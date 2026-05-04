@@ -6,6 +6,7 @@ import { formatDate } from "@/lib/utils";
 import {
   BadgeCheck,
   Building2,
+  Calendar,
   Edit,
   Mail,
   Phone,
@@ -16,6 +17,36 @@ import {
   Users,
   X,
 } from "lucide-react";
+
+type DateFilter = "all" | "today" | "week" | "month" | "3months";
+
+const DATE_FILTERS: { key: DateFilter; label: string }[] = [
+  { key: "all",     label: "All time" },
+  { key: "today",   label: "Today" },
+  { key: "week",    label: "This week" },
+  { key: "month",   label: "This month" },
+  { key: "3months", label: "Last 3 months" },
+];
+
+function filterByDate(users: AdminUser[], f: DateFilter): AdminUser[] {
+  if (f === "all") return users;
+  const now = new Date();
+  let cutoff: Date;
+  if (f === "today") {
+    cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  } else if (f === "week") {
+    const day = now.getDay(); // 0=Sun
+    cutoff = new Date(now);
+    cutoff.setDate(now.getDate() - day);
+    cutoff.setHours(0, 0, 0, 0);
+  } else if (f === "month") {
+    cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+  } else {
+    cutoff = new Date(now);
+    cutoff.setMonth(now.getMonth() - 3);
+  }
+  return users.filter((u) => u.created_at && new Date(u.created_at) >= cutoff);
+}
 
 type EditForm = {
   owner_name: string;
@@ -54,6 +85,7 @@ export default function AdminUsersManager() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [activeQ, setActiveQ] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [selected, setSelected] = useState<AdminUser | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -68,9 +100,10 @@ export default function AdminUsersManager() {
     setup_complete: false,
   });
 
-  const activeCount = useMemo(() => rows.filter((u) => u.subscription_active).length, [rows]);
-  const setupCount = useMemo(() => rows.filter((u) => u.setup_complete).length, [rows]);
-  const ownerCount = useMemo(() => rows.filter((u) => !u.business_id).length, [rows]);
+  const filteredRows = useMemo(() => filterByDate(rows, dateFilter), [rows, dateFilter]);
+  const activeCount = useMemo(() => filteredRows.filter((u) => u.subscription_active).length, [filteredRows]);
+  const setupCount = useMemo(() => filteredRows.filter((u) => u.setup_complete).length, [filteredRows]);
+  const ownerCount = useMemo(() => filteredRows.filter((u) => !u.business_id).length, [filteredRows]);
 
   function showToast(msg: string, type: "ok" | "err" = "ok") {
     setToast({ msg, type });
@@ -145,10 +178,10 @@ export default function AdminUsersManager() {
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: "Total accounts", value: total, icon: Users, color: "text-slate-600 bg-slate-100" },
-          { label: "Subscribed", value: activeCount, icon: BadgeCheck, color: "text-emerald-700 bg-emerald-100" },
-          { label: "Setup complete", value: setupCount, icon: Shield, color: "text-indigo-700 bg-indigo-100" },
-          { label: "Business owners", value: ownerCount, icon: Building2, color: "text-amber-700 bg-amber-100" },
+          { label: dateFilter === "all" ? "Total accounts" : `Accounts · ${DATE_FILTERS.find(f=>f.key===dateFilter)?.label}`, value: loading ? "—" : (dateFilter === "all" ? total : filteredRows.length), icon: Users, color: "text-slate-600 bg-slate-100" },
+          { label: "Subscribed", value: loading ? "—" : activeCount, icon: BadgeCheck, color: "text-emerald-700 bg-emerald-100" },
+          { label: "Setup complete", value: loading ? "—" : setupCount, icon: Shield, color: "text-indigo-700 bg-indigo-100" },
+          { label: "Business owners", value: loading ? "—" : ownerCount, icon: Building2, color: "text-amber-700 bg-amber-100" },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-4">
             <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${color}`}>
@@ -165,32 +198,59 @@ export default function AdminUsersManager() {
       {/* Table card */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-100">
-          <div className="flex-1 flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
-            <Search size={13} className="text-slate-400 shrink-0" />
-            <input
-              ref={searchRef}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && doSearch()}
-              placeholder="Search email, name, business, phone…"
-              className="flex-1 text-sm bg-transparent outline-none text-slate-700 placeholder:text-slate-400"
-            />
+        <div className="border-b border-slate-100">
+          {/* Search row */}
+          <div className="flex items-center gap-3 px-4 py-3">
+            <div className="flex-1 flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
+              <Search size={13} className="text-slate-400 shrink-0" />
+              <input
+                ref={searchRef}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && doSearch()}
+                placeholder="Search email, name, business, phone…"
+                className="flex-1 text-sm bg-transparent outline-none text-slate-700 placeholder:text-slate-400"
+              />
+            </div>
+            <button
+              onClick={doSearch}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors"
+            >
+              Search
+            </button>
+            <button
+              onClick={() => void loadUsers(activeQ, true)}
+              disabled={refreshing}
+              className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 transition-colors"
+              title="Refresh"
+            >
+              <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+            </button>
           </div>
-          <button
-            onClick={doSearch}
-            className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors"
-          >
-            Search
-          </button>
-          <button
-            onClick={() => void loadUsers(activeQ, true)}
-            disabled={refreshing}
-            className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 transition-colors"
-            title="Refresh"
-          >
-            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
-          </button>
+          {/* Date filter pills */}
+          <div className="flex items-center gap-2 px-4 pb-3">
+            <Calendar size={12} className="text-slate-400 shrink-0" />
+            <div className="flex flex-wrap gap-1.5">
+              {DATE_FILTERS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setDateFilter(key)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                    dateFilter === key
+                      ? "bg-indigo-600 text-white"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {dateFilter !== "all" && (
+              <span className="ml-auto text-xs text-slate-400">
+                {filteredRows.length} of {total} accounts
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Table */}
@@ -216,16 +276,18 @@ export default function AdminUsersManager() {
                       ))}
                     </tr>
                   ))
-                : rows.length === 0
+                : filteredRows.length === 0
                 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-12 text-center">
                       <Users size={36} className="mx-auto text-slate-200 mb-3" />
-                      <p className="text-slate-400 text-sm">No accounts found</p>
+                      <p className="text-slate-400 text-sm">
+                        {dateFilter !== "all" ? `No accounts signed up in this period` : "No accounts found"}
+                      </p>
                     </td>
                   </tr>
                 )
-                : rows.map((u) => (
+                : filteredRows.map((u) => (
                     <tr key={u.id} className="hover:bg-slate-50/70 transition-colors">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
@@ -291,9 +353,9 @@ export default function AdminUsersManager() {
           </table>
         </div>
 
-        {!loading && rows.length > 0 && (
+        {!loading && filteredRows.length > 0 && (
           <div className="px-4 py-2.5 border-t border-slate-100 text-xs text-slate-400">
-            Showing {rows.length} of {total} accounts
+            Showing {filteredRows.length}{dateFilter !== "all" ? ` (filtered)` : ""} of {total} accounts
           </div>
         )}
       </div>
