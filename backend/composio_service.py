@@ -69,6 +69,19 @@ ACTION_OUTLOOK_SEARCH     = "OUTLOOK_OUTLOOK_SEARCH_MESSAGES"
 ACTION_SHOPIFY_GET_ORDERS_WITH_FILTERS = "SHOPIFY_GET_ORDERS_WITH_FILTERS"
 ACTION_SHOPIFY_GET_PRODUCTS_PAGINATED = "SHOPIFY_GET_PRODUCTS_PAGINATED"
 
+# Stripe
+ACTION_STRIPE_LIST_INVOICES = "STRIPE_LIST_INVOICES"
+ACTION_STRIPE_LIST_PAYMENT_INTENTS = "STRIPE_LIST_PAYMENT_INTENTS"
+
+# Klaviyo
+ACTION_KLAVIYO_GET_FLOWS = "KLAVIYO_GET_FLOWS"
+ACTION_KLAVIYO_GET_METRICS = "KLAVIYO_GET_METRICS"
+
+# Slack
+ACTION_SLACK_TEST_AUTH = "SLACK_TEST_AUTH"
+ACTION_SLACK_LIST_CONVERSATIONS = "SLACK_LIST_CONVERSATIONS"
+ACTION_SLACK_SEND_MESSAGE = "SLACK_SEND_MESSAGE"
+
 
 def _get_key() -> str:
     return os.getenv("COMPOSIO_API_KEY", "").strip()
@@ -540,6 +553,205 @@ async def shopify_products_via_composio_or_proxy(
         "GET",
         "/admin/api/2024-01/products.json",
         params={"limit": str(lim), "status": product_status},
+    )
+
+
+def _unwrap_execute_dict(exec_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if exec_result.get("error") or not exec_result.get("success"):
+        return None
+    d = exec_result.get("data")
+    if isinstance(d, dict):
+        return d
+    return None
+
+
+def _stripe_list_objects(exec_result: Dict[str, Any]) -> Optional[list]:
+    inner = _unwrap_execute_dict(exec_result)
+    if not inner:
+        return None
+    items = inner.get("data")
+    if isinstance(items, list):
+        return items
+    return None
+
+
+def _klaviyo_flow_filter_expression(status: str) -> Optional[str]:
+    s = (status or "all").strip().lower()
+    if s == "all":
+        return None
+    if s == "live":
+        return 'equals(status,"live")'
+    if s == "draft":
+        return 'equals(status,"draft")'
+    if s == "archived":
+        return 'equals(archived,"true")'
+    return None
+
+
+async def stripe_invoices_via_composio_or_proxy(
+    user_id: str,
+    *,
+    limit: int,
+    status: str,
+) -> Dict[str, Any]:
+    lim = min(max(int(limit), 1), 100)
+    params: Dict[str, Any] = {"limit": lim}
+    st = (status or "open").lower()
+    if st != "all":
+        params["status"] = st
+    r = await execute_action(user_id, ACTION_STRIPE_LIST_INVOICES, params)
+    items = _stripe_list_objects(r)
+    if items is not None:
+        return {"data": items}
+    qparams: Dict[str, str] = {"limit": str(lim)}
+    if st != "all":
+        qparams["status"] = st
+    return await composio_proxy(user_id, TOOLKIT_STRIPE, "GET", "/v1/invoices", params=qparams)
+
+
+async def stripe_payment_intents_via_composio_or_proxy(
+    user_id: str,
+    *,
+    limit: int,
+) -> Dict[str, Any]:
+    lim = min(max(int(limit), 1), 100)
+    r = await execute_action(
+        user_id,
+        ACTION_STRIPE_LIST_PAYMENT_INTENTS,
+        {"limit": lim},
+    )
+    items = _stripe_list_objects(r)
+    if items is not None:
+        return {"data": items}
+    return await composio_proxy(
+        user_id,
+        TOOLKIT_STRIPE,
+        "GET",
+        "/v1/payment_intents",
+        params={"limit": str(lim)},
+    )
+
+
+async def klaviyo_flows_via_composio_or_proxy(
+    user_id: str,
+    *,
+    status: str,
+) -> Dict[str, Any]:
+    filt = _klaviyo_flow_filter_expression(status)
+    params: Dict[str, Any] = {"page__size": 50}
+    if filt:
+        params["filter"] = filt
+    r = await execute_action(user_id, ACTION_KLAVIYO_GET_FLOWS, params)
+    inner = _unwrap_execute_dict(r)
+    if inner is not None:
+        data_arr = inner.get("data")
+        if isinstance(data_arr, list):
+            return {"data": data_arr}
+    rest_params: Dict[str, Any] = {"page[size]": 50}
+    st = (status or "all").lower()
+    if st != "all":
+        rest_params["filter"] = f"equals(status,'{st}')"
+    return await composio_proxy(user_id, TOOLKIT_KLAVIYO, "GET", "/api/flows/", params=rest_params)
+
+
+async def klaviyo_metrics_via_composio_or_proxy(
+    user_id: str,
+    *,
+    limit: int,
+) -> Dict[str, Any]:
+    lim = min(max(int(limit), 1), 200)
+    r = await execute_action(user_id, ACTION_KLAVIYO_GET_METRICS, {})
+    inner = _unwrap_execute_dict(r)
+    if inner is not None:
+        data_arr = inner.get("data")
+        if isinstance(data_arr, list):
+            return {"data": data_arr[:lim]}
+    return await composio_proxy(
+        user_id,
+        TOOLKIT_KLAVIYO,
+        "GET",
+        "/api/metrics/",
+        params={"page[size]": str(lim)},
+    )
+
+
+async def slack_auth_test_via_composio_or_proxy(user_id: str) -> Dict[str, Any]:
+    r = await execute_action(user_id, ACTION_SLACK_TEST_AUTH, {})
+    inner = _unwrap_execute_dict(r)
+    if inner is not None and inner.get("ok") is not False and (
+        inner.get("ok") is True or inner.get("team_id") or inner.get("team")
+    ):
+        return inner
+    return await composio_proxy(user_id, TOOLKIT_SLACK, "POST", "auth.test", json={})
+
+
+async def slack_conversations_list_via_composio_or_proxy(
+    user_id: str,
+    *,
+    types: str,
+    limit: int,
+    exclude_archived: bool,
+    cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    lim = min(max(int(limit), 1), 1000)
+    params: Dict[str, Any] = {
+        "types": types,
+        "limit": lim,
+        "exclude_archived": exclude_archived,
+    }
+    if cursor:
+        params["cursor"] = cursor
+    r = await execute_action(user_id, ACTION_SLACK_LIST_CONVERSATIONS, params)
+    inner = _unwrap_execute_dict(r)
+    if inner:
+        if isinstance(inner.get("channels"), list):
+            return inner
+        nested = inner.get("data")
+        if isinstance(nested, dict) and isinstance(nested.get("channels"), list):
+            return nested
+    slack_json: Dict[str, Any] = {
+        "types": types,
+        "limit": lim,
+        "exclude_archived": exclude_archived,
+    }
+    if cursor:
+        slack_json["cursor"] = cursor
+    return await composio_proxy(
+        user_id,
+        TOOLKIT_SLACK,
+        "POST",
+        "conversations.list",
+        json=slack_json,
+        timeout=20.0,
+    )
+
+
+async def slack_post_message_via_composio_or_proxy(
+    user_id: str,
+    *,
+    channel: str,
+    text: str,
+    thread_ts: Optional[str] = None,
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"channel": channel, "text": text}
+    if thread_ts:
+        params["thread_ts"] = thread_ts
+    r = await execute_action(user_id, ACTION_SLACK_SEND_MESSAGE, params)
+    inner = _unwrap_execute_dict(r)
+    if inner is not None and inner.get("ok") is not False and (
+        inner.get("ok") is True or inner.get("ts")
+    ):
+        return inner
+    payload: Dict[str, Any] = {"channel": channel, "text": text}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    return await composio_proxy(
+        user_id,
+        TOOLKIT_SLACK,
+        "POST",
+        "chat.postMessage",
+        json=payload,
+        timeout=15.0,
     )
 
 
