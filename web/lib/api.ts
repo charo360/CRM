@@ -207,6 +207,20 @@ export interface TeamMember {
   temp_password?: string | null;
 }
 
+export interface AdminUser {
+  id: string;
+  email: string;
+  owner_name: string;
+  business_name: string;
+  phone_number?: string;
+  role: string;
+  business_id?: string | null;
+  subscription_active?: boolean;
+  setup_complete?: boolean;
+  created_at?: string;
+  last_login?: string;
+}
+
 export interface FollowUp {
   id: string;
   customer_id: string;
@@ -652,6 +666,22 @@ export const teamApi = {
   create: (member: Partial<TeamMember>) => api.post<TeamMember>("/team/members", member),
   update: (id: string, member: Partial<TeamMember>) => api.put<TeamMember>(`/team/members/${id}`, member),
   delete: (id: string) => api.delete<void>(`/team/members/${id}`),
+};
+
+export const adminApi = {
+  listUsers: (params?: { q?: string; limit?: number; skip?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (typeof params?.limit === "number") qs.set("limit", String(params.limit));
+    if (typeof params?.skip === "number") qs.set("skip", String(params.skip));
+    const s = qs.toString();
+    return api.get<{ users: AdminUser[]; total: number; limit: number; skip: number }>(
+      `/admin/users${s ? `?${s}` : ""}`,
+    );
+  },
+  updateUser: (id: string, body: Partial<AdminUser>) =>
+    api.patch<{ user: AdminUser }>(`/admin/users/${id}`, body),
+  deleteUser: (id: string) => api.delete<{ ok: boolean }>(`/admin/users/${id}`),
 };
 
 export interface CollaborationWorkspace {

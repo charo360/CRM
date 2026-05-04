@@ -12029,6 +12029,121 @@ async def get_social_audience_insights(
 
 # ── Composio: Gmail & Google Calendar OAuth + connection management ───────────
 
+def _platform_admin_emails() -> set[str]:
+    raw = (
+        os.environ.get("PLATFORM_ADMIN_EMAILS")
+        or os.environ.get("ADMIN_EMAILS")
+        or ""
+    )
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def _require_platform_admin(user: dict) -> None:
+    """Allow only platform admins to access global user-management endpoints."""
+    email = str(user.get("email") or "").strip().lower()
+    allowed = _platform_admin_emails()
+    if allowed and email in allowed:
+        return
+    # Fallback for single-tenant owner accounts if env var is not configured.
+    if not allowed and check_permission(user, TeamMemberRole.OWNER):
+        return
+    raise HTTPException(status_code=403, detail="Platform admin access required")
+
+
+def _serialize_admin_user(u: dict) -> dict:
+    def _iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") else v
+    return {
+        "id": u.get("_id"),
+        "email": u.get("email") or "",
+        "owner_name": u.get("owner_name") or "",
+        "business_name": u.get("business_name") or "",
+        "phone_number": u.get("phone_number") or "",
+        "role": u.get("role") or "owner",
+        "business_id": u.get("business_id"),
+        "subscription_active": bool(u.get("subscription_active")),
+        "setup_complete": bool(u.get("setup_complete")),
+        "created_at": _iso(u.get("created_at")),
+        "last_login": _iso(u.get("last_login")),
+    }
+
+
+@api_router.get("/admin/users")
+async def admin_list_users(
+    q: str = "",
+    limit: int = 100,
+    skip: int = 0,
+    user=Depends(get_current_user),
+):
+    _require_platform_admin(user)
+    limit = max(1, min(limit, 500))
+    skip = max(0, skip)
+    query: dict = {}
+    needle = q.strip()
+    if needle:
+        rx = {"$regex": _re.escape(needle), "$options": "i"}
+        query = {"$or": [{"email": rx}, {"owner_name": rx}, {"business_name": rx}, {"phone_number": rx}]}
+
+    projection = {
+        "password_hash": 0,
+        "refresh_token": 0,
+        "reset_token": 0,
+        "otp": 0,
+        "otp_code": 0,
+    }
+    cursor = db.users.find(query, projection).sort("created_at", -1).skip(skip).limit(limit)
+    rows = []
+    async for doc in cursor:
+        rows.append(_serialize_admin_user(doc))
+    total = await db.users.count_documents(query)
+    return {"users": rows, "total": total, "limit": limit, "skip": skip}
+
+
+@api_router.patch("/admin/users/{target_user_id}")
+async def admin_update_user(target_user_id: str, body: dict, user=Depends(get_current_user)):
+    _require_platform_admin(user)
+    existing = await db.users.find_one({"_id": target_user_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    allowed_keys = {
+        "owner_name",
+        "business_name",
+        "phone_number",
+        "role",
+        "subscription_active",
+        "setup_complete",
+    }
+    update: dict = {}
+    for k in allowed_keys:
+        if k in body:
+            update[k] = body[k]
+    if not update:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    await db.users.update_one({"_id": target_user_id}, {"$set": update})
+    fresh = await db.users.find_one({"_id": target_user_id})
+    return {"user": _serialize_admin_user(fresh or existing)}
+
+
+@api_router.delete("/admin/users/{target_user_id}")
+async def admin_delete_user(target_user_id: str, user=Depends(get_current_user)):
+    _require_platform_admin(user)
+    if target_user_id == user.get("_id"):
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    existing = await db.users.find_one({"_id": target_user_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.delete_one({"_id": target_user_id})
+    # Best-effort cleanup of related records keyed by this user/business.
+    await db.team_members.delete_many({"$or": [{"user_id": target_user_id}, {"business_id": target_user_id}]})
+    await db.customers.delete_many({"user_id": target_user_id})
+    await db.orders.delete_many({"user_id": target_user_id})
+    await db.messages.delete_many({"user_id": target_user_id})
+    await db.email_threads.delete_many({"business_id": target_user_id})
+    await db.email_messages.delete_many({"business_id": target_user_id})
+    return {"ok": True}
+
 @api_router.post("/composio/connect/{toolkit}")
 async def composio_connect(toolkit: str, user=Depends(get_current_user)):
     """Start Composio OAuth for a toolkit (gmail | googlecalendar).

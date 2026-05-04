@@ -57,6 +57,7 @@ function coreNavItems(overviewLabel: string) {
   return [
     { href: "/dashboard", label: overviewLabel, icon: LayoutDashboard, exact: true as const },
     { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
+    { href: "/dashboard/admin/users", label: "Admin Users", icon: Shield },
     { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
