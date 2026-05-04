@@ -514,7 +514,7 @@ export default function DesignTemplatesPage() {
                       </div>
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center bg-gray-100 text-gray-400 gap-1">
-                        {uploadCategory === "ppt" ? <Presentation className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
+                        {/\.(pptx?|ppt)$/i.test(p.file.name) ? <Presentation className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
                         <span className="text-[9px]">{p.file.name.split(".").pop()?.toUpperCase()}</span>
                       </div>
                     )}
