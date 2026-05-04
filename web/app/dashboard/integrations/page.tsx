@@ -583,13 +583,14 @@ function IntegrationsPageInner() {
 
   const refreshNango = useCallback(async () => {
     const token = getToken();
-    if (!token) return;
+    const _nangoFalse = { slack: false, email: false, calendar: false, shopify: false, microsoft: false, stripe: false, klaviyo: false, mailchimp: false, brevo: false, google_sheets: false, notion: false };
+    if (!token) { setNangoStatus(_nangoFalse); return; }
     const ids = Object.values(NANGO_IDS).join(",");
     try {
       const res = await fetch(`/api/nango/connections?integrations=${ids}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) return;
+      if (!res.ok) { setNangoStatus(_nangoFalse); return; }
       const data = (await res.json()) as { connected: Record<string, boolean> };
       setNangoStatus({
         slack: data.connected[NANGO_IDS.slack] ?? false,
@@ -611,12 +612,18 @@ function IntegrationsPageInner() {
 
   const refreshComposio = useCallback(async () => {
     const token = getToken();
-    if (!token) return;
+    if (!token) {
+      setComposioStatus({ gmail: false, googlecalendar: false, outlook: false });
+      return;
+    }
     try {
       const res = await fetch("/api/composio/connections", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        setComposioStatus({ gmail: false, googlecalendar: false, outlook: false });
+        return;
+      }
       const data = (await res.json()) as { connected: Record<string, boolean> };
       setComposioStatus({
         gmail: data.connected["gmail"] ?? false,
@@ -624,7 +631,7 @@ function IntegrationsPageInner() {
         outlook: data.connected["outlook"] ?? false,
       });
     } catch {
-      setComposioStatus({ gmail: false, googlecalendar: false });
+      setComposioStatus({ gmail: false, googlecalendar: false, outlook: false });
     }
   }, []);
 
