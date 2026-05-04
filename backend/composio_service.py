@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://backend.composio.dev/api"
 
+# Toolkits where Composio docs list "Managed App: No" — managed OAuth (useComposioAuth: true) cannot be used.
+_COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo"})
+
 # Composio app name (lowercase slug, as stored in appName field)
 _APP_NAMES: Dict[str, str] = {
     # Email / Calendar
@@ -124,6 +127,11 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
     # 2. Get the Composio app metadata to find appId
     try:
         resp = await client.get(f"{_BASE}/v1/apps/{app_name}", headers=_headers())
+        if resp.status_code != 200 and app_name == app_name.lower():
+            resp = await client.get(
+                f"{_BASE}/v1/apps/{app_name.upper()}",
+                headers=_headers(),
+            )
         logger.info("[composio] GET /v1/apps/%s → %d %s", app_name, resp.status_code, resp.text[:200])
         if resp.status_code != 200:
             return None
@@ -135,7 +143,8 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
         logger.warning("[composio] get app metadata error: %s", e)
         return None
 
-    # 3. Create a new integration using Composio's managed OAuth
+    # 3. Create integration (Composio-managed OAuth only where supported).
+    use_composio_managed = app_name.lower() not in _COMPOSIO_NO_MANAGED_OAUTH
     try:
         import time
         ts = int(time.time())
@@ -143,10 +152,16 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
             "appId": app_id,
             "name": f"{app_name}_zilo_{ts}",
             "authScheme": "OAUTH2",
-            "useComposioAuth": True,
+            "useComposioAuth": use_composio_managed,
         }
         resp = await client.post(f"{_BASE}/v1/integrations", headers=_headers(), json=payload)
-        logger.info("[composio] create integration %s → %d %s", app_name, resp.status_code, resp.text[:300])
+        logger.info(
+            "[composio] create integration %s managed=%s → %d %s",
+            app_name,
+            use_composio_managed,
+            resp.status_code,
+            resp.text[:300],
+        )
         if resp.status_code in (200, 201):
             data = resp.json()
             iid = data.get("id")
@@ -174,6 +189,15 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
         async with httpx.AsyncClient(timeout=30.0) as client:
             integration_id = await _get_or_create_integration_id(client, app_name)
             if not integration_id:
+                if app_name.lower() in _COMPOSIO_NO_MANAGED_OAUTH:
+                    return {
+                        "error": (
+                            f"Could not create a Composio integration for {app_name}. "
+                            "This app has no Composio-managed OAuth — open the Composio dashboard, "
+                            "add a Brevo auth configuration (OAuth client or API key), "
+                            "then try connecting again."
+                        )
+                    }
                 return {"error": f"Could not find or create Composio integration for {app_name}"}
 
             payload: Dict[str, Any] = {
