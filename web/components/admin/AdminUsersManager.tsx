@@ -18,6 +18,7 @@ type EditForm = {
 
 export default function AdminUsersManager() {
   const router = useRouter();
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
   const [accessChecked, setAccessChecked] = useState(false);
   const [hasAccess, setHasAccess] = useState(false);
   const [rows, setRows] = useState<AdminUser[]>([]);
@@ -52,10 +53,10 @@ export default function AdminUsersManager() {
 
   useEffect(() => {
     (async () => {
-      if (!isAuthenticated()) {
+      const authed = isAuthenticated();
+      setIsLoggedIn(authed);
+      if (!authed) {
         router.replace("/login");
-        setAccessChecked(true);
-        setHasAccess(false);
         return;
       }
       try {
@@ -73,8 +74,12 @@ export default function AdminUsersManager() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
+  if (isLoggedIn === false) {
+    return <div className="p-6 text-sm text-slate-500">Redirecting to login…</div>;
+  }
+
   if (!accessChecked) {
-    return <div className="p-6 text-sm text-slate-500">Checking admin access…</div>;
+    return <div className="p-6 text-sm text-slate-500">Checking admin permissions…</div>;
   }
 
   if (!hasAccess) {
