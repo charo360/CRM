@@ -22,6 +22,8 @@ export default function AdminUsersManager() {
   const [rows, setRows] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  // Must be here (top level) before any conditional returns — Rules of Hooks
+  const activeCount = useMemo(() => rows.filter((u) => u.subscription_active).length, [rows]);
   const [q, setQ] = useState("");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<AdminUser | null>(null);
@@ -85,11 +87,6 @@ export default function AdminUsersManager() {
       </div>
     );
   }
-
-  const activeCount = useMemo(
-    () => rows.filter((u) => u.subscription_active).length,
-    [rows],
-  );
 
   function openEdit(u: AdminUser) {
     setSelected(u);
