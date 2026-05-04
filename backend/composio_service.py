@@ -22,14 +22,36 @@ _BASE = "https://backend.composio.dev/api"
 
 # Composio app name (lowercase slug, as stored in appName field)
 _APP_NAMES: Dict[str, str] = {
+    # Email / Calendar
     "gmail":           "gmail",
     "googlecalendar":  "googlecalendar",
-    "outlook":         "outlook",         # Microsoft Outlook via Composio
+    "outlook":         "outlook",
+    # Productivity
+    "slack":           "slack",
+    "googlesheets":    "googlesheets",
+    "notion":          "notion",
+    # E-commerce / Payments
+    "shopify":         "shopify",
+    "stripe":          "stripe",
+    # Marketing
+    "klaviyo":         "klaviyo",
+    "mailchimp":       "mailchimp",
+    "brevo":           "brevo",
 }
 
-TOOLKIT_GMAIL    = "gmail"
-TOOLKIT_CALENDAR = "googlecalendar"
-TOOLKIT_OUTLOOK  = "outlook"
+TOOLKIT_GMAIL        = "gmail"
+TOOLKIT_CALENDAR     = "googlecalendar"
+TOOLKIT_OUTLOOK      = "outlook"
+TOOLKIT_SLACK        = "slack"
+TOOLKIT_GOOGLESHEETS = "googlesheets"
+TOOLKIT_NOTION       = "notion"
+TOOLKIT_SHOPIFY      = "shopify"
+TOOLKIT_STRIPE       = "stripe"
+TOOLKIT_KLAVIYO      = "klaviyo"
+TOOLKIT_MAILCHIMP    = "mailchimp"
+TOOLKIT_BREVO        = "brevo"
+
+ALL_TOOLKITS = list(_APP_NAMES.keys())
 
 # ── Action name constants ──────────────────────────────────────────────────────
 ACTION_GMAIL_FETCH        = "GMAIL_FETCH_EMAILS"
@@ -235,13 +257,45 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
 
 
 async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
-    """Return connection status for all Zilo-supported toolkits."""
+    """Return connection status for all Zilo-supported toolkits (all apps)."""
     if not _get_key():
-        return {TOOLKIT_GMAIL: False, TOOLKIT_CALENDAR: False, TOOLKIT_OUTLOOK: False}
+        return {t: False for t in ALL_TOOLKITS}
+    # Fetch connected accounts once and check each toolkit
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(
+                f"{_BASE}/v1/connectedAccounts",
+                headers=_headers(),
+                params={"userUuid": user_id, "showActiveOnly": "true"},
+            )
+            if resp.status_code != 200:
+                return {t: False for t in ALL_TOOLKITS}
+            data = resp.json()
+            items = data.get("items") or data.get("data") or data.get("connectedAccounts") or []
+    except Exception as e:
+        logger.warning("[composio] get_all_connection_statuses error: %s", e)
+        return {t: False for t in ALL_TOOLKITS}
+
+    # Build set of connected app names (validated by userUuid)
+    connected_apps: set = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_user = str(
+            item.get("userUuid") or item.get("clientUniqueUserId") or item.get("entityId") or ""
+        ).strip()
+        if item_user and item_user != user_id:
+            continue
+        item_status = str(item.get("status") or "ACTIVE").upper()
+        if item_status not in ("ACTIVE", ""):
+            continue
+        app = str(item.get("appName") or item.get("appUniqueId") or "").lower()
+        if app:
+            connected_apps.add(app)
+
     results: Dict[str, bool] = {}
-    for toolkit in (TOOLKIT_GMAIL, TOOLKIT_CALENDAR, TOOLKIT_OUTLOOK):
-        status = await get_connection_status(user_id, toolkit)
-        results[toolkit] = status.get("connected", False)
+    for toolkit, app_name in _APP_NAMES.items():
+        results[toolkit] = any(app_name in a or a in app_name for a in connected_apps)
     return results
 
 
@@ -270,6 +324,103 @@ async def disconnect(user_id: str, toolkit: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error("[composio] disconnect error: %s", e)
         return {"error": str(e)}
+
+
+# ── Raw proxy (replaces nango_proxy for tool execution) ───────────────────────
+
+async def composio_proxy(
+    user_id: str,
+    toolkit: str,
+    method: str,
+    path: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json: Optional[Dict[str, Any]] = None,
+    timeout: float = 15.0,
+) -> Dict[str, Any]:
+    """Make a raw HTTP request through a user's Composio connected account.
+
+    Mirrors the nango_proxy() signature so it can be used as a drop-in replacement.
+    Uses Composio's proxy endpoint (/v2/actions/proxy) which handles OAuth token
+    refresh and routes to the correct base URL per integration.
+
+    Args:
+        user_id:  The user's business_id (used as Composio userUuid/entityId).
+        toolkit:  Composio app slug (e.g. "shopify", "slack", "googlesheets").
+        method:   HTTP method ("GET", "POST", "PUT", "PATCH", "DELETE").
+        path:     API path (e.g. "/admin/api/2024-01/orders.json").
+        params:   Optional URL query parameters.
+        json:     Optional JSON request body.
+        timeout:  Request timeout seconds.
+
+    Returns:
+        Parsed JSON response dict.
+
+    Raises:
+        RuntimeError: If Composio is not configured, not connected, or call fails.
+    """
+    if not _get_key():
+        raise RuntimeError("COMPOSIO_API_KEY is not configured")
+
+    # Resolve connectedAccountId
+    status = await get_connection_status(user_id, toolkit)
+    if not status.get("connected"):
+        raise RuntimeError(
+            f"No {toolkit} connection found for this account. "
+            f"Connect {toolkit} in the Integrations page first."
+        )
+    conn_id = status.get("connection_id")
+
+    # Build Composio proxy request
+    # Parameters must be a list of {name, value, in} objects
+    param_list = []
+    if params:
+        for k, v in params.items():
+            param_list.append({"name": str(k), "value": str(v), "in": "query"})
+
+    proxy_body: Dict[str, Any] = {
+        "endpoint": path.lstrip("/") if not path.startswith("http") else path,
+        "method": method.upper(),
+        "parameters": param_list,
+        "body": json or {},
+    }
+    if conn_id:
+        proxy_body["connectedAccountId"] = conn_id
+    else:
+        proxy_body["entityId"] = user_id
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{_BASE}/v2/actions/proxy",
+                headers=_headers(),
+                json=proxy_body,
+            )
+    except Exception as e:
+        raise RuntimeError(f"Composio proxy request failed: {e}") from e
+
+    if resp.status_code >= 400:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text[:300]
+        raise RuntimeError(f"{toolkit} proxy error {resp.status_code}: {body}")
+
+    try:
+        data = resp.json()
+    except Exception:
+        return {"raw": resp.text[:2000]}
+
+    # Composio wraps responses: { data: { responseData: {...}, successfull: bool } }
+    inner = data.get("data") or data
+    if isinstance(inner, dict):
+        response_data = inner.get("responseData") or inner.get("response_data") or inner
+        if isinstance(response_data, dict) and (
+            "responseData" not in response_data and "successfull" not in response_data
+        ):
+            return response_data
+        return response_data
+    return data
 
 
 # ── Toolkit from action name ──────────────────────────────────────────────────

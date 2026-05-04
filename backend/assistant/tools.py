@@ -2465,7 +2465,7 @@ async def run_weekly_operator_digest(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_shopify_orders(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     from datetime import timezone
     status = args.get("status", "any")
     limit  = min(int(args.get("limit", 25)), 250)
@@ -2515,7 +2515,7 @@ async def list_shopify_orders(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit  = min(int(args.get("limit", 50)), 250)
     status = args.get("status", "active")
     try:
@@ -2559,7 +2559,7 @@ async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_shopify_analytics(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     from datetime import timezone
     days  = int(args.get("days", 30))
     since = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)).isoformat()
@@ -2615,7 +2615,7 @@ async def get_shopify_analytics(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_fulfill_order(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     order_id = str(args["order_id"])
     try:
         # Get fulfillment orders
@@ -2675,7 +2675,7 @@ async def shopify_fulfill_order(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_cancel_order(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     order_id = str(args["order_id"])
     try:
         result = await nango_proxy(
@@ -2714,7 +2714,7 @@ async def shopify_cancel_order(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_create_discount(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     import random, string
     from datetime import timezone
     code = (args.get("code") or "").strip().upper() or "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
@@ -2776,7 +2776,7 @@ async def shopify_create_discount(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def shopify_get_abandoned_carts(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     from datetime import timezone
     hours = int(args.get("since_hours", 1))
     limit = min(int(args.get("limit", 25)), 250)
@@ -2831,7 +2831,7 @@ async def shopify_get_abandoned_carts(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def shopify_get_growth_metrics(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     from datetime import timezone
     days  = int(args.get("days", 90))
     since = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)).isoformat()
@@ -2955,7 +2955,7 @@ async def shopify_get_growth_metrics(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_add_product(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     title   = args["title"]
     price   = str(args["price"])
     raw_variants = args.get("variants") or []
@@ -3021,7 +3021,7 @@ async def shopify_add_product(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     inv_item_id = str(args["inventory_item_id"])
     delta = int(args["delta"])
     location_id = args.get("location_id")
@@ -3071,7 +3071,7 @@ async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_stripe_payments(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit  = min(int(args.get("limit", 20)), 100)
     status = args.get("status", "succeeded")
     params: Dict[str, Any] = {"limit": limit}
@@ -3115,7 +3115,7 @@ async def list_stripe_payments(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     status = args.get("status", "open")
     limit  = min(int(args.get("limit", 20)), 100)
     params: Dict[str, Any] = {"limit": limit}
@@ -3164,7 +3164,7 @@ async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_klaviyo_flows(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     status = args.get("status", "all")
     params: Dict[str, Any] = {"page[size]": 50}
     if status != "all":
@@ -3206,7 +3206,7 @@ async def list_klaviyo_flows(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_klaviyo_metrics(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit = min(int(args.get("limit", 20)), 100)
     try:
         data = await nango_proxy(
@@ -6405,9 +6405,9 @@ import os as _os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-_GMAIL_KEY     = _os.getenv("NEXT_PUBLIC_NANGO_ID_EMAIL",     "google-mail")
-_MICROSOFT_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_MICROSOFT", "microsoft")
-_SLACK_KEY     = _os.getenv("NEXT_PUBLIC_NANGO_ID_SLACK",     "slack")
+_GMAIL_KEY     = "gmail"       # Composio toolkit slug (was: google-mail via Nango)
+_MICROSOFT_KEY = "outlook"     # Composio toolkit slug (was: microsoft via Nango)
+_SLACK_KEY     = "slack"       # Composio toolkit slug (same as Nango)
 
 
 def _slack_api_error(data: Dict[str, Any]) -> Optional[str]:
@@ -6487,7 +6487,7 @@ def _email_trunc(text: str, n: int = 3000) -> str:
     },
 )
 async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     q = (args.get("query") or "in:inbox").strip()
     if args.get("unread_only"):
         q = "is:unread " + q
@@ -6542,7 +6542,7 @@ async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     thread_id = (args.get("thread_id") or "").strip()
     if not thread_id:
         return {"error": "thread_id is required"}
@@ -6589,7 +6589,7 @@ async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -6625,7 +6625,7 @@ async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     thread_id = (args.get("thread_id") or "").strip()
     body = (args.get("body") or "").strip()
     if not thread_id or not body:
@@ -6682,7 +6682,7 @@ async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -6716,7 +6716,7 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def slack_workspace_info(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     try:
         data = await nango_proxy(
             ctx.business_id, _SLACK_KEY, "POST", "auth.test", json={}, timeout=12.0,
@@ -6763,7 +6763,7 @@ async def slack_workspace_info(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     include_private = args.get("include_private", True)
     include_archived = bool(args.get("include_archived", False))
     max_pages = min(max(int(args.get("page_limit") or 10), 1), 15)
@@ -6834,7 +6834,7 @@ async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def slack_post_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     channel = (args.get("channel") or "").strip()
     text = (args.get("text") or "").strip()
     if not channel or not text:
@@ -6889,7 +6889,7 @@ def _ms_addr_list(val: str) -> list:
     },
 )
 async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     folder = (args.get("folder") or "inbox").strip()
     limit  = min(int(args.get("max_results") or 15), 50)
     params: Dict[str, Any] = {
@@ -6937,7 +6937,7 @@ async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     msg_id = (args.get("message_id") or "").strip()
     if not msg_id:
         return {"error": "message_id is required"}
@@ -6983,7 +6983,7 @@ async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -7023,7 +7023,7 @@ async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     msg_id    = (args.get("message_id") or "").strip()
     body      = (args.get("body") or "").strip()
     reply_all = bool(args.get("reply_all"))
@@ -7398,7 +7398,7 @@ async def save_document_style(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -7440,7 +7440,7 @@ _NOTION_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_NOTION", "notion")
     },
 )
 async def sheets_list(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit = min(int(args.get("max_results") or 20), 50)
     q = "mimeType='application/vnd.google-apps.spreadsheet'"
     if args.get("query"):
@@ -7480,7 +7480,7 @@ async def sheets_list(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def sheets_read(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     if not sid:
         return {"error": "spreadsheet_id is required"}
@@ -7523,7 +7523,7 @@ async def sheets_read(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_append(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     rows = args.get("rows") or []
     if not sid or not rows:
@@ -7568,7 +7568,7 @@ async def sheets_append(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_update(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     rng = (args.get("range") or "").strip()
     rows = args.get("rows") or []
@@ -7603,7 +7603,7 @@ async def sheets_update(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_create(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     title = (args.get("title") or "Untitled").strip()
     try:
         result = await nango_proxy(
@@ -7639,7 +7639,7 @@ async def sheets_create(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_search(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit = min(int(args.get("max_results") or 10), 20)
     body: Dict[str, Any] = {"page_size": limit}
     if args.get("query"):
@@ -7688,7 +7688,7 @@ async def notion_search(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_read_page(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     page_id = (args.get("page_id") or "").strip().replace("-", "")
     if not page_id:
         return {"error": "page_id is required"}
@@ -7737,7 +7737,7 @@ async def notion_read_page(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def notion_create_page(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     parent_id   = (args.get("parent_id") or "").strip().replace("-", "")
     parent_type = (args.get("parent_type") or "page").strip()
     title       = (args.get("title") or "").strip()
@@ -7787,7 +7787,7 @@ async def notion_create_page(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def notion_append_blocks(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     page_id = (args.get("page_id") or "").strip().replace("-", "")
     content = (args.get("content") or "").strip()
     if not page_id or not content:
@@ -7825,7 +7825,7 @@ async def notion_append_blocks(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_query_database(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     db_id = (args.get("database_id") or "").strip().replace("-", "")
     limit = min(int(args.get("max_results") or 20), 50)
     if not db_id:
