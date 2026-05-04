@@ -2465,17 +2465,18 @@ async def run_weekly_operator_digest(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_shopify_orders(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import shopify_orders_via_composio_or_proxy
     from datetime import timezone
     status = args.get("status", "any")
     limit  = min(int(args.get("limit", 25)), 250)
     days   = int(args.get("since_days", 7))
     since  = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)).isoformat()
     try:
-        data = await nango_proxy(
-            ctx.business_id, "shopify", "GET",
-            "/admin/api/2024-01/orders.json",
-            params={"status": status, "limit": limit, "created_at_min": since},
+        data = await shopify_orders_via_composio_or_proxy(
+            ctx.business_id,
+            status=str(status),
+            limit=limit,
+            created_at_min=since,
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -2515,14 +2516,14 @@ async def list_shopify_orders(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import shopify_products_via_composio_or_proxy
     limit  = min(int(args.get("limit", 50)), 250)
     status = args.get("status", "active")
     try:
-        data = await nango_proxy(
-            ctx.business_id, "shopify", "GET",
-            "/admin/api/2024-01/products.json",
-            params={"limit": limit, "status": status},
+        data = await shopify_products_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
+            product_status=str(status),
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -2559,15 +2560,17 @@ async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_shopify_analytics(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import shopify_orders_via_composio_or_proxy
     from datetime import timezone
     days  = int(args.get("days", 30))
     since = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)).isoformat()
     try:
-        data = await nango_proxy(
-            ctx.business_id, "shopify", "GET",
-            "/admin/api/2024-01/orders.json",
-            params={"status": "any", "financial_status": "paid", "limit": 250, "created_at_min": since},
+        data = await shopify_orders_via_composio_or_proxy(
+            ctx.business_id,
+            status="any",
+            limit=250,
+            created_at_min=since,
+            financial_status="paid",
         )
     except RuntimeError as e:
         return {"error": str(e)}

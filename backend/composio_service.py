@@ -65,6 +65,10 @@ ACTION_OUTLOOK_SEND       = "OUTLOOK_OUTLOOK_SEND_EMAIL"
 ACTION_OUTLOOK_REPLY      = "OUTLOOK_OUTLOOK_REPLY_EMAIL"
 ACTION_OUTLOOK_SEARCH     = "OUTLOOK_OUTLOOK_SEARCH_MESSAGES"
 
+# Shopify — prefer packaged actions over raw REST where possible
+ACTION_SHOPIFY_GET_ORDERS_WITH_FILTERS = "SHOPIFY_GET_ORDERS_WITH_FILTERS"
+ACTION_SHOPIFY_GET_PRODUCTS_PAGINATED = "SHOPIFY_GET_PRODUCTS_PAGINATED"
+
 
 def _get_key() -> str:
     return os.getenv("COMPOSIO_API_KEY", "").strip()
@@ -426,7 +430,7 @@ async def composio_proxy(
 # ── Toolkit from action name ──────────────────────────────────────────────────
 
 def _toolkit_for_action(action: str) -> Optional[str]:
-    """Derive toolkit slug from action name prefix."""
+    """Derive toolkit slug from Composio action name prefix (e.g. SHOPIFY_* → shopify)."""
     a = action.upper()
     if a.startswith("GMAIL_"):
         return TOOLKIT_GMAIL
@@ -434,7 +438,109 @@ def _toolkit_for_action(action: str) -> Optional[str]:
         return TOOLKIT_CALENDAR
     if a.startswith("OUTLOOK_"):
         return TOOLKIT_OUTLOOK
+    if a.startswith("SHOPIFY_"):
+        return TOOLKIT_SHOPIFY
+    if a.startswith("SLACK_"):
+        return TOOLKIT_SLACK
+    if a.startswith("STRIPE_"):
+        return TOOLKIT_STRIPE
+    if a.startswith("KLAVIYO_"):
+        return TOOLKIT_KLAVIYO
+    if a.startswith("MAILCHIMP_"):
+        return TOOLKIT_MAILCHIMP
+    if a.startswith("BREVO_") or a.startswith("SENDINBLUE_"):
+        return TOOLKIT_BREVO
+    if a.startswith("NOTION_"):
+        return TOOLKIT_NOTION
+    if a.startswith("GOOGLESHEETS_") or a.startswith("GOOGLE_SHEETS_"):
+        return TOOLKIT_GOOGLESHEETS
     return None
+
+
+def _extract_list_from_execute(
+    exec_result: Dict[str, Any],
+    key: str,
+) -> Optional[list]:
+    """Pull a list from execute_action() output; None means caller should fall back."""
+    if exec_result.get("error"):
+        return None
+    if not exec_result.get("success"):
+        return None
+    d = exec_result.get("data")
+    if d is None:
+        return None
+    if isinstance(d, list):
+        return d
+    if isinstance(d, dict):
+        if key in d and isinstance(d[key], list):
+            return d[key]
+        for inner in (d.get("data"), d.get("response"), d.get("body"), d.get("result")):
+            if isinstance(inner, dict) and isinstance(inner.get(key), list):
+                return inner[key]
+    return None
+
+
+async def shopify_orders_via_composio_or_proxy(
+    user_id: str,
+    *,
+    status: str,
+    limit: int,
+    created_at_min: str,
+    financial_status: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List orders: try Composio packaged action first, then Admin REST proxy."""
+    params: Dict[str, Any] = {
+        "status": status,
+        "limit": min(max(limit, 1), 250),
+        "created_at_min": created_at_min,
+    }
+    if financial_status:
+        params["financial_status"] = financial_status
+    r = await execute_action(user_id, ACTION_SHOPIFY_GET_ORDERS_WITH_FILTERS, params)
+    orders = _extract_list_from_execute(r, "orders")
+    if orders is not None:
+        return {"orders": orders}
+    qparams: Dict[str, str] = {
+        "status": status,
+        "limit": str(limit),
+        "created_at_min": created_at_min,
+    }
+    if financial_status:
+        qparams["financial_status"] = financial_status
+    return await composio_proxy(
+        user_id,
+        TOOLKIT_SHOPIFY,
+        "GET",
+        "/admin/api/2024-01/orders.json",
+        params=qparams,
+    )
+
+
+async def shopify_products_via_composio_or_proxy(
+    user_id: str,
+    *,
+    limit: int,
+    product_status: str,
+) -> Dict[str, Any]:
+    """List products: try Composio paginated action, filter by status; else REST proxy."""
+    lim = min(max(limit, 1), 250)
+    r = await execute_action(
+        user_id,
+        ACTION_SHOPIFY_GET_PRODUCTS_PAGINATED,
+        {"limit": lim},
+    )
+    products = _extract_list_from_execute(r, "products")
+    if products is not None:
+        ps = (product_status or "active").lower()
+        products = [p for p in products if str(p.get("status") or "").lower() == ps]
+        return {"products": products[:lim]}
+    return await composio_proxy(
+        user_id,
+        TOOLKIT_SHOPIFY,
+        "GET",
+        "/admin/api/2024-01/products.json",
+        params={"limit": str(lim), "status": product_status},
+    )
 
 
 # ── Execute action ─────────────────────────────────────────────────────────────
