@@ -12061,6 +12061,36 @@ async def composio_connection_status(toolkit: str, user=Depends(get_current_user
     return result
 
 
+@api_router.get("/nango/integration-status")
+async def nango_integration_status(user=Depends(get_current_user)):
+    """Return which Nango integrations this user has connected (DB-backed, fully isolated per user)."""
+    connected = set(user.get("nango_integrations") or [])
+    return {"connected": list(connected)}
+
+@api_router.post("/nango/record-connection")
+async def nango_record_connection(body: dict, user=Depends(get_current_user)):
+    """Record a successful Nango integration connection for this user."""
+    integration_id = (body.get("integration_id") or "").strip()
+    if not integration_id:
+        raise HTTPException(status_code=400, detail="integration_id required")
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$addToSet": {"nango_integrations": integration_id}},
+    )
+    return {"ok": True}
+
+@api_router.delete("/nango/record-connection")
+async def nango_remove_connection(body: dict, user=Depends(get_current_user)):
+    """Remove a Nango integration from this user's connected list."""
+    integration_id = (body.get("integration_id") or "").strip()
+    if integration_id:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$pull": {"nango_integrations": integration_id}},
+        )
+    return {"ok": True}
+
+
 @api_router.delete("/composio/connections/{toolkit}")
 async def composio_disconnect(toolkit: str, user=Depends(get_current_user)):
     """Disconnect (revoke) a Composio toolkit connection for this user."""

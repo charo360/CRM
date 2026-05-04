@@ -23,11 +23,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const secret = process.env.NANGO_SECRET_KEY;
-  if (!secret) {
-    return NextResponse.json({ connected: {} });
-  }
-
   const url = new URL(req.url);
   const integrations = (url.searchParams.get("integrations") ?? "")
     .split(",")
@@ -39,30 +34,21 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const meUrl = buildServerCrmApiUrl(req, "/auth/me");
-    const meRes = await fetch(meUrl, { headers: { Authorization: auth } });
-    if (!meRes.ok) {
-      return NextResponse.json({ error: "Invalid session" }, { status: 401 });
+    // Use our own DB as source of truth for connection status.
+    // Nango's tag-based filter returns all connections regardless of user,
+    // which causes new accounts to see other users' connected integrations.
+    const statusUrl = buildServerCrmApiUrl(req, "/nango/integration-status");
+    const statusRes = await fetch(statusUrl, { headers: { Authorization: auth } });
+    if (!statusRes.ok) {
+      return NextResponse.json({ connected: allFalse(integrations) });
     }
-    let me: { id?: string; business_id?: string };
-    try {
-      me = (await meRes.json()) as { id?: string; business_id?: string };
-    } catch {
-      return NextResponse.json({ error: "Invalid session" }, { status: 401 });
-    }
-    const tenantIdRaw = me.business_id ?? me.id;
-    const tenantId = tenantIdRaw != null ? String(tenantIdRaw) : "";
-    if (!tenantId) {
-      return NextResponse.json({ error: "Invalid session" }, { status: 401 });
-    }
-
-    const connectedSet = await mergeConnectionProviderKeys(secret, me);
+    const { connected: connectedList } = (await statusRes.json()) as { connected: string[] };
+    const connectedSet = new Set(connectedList ?? []);
 
     const connected: Record<string, boolean> = {};
     for (const id of integrations) {
       connected[id] = connectedSet.has(id);
     }
-
     return NextResponse.json({ connected });
   } catch (e) {
     console.error("[api/nango/connections]", e);
@@ -196,6 +182,18 @@ export async function DELETE(req: NextRequest) {
       { error: err?.error?.message || "Failed to disconnect" },
       { status: delRes.status }
     );
+  }
+
+  // Remove from our DB so status is immediately correct for this user
+  try {
+    const removeUrl = buildServerCrmApiUrl(req, "/nango/record-connection");
+    await fetch(removeUrl, {
+      method: "DELETE",
+      headers: { Authorization: auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ integration_id: integrationId }),
+    });
+  } catch {
+    // Non-fatal — status will still be false next refresh since Nango is disconnected
   }
 
   return NextResponse.json({ ok: true });

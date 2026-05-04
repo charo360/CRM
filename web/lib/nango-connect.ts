@@ -48,6 +48,21 @@ export async function openNangoConnect(
       if (event.type === "connect") {
         toast.success("Connected");
         ui.close();
+        // Record each connected integration in our DB so status is user-isolated
+        // and doesn't rely on Nango's tag-filter returning correct results.
+        const currentToken = getToken();
+        if (currentToken && allowedIntegrations.length) {
+          for (const integrationId of allowedIntegrations) {
+            fetch("/api/nango/record-connection", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${currentToken}`,
+              },
+              body: JSON.stringify({ integration_id: integrationId }),
+            }).catch(() => {});
+          }
+        }
         const fn = opts?.onAfterConnect;
         if (fn) {
           const delaysMs = [0, 700, 2000, 4500];
