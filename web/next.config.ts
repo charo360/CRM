@@ -13,6 +13,12 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: WEB_PACKAGE_ROOT,
   },
+  async redirects() {
+    return [
+      { source: "/ADMIN", destination: "/admin", permanent: false },
+      { source: "/Admin", destination: "/admin", permanent: false },
+    ];
+  },
   async rewrites() {
     return [
       {
