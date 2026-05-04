@@ -1485,7 +1485,7 @@ export default function EmailPage() {
               onClick={() => {
                 const next = threadLimit + 50;
                 setThreadLimit(next);
-                loadThreads(activeSearch, activeProvider, next);
+                loadThreads(activeSearch, activeProvider ?? undefined, next);
               }}
               className="w-full text-xs text-brand-dark font-medium py-2 rounded-xl hover:bg-brand/5 border border-brand/20 transition-colors"
             >
