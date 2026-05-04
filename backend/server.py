@@ -12045,10 +12045,27 @@ async def composio_connect(toolkit: str, user=Depends(get_current_user)):
 
 @api_router.get("/composio/connections")
 async def composio_connections(user=Depends(get_current_user)):
-    """Return connection status for all Composio-managed toolkits."""
+    """Return connection status for all Composio-managed toolkits.
+
+    Queries Composio with the user's unique ID and verifies each returned
+    account belongs to this user. Writes confirmed connections to MongoDB
+    so status is also readable from DB without hitting Composio every time.
+    """
     from composio_service import get_all_connection_statuses
     user_id = str(user.get("business_id") or user["_id"])
     statuses = await get_all_connection_statuses(user_id)
+
+    # Persist confirmed connections in the user doc for reliable per-user isolation
+    connected_set = [k for k, v in statuses.items() if v]
+    disconnected_set = [k for k, v in statuses.items() if not v]
+    update: dict = {}
+    for k in connected_set:
+        update[f"composio_integrations.{k}"] = True
+    for k in disconnected_set:
+        update[f"composio_integrations.{k}"] = False
+    if update:
+        await db.users.update_one({"_id": user["_id"]}, {"$set": update})
+
     return {"connected": statuses}
 
 

@@ -183,7 +183,12 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 # ── Connection status ──────────────────────────────────────────────────────────
 
 async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
-    """Return {"connected": bool, "connection_id": str|None}."""
+    """Return {"connected": bool, "connection_id": str|None}.
+
+    Always verifies the returned connection's userUuid matches user_id so that
+    if the Composio API ignores the filter and returns all accounts, we do not
+    incorrectly mark a new user as connected with someone else's account.
+    """
     if not _get_key():
         return {"connected": False, "error": "COMPOSIO_API_KEY not configured"}
 
@@ -202,6 +207,18 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
             items = data.get("items") or data.get("data") or data.get("connectedAccounts") or []
             for item in items:
                 if not isinstance(item, dict):
+                    continue
+                # Verify this connection actually belongs to the requesting user.
+                # Composio may return all accounts when the userUuid filter is
+                # not applied server-side — we enforce isolation here.
+                item_user = str(
+                    item.get("userUuid") or item.get("clientUniqueUserId") or item.get("entityId") or ""
+                ).strip()
+                if item_user and item_user != user_id:
+                    logger.debug(
+                        "[composio] skipping account %s: belongs to %s, not %s",
+                        item.get("id"), item_user, user_id,
+                    )
                     continue
                 item_app = str(
                     item.get("appName") or item.get("appUniqueId") or ""
