@@ -3,10 +3,9 @@
 Handles OAuth connections (Gmail, Google Calendar) and action execution.
 Uses Composio managed auth — only COMPOSIO_API_KEY needed.
 
-Correct Composio REST endpoints (from SDK source inspection):
-  Base:  https://backend.composio.dev   (no /api prefix)
-  Paths: /v1/connectedAccounts, /v1/integrations, /v1/apps/{name}
-  Key body field: "userUuid" (not entityId/userId)
+Correct Composio REST base: https://backend.composio.dev/api
+  - Managed OAuth toolkits: v1 integrations + POST /v1/connectedAccounts (integrationId, userUuid).
+  - Shopify/Brevo (no managed app): v3.1 auth_configs + POST /v3.1/connected_accounts (auth_config.id).
 """
 from __future__ import annotations
 
@@ -174,6 +173,135 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
     return None
 
 
+def _composio_err_text(data: Any, http_status: int) -> str:
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("suggested_fix")
+            if msg:
+                return str(msg)
+        m = data.get("message")
+        if m:
+            return str(m)
+        return f"Composio HTTP {http_status}: {str(data)[:400]}"
+    return f"Composio HTTP {http_status}"
+
+
+def _v31_extract_redirect(data: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    cid = data.get("id")
+    url = data.get("redirect_url") or data.get("redirect_uri")
+    if url:
+        return str(url), str(cid) if cid is not None else None
+    cd = data.get("connectionData")
+    if isinstance(cd, dict):
+        val = cd.get("val")
+        if isinstance(val, dict):
+            u2 = val.get("redirectUrl") or val.get("authUri") or val.get("callbackUrl")
+            if u2:
+                return str(u2), str(cid) if cid is not None else None
+    return None, str(cid) if cid is not None else None
+
+
+async def _resolve_auth_config_nanoid(client: httpx.AsyncClient, app_name: str) -> Optional[str]:
+    """v3.1 auth config id. Override with COMPOSIO_AUTH_CONFIG_ID_SHOPIFY (etc.) in .env."""
+    env_key = f"COMPOSIO_AUTH_CONFIG_ID_{app_name.upper().replace('-', '_')}"
+    forced = os.getenv(env_key, "").strip()
+    if forced:
+        logger.info("[composio] using %s from environment", env_key)
+        return forced
+    for slug in (app_name.upper(), app_name.lower()):
+        r = await client.get(
+            f"{_BASE}/v3.1/auth_configs",
+            headers=_headers(),
+            params={"toolkit_slug": slug, "limit": 25, "show_disabled": "false"},
+        )
+        if r.status_code != 200:
+            logger.warning(
+                "[composio] GET v3.1/auth_configs slug=%s → %d %s",
+                slug,
+                r.status_code,
+                r.text[:250],
+            )
+            continue
+        try:
+            body = r.json()
+        except Exception:
+            continue
+        for it in body.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            iid = it.get("id") or it.get("nanoid")
+            if iid:
+                logger.info("[composio] auth_config from API id=%s slug=%s", iid, slug)
+                return str(iid)
+    return None
+
+
+async def _init_connected_account_v31(
+    client: httpx.AsyncClient,
+    auth_config_id: str,
+    user_id: str,
+    callback_url: str,
+) -> Dict[str, Any]:
+    attempts: list[Dict[str, Any]] = [
+        {
+            "auth_config": {"id": auth_config_id},
+            "connection": {
+                "user_id": user_id,
+                "callback_url": callback_url,
+                "state": {
+                    "authScheme": "OAUTH2",
+                    "val": {"status": "INITIALIZING"},
+                },
+            },
+        },
+        {
+            "auth_config": {"id": auth_config_id},
+            "user_id": user_id,
+            "callback_url": callback_url,
+        },
+    ]
+    last_err = ""
+    for payload in attempts:
+        resp = await client.post(
+            f"{_BASE}/v3.1/connected_accounts",
+            headers=_headers(),
+            json=payload,
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw": resp.text[:500]}
+        logger.info(
+            "[composio] POST v3.1/connected_accounts → %d %s",
+            resp.status_code,
+            str(data)[:500],
+        )
+        if resp.status_code in (200, 201) and isinstance(data, dict):
+            url, cid = _v31_extract_redirect(data)
+            if url:
+                return {"redirect_url": url, "connection_id": cid}
+            last_err = f"Composio returned no redirect URL: {str(data)[:400]}"
+        else:
+            last_err = _composio_err_text(data, resp.status_code)
+    return {"error": last_err or "Composio v3.1 connected_accounts failed"}
+
+
+def _no_auth_config_help(app_name: str) -> str:
+    guide = (
+        "https://composio.dev/auth/shopify"
+        if app_name.lower() == "shopify"
+        else "https://docs.composio.dev/toolkits/brevo"
+    )
+    u = app_name.upper().replace("-", "_")
+    return (
+        f"No Composio auth configuration found for {app_name}. "
+        f"In the Composio dashboard, add OAuth/API credentials for this toolkit, "
+        f"or set COMPOSIO_AUTH_CONFIG_ID_{u}=<auth config id> in backend .env. "
+        f"Setup: {guide}"
+    )
+
+
 # ── OAuth connect ──────────────────────────────────────────────────────────────
 
 async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict[str, Any]:
@@ -188,17 +316,15 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            if app_name.lower() in _COMPOSIO_NO_MANAGED_OAUTH:
+                auth_cid = await _resolve_auth_config_nanoid(client, app_name)
+                if not auth_cid:
+                    return {"error": _no_auth_config_help(app_name)}
+                out = await _init_connected_account_v31(client, auth_cid, user_id, redirect_url)
+                return out
+
             integration_id = await _get_or_create_integration_id(client, app_name)
             if not integration_id:
-                if app_name.lower() in _COMPOSIO_NO_MANAGED_OAUTH:
-                    return {
-                        "error": (
-                            f"Could not find or create a Composio integration for {app_name}. "
-                            "This toolkit has no Composio-managed OAuth: open your Composio project, "
-                            "add a custom auth configuration (OAuth app or API key per Composio’s docs), "
-                            "then try again. Shopify setup: https://composio.dev/auth/shopify"
-                        )
-                    }
                 return {"error": f"Could not find or create Composio integration for {app_name}"}
 
             payload: Dict[str, Any] = {
