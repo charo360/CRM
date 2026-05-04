@@ -5,7 +5,7 @@ Uses Composio managed auth — only COMPOSIO_API_KEY needed.
 
 Correct Composio REST base: https://backend.composio.dev/api
   - Managed OAuth toolkits: v1 integrations + POST /v1/connectedAccounts (integrationId, userUuid).
-  - Shopify/Brevo (no managed app): v3.1 auth_configs + POST /v3.1/connected_accounts (auth_config.id).
+  - Shopify/Brevo/Klaviyo (no managed app): v3.1 auth_configs + POST /v3.1/connected_accounts (auth_config.id).
 """
 from __future__ import annotations
 
@@ -19,9 +19,8 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://backend.composio.dev/api"
 
-# No Composio-managed OAuth — integration must use useComposioAuth: false; users configure
-# custom OAuth/API credentials in the Composio dashboard (see toolkit docs on composio.dev).
-_COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo", "shopify"})
+# No Composio-managed OAuth — use v3.1 auth_configs + connected_accounts in get_connect_url.
+_COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo", "shopify", "klaviyo"})
 
 # Composio app name (lowercase slug, as stored in appName field)
 _APP_NAMES: Dict[str, str] = {
@@ -202,6 +201,28 @@ def _v31_extract_redirect(data: Dict[str, Any]) -> tuple[Optional[str], Optional
     return None, str(cid) if cid is not None else None
 
 
+_SETUP_GUIDE_URL: Dict[str, str] = {
+    "shopify": "https://composio.dev/auth/shopify",
+    "brevo": "https://docs.composio.dev/toolkits/brevo",
+    "klaviyo": "https://docs.composio.dev/toolkits/klaviyo",
+}
+
+
+def _auth_config_item_matches_toolkit(item: Dict[str, Any], app_name: str) -> bool:
+    want = app_name.lower()
+    tk = item.get("toolkit")
+    if isinstance(tk, dict):
+        for key in ("slug", "name", "appName", "unique_slug"):
+            v = tk.get(key)
+            if v is not None and want == str(v).strip().lower():
+                return True
+    for key in ("toolkit_slug", "appName", "app_name", "appUniqueKey"):
+        v = item.get(key)
+        if v is not None and want in str(v).lower():
+            return True
+    return False
+
+
 async def _resolve_auth_config_nanoid(client: httpx.AsyncClient, app_name: str) -> Optional[str]:
     """v3.1 auth config id. Override with COMPOSIO_AUTH_CONFIG_ID_SHOPIFY (etc.) in .env."""
     env_key = f"COMPOSIO_AUTH_CONFIG_ID_{app_name.upper().replace('-', '_')}"
@@ -234,6 +255,28 @@ async def _resolve_auth_config_nanoid(client: httpx.AsyncClient, app_name: str) 
             if iid:
                 logger.info("[composio] auth_config from API id=%s slug=%s", iid, slug)
                 return str(iid)
+
+    r2 = await client.get(
+        f"{_BASE}/v3.1/auth_configs",
+        headers=_headers(),
+        params={"limit": 80, "show_disabled": "false"},
+    )
+    if r2.status_code != 200:
+        logger.warning("[composio] GET v3.1/auth_configs unfiltered → %d", r2.status_code)
+        return None
+    try:
+        body2 = r2.json()
+    except Exception:
+        return None
+    for it in body2.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        if not _auth_config_item_matches_toolkit(it, app_name):
+            continue
+        iid = it.get("id") or it.get("nanoid")
+        if iid:
+            logger.info("[composio] auth_config matched toolkit %s id=%s", app_name, iid)
+            return str(iid)
     return None
 
 
@@ -288,17 +331,16 @@ async def _init_connected_account_v31(
 
 
 def _no_auth_config_help(app_name: str) -> str:
-    guide = (
-        "https://composio.dev/auth/shopify"
-        if app_name.lower() == "shopify"
-        else "https://docs.composio.dev/toolkits/brevo"
+    guide = _SETUP_GUIDE_URL.get(
+        app_name.lower(),
+        f"https://docs.composio.dev/toolkits/{app_name.lower()}",
     )
     u = app_name.upper().replace("-", "_")
     return (
         f"No Composio auth configuration found for {app_name}. "
-        f"In the Composio dashboard, add OAuth/API credentials for this toolkit, "
+        f"In the Composio dashboard, create an auth config for this toolkit (OAuth or API key), "
         f"or set COMPOSIO_AUTH_CONFIG_ID_{u}=<auth config id> in backend .env. "
-        f"Setup: {guide}"
+        f"Docs: {guide}"
     )
 
 
