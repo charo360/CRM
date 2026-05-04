@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://backend.composio.dev/api"
 
-# Toolkits where Composio docs list "Managed App: No" — managed OAuth (useComposioAuth: true) cannot be used.
-_COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo"})
+# No Composio-managed OAuth — integration must use useComposioAuth: false; users configure
+# custom OAuth/API credentials in the Composio dashboard (see toolkit docs on composio.dev).
+_COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo", "shopify"})
 
 # Composio app name (lowercase slug, as stored in appName field)
 _APP_NAMES: Dict[str, str] = {
@@ -192,10 +193,10 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
                 if app_name.lower() in _COMPOSIO_NO_MANAGED_OAUTH:
                     return {
                         "error": (
-                            f"Could not create a Composio integration for {app_name}. "
-                            "This app has no Composio-managed OAuth — open the Composio dashboard, "
-                            "add a Brevo auth configuration (OAuth client or API key), "
-                            "then try connecting again."
+                            f"Could not find or create a Composio integration for {app_name}. "
+                            "This toolkit has no Composio-managed OAuth: open your Composio project, "
+                            "add a custom auth configuration (OAuth app or API key per Composio’s docs), "
+                            "then try again. Shopify setup: https://composio.dev/auth/shopify"
                         )
                     }
                 return {"error": f"Could not find or create Composio integration for {app_name}"}
