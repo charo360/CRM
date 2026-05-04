@@ -1095,14 +1095,13 @@ function ContentTypeBadge({ template: t }: { template: DesignTemplate }) {
 
 function CategoryBadge({ template: t }: { template: DesignTemplate }) {
   const cat = getCategory(t);
-  const map: Record<Category, { label: string; cls: string }> = {
-    all: { label: "", cls: "" },
+  const map: Record<AssetCategory, { label: string; cls: string }> = {
     image: { label: "", cls: "" },
     video: { label: "Video", cls: "bg-violet-100 text-violet-700" },
     pdf: { label: "PDF", cls: "bg-red-100 text-red-700" },
     ppt: { label: "PPT", cls: "bg-orange-100 text-orange-700" },
   };
-  const { label, cls } = map[cat] ?? map.image;
+  const { label, cls } = map[cat as AssetCategory] ?? map.image;
   return label ? (
     <span className={cn("inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-semibold", cls)}>
       {CATEGORY_ICON[cat] && <span className="w-3 h-3">{CATEGORY_ICON[cat]}</span>}
