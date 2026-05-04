@@ -83,7 +83,7 @@ def _email_trunc(text: str, n: int = 3000) -> str:
     },
 )
 async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     q = (args.get("query") or "in:inbox").strip()
     if args.get("unread_only"):
         q = "is:unread " + q
@@ -138,7 +138,7 @@ async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     thread_id = (args.get("thread_id") or "").strip()
     if not thread_id:
         return {"error": "thread_id is required"}
@@ -185,7 +185,7 @@ async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -221,7 +221,7 @@ async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     thread_id = (args.get("thread_id") or "").strip()
     body = (args.get("body") or "").strip()
     if not thread_id or not body:
@@ -278,7 +278,7 @@ async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -324,7 +324,7 @@ def _ms_addr_list(val: str) -> list:
     },
 )
 async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     folder = (args.get("folder") or "inbox").strip()
     limit  = min(int(args.get("max_results") or 15), 50)
     params: Dict[str, Any] = {
@@ -372,7 +372,7 @@ async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     msg_id = (args.get("message_id") or "").strip()
     if not msg_id:
         return {"error": "message_id is required"}
@@ -418,7 +418,7 @@ async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -458,7 +458,7 @@ async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     msg_id    = (args.get("message_id") or "").strip()
     body      = (args.get("body") or "").strip()
     reply_all = bool(args.get("reply_all"))
@@ -487,7 +487,7 @@ async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()

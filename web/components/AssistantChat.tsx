@@ -304,21 +304,22 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         // Keep BASE_PROMPTS fallback already set in initial state
       });
 
-    // Also load connected integrations (still used for secondary extras)
+    // Also load connected integrations (Composio + legacy keys for display)
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     if (token) {
-      const integrationIds = "shopify,stripe,klaviyo,mailchimp,brevo,slack,google-mail,microsoft,google-calendar";
-      fetch(`/api/nango/connections?integrations=${integrationIds}`, {
+      fetch("/api/composio/connections", {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((r) => r.json())
         .then((d: { connected?: Record<string, boolean> }) => {
-          const nango = d.connected ?? {};
+          const c = d.connected ?? {};
           const map: Record<string, string> = {
-            "google-mail": "gmail",
-            "google-calendar": "google_calendar",
+            gmail: "gmail",
+            googlecalendar: "google_calendar",
+            googlesheets: "google_sheets",
+            mailchimp: "mailchimp",
           };
-          const active = Object.entries(nango)
+          const active = Object.entries(c)
             .filter(([, v]) => v)
             .map(([k]) => map[k] ?? k);
           setConnectedIntegrations(active);
