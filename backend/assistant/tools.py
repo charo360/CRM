@@ -8311,7 +8311,7 @@ async def create_video(ctx: ToolContext, args: Dict[str, Any]):
             "opacity": 0.95,
         })
 
-    # Title text
+    # Title text — positioned at top to avoid overlap with subtitle
     clips.append({
         "asset": {
             "type": "title",
@@ -8322,11 +8322,12 @@ async def create_video(ctx: ToolContext, args: Dict[str, Any]):
         },
         "start": 0.5,
         "length": duration - 0.5,
-        "position": "center",
+        "position": "top",
+        "offset": {"y": 0.15},
         "transition": {"in": "fade", "out": "fade"},
     })
 
-    # Subtitle text
+    # Subtitle text — positioned at bottom with clear separation
     if subtitle:
         clips.append({
             "asset": {
@@ -8339,8 +8340,29 @@ async def create_video(ctx: ToolContext, args: Dict[str, Any]):
             "start": 1.5,
             "length": duration - 1.5,
             "position": "bottom",
-            "offset": {"y": 0.1},
+            "offset": {"y": 0.15},
             "transition": {"in": "fade"},
+        })
+
+    # Logo overlay — top-left corner, small and subtle
+    logo_url = None
+    try:
+        owner = await ctx.db.businesses.find_one({"_id": ctx.business_id})
+        if owner:
+            logo_url = owner.get("logo_url") or owner.get("brand_logo_url")
+    except Exception:
+        pass
+
+    if logo_url:
+        clips.append({
+            "asset": {"type": "image", "src": logo_url},
+            "start": 0,
+            "length": duration,
+            "fit": "contain",
+            "scale": 0.12,
+            "position": "topLeft",
+            "offset": {"x": 0.05, "y": 0.05},
+            "opacity": 0.85,
         })
 
     track = {"clips": clips}
