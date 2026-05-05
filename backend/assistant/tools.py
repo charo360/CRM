@@ -6072,6 +6072,62 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
     }
 
 @tool(
+    name="browse_presentation_themes",
+    description=(
+        "Browse and search the 2Slides template library to show the user available presentation themes. "
+        "Call this when the user wants to pick a template before generating a presentation. "
+        "Returns a list of themes with names, descriptions, preview URLs, and IDs. "
+        "Present the results to the user so they can choose one, then pass the chosen theme_id to create_presentation."
+    ),
+    parameters={
+        "type": "object",
+        "required": [],
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search keyword for themes. Examples: 'business', 'startup pitch', 'marketing', 'minimal', 'dark', 'corporate'. Defaults to 'professional'.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Number of themes to return. Default 6, max 12.",
+            },
+        },
+    },
+)
+async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
+    from twoslides_service import search_themes
+
+    query = args.get("query", "professional")
+    limit = min(int(args.get("limit") or 6), 12)
+
+    themes = await search_themes(query, limit=limit)
+    if not themes:
+        themes = await search_themes("business", limit=limit)
+
+    if not themes:
+        return {"error": "No themes found. Try a different search keyword."}
+
+    formatted = []
+    for t in themes:
+        formatted.append({
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "description": t.get("description"),
+            "tags": t.get("tags", ""),
+            "preview_url": t.get("themeURL") or t.get("previewUrl"),
+        })
+
+    return {
+        "themes": formatted,
+        "total": len(formatted),
+        "markdown": "\n".join([
+            f"**{i+1}. {t['name']}**\n> {t['description']}\n🔗 [Preview]({t['preview_url']}) | ID: `{t['id']}`"
+            for i, t in enumerate(formatted)
+        ]),
+    }
+
+
+@tool(
     name="create_presentation",
     description=(
         "Create a stunning, professional PowerPoint presentation (.pptx) using AI. "

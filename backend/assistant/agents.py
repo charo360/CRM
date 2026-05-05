@@ -268,7 +268,7 @@ CREATIVE_TOOLS: FrozenSet[str] = frozenset({
     "audit_social_integrations", "get_social_conversation_insights",
     "generate_social_post", "generate_ad_creative", "generate_carousel_cover", "refine_design",
     "generate_creative_image", "generate_design_background",
-    "create_business_document", "create_presentation",
+    "create_business_document", "create_presentation", "browse_presentation_themes",
     "create_video", "get_video_status", "list_videos",
     "create_kling_video", "get_kling_video_status",
     "switch_to_agent",
@@ -283,7 +283,7 @@ DESIGN_TOOLS: FrozenSet[str] = frozenset({
     "generate_social_post", "generate_ad_creative", "generate_carousel_cover", "refine_design",
     "generate_creative_image", "generate_design_background",
     "create_business_document",
-    "create_presentation", "get_analytics_summary",
+    "create_presentation", "browse_presentation_themes", "get_analytics_summary",
     "create_video", "get_video_status", "list_videos",
     "create_kling_video", "get_kling_video_status",
 }) | _WEB_TOOLS
@@ -292,7 +292,7 @@ DOCUMENT_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "list_customers", "get_customer",
     "get_top_customers", "get_analytics_summary", "get_revenue_trends",
     "get_sales_pipeline", "list_orders", "list_followups", "list_team",
-    "generate_document", "create_business_document", "create_presentation",
+    "generate_document", "create_business_document", "create_presentation", "browse_presentation_themes",
     "get_document_style", "save_document_style",
     "switch_to_agent",
 }) | _WEB_TOOLS
@@ -879,7 +879,24 @@ If the user asks for something that would make the design worse (bad font choice
 
 ---
 
-If the user asks for a PDF → `create_business_document`. Slide deck → `create_presentation`.
+## Presentation Flow — Always offer a choice first
+When a user asks for a presentation or slide deck, **always ask first** (one question):
+
+> "Would you like me to **generate one with AI** (I'll write the content and pick a beautiful template automatically), or would you prefer to **browse templates** and pick one yourself first?"
+
+**If they choose AI generation:**
+- Call `create_presentation` directly with a detailed prompt + `style_query` based on their business/topic
+- AI picks the best matching template and generates the full deck
+
+**If they choose templates / want to browse:**
+- Call `browse_presentation_themes` with a relevant `query` based on their business type or topic
+- Show the results — name, tags, preview link for each
+- Ask them to pick one by number or name
+- Then call `create_presentation` passing the chosen theme's `id` as `style_query`
+
+**If they say "surprise me" or don't have a preference** → go with AI generation.
+
+For PDF → `create_business_document`. Slide deck → `create_presentation`.
 
 ## Tools
 - `get_owner_info` — always call this first for business name, brand_color, and logo_url.
@@ -890,7 +907,8 @@ If the user asks for a PDF → `create_business_document`. Slide deck → `creat
 - `generate_social_post` / `generate_ad_creative` / `generate_carousel_cover` — Gemini AI design generation.
 - `refine_design` — tweak an existing AI-generated design based on feedback.
 - `create_business_document` — generate a professional PDF.
-- `create_presentation` — generate an editable .pptx slide deck.
+- `browse_presentation_themes` — search and list available templates so user can pick one.
+- `create_presentation` — generate an editable .pptx slide deck (AI-generated or from chosen template).
 
 ## Image Access
 ✅ **You CAN access product images** - `list_products` and `get_product_images` return complete image URLs from the catalog. Use these images in social media content and when creating graphics.
