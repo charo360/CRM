@@ -957,6 +957,392 @@ async def generate_presentation_with_upload(
     }
 
 
+# ── Visual (Gemini-image) Presentation ────────────────────────────────────
+
+async def _fetch_image_bytes(url: str) -> Optional[bytes]:
+    """Download image from a public URL. Returns None on failure."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            return r.content
+    except Exception as e:
+        import logging
+        logging.warning("[visual_pptx] image fetch failed %s: %s", url, e)
+        return None
+
+
+_SLIDE_IMAGE_QUALITY_SUFFIX = (
+    " — ultra-high resolution, award-winning commercial photography, "
+    "shot on Hasselblad medium format, masterful composition using rule of thirds, "
+    "dramatic volumetric lighting, deep rich shadows, vibrant yet refined color grading, "
+    "razor-sharp focus, 16:9 widescreen aspect ratio, "
+    "absolutely NO text, NO watermarks, NO logos, NO UI elements, NO people unless explicitly required, "
+    "professional stock photo quality, editorial magazine cover standard."
+)
+
+_SLIDE_STYLE_MAP = {
+    "title":   "Wide establishing cinematic shot, epic sense of scale, hero composition, "
+               "golden-hour or blue-hour lighting, extreme depth of field.",
+    "content": "Clean abstract backdrop, high-contrast geometric or organic texture, "
+               "muted mid-tones so white text reads clearly, tasteful bokeh or blur.",
+    "data":    "Sleek dark-room ambience, glowing neon accent lines, tech-forward atmosphere, "
+               "shallow depth of field, professional product photography lighting.",
+    "closing": "Bold wide panoramic vista, sunrise or city skyline at dusk, "
+               "inspiring aspirational mood, warm amber and deep blue tones.",
+}
+
+
+async def _gen_slide_image(
+    slide_prompt: str,
+    brand_color: str = "",
+    logo_url: Optional[str] = None,
+    quality: str = "pro",
+    slide_role: str = "content",
+) -> Optional[str]:
+    """Generate one landscape Gemini image for a slide at award-winning quality."""
+    try:
+        style_hint = _SLIDE_STYLE_MAP.get(slide_role, _SLIDE_STYLE_MAP["content"])
+        full_prompt = f"{style_hint} {slide_prompt}{_SLIDE_IMAGE_QUALITY_SUFFIX}"
+        from nano_banana_service import generate_creative_image
+        result = await generate_creative_image(
+            prompt=full_prompt,
+            format="landscape",
+            quality=quality,
+            brand_color=brand_color,
+            logo_url=logo_url,
+        )
+        return result.get("image_url") if result.get("success") else None
+    except Exception as e:
+        import logging
+        logging.warning("[visual_pptx] slide image gen failed: %s", e)
+        return None
+
+
+def _add_visual_slide(
+    prs: "Presentation",
+    image_bytes: Optional[bytes],
+    title: str,
+    body_lines: List[str],
+    brand_color_hex: str = "",
+    is_title_slide: bool = False,
+) -> None:
+    """Add one slide: full-bleed background image + text overlay."""
+    import io as _io
+    from pptx.util import Inches as _In, Pt as _Pt, Emu as _Emu
+    from pptx.dml.color import RGBColor as _RGB
+    from pptx.enum.text import PP_ALIGN as _ALIGN
+
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
+    W, H = prs.slide_width, prs.slide_height
+
+    # ── Background ──
+    if image_bytes:
+        try:
+            pic = slide.shapes.add_picture(_io.BytesIO(image_bytes), 0, 0, W, H)
+            # Send image to back
+            slide.shapes._spTree.remove(pic._element)
+            slide.shapes._spTree.insert(2, pic._element)
+        except Exception:
+            pass  # fall through to solid bg if image fails
+
+    # Semi-transparent dark overlay using a shape (pptx doesn't support true opacity
+    # on fills, so we use a very dark near-black with alpha via theme trick — use
+    # a solid rectangle at 55% lightness equivalent via dark colour)
+    overlay_color = _RGB(0x0A, 0x0A, 0x0A)
+    ov = slide.shapes.add_shape(1, 0, 0, W, H)  # MSO_SHAPE_TYPE.RECTANGLE = 1
+    ov.fill.solid()
+    ov.fill.fore_color.rgb = overlay_color
+    ov.line.fill.background()
+    # Set transparency via XML (python-pptx doesn't expose alpha directly)
+    try:
+        from lxml import etree as _et
+        solidFill = ov.fill._xPr.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}solidFill')
+        if solidFill is not None:
+            srgb = solidFill.find('{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr')
+            if srgb is not None:
+                alpha = _et.SubElement(srgb, '{http://schemas.openxmlformats.org/drawingml/2006/main}alpha')
+                alpha.set('val', '60000')  # 60 000 / 100 000 = 60% opaque → 40% transparent
+    except Exception:
+        pass
+
+    # ── Brand accent bar (top) ──
+    try:
+        r = int(brand_color_hex[1:3], 16) if brand_color_hex and len(brand_color_hex) == 7 else 0x4C
+        g = int(brand_color_hex[3:5], 16) if brand_color_hex and len(brand_color_hex) == 7 else 0xD1
+        b = int(brand_color_hex[5:7], 16) if brand_color_hex and len(brand_color_hex) == 7 else 0x37
+        accent = _RGB(r, g, b)
+    except Exception:
+        accent = _RGB(0x4C, 0xD1, 0x37)
+
+    bar = slide.shapes.add_shape(1, 0, 0, W, _In(0.12))
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = accent
+    bar.line.fill.background()
+
+    # ── Title text ──
+    title_top = _In(1.6) if not is_title_slide else _In(2.2)
+    title_size = 40 if is_title_slide else 32
+    title_box = slide.shapes.add_textbox(_In(0.7), title_top, _In(8.6), _In(1.6))
+    tf = title_box.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = title
+    p.font.size = _Pt(title_size)
+    p.font.bold = True
+    p.font.color.rgb = _RGB(0xFF, 0xFF, 0xFF)
+    p.font.name = "Calibri Light"
+    p.alignment = _ALIGN.LEFT
+
+    # ── Accent rule under title ──
+    rule_top = title_top + _In(1.55)
+    rule = slide.shapes.add_shape(1, _In(0.7), rule_top, _In(2.2), _In(0.06))
+    rule.fill.solid()
+    rule.fill.fore_color.rgb = accent
+    rule.line.fill.background()
+
+    # ── Body bullets ──
+    if body_lines:
+        body_top = rule_top + _In(0.22)
+        body_box = slide.shapes.add_textbox(_In(0.7), body_top, _In(8.6), _In(2.8))
+        btf = body_box.text_frame
+        btf.word_wrap = True
+        for i, line in enumerate(body_lines[:6]):
+            bp = btf.paragraphs[0] if i == 0 else btf.add_paragraph()
+            bp.text = f"  •  {line}"
+            bp.font.size = _Pt(18)
+            bp.font.color.rgb = _RGB(0xE8, 0xE8, 0xE8)
+            bp.font.name = "Calibri"
+
+
+async def create_visual_presentation_async(
+    topic: str,
+    slides_plan: List[Dict[str, Any]],
+    business_name: str = "My Business",
+    brand_color: str = "",
+    logo_url: Optional[str] = None,
+    quality: str = "fast",
+) -> Dict[str, Any]:
+    """
+    Build a PPTX where every slide has a **Gemini-generated full-bleed background image**
+    with the slide title and bullet points overlaid on a semi-transparent dark panel.
+
+    slides_plan — list of dicts, each with:
+        title (str)        : slide headline
+        body  (list[str])  : 2-5 bullet points / key lines
+        image_prompt (str) : what to generate for the slide background image
+        is_title (bool)    : True for the cover slide (default False except slide 0)
+    """
+    import logging as _log
+
+    # Step 1 — generate all slide images in parallel (concurrency capped at 4)
+    sem = asyncio.Semaphore(4)
+
+    async def _bounded_gen(sd: Dict[str, Any]) -> Optional[str]:
+        async with sem:
+            raw = (sd.get("image_prompt") or "").strip()
+            if not raw:
+                raw = (
+                    f"Abstract, atmospheric, textured background for a professional business "
+                    f"presentation slide titled '{sd.get('title', topic)}'. "
+                    f"Minimal, sophisticated, no clutter."
+                )
+            # Determine slide role for style hint
+            if sd.get("is_title"):
+                role = "title"
+            elif any(kw in (sd.get("title") or "").lower() for kw in ("thank", "next step", "contact", "cta", "call to action", "conclusion")):
+                role = "closing"
+            elif any(kw in (sd.get("title") or "").lower() for kw in ("data", "metric", "result", "number", "stat", "revenue", "growth", "kpi")):
+                role = "data"
+            else:
+                role = "content"
+            return await _gen_slide_image(raw, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role)
+
+    image_urls: List[Optional[str]] = await asyncio.gather(
+        *[_bounded_gen(sd) for sd in slides_plan]
+    )
+
+    # Step 2 — download image bytes for all slides in parallel
+    async def _dl(url: Optional[str]) -> Optional[bytes]:
+        return await _fetch_image_bytes(url) if url else None
+
+    image_bytes_list: List[Optional[bytes]] = await asyncio.gather(
+        *[_dl(u) for u in image_urls]
+    )
+
+    # Step 3 — assemble PPTX
+    prs = Presentation()
+    prs.slide_width = Inches(13.33)   # widescreen 16:9
+    prs.slide_height = Inches(7.5)
+
+    for i, (sd, img_bytes) in enumerate(zip(slides_plan, image_bytes_list)):
+        is_title = sd.get("is_title", i == 0)
+        _add_visual_slide(
+            prs,
+            image_bytes=img_bytes,
+            title=sd.get("title", f"Slide {i + 1}"),
+            body_lines=sd.get("body") or [],
+            brand_color_hex=brand_color,
+            is_title_slide=bool(is_title),
+        )
+
+    # Step 4 — save locally then upload to S3
+    filename = f"visual-pptx-{uuid.uuid4().hex[:8]}.pptx"
+    filepath = os.path.join(PRESENTATIONS_DIR, filename)
+    prs.save(filepath)
+
+    file_url = f"/api/media/presentations/{filename}"
+    try:
+        from pathlib import Path
+        from image_handler import S3Handler
+        file_bytes = Path(filepath).read_bytes()
+        b64 = base64.b64encode(file_bytes).decode()
+        s3_name = f"visual-pptx-{uuid.uuid4().hex[:8]}.pptx"
+        s3_url = await S3Handler.upload_file(
+            b64, s3_name,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        if s3_url:
+            file_url = s3_url
+    except Exception as e:
+        _log.warning("[visual_pptx] S3 upload skipped: %s", e)
+    finally:
+        try:
+            os.unlink(filepath)
+        except Exception:
+            pass
+
+    slide_count = len(slides_plan)
+    generated_count = sum(1 for u in image_urls if u)
+    return {
+        "success": True,
+        "url": file_url,
+        "filename": filename,
+        "slide_count": slide_count,
+        "images_generated": generated_count,
+        "topic": topic,
+        # Return slides + image URLs so the caller can pass them back for per-slide regeneration
+        "slides": slides_plan,
+        "image_urls": [u or "" for u in image_urls],
+    }
+
+
+async def regenerate_single_slide_async(
+    slides_plan: List[Dict[str, Any]],
+    image_urls: List[str],
+    slide_index: int,
+    instruction: str,
+    brand_color: str = "",
+    quality: str = "pro",
+    topic: str = "",
+) -> Dict[str, Any]:
+    """
+    Regenerate ONE slide's background image based on new instructions,
+    then rebuild and re-upload the full .pptx with that image swapped in.
+
+    Returns the same shape as create_visual_presentation_async.
+    """
+    import logging as _log
+
+    if slide_index < 0 or slide_index >= len(slides_plan):
+        return {"error": f"slide_index {slide_index} is out of range (deck has {len(slides_plan)} slides)."}
+
+    sd = slides_plan[slide_index]
+
+    # Build a refined prompt: original image_prompt + user instruction
+    original_prompt = (sd.get("image_prompt") or sd.get("image_concept") or "").strip()
+    if instruction.strip():
+        if original_prompt:
+            refined_prompt = f"{original_prompt}. Modification: {instruction.strip()}"
+        else:
+            refined_prompt = instruction.strip()
+    else:
+        refined_prompt = original_prompt or f"Abstract professional background for: {sd.get('title', 'slide')}"
+
+    # Determine slide role
+    if sd.get("is_title") or slide_index == 0:
+        role = "title"
+    elif any(kw in (sd.get("title") or "").lower() for kw in ("thank", "next step", "contact", "cta", "conclusion")):
+        role = "closing"
+    elif any(kw in (sd.get("title") or "").lower() for kw in ("data", "metric", "result", "stat", "revenue", "growth", "kpi")):
+        role = "data"
+    else:
+        role = "content"
+
+    new_url = await _gen_slide_image(refined_prompt, brand_color=brand_color, quality=quality, slide_role=role)
+    if not new_url:
+        return {"error": "Image generation failed for this slide. Please try again."}
+
+    # Build updated image_urls list with the new URL swapped in
+    updated_urls: List[Optional[str]] = [u if u else None for u in image_urls]
+    updated_urls[slide_index] = new_url
+
+    # Download all image bytes in parallel
+    async def _dl(url: Optional[str]) -> Optional[bytes]:
+        return await _fetch_image_bytes(url) if url else None
+
+    image_bytes_list: List[Optional[bytes]] = await asyncio.gather(*[_dl(u) for u in updated_urls])
+
+    # Also update the slide's image_prompt so it reflects the new version
+    updated_slides = [dict(s) for s in slides_plan]
+    updated_slides[slide_index] = {**updated_slides[slide_index], "image_prompt": refined_prompt}
+
+    # Rebuild full .pptx
+    prs = Presentation()
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+
+    for i, (sd_item, img_bytes) in enumerate(zip(updated_slides, image_bytes_list)):
+        is_title = sd_item.get("is_title", i == 0)
+        _add_visual_slide(
+            prs,
+            image_bytes=img_bytes,
+            title=sd_item.get("title", f"Slide {i + 1}"),
+            body_lines=sd_item.get("body") or [],
+            brand_color_hex=brand_color,
+            is_title_slide=bool(is_title),
+        )
+
+    filename = f"visual-pptx-{uuid.uuid4().hex[:8]}.pptx"
+    filepath = os.path.join(PRESENTATIONS_DIR, filename)
+    prs.save(filepath)
+
+    file_url = f"/api/media/presentations/{filename}"
+    try:
+        from pathlib import Path
+        from image_handler import S3Handler
+        file_bytes = Path(filepath).read_bytes()
+        b64 = base64.b64encode(file_bytes).decode()
+        s3_name = f"visual-pptx-{uuid.uuid4().hex[:8]}.pptx"
+        s3_url = await S3Handler.upload_file(
+            b64, s3_name,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        if s3_url:
+            file_url = s3_url
+    except Exception as e:
+        _log.warning("[visual_pptx] S3 re-upload skipped: %s", e)
+    finally:
+        try:
+            os.unlink(filepath)
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "url": file_url,
+        "filename": filename,
+        "slide_count": len(updated_slides),
+        "images_generated": sum(1 for u in updated_urls if u),
+        "regenerated_slide_index": slide_index,
+        "regenerated_slide_title": sd.get("title", f"Slide {slide_index + 1}"),
+        "topic": topic,
+        "slides": updated_slides,
+        "image_urls": [u or "" for u in updated_urls],
+    }
+
+
 def _render_slide(
     prs,
     theme,

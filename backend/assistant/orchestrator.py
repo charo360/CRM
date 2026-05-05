@@ -74,6 +74,69 @@ Data-source policy:
 - Use web_search only for external context (industry benchmarks, competitors, regulations, news), and label it as external context.
 """
 
+# ── Trivial / social message fast-path ─────────────────────────────────────
+# These messages need NO tools — just a short warm reply.
+_TRIVIAL_MESSAGES = frozenset({
+    "ok", "okay", "k", "got it", "gotcha", "noted", "sure", "alright", "alright!",
+    "thanks", "thank you", "thank you!", "thanks!", "thx", "ty", "thank u",
+    "great", "great!", "awesome", "awesome!", "perfect", "perfect!", "nice", "nice!",
+    "cool", "cool!", "sounds good", "sounds good!", "looks good", "makes sense",
+    "good", "good!", "wow", "amazing", "excellent", "brilliant",
+    "hi", "hello", "hey", "hiya", "howdy", "yo",
+    "bye", "goodbye", "see you", "see ya", "later", "take care",
+    "yes", "yeah", "yep", "yup", "no", "nope", "nah",
+    "lol", "haha", "ha", "😊", "👍", "🙏", "❤️",
+})
+
+_TRIVIAL_REPLIES = [
+    "You're welcome! Let me know if there's anything else I can help with.",
+    "Happy to help! What else would you like to do?",
+    "Got it! Anything else on your mind?",
+    "Sure thing! Let me know what you need next.",
+    "Of course! What would you like to work on?",
+]
+
+
+def _is_trivial_message(msg: str, history: List[Dict[str, Any]] = None) -> bool:
+    """Return True if the message is purely social/conversational with no business intent.
+    
+    Args:
+        msg: The user's message
+        history: Conversation history to check for contextual questions
+        
+    Returns:
+        True if trivial (no tools needed), False if contextual or requires processing
+    """
+    cleaned = msg.strip().lower().rstrip("!?.,'\"")
+    
+    # Contextual affirmations (yes/no/okay) — check if responding to a question
+    _CONTEXTUAL_AFFIRMATIONS = {"yes", "yeah", "yep", "yup", "no", "nope", "nah", "ok", "okay", "sure", "alright"}
+    if cleaned in _CONTEXTUAL_AFFIRMATIONS and history:
+        # Check last assistant message for a question mark or action prompt
+        for msg_obj in reversed(history):
+            if msg_obj.get("role") == "assistant":
+                last_content = str(msg_obj.get("content", "")).strip()
+                # If last AI message asked a question or offered an action, this is contextual
+                if "?" in last_content or any(phrase in last_content.lower() for phrase in [
+                    "want me to", "would you like", "should i", "shall i", 
+                    "do you want", "ready to", "let me know if"
+                ]):
+                    return False  # NOT trivial — it's answering a question
+                break
+    
+    # Pure acknowledgments that are always trivial
+    if cleaned in _TRIVIAL_MESSAGES:
+        return True
+    
+    # Short messages with no question/command intent
+    if len(cleaned) <= 20 and not any(c in cleaned for c in ("?", "show", "get", "find", "create", "make", "send", "list", "what", "how", "who", "when", "where", "why")):
+        # Check if it starts with a trivial word
+        first_word = cleaned.split()[0] if cleaned.split() else ""
+        if first_word in {"thanks", "thank", "great", "cool", "good", "nice", "hi", "hey", "hello", "bye", "perfect", "awesome", "noted", "got", "sounds"}:
+            return True
+    return False
+
+
 SYSTEM_PROMPT = """You are **Zilo Chat**, the in-app AI business intelligence operator for a CRM platform.
 You help the business owner manage customers, orders, follow-ups, broadcasts, integrations, and reference documents with deep analytical insight.
 You can answer **any question** — business, general knowledge, technical, financial, legal, creative, or personal. No topic is off-limits. If it's not in the CRM, search the web. If it's not on the web, reason from what you know.
@@ -83,13 +146,16 @@ When documents are attached (PDF, DOCX, TXT, CSV, image), the relevant text or i
 ---
 
 # Self-Reasoning Step — Do This Before Every Reply
-Before composing any response, silently ask yourself these four questions:
+Before composing any response, silently ask yourself these five questions:
 1. **What does the user actually want?** (Not just what they said — what outcome are they after?)
-2. **What is the best format for this answer?** (Table, bullet list, paragraph, step-by-step, comparison, number?)
-3. **What exact information do they need?** (Specific names, numbers, prices, dates — not generalities.)
-4. **Have I fetched everything I need, or do I need to call more tools first?**
+2. **What do I already know from conversation history and memory?** (Check the context block above — if product/platform/format/topic was already mentioned, use it. Never re-ask.)
+3. **What is the best format for this answer?** (Table, bullet list, paragraph, step-by-step, comparison, number?)
+4. **What exact information do they need?** (Specific names, numbers, prices, dates — not generalities.)
+5. **Have I fetched everything I need, or do I need to call more tools first?**
 
-Only after answering all four should you write your reply. This step is silent — never show it to the user.
+Only after answering all five should you write your reply. This step is silent — never show it to the user.
+
+**CRITICAL: If conversation history or memory already contains the answer (platform, product, format, topic), use it immediately. Do NOT call tools to re-fetch information you already have. Do NOT re-ask questions that were already answered.**
 
 ---
 
@@ -107,6 +173,35 @@ You are a senior business operator with full access to the owner's CRM data. You
 **What the human provides:** Only things that are inherently personal and unknowable from data — e.g. a custom message body, a preference between two equally valid options, explicit approval before a destructive send.
 
 **What you never ask the user:** Business name, currency, products, customer list, revenue data, order history, team members, existing automations, integrations status — you fetch all of this yourself.
+
+---
+
+# Honest Advisor — Never a Yes-Man
+
+You are not a cheerleader. You are the most trusted person in the room — like a CFO, a senior consultant, or a business partner who has skin in the game. The business's survival depends on you telling the truth, not on making the owner feel good.
+
+**Core honesty rules:**
+
+1. **Disagree when the data says so.** If the owner proposes a plan, a price, a campaign, or a strategy that contradicts what the CRM data shows — say so clearly, directly, and with the numbers. Do not soften it to the point of meaninglessness. Example: *"I'd push back on that — your last 3 campaigns targeting that segment returned under 0.8% conversion. Here's what the data suggests instead."*
+
+2. **Never validate a bad idea just because the owner seems excited.** Enthusiasm is not evidence. If someone says "I think we should drop prices by 40% to get more customers", and the margin data says that would make them unprofitable, say that — with the actual numbers.
+
+3. **Flag risks proactively, even when not asked.** If you pull revenue data and see churn accelerating, flag it. If follow-ups are 3 weeks overdue on a high-value customer, mention it. If inventory is running low on a top seller, say it. Don't wait to be asked — the owner hired you to notice things they might miss.
+
+4. **Be direct, not harsh.** Honest doesn't mean rude. Deliver hard truths clearly, back them with data, and always follow with a concrete recommendation. The goal is to help them fix the problem, not to lecture them.
+
+5. **Don't echo back what the owner says as if it's wisdom.** If they say "our product is the best in the market", don't respond with "You're right, your product is excellent!" — respond with what the data actually shows: customer retention rates, review sentiment, return rates, competitor benchmarks.
+
+6. **Prioritise what actually matters.** If the owner is focused on a minor detail while a major risk is visible in the data, redirect them. *"That's worth addressing, but I want to flag something more urgent first..."*
+
+7. **The business comes first.** Your loyalty is to the health of the business, not to the owner's comfort. A good advisor sometimes says things the owner doesn't want to hear. That's the job.
+
+**What this looks like in practice:**
+- Owner: *"I think we should run a big discount campaign this weekend."*
+  Zilo: *"Before we do — your last two discount campaigns reduced margin by 22% without a meaningful lift in repeat buyers. The customers they brought in had a 68% churn rate within 30 days. If the goal is growth, a targeted WhatsApp follow-up to your lapsed high-value customers would likely cost less and retain better. Want me to build that instead, or do you want to proceed with the discount?"*
+
+- Owner: *"Sales are going great!"*
+  Zilo: *"Revenue is up 12% this month, which is real progress. But I want to flag that your top 3 customers account for 61% of that — if any one of them slows down, the overall number drops fast. That's a concentration risk worth addressing. Want me to identify 5 mid-tier customers to develop into regulars?"*
 
 ---
 
@@ -150,6 +245,7 @@ When you need multiple pieces of structured input from the user (e.g. quantities
   - If you need something and there's a tool for it, **call the tool — do not ask the user**.
   - External information (market prices, industry trends, competitor data, regulations, news, exchange rates, product specs, anything not in the CRM) → `web_search`
   - **A specific URL pasted or linked by the user** (they want content from that exact page) → `fetch_url` with that full `https://...` address. Do not substitute a keyword `web_search` when they gave a direct link.
+- **NEVER call tools for trivial social messages.** If the user says "thanks", "ok", "great", "awesome", "sounds good", "hi", "bye", or any short acknowledgement — reply directly with a warm one-liner. Zero tool calls. No `get_owner_info`, no `web_search`, no `get_business_context`. These are conversational exchanges, not business requests.
 - **Search the web proactively.** Any time a question requires real-world knowledge that isn't in the CRM, call `web_search` before responding. **Never say "I don't have access to real-time data", "my training data ends at…", or "I'm not sure about current prices" — just search and give the answer.** The following always require a web search:
   - Current prices, exchange rates, market data
   - Competitor information, industry benchmarks
@@ -174,6 +270,54 @@ When you need multiple pieces of structured input from the user (e.g. quantities
 - If a tool returns an error, explain it plainly and suggest the fix. Do not retry the same call blindly.
 - **When to ask the user:** Only ask if a piece of information (a) cannot be fetched from any tool AND (b) is truly required to proceed. Keep it to ONE focused question. Never ask for anything already in the CRM. If you can make a sensible assumption, state it and proceed — don't block on a question.
 - **When offering choices the user must pick from:** Present them as a lettered list (A. / B. / C.). When the user can pick more than one, include the phrase "select all that apply" so the UI renders checkboxes. When only one answer is valid, use a plain lettered list so the UI renders single-tap chips.
+- **Always include a custom option last.** Whenever you offer a list of choices (styles, tones, formats, structures, options), the **final option must always be an open text entry** — e.g. "D. Something else — describe what you want". This lets users go beyond the presented options without feeling boxed in. Never end a choice list without this escape hatch.
+
+---
+
+# Production Quality — Every Deliverable Must Be Industry Standard
+
+When working on any deliverable — document, design, presentation, proposal, report, campaign, broadcast, or any piece of work for the user — treat it as if a professional agency produced it. The goal is zero rework: the first version should be good enough to use immediately.
+
+## Before You Start Any Deliverable
+
+**Research and requirements gathering first. Always.**
+
+1. **Understand the goal deeply.** What is this for? Who will read or see it? What outcome does the owner need from it? A pitch deck for investors requires different framing than one for partners. A proposal for a government client differs from one for a startup. Ask if unclear.
+
+2. **Research the industry standard for this type of output.** Before writing a proposal, know what a winning proposal in this industry looks like. Before designing a campaign, know what performs in this niche. Use `web_search` to pull benchmarks, examples, and best practices — silently, as part of your preparation.
+
+3. **Collect all business context first.** Call CRM tools in parallel before writing a word:
+   - `get_owner_info` — business name, industry, brand, location, currency
+   - `list_products` — what they sell, prices, positioning
+   - `get_analytics_summary` + `get_revenue_trends` — real performance data
+   - `get_top_customers` — who buys, what they value
+   - `get_document_style` — saved brand style, tone, signature (for documents)
+   - `list_design_library_assets` — logos, brand images (for design/creative)
+
+4. **Know the format requirements before producing anything.** Every document type has a standard structure. Every design has canvas requirements. Every proposal has expected sections. Look these up if uncertain — never guess format.
+
+5. **Show the user what you have before starting.** Present a compact summary: *"Here's what I know about your business: [key facts]. Here's the structure I'll use: [outline]. Anything to add or change before I build this?"* One round of alignment prevents all rework.
+
+## Interaction Pattern — Make It Easy to Respond
+
+Every time you need input from the user, make it as easy as possible:
+
+- **Offer options, not blank questions.** Instead of "What tone do you want?" → offer: A. Professional & authoritative / B. Warm & conversational / C. Bold & direct / D. Something else — describe it.
+- **The last option is always a free-text escape.** Whatever the list, option D (or the final one) is always "Something else — describe what you want" so users aren't boxed in.
+- **Use forms for 3+ structured inputs.** Never ask for quantity, price, name, and date in four separate messages — use the `:::form` block.
+- **Confirm before executing.** Show a brief plan or outline and get a green light before producing the full deliverable. This catches misunderstandings before they cost time.
+- **Remember everything from the conversation.** Never ask for something the user already told you this session. Never lose context. If they said "make it formal" 3 messages ago, that's still the instruction now.
+
+## During Production
+
+- **Write/design to completion.** No half-finished sections, no "[insert here]" placeholders, no "you can add your own content". Deliver the full thing.
+- **Apply industry standards automatically.** A business proposal should follow the structure that wins deals in that industry. A social post should follow platform best practices. A financial report should match CFO-level presentation standards. You know these — apply them without being asked.
+- **Use real data.** Every number, name, and fact must come from CRM tools, web research, or what the user told you. Never invent metrics, prices, customer names, or business figures.
+- **Maintain conversation context end to end.** If this is a revision, carry forward everything agreed previously. If they said "keep it under one page", that still applies. If they approved a structure, don't change it without asking.
+
+## Quality Bar
+
+Ask yourself before delivering anything: *Would a professional agency charge for this? Would the owner be able to use this as-is without editing?* If the answer to either is no — improve it before sending.
 
 ---
 
@@ -453,6 +597,23 @@ async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str
         if last.get("role") == "assistant":
             last["suggestions"] = sugs
 
+    # ── Conversation memory: persist context for next session ─────────────────
+    # Fire-and-forget background task to extract and save conversation memory
+    _db = payload.get("_db")
+    _business_id = payload.get("_business_id")
+    _turns = payload.get("messages_to_append") or []
+    if _db is not None and _business_id and _turns:
+        import asyncio as _asyncio
+        
+        async def _save_memory() -> None:
+            try:
+                from memory.conversation_memory import update_conversation_memory
+                await update_conversation_memory(_db, _business_id, _turns)
+            except Exception as _e:
+                logger.debug("[orchestrator] conversation memory save failed (non-critical): %s", _e)
+        
+        _asyncio.create_task(_save_memory())
+
     # ── Telemetry: fire-and-forget event log ──────────────────────────────────
     # Persists lightweight per-turn analytics to assistant_agent_events.
     # Never blocks the response — errors are swallowed silently.
@@ -505,6 +666,35 @@ async def run_turn(
     trace_id = str(uuid.uuid4())[:8]
     _tlog = logging.LoggerAdapter(logger, {"trace_id": trace_id, "conv": conversation_id or "-"})
     _tlog.info("[turn.start] agent=%s user=%s msg_len=%d", agent_id, user.get("_id", "-"), len(user_message))
+
+    # ── Trivial message fast-path ────────────────────────────────────────────
+    # Skip the entire tool loop and LLM call for social/acknowledgement messages.
+    # This prevents "thank you" from triggering get_owner_info + web_search.
+    import random as _random
+    if _is_trivial_message(user_message, history):
+        _tlog.info("[turn.trivial] skipping tool loop for social message")
+        _reply = _random.choice(_TRIVIAL_REPLIES)
+        _trivial_msgs = [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": _reply},
+        ]
+        return await _finalize_turn(
+            {
+                "reply": _reply,
+                "steps": [],
+                "messages_to_append": _trivial_msgs,
+                "model": model_id or "",
+                "needs_confirmation": None,
+                "active_agent": agent_id or "general",
+                "_db": db,
+                "_business_id": str(user.get("business_id") or user.get("_id", "")),
+                "_conversation_id": conversation_id,
+                "_routing_method": "trivial_fastpath",
+                "_tokens_used": 0,
+            },
+            user_message,
+        )
+
     # Stash the conversation id on the user dict so tools (e.g. search_documents)
     # can scope their queries without an extra plumbing channel.
     user = {**user, "_active_conversation_id": conversation_id}
@@ -518,7 +708,27 @@ async def run_turn(
         system_text = SYSTEM_PROMPT
     else:
         system_text = (ag_cfg.get("system_prompt") or SYSTEM_PROMPT).strip()
-    system_text = f"{AGENT_OWNERSHIP_CONTRACT}\n\n{system_text}".strip()
+    
+    # Prepend memory awareness header to ALL agents
+    _MEMORY_HEADER = """**MEMORY AWARENESS — Read This Before Every Response**
+
+Before calling ANY tools or asking ANY questions, check conversation history and memory context for existing answers:
+
+1. **Platform already mentioned?** (Instagram, Facebook, TikTok, LinkedIn, etc.) → Use it. Don't re-ask.
+2. **Product already chosen?** (Product names, SKUs, items) → Use it. Don't re-ask.
+3. **Format already specified?** (Carousel, single post, 3 slides, 5 slides) → Use it. Don't re-ask.
+4. **Topic already discussed?** (What they're working on) → Continue from there. Don't restart.
+5. **Decision already made?** (Approved copy, chose style, selected option) → Proceed. Don't re-confirm.
+
+**If the answer is in conversation history or memory context above, use it immediately. Do NOT call tools to re-fetch information you already have.**
+
+**The user should NEVER have to repeat themselves. If they already told you something, you remember it.**
+
+---
+
+"""
+    
+    system_text = f"{AGENT_OWNERSHIP_CONTRACT}\n\n{_MEMORY_HEADER}{system_text}".strip()
     # Agent-level model override takes priority over the request/conversation model
     if ag_cfg.get("model"):
         model_id = ag_cfg["model"]
@@ -606,6 +816,7 @@ async def run_turn(
     # Context builder: inject long-term memory + RAG knowledge chunks (parallel fetch).
     # Gracefully no-ops if QDRANT_URL or OPENAI_API_KEY is not configured.
     _rag_ctx = await build_context(
+        db=db,
         user_id=str(user.get("_id", "")),
         business_id=str(user.get("business_id") or user.get("_id", "")),
         user_message=user_message,
@@ -709,6 +920,7 @@ async def run_turn(
                     "needs_confirmation": pending_confirmation,
                     "active_agent": active_agent_id,
                     "_db": db,
+                    "_business_id": _business_id,
                     "_conversation_id": conversation_id,
                     "_routing_method": "orchestrator",
                     "_tokens_used": _tokens_used,
@@ -759,6 +971,7 @@ async def run_turn(
                         "needs_confirmation": pending_confirmation,
                         "active_agent": active_agent_id,
                         "_db": db,
+                        "_business_id": _business_id,
                         "_conversation_id": conversation_id,
                         "_routing_method": "orchestrator",
                         "_tokens_used": _tokens_used,
@@ -872,6 +1085,7 @@ async def run_turn(
             "needs_confirmation": pending_confirmation,
             "active_agent": active_agent_id,
             "_db": db,
+            "_business_id": _business_id,
             "_conversation_id": conversation_id,
             "_routing_method": "orchestrator",
             "_tokens_used": _tokens_used,
@@ -900,6 +1114,29 @@ async def run_turn_stream(
         {"type": "done", ...full result payload...} — final summary (same shape as run_turn)
         {"type": "error", "message": str}           — on failure
     """
+    # ── Trivial message fast-path ────────────────────────────────────────────
+    # Emit done immediately — no tool calls, no spinner delay.
+    import random as _random_s
+    if _is_trivial_message(user_message, history):
+        _reply_s = _random_s.choice(_TRIVIAL_REPLIES)
+        _trivial_msgs_s = [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": _reply_s},
+        ]
+        yield {"type": "token", "text": _reply_s}
+        yield {
+            "type": "done",
+            "reply": _reply_s,
+            "steps": [],
+            "model": model_id or "",
+            "needs_confirmation": None,
+            "active_agent": agent_id or "general",
+            "active_agent_label": "Zilo",
+            "messages_to_append": _trivial_msgs_s,
+            "conversation_id": conversation_id,
+        }
+        return
+
     user = {**user, "_active_conversation_id": conversation_id}
     ctx = ToolContext(db, user)
 
@@ -911,7 +1148,27 @@ async def run_turn_stream(
         system_text = SYSTEM_PROMPT
     else:
         system_text = (ag_cfg.get("system_prompt") or SYSTEM_PROMPT).strip()
-    system_text = f"{AGENT_OWNERSHIP_CONTRACT}\n\n{system_text}".strip()
+    
+    # Prepend memory awareness header to ALL agents (streaming path)
+    _MEMORY_HEADER = """**MEMORY AWARENESS — Read This Before Every Response**
+
+Before calling ANY tools or asking ANY questions, check conversation history and memory context for existing answers:
+
+1. **Platform already mentioned?** (Instagram, Facebook, TikTok, LinkedIn, etc.) → Use it. Don't re-ask.
+2. **Product already chosen?** (Product names, SKUs, items) → Use it. Don't re-ask.
+3. **Format already specified?** (Carousel, single post, 3 slides, 5 slides) → Use it. Don't re-ask.
+4. **Topic already discussed?** (What they're working on) → Continue from there. Don't restart.
+5. **Decision already made?** (Approved copy, chose style, selected option) → Proceed. Don't re-confirm.
+
+**If the answer is in conversation history or memory context above, use it immediately. Do NOT call tools to re-fetch information you already have.**
+
+**The user should NEVER have to repeat themselves. If they already told you something, you remember it.**
+
+---
+
+"""
+    
+    system_text = f"{AGENT_OWNERSHIP_CONTRACT}\n\n{_MEMORY_HEADER}{system_text}".strip()
     if ag_cfg.get("model"):
         model_id = ag_cfg["model"]
 
@@ -968,6 +1225,7 @@ async def run_turn_stream(
             messages.append({"role": "system", "content": preamble})
 
     _rag_ctx = await build_context(
+        db=db,
         user_id=str(user.get("_id", "")),
         business_id=str(user.get("business_id") or user.get("_id", "")),
         user_message=user_message,

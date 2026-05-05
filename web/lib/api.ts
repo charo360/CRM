@@ -709,6 +709,30 @@ export const adminApi = {
     if (!res.ok) return { access: false };
     return (await res.json()) as { access: boolean };
   },
+  getMetrics: async (params?: { period?: "all" | "today" | "week" | "month" | "3months" | "custom"; start?: string; end?: string }) => {
+    const token = getAdminPanelToken();
+    if (!token) throw new Error("No admin session");
+    const qs = new URLSearchParams();
+    if (params?.period) qs.set("period", params.period);
+    if (params?.start) qs.set("start", params.start);
+    if (params?.end) qs.set("end", params.end);
+    const s = qs.toString();
+    const res = await fetch(`/api/admin/metrics${s ? `?${s}` : ""}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as {
+      period: string;
+      total_users: number;
+      subscribed_users: number;
+      setup_done_users: number;
+      total_earnings: number;
+      sales_count: number;
+      start?: string | null;
+      end?: string | null;
+    };
+  },
   listUsers: async (params?: { q?: string; limit?: number; skip?: number }) => {
     const qs = new URLSearchParams();
     if (params?.q) qs.set("q", params.q);
@@ -1074,6 +1098,7 @@ export interface AssistantDocument {
   text_len: number;
   has_text: boolean;
   created_at?: string;
+  public_url?: string;
 }
 
 export const assistantApi = {

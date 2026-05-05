@@ -4606,6 +4606,285 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
     }
 
 
+@tool(
+    name="plan_visual_presentation",
+    description=(
+        "STEP 1 of 2 — Plan a visual presentation deck and present the full outline to the user "
+        "for review and approval BEFORE any images are generated. "
+        "This avoids wasting Gemini image credits on a deck the user hasn't approved. "
+        "Call this first whenever a user asks for a presentation, pitch deck, or slideshow. "
+        "It returns a structured slide-by-slide plan showing: slide title, bullet points, "
+        "and the image concept for each slide. "
+        "After showing the plan, ask the user: 'Does this look good, or would you like to change anything?' "
+        "Only call create_visual_presentation once the user explicitly approves."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "Main subject of the presentation.",
+            },
+            "audience": {
+                "type": "string",
+                "description": "Who this deck is for (e.g. 'investors', 'clients', 'internal team').",
+            },
+            "slides": {
+                "type": "array",
+                "description": (
+                    "The complete planned slide list. Each object must have: "
+                    "title (str), body (list of 3-5 punchy bullet strings — no filler), "
+                    "image_concept (str — vivid 1-sentence description of the background visual), "
+                    "is_title (bool — True only for the first cover slide). "
+                    "Plan 6-10 slides. Start with a cover, end with a strong CTA or summary."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title":         {"type": "string"},
+                        "body":          {"type": "array", "items": {"type": "string"}},
+                        "image_concept": {"type": "string"},
+                        "is_title":      {"type": "boolean"},
+                    },
+                    "required": ["title", "body", "image_concept"],
+                },
+            },
+            "style_note": {
+                "type": "string",
+                "description": "Visual tone for all images (e.g. 'dark cinematic', 'bright modern', 'luxury minimal').",
+            },
+        },
+        "required": ["topic", "slides"],
+    },
+)
+async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    topic      = (args.get("topic") or "Presentation").strip()
+    audience   = (args.get("audience") or "").strip()
+    slides     = args.get("slides") or []
+    style_note = (args.get("style_note") or "cinematic dark professional").strip()
+
+    if not slides:
+        return {"error": "slides list is required."}
+
+    return {
+        "success": True,
+        "plan_ready": True,
+        "topic": topic,
+        "audience": audience,
+        "style_note": style_note,
+        "slide_count": len(slides),
+        "slides": slides,
+        "awaiting_approval": True,
+        "note": (
+            f"Deck plan ready — {len(slides)} slides. "
+            "Show this plan to the user and ask for approval or changes. "
+            "Do NOT call create_visual_presentation until the user confirms."
+        ),
+    }
+
+
+@tool(
+    name="create_visual_presentation",
+    description=(
+        "STEP 2 of 2 — Generate the actual visual PowerPoint (.pptx) ONLY after the user has "
+        "approved the plan from plan_visual_presentation. "
+        "Each slide gets a unique Gemini AI-generated full-bleed background image (award-winning, "
+        "cinematic quality), with the slide title and bullets overlaid on a semi-transparent panel. "
+        "Never call this tool speculatively — only after explicit user approval of the slide plan. "
+        "Pass the exact slides array from the approved plan, enriched with a detailed image_prompt "
+        "per slide (expand image_concept into a rich, specific generation prompt)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "Main subject of the presentation.",
+            },
+            "slides": {
+                "type": "array",
+                "description": (
+                    "The APPROVED slide list from plan_visual_presentation, with image_prompt "
+                    "added to each slide (expand the image_concept into a rich, specific, "
+                    "award-winning image generation prompt — include lighting, mood, composition, "
+                    "color palette, no text, no people unless essential). "
+                    "Each slide: title, body (list[str]), image_prompt (str), is_title (bool)."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title":        {"type": "string"},
+                        "body":         {"type": "array", "items": {"type": "string"}},
+                        "image_prompt": {"type": "string"},
+                        "is_title":     {"type": "boolean"},
+                    },
+                    "required": ["title", "image_prompt"],
+                },
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Hex colour code for the accent bar (e.g. '#4CD137'). From get_owner_info.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "description": "'pro' for final delivery (recommended), 'fast' for draft preview.",
+            },
+        },
+        "required": ["topic", "slides"],
+    },
+)
+async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    from presentation_service import create_visual_presentation_async
+
+    topic       = (args.get("topic") or "Presentation").strip()
+    slides_plan = args.get("slides") or []
+    brand_color = (args.get("brand_color") or "").strip()
+    quality     = (args.get("quality") or "pro").strip()
+
+    if not slides_plan:
+        return {"error": "slides list is required — pass the approved plan from plan_visual_presentation."}
+    if len(slides_plan) > 15:
+        slides_plan = slides_plan[:15]
+
+    # Auto-fetch brand color + business name from owner info
+    try:
+        owner = await get_owner_info(ctx, {})
+        if not brand_color:
+            brand_color = owner.get("brand_primary_color") or ""
+        business_name = str(owner.get("business_name") or "My Business").strip()
+    except Exception:
+        business_name = "My Business"
+
+    result = await create_visual_presentation_async(
+        topic=topic,
+        slides_plan=slides_plan,
+        business_name=business_name,
+        brand_color=brand_color,
+        quality=quality,
+    )
+
+    if not result.get("success"):
+        return {"error": result.get("error", "Presentation generation failed.")}
+
+    return {
+        "success": True,
+        "url": result["url"],
+        "slide_count": result["slide_count"],
+        "images_generated": result["images_generated"],
+        "topic": topic,
+        "slides": result.get("slides", slides_plan),
+        "image_urls": result.get("image_urls", []),
+    }
+
+
+@tool(
+    name="regenerate_slide",
+    description=(
+        "Regenerate a SINGLE slide's background image in an existing visual presentation, "
+        "based on the user's feedback/instruction for that specific slide. "
+        "Only ONE new Gemini image is generated (cheap). The full .pptx is rebuilt with "
+        "that one slide swapped and re-uploaded. "
+        "Use this when the user says things like 'redo slide 3', 'change slide 2 to show a sunset', "
+        "'make slide 4 more dramatic', etc. "
+        "You need the slides array and image_urls array from the previous create_visual_presentation result."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "slide_index": {
+                "type": "integer",
+                "description": (
+                    "0-based index of the slide to regenerate. "
+                    "If user says 'slide 3', use index 2. If 'slide 1', use 0."
+                ),
+            },
+            "instruction": {
+                "type": "string",
+                "description": (
+                    "The user's instruction for what to change on this slide's background image. "
+                    "E.g. 'make it more dramatic with stormy weather', 'use a forest background', "
+                    "'change to a luxury hotel lobby'. Be descriptive."
+                ),
+            },
+            "slides": {
+                "type": "array",
+                "description": "The full slides array from the previous create_visual_presentation result.",
+                "items": {"type": "object"},
+            },
+            "image_urls": {
+                "type": "array",
+                "description": "The image_urls array from the previous create_visual_presentation result.",
+                "items": {"type": "string"},
+            },
+            "topic": {
+                "type": "string",
+                "description": "The presentation topic (from the previous result).",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Hex brand colour (from get_owner_info or previous result).",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "description": "'pro' for final quality (default), 'fast' for quick preview.",
+            },
+        },
+        "required": ["slide_index", "instruction", "slides", "image_urls"],
+    },
+)
+async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
+    from presentation_service import regenerate_single_slide_async
+
+    slide_index  = int(args.get("slide_index", 0))
+    instruction  = (args.get("instruction") or "").strip()
+    slides_plan  = args.get("slides") or []
+    image_urls   = args.get("image_urls") or []
+    topic        = (args.get("topic") or "Presentation").strip()
+    brand_color  = (args.get("brand_color") or "").strip()
+    quality      = (args.get("quality") or "pro").strip()
+
+    if not slides_plan:
+        return {"error": "slides array is required — pass it from the previous create_visual_presentation result."}
+    if not image_urls:
+        return {"error": "image_urls array is required — pass it from the previous create_visual_presentation result."}
+    if not instruction:
+        return {"error": "instruction is required — describe what to change on this slide."}
+
+    if not brand_color:
+        try:
+            owner = await get_owner_info(ctx, {})
+            brand_color = owner.get("brand_primary_color") or ""
+        except Exception:
+            pass
+
+    result = await regenerate_single_slide_async(
+        slides_plan=slides_plan,
+        image_urls=image_urls,
+        slide_index=slide_index,
+        instruction=instruction,
+        brand_color=brand_color,
+        quality=quality,
+        topic=topic,
+    )
+
+    if not result.get("success"):
+        return {"error": result.get("error", "Slide regeneration failed.")}
+
+    return {
+        "success": True,
+        "url": result["url"],
+        "slide_count": result["slide_count"],
+        "images_generated": result["images_generated"],
+        "regenerated_slide_index": result["regenerated_slide_index"],
+        "regenerated_slide_title": result["regenerated_slide_title"],
+        "topic": topic,
+        "slides": result["slides"],
+        "image_urls": result["image_urls"],
+    }
+
+
 # ── AI-recreate design (Gemini-driven, template thumbnail as reference) ──────
 # Combines staging + render in one call: Gemini receives the locked template's
 # thumbnail (free) as a layout reference, the real product photo, the brand
@@ -10946,3 +11225,42 @@ async def delete_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[
         "calendar_id": args.get("calendar_id") or "primary",
     })
     return result
+
+
+@tool(
+    name="switch_to_agent",
+    description=(
+        "Hand off this conversation to a specialist agent immediately. "
+        "Call this the INSTANT you detect the user's request is outside your area — "
+        "do NOT apologise, do NOT explain, do NOT attempt to help first. Just switch. "
+        "The handoff is invisible to the user — they see the correct agent's response directly."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["target_agent"],
+        "properties": {
+            "target_agent": {
+                "type": "string",
+                "enum": ["creative", "general", "meta_ads", "social_monitor", "document", "social_scheduler"],
+                "description": (
+                    "Agent to hand off to. "
+                    "creative=visuals/graphics/social post images. "
+                    "document=proposals/reports/presentations/PDFs. "
+                    "meta_ads=Facebook/Instagram ad campaigns. "
+                    "social_monitor=analytics/follower data/post performance. "
+                    "social_scheduler=scheduling posts. "
+                    "general=everything else."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "One-line reason for the handoff (logged only, not shown to user).",
+            },
+        },
+    },
+)
+async def switch_to_agent(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    target = args.get("target_agent", "")
+    reason = args.get("reason", "")
+    logger.info("[switch_to_agent] handoff → %s | reason: %s", target, reason)
+    return {"__handoff__": target, "reason": reason}
