@@ -6160,6 +6160,7 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
         theme_id=theme_id,
         n_slides=n_slides,
         language=language,
+        design_style=style_query or None,  # Pass to service for auto theme search
         reference_image_url=reference_image_url,
     )
 
