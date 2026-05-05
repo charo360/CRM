@@ -139,9 +139,10 @@ async def _post_and_poll(endpoint: str, payload: Dict[str, Any]) -> Dict[str, An
         logger.error("[2slides] request error: %s", e)
         return {"error": str(e)}
 
-    # Synchronous response
-    download_url = data.get("downloadUrl") or data.get("url")
-    job_id = data.get("jobId") or data.get("id")
+    # Response can be flat or nested: {"success": true, "data": {"jobId": "..."}} or {"jobId": "..."}
+    inner = data.get("data") if isinstance(data.get("data"), dict) else data
+    download_url = inner.get("downloadUrl") or inner.get("url") or data.get("downloadUrl")
+    job_id = inner.get("jobId") or inner.get("id") or data.get("jobId")
 
     if download_url and not job_id:
         return {"status": "success", "download_url": download_url, "job_id": None}
@@ -149,6 +150,7 @@ async def _post_and_poll(endpoint: str, payload: Dict[str, Any]) -> Dict[str, An
     if not job_id:
         return {"error": f"Unexpected 2Slides response: {data}"}
 
+    logger.info("[2slides] job started: %s", job_id)
     return await poll_job(job_id)
 
 
@@ -168,12 +170,14 @@ async def poll_job(job_id: str) -> Dict[str, Any]:
             logger.warning("[2slides] poll attempt %d failed: %s", attempt + 1, e)
             continue
 
-        status = (data.get("status") or "").lower()
+        # Response may be nested: {"success": true, "data": {"status": "...", "downloadUrl": "..."}}
+        inner = data.get("data") if isinstance(data.get("data"), dict) else data
+        status = (inner.get("status") or data.get("status") or "").lower()
         logger.info("[2slides] job %s status: %s (attempt %d)", job_id, status, attempt + 1)
 
         if status in ("success", "completed", "done"):
-            download_url = data.get("downloadUrl") or data.get("url")
-            pages = data.get("pages", [])
+            download_url = inner.get("downloadUrl") or inner.get("url") or data.get("downloadUrl")
+            pages = inner.get("pages", data.get("pages", []))
             thumbnail = pages[0] if pages else None
             return {
                 "status": "success",
@@ -183,7 +187,7 @@ async def poll_job(job_id: str) -> Dict[str, Any]:
                 "pages": pages,
             }
         elif status in ("failed", "error"):
-            return {"error": data.get("message") or "2Slides render failed", "job_id": job_id}
+            return {"error": inner.get("message") or data.get("message") or "2Slides render failed", "job_id": job_id}
         # Still processing — keep polling
 
     return {"error": "2Slides render timed out after 2 minutes", "job_id": job_id}
