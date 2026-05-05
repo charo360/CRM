@@ -6223,9 +6223,36 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
     if result.get("error"):
         return {"error": result["error"]}
 
-    url = result.get("download_url")
+    temp_url = result.get("download_url")
     thumb_url = result.get("thumbnail_url")
     job_id = result.get("job_id")
+
+    # Re-upload to permanent S3 storage — 2Slides pre-signed URLs expire in ~1 hour
+    url = temp_url
+    if temp_url:
+        try:
+            import base64
+            import uuid
+            import httpx as _httpx
+            from image_handler import S3Handler
+
+            async with _httpx.AsyncClient(timeout=60) as _client:
+                dl = await _client.get(temp_url)
+                dl.raise_for_status()
+                file_bytes = dl.content
+
+            b64 = base64.b64encode(file_bytes).decode()
+            s3_name = f"pptx-{uuid.uuid4().hex[:8]}.pptx"
+            permanent_url = await S3Handler.upload_file(
+                b64,
+                s3_name,
+                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+            if permanent_url:
+                url = permanent_url
+                logger.info("[create_presentation] re-uploaded to S3: %s", url)
+        except Exception:
+            logger.exception("[create_presentation] S3 re-upload failed, using temp URL")
 
     if url:
         try:
