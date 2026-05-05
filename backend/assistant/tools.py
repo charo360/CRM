@@ -6074,139 +6074,105 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="create_presentation",
     description=(
-        "Create a professional PowerPoint presentation (.pptx). "
-        "Slide layouts: title, content, two_column, quote, key_points, section, image_text, ending. "
-        "Color themes: dark (deep green), light (white), navy (blue), warm (amber). "
-        "Deck styles change the actual geometry, fonts, and structural layout — not just colour: "
-        "ribbon, minimal, magazine, split, spotlight. "
-        "IMPORTANT: Do NOT pass deck_style or theme unless the user explicitly asks for a specific look. "
-        "When omitted, the system automatically pairs a random layout+colour preset so every deck looks unique. "
-        "First slide becomes title; last slide gets an ending unless already specified."
+        "Create a stunning, professional PowerPoint presentation (.pptx) using AI. "
+        "Generates beautifully designed slides with real templates — far better than basic layouts. "
+        "Pass a detailed prompt describing the presentation topic, business context, key points, and tone. "
+        "Optionally pass n_slides (default 10), style_query to find a matching theme (e.g. 'modern dark', "
+        "'startup pitch', 'marketing', 'minimal'), or reference_image_url to clone a design style from any image. "
+        "Always include the business name, product, and brand context in the prompt for on-brand output."
     ),
     parameters={
         "type": "object",
-        "required": ["title", "slides_data"],
+        "required": ["title", "prompt"],
         "properties": {
             "title": {
                 "type": "string",
                 "description": "The main title of the presentation.",
             },
-            "deck_style": {
+            "prompt": {
                 "type": "string",
                 "description": (
-                    "Visual layout family — changes shapes, alignment, fonts, geometry. "
-                    "Omit (or pass \"auto\") unless user asks for a specific style. "
-                    "ribbon: bar + decorative shapes. minimal: whitespace + centered. "
-                    "magazine: editorial serif + side panel. split: big colour block hero. spotlight: framed card."
+                    "Detailed description of what the presentation should cover. "
+                    "Include: business name, product/service, target audience, key messages, tone (professional/casual/bold), "
+                    "and any specific sections needed (e.g. problem, solution, pricing, CTA). "
+                    "Example: 'Create a 10-slide pitch deck for Zilo, a CRM platform for small businesses. "
+                    "Cover: problem, solution, features, pricing, and a strong CTA. Tone: modern and confident.'"
                 ),
-                "enum": ["auto", "ribbon", "minimal", "magazine", "split", "spotlight"],
             },
-            "theme": {
+            "n_slides": {
+                "type": "integer",
+                "description": "Number of slides to generate. Default is 10. Range: 5–20.",
+            },
+            "style_query": {
                 "type": "string",
                 "description": (
-                    "Colour palette. Omit (or pass \"auto\") unless user specifies a colour. "
-                    "dark: deep forest green. light: white/cream. navy: dark blue. warm: amber/brown."
+                    "Keyword to search for a matching visual theme. "
+                    "Examples: 'modern dark', 'startup pitch', 'marketing', 'minimal', 'corporate', 'bold colorful'. "
+                    "If omitted, a professional default theme is used."
                 ),
-                "enum": ["auto", "dark", "light", "navy", "warm"],
             },
-            "tagline": {
+            "reference_image_url": {
                 "type": "string",
-                "description": "Optional closing tagline shown on the ending slide (e.g. 'Let\'s grow together').",
-            },
-            "slides_data": {
-                "type": "array",
                 "description": (
-                    "List of slide objects. Each has a 'layout' key plus layout-specific keys. "
-                    "Layouts: 'title' (title, subtitle), 'content' (title, content[]), 'section' (title), "
-                    "'two_column' (title, left_items[], right_items[], left_header?, right_header?), "
-                    "'quote' (quote, attribution?), 'key_points' (title, points[{title, description}]), "
-                    "'image_text' (title, content[], image_url?), 'ending' (auto-generated). "
-                    "Default layout is 'content'. First slide auto-becomes 'title', last auto-gets 'ending'."
+                    "Optional URL of a slide image to clone the design style from. "
+                    "The AI will generate content matching that visual style exactly. "
+                    "Use when the user wants a specific look they've seen."
                 ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "layout": {
-                            "type": "string",
-                            "enum": ["title", "section", "content", "two_column", "quote", "image_text", "key_points", "ending"],
-                        },
-                        "title": {"type": "string"},
-                        "subtitle": {"type": "string"},
-                        "content": {"type": "array", "items": {"type": "string"}},
-                        "left_items": {"type": "array", "items": {"type": "string"}},
-                        "right_items": {"type": "array", "items": {"type": "string"}},
-                        "left_header": {"type": "string"},
-                        "right_header": {"type": "string"},
-                        "quote": {"type": "string"},
-                        "attribution": {"type": "string"},
-                        "points": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "description": {"type": "string"},
-                                },
-                            },
-                        },
-                        "image_url": {"type": "string"},
-                    },
-                },
+            },
+            "language": {
+                "type": "string",
+                "description": "Language for the presentation content. Default: 'en'.",
             },
         },
     },
 )
 async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    from presentation_service import (
-        generate_presentation_with_upload,
-        normalize_deck_style,
-        pick_deck_preset,
-        pick_deck_style_random,
-    )
+    from twoslides_service import generate_presentation, search_themes
+
     title = args.get("title", "Presentation")
-    slides_data = args.get("slides_data", [])
-    tagline = args.get("tagline", "")
+    prompt = args.get("prompt", title)
+    n_slides = int(args.get("n_slides") or 10)
+    style_query = args.get("style_query", "")
+    reference_image_url = args.get("reference_image_url")
+    language = args.get("language", "en")
 
-    raw_style = args.get("deck_style")
-    raw_theme = args.get("theme")
+    # Enrich prompt with business context
+    try:
+        owner = await ctx.db.users.find_one({"_id": ctx.business_id})
+        if owner:
+            biz_name = owner.get("business_name") or owner.get("owner_name") or ""
+            brand_color = owner.get("brand_primary_color") or ""
+            if biz_name and biz_name not in prompt:
+                prompt = f"Business: {biz_name}. {prompt}"
+    except Exception:
+        pass
 
-    _auto_style = not raw_style or str(raw_style).strip().lower() in ("", "auto", "automatic", "random")
-    _auto_theme = not raw_theme or str(raw_theme).strip().lower() in ("", "auto", "automatic", "random")
+    # Search for a matching theme if style_query provided
+    theme_id = None
+    if style_query:
+        themes = await search_themes(style_query)
+        if themes:
+            theme_id = themes[0].get("id") or themes[0].get("themeId")
+            logger.info("[create_presentation] using theme: %s for query '%s'", theme_id, style_query)
 
-    if _auto_style and _auto_theme:
-        # Pick a fully-curated preset: BOTH layout AND colour differ each time
-        deck_style, theme_name = pick_deck_preset()
-    elif _auto_style:
-        theme_name = str(raw_theme).strip().lower()
-        deck_style = pick_deck_style_random()
-    elif _auto_theme:
-        deck_style = normalize_deck_style(str(raw_style))
-        theme_name = "dark"
-    else:
-        deck_style = normalize_deck_style(str(raw_style))
-        theme_name = str(raw_theme).strip().lower()
-
-    owner = await ctx.db.users.find_one({"_id": ctx.business_id})
-    business_name = owner.get("business_name") or owner.get("owner_name") or "My Business" if owner else "My Business"
-
-    result = await generate_presentation_with_upload(
-        title,
-        slides_data,
-        business_name,
-        theme_name=theme_name,
-        tagline=tagline,
-        deck_style=deck_style,
+    result = await generate_presentation(
+        prompt=prompt,
+        theme_id=theme_id,
+        n_slides=n_slides,
+        language=language,
+        reference_image_url=reference_image_url,
     )
 
     if result.get("error"):
         return {"error": result["error"]}
 
-    url = result.get("url")
+    url = result.get("download_url")
     thumb_url = result.get("thumbnail_url")
+    job_id = result.get("job_id")
+
     if url:
         try:
             from saved_designs import insert_saved_design
-
             await insert_saved_design(
                 ctx.db,
                 ctx.business_id,
@@ -6220,7 +6186,6 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
         except Exception:
             logger.exception("[create_presentation] saved_designs insert skipped")
 
-    # Build markdown with image preview (chat renders ![...](...) as visual card with download)
     md_parts = []
     if thumb_url:
         md_parts.append(f"![{title}]({thumb_url})")
@@ -6232,7 +6197,7 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
         "success": True,
         "pptx_url": url,
         "thumbnail_url": thumb_url,
-        "deck_style": result.get("deck_style") or deck_style,
+        "job_id": job_id,
         "markdown": markdown,
     }
 
