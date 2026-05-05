@@ -12,8 +12,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _BASE = "https://2slides.com/api/v1"
-_POLL_INTERVAL = 5  # seconds between status checks
-_MAX_POLLS = 24     # 2 minutes max
+_POLL_INTERVAL = 20  # seconds between status checks (per API docs)
+_MAX_POLLS = 12      # 4 minutes max
 
 
 def _get_key() -> str:
@@ -30,18 +30,21 @@ def _headers() -> Dict[str, str]:
     }
 
 
-async def search_themes(query: str = "professional") -> list:
+async def search_themes(query: str = "professional", limit: int = 5) -> list:
     """Search available themes/templates by keyword."""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
                 f"{_BASE}/themes/search",
                 headers=_headers(),
-                params={"q": query},
+                params={"query": query, "limit": limit},
             )
             resp.raise_for_status()
             data = resp.json()
-            return data if isinstance(data, list) else data.get("themes", [])
+            # Response: {"success": true, "data": {"themes": [...]}}
+            if isinstance(data, list):
+                return data
+            return data.get("data", {}).get("themes", data.get("themes", []))
     except Exception as e:
         logger.warning("[2slides] theme search failed: %s", e)
         return []
@@ -53,50 +56,99 @@ async def generate_presentation(
     n_slides: int = 10,
     language: str = "en",
     resolution: str = "2K",
+    design_style: Optional[str] = None,
     reference_image_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate a presentation via 2Slides API.
+
+    Routes:
+    - reference_image_url provided → POST /slides/create-like-this (style clone)
+    - theme_id provided            → POST /slides/generate (fast PPT, pre-built theme)
+    - neither                      → POST /slides/create-pdf-slides (AI-designed, no theme needed)
+
     Returns dict with: download_url, job_id, status, error
     """
-    payload: Dict[str, Any] = {
+    # ── Route A: style clone from reference image ──────────────────────────
+    if reference_image_url:
+        payload: Dict[str, Any] = {
+            "userInput": prompt,
+            "referenceImageUrl": reference_image_url,
+            "responseLanguage": language,
+            "resolution": resolution,
+            "page": n_slides,
+            "contentDetail": "standard",
+            "mode": "async",
+        }
+        return await _post_and_poll(f"{_BASE}/slides/create-like-this", payload)
+
+    # ── Route B: fast PPT with pre-built theme ─────────────────────────────
+    if theme_id:
+        payload = {
+            "userInput": prompt,
+            "themeId": theme_id,
+            "responseLanguage": language,
+            "mode": "async",
+        }
+        return await _post_and_poll(f"{_BASE}/slides/generate", payload)
+
+    # ── Route C: No theme provided — search for one automatically ───────────
+    # slides/generate (1 credit/page) is much cheaper than create-pdf-slides (100 credits/page)
+    style_kw = design_style or "professional modern"
+    themes = await search_themes(style_kw, limit=5)
+    if not themes:
+        # Fallback: try a generic search
+        themes = await search_themes("business", limit=5)
+
+    if themes:
+        auto_theme_id = themes[0].get("id") or themes[0].get("themeId")
+        logger.info("[2slides] auto-selected theme: %s (%s)", auto_theme_id, themes[0].get("name"))
+        payload = {
+            "userInput": prompt,
+            "themeId": auto_theme_id,
+            "responseLanguage": language,
+            "mode": "async",
+        }
+        return await _post_and_poll(f"{_BASE}/slides/generate", payload)
+
+    # Last resort: create-pdf-slides (costs more credits)
+    payload = {
         "userInput": prompt,
         "responseLanguage": language,
         "resolution": resolution,
+        "page": n_slides,
+        "contentDetail": "standard",
         "mode": "async",
     }
-    if theme_id:
-        payload["themeId"] = theme_id
-    if n_slides:
-        payload["numSlides"] = n_slides
+    if design_style:
+        payload["designStyle"] = design_style
+    return await _post_and_poll(f"{_BASE}/slides/create-pdf-slides", payload)
 
-    # Use style-cloning endpoint if reference image provided
-    endpoint = f"{_BASE}/slides/generate"
-    if reference_image_url:
-        endpoint = f"{_BASE}/slides/create-like-this"
-        payload["referenceImageUrl"] = reference_image_url
 
+async def _post_and_poll(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST to endpoint and poll for job completion."""
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(endpoint, headers=_headers(), json=payload)
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as e:
-        logger.error("[2slides] generate failed: %s — %s", e.response.status_code, e.response.text)
-        return {"error": f"2Slides API error: {e.response.status_code} — {e.response.text}"}
+        logger.error("[2slides] request failed: %s — %s", e.response.status_code, e.response.text)
+        return {"error": f"2Slides API error {e.response.status_code}: {e.response.text}"}
     except Exception as e:
-        logger.error("[2slides] generate request failed: %s", e)
+        logger.error("[2slides] request error: %s", e)
         return {"error": str(e)}
 
+    # Synchronous response
+    download_url = data.get("downloadUrl") or data.get("url")
     job_id = data.get("jobId") or data.get("id")
-    if not job_id:
-        # Synchronous response with direct download URL
-        download_url = data.get("downloadUrl") or data.get("url")
-        if download_url:
-            return {"status": "success", "download_url": download_url, "job_id": None}
-        return {"error": f"Unexpected response: {data}"}
 
-    # Poll for result
+    if download_url and not job_id:
+        return {"status": "success", "download_url": download_url, "job_id": None}
+
+    if not job_id:
+        return {"error": f"Unexpected 2Slides response: {data}"}
+
     return await poll_job(job_id)
 
 
