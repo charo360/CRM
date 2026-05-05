@@ -16,12 +16,14 @@ export async function POST(
   }
   const { toolkit } = await params;
   try {
+    const forward = await req.text();
     const url = buildServerCrmApiUrl(req, `/composio/connect/${toolkit}`);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
     const res = await fetch(url, {
       method: "POST",
       headers: { Authorization: auth, "Content-Type": "application/json" },
+      body: forward.trim() ? forward : "{}",
       signal: controller.signal,
     });
     clearTimeout(timeout);

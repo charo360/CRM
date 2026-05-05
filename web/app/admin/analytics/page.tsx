@@ -6,11 +6,23 @@ import {
   BadgeCheck,
   Building2,
   CalendarDays,
+  DollarSign,
   Shield,
   TrendingUp,
   Users,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils";
+
+type MetricsPeriod = "all" | "today" | "week" | "month" | "3months" | "custom";
+
+const METRIC_FILTERS: { key: MetricsPeriod; label: string }[] = [
+  { key: "all", label: "All time" },
+  { key: "today", label: "Today" },
+  { key: "week", label: "This week" },
+  { key: "month", label: "This month" },
+  { key: "3months", label: "Last 3 months" },
+  { key: "custom", label: "Custom range" },
+];
 
 function StatCard({
   label,
@@ -44,17 +56,57 @@ function StatCard({
 export default function AdminAnalyticsPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [metricsLoading, setMetricsLoading] = useState(true);
+  const [period, setPeriod] = useState<MetricsPeriod>("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [totalEarnings, setTotalEarnings] = useState(0);
+  const [salesCount, setSalesCount] = useState(0);
+  const [metricsUsers, setMetricsUsers] = useState<{ total: number; subscribed: number; setup: number } | null>(null);
 
   useEffect(() => {
     adminApi.listUsers({ limit: 500 }).then((d) => { setUsers(d.users); setLoading(false); }).catch(() => setLoading(false));
   }, []);
 
-  const total = users.length;
-  const subscribed = useMemo(() => users.filter((u) => u.subscription_active).length, [users]);
-  const setupDone = useMemo(() => users.filter((u) => u.setup_complete).length, [users]);
+  useEffect(() => {
+    let alive = true;
+    setMetricsLoading(true);
+    const query = {
+      period,
+      start: period === "custom" && customStart ? `${customStart}T00:00:00` : undefined,
+      end: period === "custom" && customEnd ? `${customEnd}T23:59:59` : undefined,
+    } as const;
+    adminApi
+      .getMetrics(query)
+      .then((m) => {
+        if (!alive) return;
+        setTotalEarnings(m.total_earnings || 0);
+        setSalesCount(m.sales_count || 0);
+        setMetricsUsers({
+          total: m.total_users || 0,
+          subscribed: m.subscribed_users || 0,
+          setup: m.setup_done_users || 0,
+        });
+        setMetricsLoading(false);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setMetricsLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [period, customStart, customEnd]);
+
+  const baseSubscribed = useMemo(() => users.filter((u) => u.subscription_active).length, [users]);
+  const baseSetupDone = useMemo(() => users.filter((u) => u.setup_complete).length, [users]);
+  const total = metricsUsers?.total ?? users.length;
+  const subscribed = metricsUsers?.subscribed ?? baseSubscribed;
+  const setupDone = metricsUsers?.setup ?? baseSetupDone;
   const owners = useMemo(() => users.filter((u) => !u.business_id).length, [users]);
   const subPct = total ? Math.round((subscribed / total) * 100) : 0;
   const setupPct = total ? Math.round((setupDone / total) * 100) : 0;
+  const earningsValue = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(totalEarnings || 0);
 
   // Signups by month (last 6)
   const byMonth = useMemo(() => {
@@ -79,11 +131,45 @@ export default function AdminAnalyticsPage() {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {METRIC_FILTERS.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setPeriod(key)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                period === key ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+          {period === "custom" && (
+            <div className="flex flex-wrap items-center gap-2 ml-auto">
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+                className="h-8 px-2 rounded-md border border-slate-200 text-xs text-slate-700"
+              />
+              <span className="text-xs text-slate-400">to</span>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+                className="h-8 px-2 rounded-md border border-slate-200 text-xs text-slate-700"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total accounts" value={loading ? "—" : total} icon={Users} color="bg-slate-100 text-slate-600" />
-        <StatCard label="Subscribed" value={loading ? "—" : subscribed} sub={`${subPct}% of accounts`} icon={BadgeCheck} color="bg-emerald-100 text-emerald-700" />
-        <StatCard label="Setup complete" value={loading ? "—" : setupDone} sub={`${setupPct}% of accounts`} icon={Shield} color="bg-indigo-100 text-indigo-700" />
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <StatCard label="Total earnings" value={metricsLoading ? "—" : earningsValue} sub={metricsLoading ? undefined : `${salesCount} sales`} icon={DollarSign} color="bg-emerald-100 text-emerald-700" />
+        <StatCard label="Total accounts" value={loading || metricsLoading ? "—" : total} icon={Users} color="bg-slate-100 text-slate-600" />
+        <StatCard label="Subscribed" value={loading || metricsLoading ? "—" : subscribed} sub={`${subPct}% of accounts`} icon={BadgeCheck} color="bg-emerald-100 text-emerald-700" />
+        <StatCard label="Setup complete" value={loading || metricsLoading ? "—" : setupDone} sub={`${setupPct}% of accounts`} icon={Shield} color="bg-indigo-100 text-indigo-700" />
         <StatCard label="Business owners" value={loading ? "—" : owners} icon={Building2} color="bg-amber-100 text-amber-700" />
       </div>
 

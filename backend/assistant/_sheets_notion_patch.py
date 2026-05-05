@@ -1,7 +1,7 @@
 """Google Sheets and Notion tools — appended to tools.py"""
 
-_SHEETS_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_GOOGLE_SHEETS", "google-sheet")
-_NOTION_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_NOTION", "notion")
+_SHEETS_KEY = "googlesheets"
+_NOTION_KEY = "notion"
 
 
 # ── Google Sheets tools ───────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ _NOTION_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_NOTION", "notion")
     },
 )
 async def sheets_list(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit = min(int(args.get("max_results") or 20), 50)
     q = "mimeType='application/vnd.google-apps.spreadsheet'"
     if args.get("query"):
@@ -61,7 +61,7 @@ async def sheets_list(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def sheets_read(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     if not sid:
         return {"error": "spreadsheet_id is required"}
@@ -104,7 +104,7 @@ async def sheets_read(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_append(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     rows = args.get("rows") or []
     if not sid or not rows:
@@ -149,7 +149,7 @@ async def sheets_append(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_update(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     rng = (args.get("range") or "").strip()
     rows = args.get("rows") or []
@@ -184,7 +184,7 @@ async def sheets_update(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_create(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     title = (args.get("title") or "Untitled").strip()
     try:
         result = await nango_proxy(
@@ -220,7 +220,7 @@ async def sheets_create(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_search(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit = min(int(args.get("max_results") or 10), 20)
     body: Dict[str, Any] = {"page_size": limit}
     if args.get("query"):
@@ -269,7 +269,7 @@ async def notion_search(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_read_page(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     page_id = (args.get("page_id") or "").strip().replace("-", "")
     if not page_id:
         return {"error": "page_id is required"}
@@ -318,7 +318,7 @@ async def notion_read_page(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def notion_create_page(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     parent_id   = (args.get("parent_id") or "").strip().replace("-", "")
     parent_type = (args.get("parent_type") or "page").strip()
     title       = (args.get("title") or "").strip()
@@ -368,7 +368,7 @@ async def notion_create_page(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def notion_append_blocks(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     page_id = (args.get("page_id") or "").strip().replace("-", "")
     content = (args.get("content") or "").strip()
     if not page_id or not content:
@@ -406,7 +406,7 @@ async def notion_append_blocks(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_query_database(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     db_id = (args.get("database_id") or "").strip().replace("-", "")
     limit = min(int(args.get("max_results") or 20), 50)
     if not db_id:

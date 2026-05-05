@@ -138,6 +138,18 @@ def extract(content: bytes, mime_type: str) -> Tuple[str, str]:
     return kind, text[:MAX_EXTRACT_CHARS]
 
 
+async def _upload_image_to_s3(content: bytes, filename: str, mime_type: str) -> Optional[str]:
+    """Upload image bytes to S3/Cloudinary and return a public URL. Returns None on failure."""
+    try:
+        b64_str = base64.b64encode(content).decode("ascii")
+        from image_handler import S3Handler
+        url = await S3Handler.upload_file(b64_str, filename, content_type=mime_type)
+        return url or None
+    except Exception as e:
+        logger.warning("[documents] S3 image upload failed: %s", e)
+    return None
+
+
 async def store_upload(
     db,
     *,
@@ -155,6 +167,12 @@ async def store_upload(
             "Supported: PDF, DOCX, TXT, MD, CSV, PNG, JPEG, WEBP, GIF."
         )
     kind, text = extract(content, mime_type)
+
+    # For images: upload to S3 so design tools can use the URL as product_image_url
+    public_url: Optional[str] = None
+    if kind == "image":
+        public_url = await _upload_image_to_s3(content, filename, mime_type)
+
     doc_id = str(uuid.uuid4())
     doc = {
         "_id": doc_id,
@@ -168,6 +186,8 @@ async def store_upload(
         "text_len": len(text),
         # base64 is only kept for images + PDFs so Claude can ingest them natively
         "b64": base64.b64encode(content).decode("ascii") if kind in ("image", "pdf") else None,
+        # public S3 URL for images — passed to design tools as product_image_url
+        "public_url": public_url,
         "created_at": datetime.utcnow(),
     }
     await db.assistant_documents.insert_one(doc)
@@ -197,6 +217,7 @@ async def store_upload(
         "text_len": len(text),
         "has_text": bool(text),
         "chunks_indexed": chunks_indexed,
+        "public_url": public_url,
     }
 
 
@@ -213,6 +234,7 @@ async def list_for_conversation(db, user_id: str, conversation_id: str) -> List[
         "text_len": r.get("text_len", 0),
         "has_text": bool(r.get("text")),
         "created_at": r.get("created_at"),
+        "public_url": r.get("public_url"),
     } for r in rows]
 
 
@@ -240,19 +262,37 @@ def build_context_preamble(docs: List[Dict[str, Any]], per_doc_chars: int = 12_0
     if not docs:
         return None
     blocks: List[str] = ["The user has attached the following reference documents:"]
+    image_urls: List[str] = []
     for i, d in enumerate(docs, 1):
         fn = d.get("filename") or f"document {i}"
         kind = d.get("kind") or "file"
         text = (d.get("text") or "").strip()
+        public_url = d.get("public_url") or ""
         header = f"\n--- Document {i}: {fn} ({kind}) ---"
-        if not text:
+        if kind == "image" and public_url:
+            image_urls.append(public_url)
+            blocks.append(
+                f"{header}\n"
+                f"Public image URL (use this as product_image_url for design tools): {public_url}\n"
+                f"[Image is also attached natively for visual reference]"
+            )
+        elif not text:
             blocks.append(header + "\n[No extractable text — image or scanned PDF]")
-            continue
-        snippet = text[:per_doc_chars]
-        truncated = " …[truncated]" if len(text) > per_doc_chars else ""
-        blocks.append(f"{header}\n{snippet}{truncated}")
+        else:
+            snippet = text[:per_doc_chars]
+            truncated = " …[truncated]" if len(text) > per_doc_chars else ""
+            blocks.append(f"{header}\n{snippet}{truncated}")
     blocks.append(
         "\nWhen the user asks about these documents, quote short excerpts "
         "and cite them by filename. Do not fabricate content not present in the documents."
     )
+    if image_urls:
+        blocks.append(
+            "\nDESIGN TOOL HINT: The user has uploaded "
+            + ("an image" if len(image_urls) == 1 else f"{len(image_urls)} images")
+            + " for design work. When generating social posts, ads, or any visual design, "
+            "pass the image URL above as `product_image_url` to the design tools "
+            "(generate_social_post, generate_ad_creative, generate_carousel_cover, refine_design, edit_product_image). "
+            "Do NOT ask the user for an image URL — you already have it."
+        )
     return "\n".join(blocks)

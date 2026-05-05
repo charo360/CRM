@@ -564,6 +564,17 @@ function IntegrationsPageInner() {
     gmail: null,
     googlecalendar: null,
     outlook: null,
+    // Productivity
+    slack: null,
+    googlesheets: null,
+    notion: null,
+    // E-commerce / Payments
+    shopify: null,
+    stripe: null,
+    // Marketing
+    klaviyo: null,
+    mailchimp: null,
+    brevo: null,
   });
   const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
@@ -612,26 +623,34 @@ function IntegrationsPageInner() {
 
   const refreshComposio = useCallback(async () => {
     const token = getToken();
-    if (!token) {
-      setComposioStatus({ gmail: false, googlecalendar: false, outlook: false });
-      return;
-    }
+    const _allFalse: Record<string, boolean> = {
+      gmail: false, googlecalendar: false, outlook: false,
+      slack: false, googlesheets: false, notion: false,
+      shopify: false, stripe: false,
+      klaviyo: false, mailchimp: false, brevo: false,
+    };
+    if (!token) { setComposioStatus(_allFalse); return; }
     try {
       const res = await fetch("/api/composio/connections", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) {
-        setComposioStatus({ gmail: false, googlecalendar: false, outlook: false });
-        return;
-      }
+      if (!res.ok) { setComposioStatus(_allFalse); return; }
       const data = (await res.json()) as { connected: Record<string, boolean> };
       setComposioStatus({
-        gmail: data.connected["gmail"] ?? false,
+        gmail:          data.connected["gmail"]         ?? false,
         googlecalendar: data.connected["googlecalendar"] ?? false,
-        outlook: data.connected["outlook"] ?? false,
+        outlook:        data.connected["outlook"]       ?? false,
+        slack:          data.connected["slack"]         ?? false,
+        googlesheets:   data.connected["googlesheets"]  ?? false,
+        notion:         data.connected["notion"]        ?? false,
+        shopify:        data.connected["shopify"]       ?? false,
+        stripe:         data.connected["stripe"]        ?? false,
+        klaviyo:        data.connected["klaviyo"]       ?? false,
+        mailchimp:      data.connected["mailchimp"]     ?? false,
+        brevo:          data.connected["brevo"]         ?? false,
       });
     } catch {
-      setComposioStatus({ gmail: false, googlecalendar: false, outlook: false });
+      setComposioStatus(_allFalse);
     }
   }, []);
 
@@ -641,7 +660,11 @@ function IntegrationsPageInner() {
       const token = getToken();
       const res = await fetch(`/api/composio/connect/${toolkit}`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token ?? ""}` },
+        headers: {
+          Authorization: `Bearer ${token ?? ""}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ redirect_base: window.location.origin }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({} as { detail?: string }))) as { detail?: string };
@@ -935,11 +958,13 @@ function IntegrationsPageInner() {
             borderClass="border-[#635BFF]/20 bg-[#635BFF]/5"
             icon={<StripeGlyph className="h-5 w-5 text-[#635BFF]" />}
           >
-            <NangoTileControls
-              connected={nangoStatus.stripe} connectLabel="Connect Stripe"
+            <ComposioTileControls
+              connected={composioStatus.stripe}
+              busy={composioBusy === "stripe"}
+              connectLabel="Connect Stripe"
               connectClass="bg-[#635BFF] hover:bg-[#4f46e5]"
-              onConnect={() => nangoConnect("stripe")}
-              onDisconnect={() => nangoDisconnect("stripe")}
+              onConnect={() => void composioConnect("stripe")}
+              onDisconnect={() => void composioDisconnect("stripe", "Stripe")}
             />
           </SmallTile>
 
@@ -970,11 +995,13 @@ function IntegrationsPageInner() {
             borderClass="border-[#00A500]/20 bg-[#00A500]/5"
             icon={<KlaviyoGlyph className="h-5 w-5 text-[#00A500]" />}
           >
-            <NangoTileControls
-              connected={nangoStatus.klaviyo} connectLabel="Connect Klaviyo"
+            <ComposioTileControls
+              connected={composioStatus.klaviyo}
+              busy={composioBusy === "klaviyo"}
+              connectLabel="Connect Klaviyo"
               connectClass="bg-[#00A500] hover:bg-[#008000]"
-              onConnect={() => nangoConnect("klaviyo")}
-              onDisconnect={() => nangoDisconnect("klaviyo")}
+              onConnect={() => void composioConnect("klaviyo")}
+              onDisconnect={() => void composioDisconnect("klaviyo", "Klaviyo")}
             />
           </SmallTile>
 
@@ -983,11 +1010,13 @@ function IntegrationsPageInner() {
             borderClass="border-[#FFE01B]/40 bg-[#FFE01B]/10"
             icon={<MailchimpGlyph className="h-5 w-5 text-[#241C15]" />}
           >
-            <NangoTileControls
-              connected={nangoStatus.mailchimp} connectLabel="Connect Mailchimp"
+            <ComposioTileControls
+              connected={composioStatus.mailchimp}
+              busy={composioBusy === "mailchimp"}
+              connectLabel="Connect Mailchimp"
               connectClass="bg-[#241C15] hover:bg-black"
-              onConnect={() => nangoConnect("mailchimp")}
-              onDisconnect={() => nangoDisconnect("mailchimp")}
+              onConnect={() => void composioConnect("mailchimp")}
+              onDisconnect={() => void composioDisconnect("mailchimp", "Mailchimp")}
             />
           </SmallTile>
 
@@ -996,11 +1025,13 @@ function IntegrationsPageInner() {
             borderClass="border-[#0B996E]/20 bg-[#0B996E]/5"
             icon={<BrevoGlyph className="h-5 w-5 text-[#0B996E]" />}
           >
-            <NangoTileControls
-              connected={nangoStatus.brevo} connectLabel="Connect Brevo"
+            <ComposioTileControls
+              connected={composioStatus.brevo}
+              busy={composioBusy === "brevo"}
+              connectLabel="Connect Brevo"
               connectClass="bg-[#0B996E] hover:bg-[#097a58]"
-              onConnect={() => nangoConnect("brevo")}
-              onDisconnect={() => nangoDisconnect("brevo")}
+              onConnect={() => void composioConnect("brevo")}
+              onDisconnect={() => void composioDisconnect("brevo", "Brevo")}
             />
           </SmallTile>
         </div>
@@ -1016,11 +1047,13 @@ function IntegrationsPageInner() {
               borderClass="border-[#4A154B]/20 bg-[#4A154B]/5"
               icon={<SlackGlyph className="h-5 w-5 text-[#4A154B]" />}
             >
-              <NangoTileControls
-                connected={nangoStatus.slack} connectLabel="Connect Slack"
+              <ComposioTileControls
+                connected={composioStatus.slack}
+                busy={composioBusy === "slack"}
+                connectLabel="Connect Slack"
                 connectClass="bg-[#4A154B] hover:bg-[#3e1240]"
-                onConnect={() => nangoConnect("slack")}
-                onDisconnect={() => nangoDisconnect("slack")}
+                onConnect={() => void composioConnect("slack")}
+                onDisconnect={() => void composioDisconnect("slack", "Slack")}
               />
             </SmallTile>
           </div>
@@ -1048,11 +1081,13 @@ function IntegrationsPageInner() {
               borderClass="border-[#0078D4]/20 bg-[#0078D4]/5"
               icon={<MicrosoftGlyph className="h-5 w-5 text-[#0078D4]" />}
             >
-              <NangoTileControls
-                connected={nangoStatus.microsoft} connectLabel="Connect Microsoft"
+              <ComposioTileControls
+                connected={composioStatus.outlook}
+                busy={composioBusy === "outlook"}
+                connectLabel="Connect Microsoft"
                 connectClass="bg-[#0078D4] hover:bg-[#006abc]"
-                onConnect={() => nangoConnect("microsoft")}
-                onDisconnect={() => nangoDisconnect("microsoft")}
+                onConnect={() => void composioConnect("outlook")}
+                onDisconnect={() => void composioDisconnect("outlook", "Microsoft")}
               />
             </SmallTile>
           </div>
@@ -1074,30 +1109,6 @@ function IntegrationsPageInner() {
             </SmallTile>
           </div>
 
-          <div id="integrations-outlook" className="min-w-0">
-            <SmallTile
-              title="Microsoft Outlook" subtitle="Email &amp; calendar via Composio"
-              borderClass="border-[#0078D4]/20 bg-[#0078D4]/5"
-              icon={
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
-                  <rect width="24" height="24" rx="3" fill="#0078D4"/>
-                  <path d="M13 7h7v10h-7V7z" fill="white" opacity="0.9"/>
-                  <path d="M4 9.5l9-2.5v10L4 14.5V9.5z" fill="white"/>
-                  <ellipse cx="8.5" cy="12" rx="2.5" ry="3" fill="#0078D4"/>
-                </svg>
-              }
-            >
-              <ComposioTileControls
-                connected={composioStatus.outlook}
-                busy={composioBusy === "outlook"}
-                connectLabel="Connect Outlook"
-                connectClass="bg-[#0078D4] hover:bg-[#106EBE]"
-                onConnect={() => void composioConnect("outlook")}
-                onDisconnect={() => void composioDisconnect("outlook", "Outlook")}
-              />
-            </SmallTile>
-          </div>
-
           <div id="integrations-google-sheets" className="min-w-0">
             <SmallTile
               title="Google Sheets" subtitle="Sync data to &amp; from spreadsheets"
@@ -1113,11 +1124,13 @@ function IntegrationsPageInner() {
                 </svg>
               }
             >
-              <NangoTileControls
-                connected={nangoStatus.google_sheets} connectLabel="Connect Sheets"
+              <ComposioTileControls
+                connected={composioStatus.googlesheets}
+                busy={composioBusy === "googlesheets"}
+                connectLabel="Connect Sheets"
                 connectClass="bg-[#0F9D58] hover:bg-[#0b7a44]"
-                onConnect={() => nangoConnect("google_sheets")}
-                onDisconnect={() => nangoDisconnect("google_sheets")}
+                onConnect={() => void composioConnect("googlesheets")}
+                onDisconnect={() => void composioDisconnect("googlesheets", "Google Sheets")}
               />
             </SmallTile>
           </div>
@@ -1132,11 +1145,13 @@ function IntegrationsPageInner() {
                 </svg>
               }
             >
-              <NangoTileControls
-                connected={nangoStatus.notion} connectLabel="Connect Notion"
+              <ComposioTileControls
+                connected={composioStatus.notion}
+                busy={composioBusy === "notion"}
+                connectLabel="Connect Notion"
                 connectClass="bg-slate-900 hover:bg-slate-700"
-                onConnect={() => nangoConnect("notion")}
-                onDisconnect={() => nangoDisconnect("notion")}
+                onConnect={() => void composioConnect("notion")}
+                onDisconnect={() => void composioDisconnect("notion", "Notion")}
               />
             </SmallTile>
           </div>
@@ -1152,11 +1167,13 @@ function IntegrationsPageInner() {
             borderClass="border-[#96BF48]/30 bg-[#96BF48]/10"
             icon={<ShopifyGlyph className="h-5 w-5 text-[#5A8E00]" />}
           >
-            <NangoTileControls
-              connected={nangoStatus.shopify} connectLabel="Connect Shopify"
+            <ComposioTileControls
+              connected={composioStatus.shopify}
+              busy={composioBusy === "shopify"}
+              connectLabel="Connect Shopify"
               connectClass="bg-[#5A8E00] hover:bg-[#4a7500]"
-              onConnect={() => nangoConnect("shopify")}
-              onDisconnect={() => nangoDisconnect("shopify")}
+              onConnect={() => void composioConnect("shopify")}
+              onDisconnect={() => void composioDisconnect("shopify", "Shopify")}
             />
           </SmallTile>
         </div>

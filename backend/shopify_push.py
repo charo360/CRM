@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any
 from bson import ObjectId
-from assistant.nango import nango_proxy
+from assistant.composio_helper import composio_proxy as nango_proxy
 
 logger = logging.getLogger(__name__)
 

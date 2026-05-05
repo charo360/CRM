@@ -2,12 +2,15 @@
  * Unified Shopify API proxy.
  * All reads are GET /api/shopify?action=...
  * All writes are POST /api/shopify { action, ...payload }
+ *
+ * Uses Composio-backed HTTP on the FastAPI backend (not Nango).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { resolveUserId, getNangoConnectionId, nangoProxy } from "@/lib/nango-proxy";
+import { resolveUserId } from "@/lib/nango-proxy";
+import { buildServerCrmApiUrl } from "@/lib/server-crm-api";
 
 const SHOPIFY_API = "2024-01";
-const INTEGRATION  = "shopify";
+const TOOLKIT = "shopify";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -15,50 +18,74 @@ function err(msg: string, status = 400) {
   return NextResponse.json({ error: msg }, { status });
 }
 
-async function shopifyGet(connectionId: string, path: string, params?: Record<string, string>) {
-  const res = await nangoProxy({ integrationKey: INTEGRATION, connectionId, path, params });
-  if (!res.ok) throw new Error(`Shopify ${path} → ${res.status}`);
-  return res.json();
+async function shopifyConnected(req: NextRequest, auth: string | null): Promise<boolean> {
+  if (!auth?.startsWith("Bearer ")) return false;
+  const url = buildServerCrmApiUrl(req, "/composio/connections");
+  const res = await fetch(url, { headers: { Authorization: auth } });
+  if (!res.ok) return false;
+  const d = (await res.json().catch(() => ({}))) as { connected?: Record<string, boolean> };
+  return !!d.connected?.[TOOLKIT];
 }
 
-async function shopifyPost(connectionId: string, path: string, body: unknown) {
-  const res = await nangoProxy({ integrationKey: INTEGRATION, connectionId, method: "POST", path, body });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Shopify POST ${path} → ${res.status}: ${text}`);
+async function composioShopify(
+  req: NextRequest,
+  auth: string | null,
+  method: string,
+  path: string,
+  params?: Record<string, string>,
+  body?: unknown,
+): Promise<unknown> {
+  const url = buildServerCrmApiUrl(req, "/composio/http");
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: auth ?? "", "Content-Type": "application/json" },
+    body: JSON.stringify({ toolkit: TOOLKIT, method, path, params, json: body }),
+  });
+  const text = await res.text();
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
   }
-  return res.json();
+  if (!res.ok) {
+    const detail =
+      typeof data === "object" && data !== null && "detail" in data
+        ? String((data as { detail: unknown }).detail)
+        : text;
+    throw new Error(detail || `Shopify ${path} → ${res.status}`);
+  }
+  return data;
 }
 
-async function shopifyDelete(connectionId: string, path: string) {
-  const res = await nangoProxy({ integrationKey: INTEGRATION, connectionId, method: "DELETE", path });
-  if (!res.ok && res.status !== 204) throw new Error(`Shopify DELETE ${path} → ${res.status}`);
+async function shopifyGet(
+  req: NextRequest,
+  auth: string | null,
+  path: string,
+  params?: Record<string, string>,
+) {
+  return composioShopify(req, auth, "GET", path, params) as Promise<Record<string, unknown>>;
 }
 
-async function shopifyPut(connectionId: string, path: string, body: unknown) {
-  const res = await nangoProxy({ integrationKey: INTEGRATION, connectionId, method: "PUT", path, body });
-  if (!res.ok) throw new Error(`Shopify PUT ${path} → ${res.status}`);
-  return res.json();
+async function shopifyPost(req: NextRequest, auth: string | null, path: string, body: unknown) {
+  return composioShopify(req, auth, "POST", path, undefined, body) as Promise<Record<string, unknown>>;
 }
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+async function shopifyDelete(req: NextRequest, auth: string | null, path: string) {
+  await composioShopify(req, auth, "DELETE", path);
+}
 
-async function getConnection(authHeader: string | null) {
-  const userId = await resolveUserId(authHeader);
-  if (!userId) return null;
-  const connectionId = await getNangoConnectionId(userId, INTEGRATION);
-  if (!connectionId) return null;
-  return connectionId;
+async function shopifyPut(req: NextRequest, auth: string | null, path: string, body: unknown) {
+  return composioShopify(req, auth, "PUT", path, undefined, body) as Promise<Record<string, unknown>>;
 }
 
 // ── GET handler ───────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get("authorization");
-  const connectionId = await getConnection(auth);
-  if (!connectionId) {
-    const userId = await resolveUserId(auth);
-    if (!userId) return err("Unauthorized", 401);
+  if (!(await resolveUserId(auth))) return err("Unauthorized", 401);
+  const connected = await shopifyConnected(req, auth);
+  if (!connected) {
     return NextResponse.json({ connected: false });
   }
 
@@ -82,7 +109,7 @@ export async function GET(req: NextRequest) {
       if (financialStatus) params.financial_status = financialStatus;
       if (fulfillmentStatus) params.fulfillment_status = fulfillmentStatus;
 
-      const data = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/orders.json`, params) as { orders: ShopifyOrder[] };
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/orders.json`, params) as { orders: ShopifyOrder[] };
       let orders = data.orders ?? [];
       if (search) {
         const q = search.toLowerCase();
@@ -99,14 +126,14 @@ export async function GET(req: NextRequest) {
     if (action === "order") {
       const id = sp.get("id");
       if (!id) return err("id required");
-      const data = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/orders/${id}.json`) as { order: ShopifyOrder };
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/orders/${id}.json`) as { order: ShopifyOrder };
       return NextResponse.json({ order: data.order });
     }
 
     // ── Products ─────────────────────────────────────────────────────────────
     if (action === "products") {
       const productStatus = sp.get("status") ?? "active";
-      const data = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/products.json`, {
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/products.json`, {
         limit: String(limit),
         status: productStatus,
         fields: "id,title,handle,product_type,status,variants,image,images",
@@ -116,7 +143,7 @@ export async function GET(req: NextRequest) {
 
     // ── Customers ────────────────────────────────────────────────────────────
     if (action === "customers") {
-      const data = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/customers.json`, {
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/customers.json`, {
         limit: String(limit),
         fields: "id,first_name,last_name,email,phone,orders_count,total_spent,created_at,updated_at,last_order_name,tags,accepts_marketing,default_address",
       }) as { customers: ShopifyCustomer[] };
@@ -129,7 +156,7 @@ export async function GET(req: NextRequest) {
 
     // ── Abandoned carts ──────────────────────────────────────────────────────
     if (action === "abandoned") {
-      const data = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/checkouts.json`, {
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/checkouts.json`, {
         limit: String(limit),
         fields: "id,token,email,created_at,updated_at,total_price,subtotal_price,currency,line_items,abandoned_checkout_url",
       }) as { checkouts: ShopifyCheckout[] };
@@ -142,7 +169,7 @@ export async function GET(req: NextRequest) {
 
     // ── Discounts ────────────────────────────────────────────────────────────
     if (action === "discounts") {
-      const data = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/price_rules.json`, {
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/price_rules.json`, {
         limit: String(limit),
         fields: "id,title,value_type,value,customer_selection,starts_at,ends_at,usage_limit,times_used,created_at",
       }) as { price_rules: ShopifyPriceRule[] };
@@ -152,7 +179,7 @@ export async function GET(req: NextRequest) {
       const enriched = await Promise.all(
         rules.slice(0, 20).map(async (rule) => {
           try {
-            const codeData = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/price_rules/${rule.id}/discount_codes.json`, { limit: "5" }) as { discount_codes: { code: string; usage_count: number }[] };
+            const codeData = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/price_rules/${rule.id}/discount_codes.json`, { limit: "5" }) as { discount_codes: { code: string; usage_count: number }[] };
             return { ...rule, codes: codeData.discount_codes ?? [] };
           } catch {
             return { ...rule, codes: [] };
@@ -164,7 +191,7 @@ export async function GET(req: NextRequest) {
 
     // ── Locations ────────────────────────────────────────────────────────────
     if (action === "locations") {
-      const data = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/locations.json`) as { locations: ShopifyLocation[] };
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/locations.json`) as { locations: ShopifyLocation[] };
       return NextResponse.json({ locations: data.locations ?? [] });
     }
 
@@ -182,14 +209,14 @@ export async function GET(req: NextRequest) {
       }
 
       const [ordersData, productsData, customersData] = await Promise.all([
-        shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/orders.json`, {
+        shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/orders.json`, {
           limit: "250",
           status: "any",
           created_at_min: createdAtMin,
           fields: "id,order_number,name,financial_status,fulfillment_status,total_price,created_at,customer,line_items,refunds",
         }),
-        shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/products/count.json`, { status: "active" }),
-        shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/customers/count.json`),
+        shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/products/count.json`, { status: "active" }),
+        shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/customers/count.json`),
       ]) as [{ orders: ShopifyOrder[] }, { count: number }, { count: number }];
 
       const orders = ordersData.orders ?? [];
@@ -251,14 +278,14 @@ export async function GET(req: NextRequest) {
       const since30  = new Date(Date.now() - 30 * 86400000).toISOString();
 
       const [ordersData, customersData] = await Promise.all([
-        shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/orders.json`, {
+        shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/orders.json`, {
           limit: "250",
           status: "any",
           created_at_min: since90,
           financial_status: "paid",
           fields: "id,customer,total_price,created_at,line_items",
         }),
-        shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/customers.json`, {
+        shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/customers.json`, {
           limit: "250",
           fields: "id,orders_count,total_spent,created_at,updated_at,accepts_marketing",
         }),
@@ -360,10 +387,8 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get("authorization");
-  const connectionId = await getConnection(auth);
-  if (!connectionId) {
-    const userId = await resolveUserId(auth);
-    if (!userId) return err("Unauthorized", 401);
+  if (!(await resolveUserId(auth))) return err("Unauthorized", 401);
+  if (!(await shopifyConnected(req, auth))) {
     return err("Shopify not connected", 400);
   }
 
@@ -411,11 +436,11 @@ export async function POST(req: NextRequest) {
     if (body.action === "fulfill") {
       if (!body.orderId) return err("orderId required");
       // Get fulfillment orders first
-      const foData = await shopifyGet(connectionId, `/admin/api/${SHOPIFY_API}/orders/${body.orderId}/fulfillment_orders.json`) as { fulfillment_orders: { id: number; status: string }[] };
+      const foData = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/orders/${body.orderId}/fulfillment_orders.json`) as { fulfillment_orders: { id: number; status: string }[] };
       const openFOs = (foData.fulfillment_orders ?? []).filter((fo) => fo.status === "open");
       if (!openFOs.length) return NextResponse.json({ ok: true, message: "Already fulfilled" });
 
-      const result = await shopifyPost(connectionId, `/admin/api/${SHOPIFY_API}/fulfillments.json`, {
+      const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/fulfillments.json`, {
         fulfillment: {
           line_items_by_fulfillment_order: openFOs.map((fo) => ({ fulfillment_order_id: fo.id })),
           notify_customer: true,
@@ -427,7 +452,7 @@ export async function POST(req: NextRequest) {
     // ── Cancel order ─────────────────────────────────────────────────────────
     if (body.action === "cancel") {
       if (!body.orderId) return err("orderId required");
-      const result = await shopifyPost(connectionId, `/admin/api/${SHOPIFY_API}/orders/${body.orderId}/cancel.json`, {
+      const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/orders/${body.orderId}/cancel.json`, {
         reason: body.reason ?? "customer",
         email: true,
         refund: true,
@@ -440,7 +465,7 @@ export async function POST(req: NextRequest) {
       if (!body.inventoryItemId || !body.locationId) return err("inventoryItemId and locationId required");
       if (body.available !== undefined) {
         // Absolute set
-        const result = await shopifyPost(connectionId, `/admin/api/${SHOPIFY_API}/inventory_levels/set.json`, {
+        const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/inventory_levels/set.json`, {
           location_id: parseInt(body.locationId),
           inventory_item_id: parseInt(body.inventoryItemId),
           available: body.available,
@@ -448,7 +473,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, inventoryLevel: result });
       }
       if (body.adjustment !== undefined) {
-        const result = await shopifyPost(connectionId, `/admin/api/${SHOPIFY_API}/inventory_levels/adjust.json`, {
+        const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/inventory_levels/adjust.json`, {
           location_id: parseInt(body.locationId),
           inventory_item_id: parseInt(body.inventoryItemId),
           available_adjustment: body.adjustment,
@@ -479,10 +504,10 @@ export async function POST(req: NextRequest) {
           } : {}),
         },
       };
-      const ruleResult = await shopifyPost(connectionId, `/admin/api/${SHOPIFY_API}/price_rules.json`, priceRuleBody) as { price_rule: { id: number } };
+      const ruleResult = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/price_rules.json`, priceRuleBody) as { price_rule: { id: number } };
       const ruleId = ruleResult.price_rule.id;
       // Create discount code
-      const codeResult = await shopifyPost(connectionId, `/admin/api/${SHOPIFY_API}/price_rules/${ruleId}/discount_codes.json`, {
+      const codeResult = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/price_rules/${ruleId}/discount_codes.json`, {
         discount_code: { code: body.code.toUpperCase() },
       });
       return NextResponse.json({ ok: true, priceRuleId: ruleId, discountCode: codeResult });
@@ -491,14 +516,14 @@ export async function POST(req: NextRequest) {
     // ── Delete discount ──────────────────────────────────────────────────────
     if (body.action === "delete_discount") {
       if (!body.priceRuleId) return err("priceRuleId required");
-      await shopifyDelete(connectionId, `/admin/api/${SHOPIFY_API}/price_rules/${body.priceRuleId}.json`);
+      await shopifyDelete(req, auth, `/admin/api/${SHOPIFY_API}/price_rules/${body.priceRuleId}.json`);
       return NextResponse.json({ ok: true });
     }
 
     // ── Add order note ───────────────────────────────────────────────────────
     if (body.action === "add_note") {
       if (!body.orderId || !body.noteText) return err("orderId and noteText required");
-      const result = await shopifyPut(connectionId, `/admin/api/${SHOPIFY_API}/orders/${body.orderId}.json`, {
+      const result = await shopifyPut(req, auth, `/admin/api/${SHOPIFY_API}/orders/${body.orderId}.json`, {
         order: { id: body.orderId, note: body.noteText },
       });
       return NextResponse.json({ ok: true, order: result });
@@ -507,7 +532,7 @@ export async function POST(req: NextRequest) {
     // ── Update variant price ─────────────────────────────────────────────────
     if (body.action === "update_price") {
       if (!body.variantId || !body.newPrice) return err("variantId and newPrice required");
-      const result = await shopifyPut(connectionId, `/admin/api/${SHOPIFY_API}/variants/${body.variantId}.json`, {
+      const result = await shopifyPut(req, auth, `/admin/api/${SHOPIFY_API}/variants/${body.variantId}.json`, {
         variant: { id: body.variantId, price: body.newPrice },
       });
       return NextResponse.json({ ok: true, variant: result });
@@ -539,7 +564,7 @@ export async function POST(req: NextRequest) {
           variants,
         },
       };
-      const result = await shopifyPost(connectionId, `/admin/api/${SHOPIFY_API}/products.json`, payload) as { product: { id: number; title: string; handle: string; admin_graphql_api_id: string } };
+      const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/products.json`, payload) as { product: { id: number; title: string; handle: string; admin_graphql_api_id: string } };
       return NextResponse.json({ ok: true, product: result.product });
     }
 

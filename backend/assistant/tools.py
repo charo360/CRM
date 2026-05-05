@@ -2465,17 +2465,18 @@ async def run_weekly_operator_digest(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_shopify_orders(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import shopify_orders_via_composio_or_proxy
     from datetime import timezone
     status = args.get("status", "any")
     limit  = min(int(args.get("limit", 25)), 250)
     days   = int(args.get("since_days", 7))
     since  = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)).isoformat()
     try:
-        data = await nango_proxy(
-            ctx.business_id, "shopify", "GET",
-            "/admin/api/2024-01/orders.json",
-            params={"status": status, "limit": limit, "created_at_min": since},
+        data = await shopify_orders_via_composio_or_proxy(
+            ctx.business_id,
+            status=str(status),
+            limit=limit,
+            created_at_min=since,
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -2515,14 +2516,14 @@ async def list_shopify_orders(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import shopify_products_via_composio_or_proxy
     limit  = min(int(args.get("limit", 50)), 250)
     status = args.get("status", "active")
     try:
-        data = await nango_proxy(
-            ctx.business_id, "shopify", "GET",
-            "/admin/api/2024-01/products.json",
-            params={"limit": limit, "status": status},
+        data = await shopify_products_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
+            product_status=str(status),
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -2559,15 +2560,17 @@ async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_shopify_analytics(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import shopify_orders_via_composio_or_proxy
     from datetime import timezone
     days  = int(args.get("days", 30))
     since = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)).isoformat()
     try:
-        data = await nango_proxy(
-            ctx.business_id, "shopify", "GET",
-            "/admin/api/2024-01/orders.json",
-            params={"status": "any", "financial_status": "paid", "limit": 250, "created_at_min": since},
+        data = await shopify_orders_via_composio_or_proxy(
+            ctx.business_id,
+            status="any",
+            limit=250,
+            created_at_min=since,
+            financial_status="paid",
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -2615,7 +2618,7 @@ async def get_shopify_analytics(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_fulfill_order(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     order_id = str(args["order_id"])
     try:
         # Get fulfillment orders
@@ -2675,7 +2678,7 @@ async def shopify_fulfill_order(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_cancel_order(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     order_id = str(args["order_id"])
     try:
         result = await nango_proxy(
@@ -2714,7 +2717,7 @@ async def shopify_cancel_order(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_create_discount(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     import random, string
     from datetime import timezone
     code = (args.get("code") or "").strip().upper() or "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
@@ -2776,7 +2779,7 @@ async def shopify_create_discount(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def shopify_get_abandoned_carts(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     from datetime import timezone
     hours = int(args.get("since_hours", 1))
     limit = min(int(args.get("limit", 25)), 250)
@@ -2831,7 +2834,7 @@ async def shopify_get_abandoned_carts(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def shopify_get_growth_metrics(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     from datetime import timezone
     days  = int(args.get("days", 90))
     since = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)).isoformat()
@@ -2955,7 +2958,7 @@ async def shopify_get_growth_metrics(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_add_product(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     title   = args["title"]
     price   = str(args["price"])
     raw_variants = args.get("variants") or []
@@ -3021,7 +3024,7 @@ async def shopify_add_product(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     inv_item_id = str(args["inventory_item_id"])
     delta = int(args["delta"])
     location_id = args.get("location_id")
@@ -3053,7 +3056,7 @@ async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# STRIPE TOOLS (via Nango proxy)
+# STRIPE TOOLS (Composio packaged actions, REST proxy fallback)
 # ═════════════════════════════════════════════════════════════════════════════
 
 @tool(
@@ -3071,15 +3074,13 @@ async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_stripe_payments(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import stripe_payment_intents_via_composio_or_proxy
     limit  = min(int(args.get("limit", 20)), 100)
     status = args.get("status", "succeeded")
-    params: Dict[str, Any] = {"limit": limit}
     try:
-        data = await nango_proxy(
-            ctx.business_id, "stripe", "GET",
-            "/v1/payment_intents",
-            params=params,
+        data = await stripe_payment_intents_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -3115,17 +3116,14 @@ async def list_stripe_payments(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import stripe_invoices_via_composio_or_proxy
     status = args.get("status", "open")
     limit  = min(int(args.get("limit", 20)), 100)
-    params: Dict[str, Any] = {"limit": limit}
-    if status != "all":
-        params["status"] = status
     try:
-        data = await nango_proxy(
-            ctx.business_id, "stripe", "GET",
-            "/v1/invoices",
-            params=params,
+        data = await stripe_invoices_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
+            status=str(status),
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -3147,7 +3145,7 @@ async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# KLAVIYO TOOLS (via Nango proxy)
+# KLAVIYO TOOLS (Composio packaged actions, REST proxy fallback)
 # ═════════════════════════════════════════════════════════════════════════════
 
 @tool(
@@ -3164,16 +3162,12 @@ async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_klaviyo_flows(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import klaviyo_flows_via_composio_or_proxy
     status = args.get("status", "all")
-    params: Dict[str, Any] = {"page[size]": 50}
-    if status != "all":
-        params["filter"] = f"equals(status,'{status}')"
     try:
-        data = await nango_proxy(
-            ctx.business_id, "klaviyo", "GET",
-            "/api/flows/",
-            params=params,
+        data = await klaviyo_flows_via_composio_or_proxy(
+            ctx.business_id,
+            status=str(status),
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -3206,13 +3200,12 @@ async def list_klaviyo_flows(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def get_klaviyo_metrics(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import klaviyo_metrics_via_composio_or_proxy
     limit = min(int(args.get("limit", 20)), 100)
     try:
-        data = await nango_proxy(
-            ctx.business_id, "klaviyo", "GET",
-            "/api/metrics/",
-            params={"page[size]": limit},
+        data = await klaviyo_metrics_via_composio_or_proxy(
+            ctx.business_id,
+            limit=limit,
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -4610,6 +4603,285 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
         "success": True,
         "image_url": image_url,
         "markdown": f"![{name}]({image_url})" if image_url else "",
+    }
+
+
+@tool(
+    name="plan_visual_presentation",
+    description=(
+        "STEP 1 of 2 — Plan a visual presentation deck and present the full outline to the user "
+        "for review and approval BEFORE any images are generated. "
+        "This avoids wasting Gemini image credits on a deck the user hasn't approved. "
+        "Call this first whenever a user asks for a presentation, pitch deck, or slideshow. "
+        "It returns a structured slide-by-slide plan showing: slide title, bullet points, "
+        "and the image concept for each slide. "
+        "After showing the plan, ask the user: 'Does this look good, or would you like to change anything?' "
+        "Only call create_visual_presentation once the user explicitly approves."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "Main subject of the presentation.",
+            },
+            "audience": {
+                "type": "string",
+                "description": "Who this deck is for (e.g. 'investors', 'clients', 'internal team').",
+            },
+            "slides": {
+                "type": "array",
+                "description": (
+                    "The complete planned slide list. Each object must have: "
+                    "title (str), body (list of 3-5 punchy bullet strings — no filler), "
+                    "image_concept (str — vivid 1-sentence description of the background visual), "
+                    "is_title (bool — True only for the first cover slide). "
+                    "Plan 6-10 slides. Start with a cover, end with a strong CTA or summary."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title":         {"type": "string"},
+                        "body":          {"type": "array", "items": {"type": "string"}},
+                        "image_concept": {"type": "string"},
+                        "is_title":      {"type": "boolean"},
+                    },
+                    "required": ["title", "body", "image_concept"],
+                },
+            },
+            "style_note": {
+                "type": "string",
+                "description": "Visual tone for all images (e.g. 'dark cinematic', 'bright modern', 'luxury minimal').",
+            },
+        },
+        "required": ["topic", "slides"],
+    },
+)
+async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    topic      = (args.get("topic") or "Presentation").strip()
+    audience   = (args.get("audience") or "").strip()
+    slides     = args.get("slides") or []
+    style_note = (args.get("style_note") or "cinematic dark professional").strip()
+
+    if not slides:
+        return {"error": "slides list is required."}
+
+    return {
+        "success": True,
+        "plan_ready": True,
+        "topic": topic,
+        "audience": audience,
+        "style_note": style_note,
+        "slide_count": len(slides),
+        "slides": slides,
+        "awaiting_approval": True,
+        "note": (
+            f"Deck plan ready — {len(slides)} slides. "
+            "Show this plan to the user and ask for approval or changes. "
+            "Do NOT call create_visual_presentation until the user confirms."
+        ),
+    }
+
+
+@tool(
+    name="create_visual_presentation",
+    description=(
+        "STEP 2 of 2 — Generate the actual visual PowerPoint (.pptx) ONLY after the user has "
+        "approved the plan from plan_visual_presentation. "
+        "Each slide gets a unique Gemini AI-generated full-bleed background image (award-winning, "
+        "cinematic quality), with the slide title and bullets overlaid on a semi-transparent panel. "
+        "Never call this tool speculatively — only after explicit user approval of the slide plan. "
+        "Pass the exact slides array from the approved plan, enriched with a detailed image_prompt "
+        "per slide (expand image_concept into a rich, specific generation prompt)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "Main subject of the presentation.",
+            },
+            "slides": {
+                "type": "array",
+                "description": (
+                    "The APPROVED slide list from plan_visual_presentation, with image_prompt "
+                    "added to each slide (expand the image_concept into a rich, specific, "
+                    "award-winning image generation prompt — include lighting, mood, composition, "
+                    "color palette, no text, no people unless essential). "
+                    "Each slide: title, body (list[str]), image_prompt (str), is_title (bool)."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title":        {"type": "string"},
+                        "body":         {"type": "array", "items": {"type": "string"}},
+                        "image_prompt": {"type": "string"},
+                        "is_title":     {"type": "boolean"},
+                    },
+                    "required": ["title", "image_prompt"],
+                },
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Hex colour code for the accent bar (e.g. '#4CD137'). From get_owner_info.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "description": "'pro' for final delivery (recommended), 'fast' for draft preview.",
+            },
+        },
+        "required": ["topic", "slides"],
+    },
+)
+async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    from presentation_service import create_visual_presentation_async
+
+    topic       = (args.get("topic") or "Presentation").strip()
+    slides_plan = args.get("slides") or []
+    brand_color = (args.get("brand_color") or "").strip()
+    quality     = (args.get("quality") or "pro").strip()
+
+    if not slides_plan:
+        return {"error": "slides list is required — pass the approved plan from plan_visual_presentation."}
+    if len(slides_plan) > 15:
+        slides_plan = slides_plan[:15]
+
+    # Auto-fetch brand color + business name from owner info
+    try:
+        owner = await get_owner_info(ctx, {})
+        if not brand_color:
+            brand_color = owner.get("brand_primary_color") or ""
+        business_name = str(owner.get("business_name") or "My Business").strip()
+    except Exception:
+        business_name = "My Business"
+
+    result = await create_visual_presentation_async(
+        topic=topic,
+        slides_plan=slides_plan,
+        business_name=business_name,
+        brand_color=brand_color,
+        quality=quality,
+    )
+
+    if not result.get("success"):
+        return {"error": result.get("error", "Presentation generation failed.")}
+
+    return {
+        "success": True,
+        "url": result["url"],
+        "slide_count": result["slide_count"],
+        "images_generated": result["images_generated"],
+        "topic": topic,
+        "slides": result.get("slides", slides_plan),
+        "image_urls": result.get("image_urls", []),
+    }
+
+
+@tool(
+    name="regenerate_slide",
+    description=(
+        "Regenerate a SINGLE slide's background image in an existing visual presentation, "
+        "based on the user's feedback/instruction for that specific slide. "
+        "Only ONE new Gemini image is generated (cheap). The full .pptx is rebuilt with "
+        "that one slide swapped and re-uploaded. "
+        "Use this when the user says things like 'redo slide 3', 'change slide 2 to show a sunset', "
+        "'make slide 4 more dramatic', etc. "
+        "You need the slides array and image_urls array from the previous create_visual_presentation result."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "slide_index": {
+                "type": "integer",
+                "description": (
+                    "0-based index of the slide to regenerate. "
+                    "If user says 'slide 3', use index 2. If 'slide 1', use 0."
+                ),
+            },
+            "instruction": {
+                "type": "string",
+                "description": (
+                    "The user's instruction for what to change on this slide's background image. "
+                    "E.g. 'make it more dramatic with stormy weather', 'use a forest background', "
+                    "'change to a luxury hotel lobby'. Be descriptive."
+                ),
+            },
+            "slides": {
+                "type": "array",
+                "description": "The full slides array from the previous create_visual_presentation result.",
+                "items": {"type": "object"},
+            },
+            "image_urls": {
+                "type": "array",
+                "description": "The image_urls array from the previous create_visual_presentation result.",
+                "items": {"type": "string"},
+            },
+            "topic": {
+                "type": "string",
+                "description": "The presentation topic (from the previous result).",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Hex brand colour (from get_owner_info or previous result).",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["fast", "pro"],
+                "description": "'pro' for final quality (default), 'fast' for quick preview.",
+            },
+        },
+        "required": ["slide_index", "instruction", "slides", "image_urls"],
+    },
+)
+async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
+    from presentation_service import regenerate_single_slide_async
+
+    slide_index  = int(args.get("slide_index", 0))
+    instruction  = (args.get("instruction") or "").strip()
+    slides_plan  = args.get("slides") or []
+    image_urls   = args.get("image_urls") or []
+    topic        = (args.get("topic") or "Presentation").strip()
+    brand_color  = (args.get("brand_color") or "").strip()
+    quality      = (args.get("quality") or "pro").strip()
+
+    if not slides_plan:
+        return {"error": "slides array is required — pass it from the previous create_visual_presentation result."}
+    if not image_urls:
+        return {"error": "image_urls array is required — pass it from the previous create_visual_presentation result."}
+    if not instruction:
+        return {"error": "instruction is required — describe what to change on this slide."}
+
+    if not brand_color:
+        try:
+            owner = await get_owner_info(ctx, {})
+            brand_color = owner.get("brand_primary_color") or ""
+        except Exception:
+            pass
+
+    result = await regenerate_single_slide_async(
+        slides_plan=slides_plan,
+        image_urls=image_urls,
+        slide_index=slide_index,
+        instruction=instruction,
+        brand_color=brand_color,
+        quality=quality,
+        topic=topic,
+    )
+
+    if not result.get("success"):
+        return {"error": result.get("error", "Slide regeneration failed.")}
+
+    return {
+        "success": True,
+        "url": result["url"],
+        "slide_count": result["slide_count"],
+        "images_generated": result["images_generated"],
+        "regenerated_slide_index": result["regenerated_slide_index"],
+        "regenerated_slide_title": result["regenerated_slide_title"],
+        "topic": topic,
+        "slides": result["slides"],
+        "image_urls": result["image_urls"],
     }
 
 
@@ -6405,9 +6677,9 @@ import os as _os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-_GMAIL_KEY     = _os.getenv("NEXT_PUBLIC_NANGO_ID_EMAIL",     "google-mail")
-_MICROSOFT_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_MICROSOFT", "microsoft")
-_SLACK_KEY     = _os.getenv("NEXT_PUBLIC_NANGO_ID_SLACK",     "slack")
+_GMAIL_KEY     = "gmail"       # Composio toolkit slug (was: google-mail via Nango)
+_MICROSOFT_KEY = "outlook"     # Composio toolkit slug (was: microsoft via Nango)
+_SLACK_KEY     = "slack"       # Composio toolkit slug (same as Nango)
 
 
 def _slack_api_error(data: Dict[str, Any]) -> Optional[str]:
@@ -6487,7 +6759,7 @@ def _email_trunc(text: str, n: int = 3000) -> str:
     },
 )
 async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     q = (args.get("query") or "in:inbox").strip()
     if args.get("unread_only"):
         q = "is:unread " + q
@@ -6542,7 +6814,7 @@ async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     thread_id = (args.get("thread_id") or "").strip()
     if not thread_id:
         return {"error": "thread_id is required"}
@@ -6589,7 +6861,7 @@ async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -6625,7 +6897,7 @@ async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     thread_id = (args.get("thread_id") or "").strip()
     body = (args.get("body") or "").strip()
     if not thread_id or not body:
@@ -6682,7 +6954,7 @@ async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -6700,7 +6972,7 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     return {"status": "draft_saved", "draft_id": result.get("id")}
 
 
-# ── Slack tools (Nango OAuth → Slack Web API proxy) ──────────────────────────
+# ── Slack tools (Composio packaged actions, Slack Web API proxy fallback) ────
 
 
 @tool(
@@ -6716,11 +6988,9 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def slack_workspace_info(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import slack_auth_test_via_composio_or_proxy
     try:
-        data = await nango_proxy(
-            ctx.business_id, _SLACK_KEY, "POST", "auth.test", json={}, timeout=12.0,
-        )
+        data = await slack_auth_test_via_composio_or_proxy(ctx.business_id)
     except RuntimeError as e:
         return {"error": str(e)}
     err = _slack_api_error(data)
@@ -6763,7 +7033,7 @@ async def slack_workspace_info(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import slack_conversations_list_via_composio_or_proxy
     include_private = args.get("include_private", True)
     include_archived = bool(args.get("include_archived", False))
     max_pages = min(max(int(args.get("page_limit") or 10), 1), 15)
@@ -6772,17 +7042,13 @@ async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
     channels: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
     for _ in range(max_pages):
-        payload: Dict[str, Any] = {
-            "types": types,
-            "limit": 200,
-            "exclude_archived": not include_archived,
-        }
-        if cursor:
-            payload["cursor"] = cursor
         try:
-            data = await nango_proxy(
-                ctx.business_id, _SLACK_KEY, "POST", "conversations.list",
-                json=payload, timeout=20.0,
+            data = await slack_conversations_list_via_composio_or_proxy(
+                ctx.business_id,
+                types=types,
+                limit=200,
+                exclude_archived=not include_archived,
+                cursor=cursor,
             )
         except RuntimeError as e:
             return {"error": str(e), "channels_partial": channels}
@@ -6834,19 +7100,18 @@ async def slack_list_channels(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def slack_post_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from composio_service import slack_post_message_via_composio_or_proxy
     channel = (args.get("channel") or "").strip()
     text = (args.get("text") or "").strip()
     if not channel or not text:
         return {"error": "channel and text are required"}
-    payload: Dict[str, Any] = {"channel": channel, "text": text}
-    ts = (args.get("thread_ts") or "").strip()
-    if ts:
-        payload["thread_ts"] = ts
+    ts = (args.get("thread_ts") or "").strip() or None
     try:
-        data = await nango_proxy(
-            ctx.business_id, _SLACK_KEY, "POST", "chat.postMessage",
-            json=payload, timeout=15.0,
+        data = await slack_post_message_via_composio_or_proxy(
+            ctx.business_id,
+            channel=channel,
+            text=text,
+            thread_ts=ts,
         )
     except RuntimeError as e:
         return {"error": str(e)}
@@ -6889,7 +7154,7 @@ def _ms_addr_list(val: str) -> list:
     },
 )
 async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     folder = (args.get("folder") or "inbox").strip()
     limit  = min(int(args.get("max_results") or 15), 50)
     params: Dict[str, Any] = {
@@ -6937,7 +7202,7 @@ async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     msg_id = (args.get("message_id") or "").strip()
     if not msg_id:
         return {"error": "message_id is required"}
@@ -6983,7 +7248,7 @@ async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -7023,7 +7288,7 @@ async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     msg_id    = (args.get("message_id") or "").strip()
     body      = (args.get("body") or "").strip()
     reply_all = bool(args.get("reply_all"))
@@ -7398,7 +7663,7 @@ async def save_document_style(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
@@ -7440,7 +7705,7 @@ _NOTION_KEY = _os.getenv("NEXT_PUBLIC_NANGO_ID_NOTION", "notion")
     },
 )
 async def sheets_list(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit = min(int(args.get("max_results") or 20), 50)
     q = "mimeType='application/vnd.google-apps.spreadsheet'"
     if args.get("query"):
@@ -7480,7 +7745,7 @@ async def sheets_list(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def sheets_read(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     if not sid:
         return {"error": "spreadsheet_id is required"}
@@ -7523,7 +7788,7 @@ async def sheets_read(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_append(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     rows = args.get("rows") or []
     if not sid or not rows:
@@ -7568,7 +7833,7 @@ async def sheets_append(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_update(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     sid = (args.get("spreadsheet_id") or "").strip()
     rng = (args.get("range") or "").strip()
     rows = args.get("rows") or []
@@ -7603,7 +7868,7 @@ async def sheets_update(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def sheets_create(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     title = (args.get("title") or "Untitled").strip()
     try:
         result = await nango_proxy(
@@ -7639,7 +7904,7 @@ async def sheets_create(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_search(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     limit = min(int(args.get("max_results") or 10), 20)
     body: Dict[str, Any] = {"page_size": limit}
     if args.get("query"):
@@ -7688,7 +7953,7 @@ async def notion_search(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_read_page(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     page_id = (args.get("page_id") or "").strip().replace("-", "")
     if not page_id:
         return {"error": "page_id is required"}
@@ -7737,7 +8002,7 @@ async def notion_read_page(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def notion_create_page(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     parent_id   = (args.get("parent_id") or "").strip().replace("-", "")
     parent_type = (args.get("parent_type") or "page").strip()
     title       = (args.get("title") or "").strip()
@@ -7787,7 +8052,7 @@ async def notion_create_page(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def notion_append_blocks(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     page_id = (args.get("page_id") or "").strip().replace("-", "")
     content = (args.get("content") or "").strip()
     if not page_id or not content:
@@ -7825,7 +8090,7 @@ async def notion_append_blocks(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def notion_query_database(ctx: ToolContext, args: Dict[str, Any]):
-    from .nango import nango_proxy
+    from .composio_helper import composio_proxy as nango_proxy
     db_id = (args.get("database_id") or "").strip().replace("-", "")
     limit = min(int(args.get("max_results") or 20), 50)
     if not db_id:
@@ -10960,3 +11225,42 @@ async def delete_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[
         "calendar_id": args.get("calendar_id") or "primary",
     })
     return result
+
+
+@tool(
+    name="switch_to_agent",
+    description=(
+        "Hand off this conversation to a specialist agent immediately. "
+        "Call this the INSTANT you detect the user's request is outside your area — "
+        "do NOT apologise, do NOT explain, do NOT attempt to help first. Just switch. "
+        "The handoff is invisible to the user — they see the correct agent's response directly."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["target_agent"],
+        "properties": {
+            "target_agent": {
+                "type": "string",
+                "enum": ["creative", "general", "meta_ads", "social_monitor", "document", "social_scheduler"],
+                "description": (
+                    "Agent to hand off to. "
+                    "creative=visuals/graphics/social post images. "
+                    "document=proposals/reports/presentations/PDFs. "
+                    "meta_ads=Facebook/Instagram ad campaigns. "
+                    "social_monitor=analytics/follower data/post performance. "
+                    "social_scheduler=scheduling posts. "
+                    "general=everything else."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "One-line reason for the handoff (logged only, not shown to user).",
+            },
+        },
+    },
+)
+async def switch_to_agent(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    target = args.get("target_agent", "")
+    reason = args.get("reason", "")
+    logger.info("[switch_to_agent] handoff → %s | reason: %s", target, reason)
+    return {"__handoff__": target, "reason": reason}

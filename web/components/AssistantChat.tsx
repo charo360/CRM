@@ -34,6 +34,7 @@ import {
   Bot,
   PencilLine,
   UserPlus,
+  RefreshCw,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { getBusinessId, getUser } from "@/lib/auth";
@@ -126,12 +127,15 @@ const TOOL_LABELS: Record<string, string> = {
   create_video:              "Creating video…",
   get_video_status:          "Rendering video…",
   // Design generation
-  generate_social_post:      "Generating design…",
-  generate_ad_creative:      "Generating ad creative…",
-  generate_carousel_cover:   "Generating carousel…",
-  refine_design:             "Refining design…",
-  generate_creative_image:   "Generating image…",
-  generate_design_background:"Generating background…",
+  generate_social_post:          "Generating design…",
+  generate_ad_creative:          "Generating ad creative…",
+  generate_carousel_cover:       "Generating carousel…",
+  refine_design:                 "Refining design…",
+  generate_creative_image:       "Generating image…",
+  generate_design_background:    "Generating background…",
+  plan_visual_presentation:      "Planning presentation deck…",
+  create_visual_presentation:    "Building visual presentation…",
+  regenerate_slide:              "Regenerating slide…",
 };
 
 function friendlyToolLabel(tool: string): string {
@@ -269,6 +273,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   const [uploading, setUploading] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamReaderRef = useRef<ReadableStreamDefaultReader<string> | null>(null);
 
   useEffect(() => {
@@ -304,21 +309,22 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         // Keep BASE_PROMPTS fallback already set in initial state
       });
 
-    // Also load connected integrations (still used for secondary extras)
+    // Also load connected integrations (Composio + legacy keys for display)
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     if (token) {
-      const integrationIds = "shopify,stripe,klaviyo,mailchimp,brevo,slack,google-mail,microsoft,google-calendar";
-      fetch(`/api/nango/connections?integrations=${integrationIds}`, {
+      fetch("/api/composio/connections", {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((r) => r.json())
         .then((d: { connected?: Record<string, boolean> }) => {
-          const nango = d.connected ?? {};
+          const c = d.connected ?? {};
           const map: Record<string, string> = {
-            "google-mail": "gmail",
-            "google-calendar": "google_calendar",
+            gmail: "gmail",
+            googlecalendar: "google_calendar",
+            googlesheets: "google_sheets",
+            mailchimp: "mailchimp",
           };
-          const active = Object.entries(nango)
+          const active = Object.entries(c)
             .filter(([, v]) => v)
             .map(([k]) => map[k] ?? k);
           setConnectedIntegrations(active);
@@ -809,6 +815,18 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                     {streamingTools.some(t => ["generate_social_post","generate_ad_creative","generate_carousel_cover","refine_design","generate_creative_image"].includes(t)) && (
                       <DesignRenderingCard />
                     )}
+                    {/* Presentation planning skeleton */}
+                    {streamingTools.some(t => t === "plan_visual_presentation") && (
+                      <PresentationPlanningCard />
+                    )}
+                    {/* Visual presentation skeleton */}
+                    {streamingTools.some(t => t === "create_visual_presentation") && (
+                      <PresentationRenderingCard />
+                    )}
+                    {/* Single-slide regeneration skeleton */}
+                    {streamingTools.some(t => t === "regenerate_slide") && (
+                      <SlideRegeneratingCard />
+                    )}
                     {/* Streaming reply text */}
                     {streamingText ? (
                       <div className="text-[14px] leading-relaxed text-slate-800">
@@ -875,28 +893,66 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3">
           {/* Attachment chips */}
           {documents.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
+            <div className="mb-2 flex flex-wrap gap-2">
               {documents.map((d) => (
-                <div
-                  key={d.id}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-700 shadow-sm"
-                  title={`${d.filename} · ${d.kind.toUpperCase()} · ${Math.round(d.size / 1024)} KB`}
-                >
-                  {d.kind === "image" ? (
-                    <ImageIcon size={11} className="text-brand" />
-                  ) : (
-                    <FileText size={11} className="text-brand" />
-                  )}
-                  <span className="max-w-[180px] truncate">{d.filename}</span>
-                  <button
-                    type="button"
-                    onClick={() => void removeDocument(d.id)}
-                    className="text-slate-400 hover:text-red-600"
-                    aria-label="Remove attachment"
+                d.kind === "image" ? (
+                  // Image: show thumbnail card
+                  <div
+                    key={d.id}
+                    className="group relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-sm"
+                    title={`${d.filename} · ${Math.round(d.size / 1024)} KB${d.public_url ? " · Ready for design tools" : ""}`}
                   >
-                    <XIcon size={10} />
-                  </button>
-                </div>
+                    {d.public_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={d.public_url}
+                        alt={d.filename}
+                        className="h-16 w-16 object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-16 w-16 items-center justify-center bg-slate-100">
+                        <ImageIcon size={22} className="text-slate-400" />
+                      </div>
+                    )}
+                    {/* filename overlay */}
+                    <div className="absolute inset-x-0 bottom-0 bg-black/50 px-1 py-0.5">
+                      <p className="truncate text-[9px] font-medium text-white">{d.filename}</p>
+                    </div>
+                    {/* remove button */}
+                    <button
+                      type="button"
+                      onClick={() => void removeDocument(d.id)}
+                      className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition group-hover:opacity-100 hover:bg-red-600"
+                      aria-label="Remove image"
+                    >
+                      <XIcon size={8} />
+                    </button>
+                    {/* design-ready badge */}
+                    {d.public_url && (
+                      <div className="absolute left-0.5 top-0.5 rounded-full bg-brand/90 px-1 py-px text-[8px] font-semibold text-white">
+                        Design ready
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  // Text document: pill chip
+                  <div
+                    key={d.id}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-700 shadow-sm"
+                    title={`${d.filename} · ${d.kind.toUpperCase()} · ${Math.round(d.size / 1024)} KB`}
+                  >
+                    <FileText size={11} className="text-brand" />
+                    <span className="max-w-[180px] truncate">{d.filename}</span>
+                    <button
+                      type="button"
+                      onClick={() => void removeDocument(d.id)}
+                      className="text-slate-400 hover:text-red-600"
+                      aria-label="Remove attachment"
+                    >
+                      <XIcon size={10} />
+                    </button>
+                  </div>
+                )
               ))}
             </div>
           )}
@@ -926,21 +982,32 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               {uploading ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
             </button>
             <textarea
+              ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                // Auto-resize: reset height then expand to fit content
+                const el = e.target;
+                el.style.height = "auto";
+                el.style.height = Math.min(el.scrollHeight, 240) + "px";
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
+                  // Reset height on send
+                  if (textareaRef.current) textareaRef.current.style.height = "auto";
                   void send();
                 }
               }}
               rows={1}
               placeholder={
-                documents.length > 0
+                documents.some(d => d.kind === "image")
+                  ? "Say 'Make a social post with this image' or 'Create an ad with my product photo'…"
+                  : documents.length > 0
                   ? "Ask a question about the attached document…"
                   : "Message Zilo Chat…"
               }
-              className="max-h-40 flex-1 resize-none bg-transparent px-1 py-2 text-[14px] text-slate-900 placeholder:text-slate-400 focus:outline-none"
+              className="max-h-60 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-2 text-[14px] text-slate-900 placeholder:text-slate-400 focus:outline-none"
             />
             <button
               type="submit"
@@ -1387,6 +1454,7 @@ function MessageBubble({
   const [editingUserPrompt, setEditingUserPrompt] = useState(false);
   const [editedUserPrompt, setEditedUserPrompt] = useState(msg.content ?? "");
   const [checkedOptions, setCheckedOptions] = useState<Set<string>>(new Set());
+  const [describeText, setDescribeText] = useState("");
 
   // Inline form — takes priority over chip options when detected
   const inlineForm = useMemo(() => {
@@ -1478,7 +1546,7 @@ function MessageBubble({
     );
   }
   if (msg.role === "assistant") {
-    const hasContent = (msg.content ?? "").length > 80;
+    const hasContent = (msg.content ?? "").length > 120;
     return (
       <div className="flex justify-start">
         <div className="flex w-full max-w-full gap-3">
@@ -1489,13 +1557,13 @@ function MessageBubble({
               {msg.content ? (
                 inlineForm && onSuggestionSend ? (
                   <>
-                    {inlineForm.before && <MarkdownBody content={inlineForm.before} />}
+                    {inlineForm.before && <MarkdownBody content={inlineForm.before} steps={msg.steps} />}
                     <InlineForm form={inlineForm} onSubmit={onSuggestionSend} />
-                    {inlineForm.after && <MarkdownBody content={inlineForm.after} />}
+                    {inlineForm.after && <MarkdownBody content={inlineForm.after} steps={msg.steps} />}
                   </>
                 ) : inlineOptions && onSuggestionSend ? (
                   <>
-                    {inlineOptions.before && <MarkdownBody content={inlineOptions.before} />}
+                    {inlineOptions.before && <MarkdownBody content={inlineOptions.before} steps={msg.steps} />}
                     <div className="mt-2 flex flex-col items-stretch gap-1.5">
                       {inlineOptions.options.map((opt, i) => {
                         const letter = String.fromCharCode(65 + i);
@@ -1569,18 +1637,21 @@ function MessageBubble({
                     </div>
                     {inlineOptions.after && (
                       <div className="mt-2">
-                        <MarkdownBody content={inlineOptions.after} />
+                        <MarkdownBody content={inlineOptions.after} steps={msg.steps} />
                       </div>
                     )}
                   </>
                 ) : (
-                  <MarkdownBody content={msg.content} />
+                  <MarkdownBody content={msg.content} steps={msg.steps} />
                 )
               ) : (
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
             <VideoPreview steps={msg.steps} />
+            <PresentationPlanPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
+            <PresentationPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
+            <DesignPreview steps={msg.steps} />
             <DocumentPreview steps={msg.steps} />
             {msg.suggestions &&
               msg.suggestions.length > 0 &&
@@ -1590,16 +1661,54 @@ function MessageBubble({
                     Suggested next step — tap to send
                   </p>
                   <div className="flex flex-col gap-2">
-                    {msg.suggestions.map((chip) => (
-                      <button
-                        key={chip}
-                        type="button"
-                        onClick={() => onSuggestionSend(chip)}
-                        className="rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-left text-[13px] font-medium leading-snug text-brand-ink shadow-sm transition hover:border-brand hover:bg-brand/10"
-                      >
-                        {chip}
-                      </button>
-                    ))}
+                    {msg.suggestions.map((chip) => {
+                      // Detect "escape hatch" options — render as text input instead of button
+                      const isEscapeOption = /something else|describe it|i['']ll describe|i['']ll explain|none of these/i.test(chip);
+
+                      if (isEscapeOption) {
+                        return (
+                          <div key={chip} className="flex gap-2">
+                            <input
+                              type="text"
+                              value={describeText}
+                              onChange={(e) => setDescribeText(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && describeText.trim()) {
+                                  onSuggestionSend(describeText.trim());
+                                  setDescribeText("");
+                                }
+                              }}
+                              placeholder="Describe what you want…"
+                              className="flex-1 rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-[13px] text-slate-700 placeholder:text-slate-400 shadow-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
+                            />
+                            <button
+                              type="button"
+                              disabled={!describeText.trim()}
+                              onClick={() => {
+                                if (describeText.trim()) {
+                                  onSuggestionSend(describeText.trim());
+                                  setDescribeText("");
+                                }
+                              }}
+                              className="rounded-xl bg-brand px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-40"
+                            >
+                              Send
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <button
+                          key={chip}
+                          type="button"
+                          onClick={() => onSuggestionSend(chip)}
+                          className="rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-left text-[13px] font-medium leading-snug text-brand-ink shadow-sm transition hover:border-brand hover:bg-brand/10"
+                        >
+                          {chip}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1649,7 +1758,54 @@ function MessageBubble({
   return null;
 }
 
-function MarkdownBody({ content }: { content: string }) {
+const _DESIGN_TOOLS = new Set([
+  "generate_social_post",
+  "generate_ad_creative",
+  "generate_carousel_cover",
+  "refine_design",
+  "generate_creative_image",
+  "generate_design_background",
+  "edit_product_image",
+]);
+
+/** Collect every image URL that DesignPreview will already render from steps. */
+function _designImageUrls(steps?: AssistantStep[]): Set<string> {
+  const urls = new Set<string>();
+  for (const s of steps ?? []) {
+    if (!_DESIGN_TOOLS.has(s.tool)) continue;
+    const r = s.result as Record<string, unknown> | null;
+    if (!r) continue;
+    const url = (r.image_url ?? r.background_url ?? r.url) as string | undefined;
+    if (url && typeof url === "string" && url.startsWith("http")) urls.add(url);
+  }
+  return urls;
+}
+
+/** Strip lines from content that are just a bare image URL already shown by DesignPreview. */
+function _stripDesignUrls(content: string, designUrls: Set<string>): string {
+  if (!designUrls.size) return content;
+  return content
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim();
+      // bare URL line
+      if (designUrls.has(t)) return false;
+      // markdown image line: ![...](url)
+      const mdImg = t.match(/^!\[.*?\]\((.+?)\)$/);
+      if (mdImg && designUrls.has(mdImg[1])) return false;
+      // markdown link line: [text](url)
+      const mdLink = t.match(/^\[.*?\]\((.+?)\)$/);
+      if (mdLink && designUrls.has(mdLink[1])) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function MarkdownBody({ content, steps }: { content: string; steps?: AssistantStep[] }) {
+  const designUrls = useMemo(() => _designImageUrls(steps), [steps]);
+  const cleanContent = useMemo(() => _stripDesignUrls(content, designUrls), [content, designUrls]);
   return (
     <div className="markdown-body">
       <ReactMarkdown
@@ -1687,6 +1843,37 @@ function MarkdownBody({ content }: { content: string }) {
                 >
                   {children}
                 </a>
+              );
+            }
+            // Bare image URL rendered as link — promote to inline image
+            const isImage = typeof href === "string" && /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(href);
+            if (isImage) {
+              const imgSrc = href as string;
+              return (
+                <span className="my-3 block max-w-full">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={imgSrc}
+                    alt={typeof children === "string" ? children : "Image"}
+                    className="h-auto w-full max-w-full rounded-xl border border-slate-200 object-contain shadow-md"
+                    style={{ display: "block", maxHeight: "min(70vh, 560px)" }}
+                    loading="lazy"
+                    decoding="async"
+                    onError={(e) => {
+                      const t = e.currentTarget;
+                      t.style.display = "none";
+                      const a = document.createElement("a");
+                      a.href = imgSrc; a.target = "_blank"; a.rel = "noreferrer";
+                      a.textContent = "View image";
+                      a.className = "text-brand-dark underline text-sm";
+                      t.parentNode?.appendChild(a);
+                    }}
+                  />
+                  <span className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-400">
+                    <a href={imgSrc} target="_blank" rel="noreferrer" className="text-brand-dark underline hover:opacity-80">Open full size</a>
+                    <button type="button" onClick={() => void downloadAsset(imgSrc, "design").catch(() => window.open(imgSrc, "_blank", "noopener,noreferrer"))} className="inline-flex items-center gap-1 text-brand-dark underline hover:opacity-80"><Download size={11} />Download</button>
+                  </span>
+                </span>
               );
             }
             return <a href={href} className="text-brand-dark underline hover:text-brand-dark" target="_blank" rel="noreferrer" {...rest}>{children}</a>;
@@ -1760,7 +1947,7 @@ function MarkdownBody({ content }: { content: string }) {
           ),
         }}
       >
-        {content}
+        {cleanContent}
       </ReactMarkdown>
     </div>
   );
@@ -1774,6 +1961,88 @@ const _DESIGN_PHRASES = [
   "Adding finishing touches…",
   "Rendering final image…",
 ];
+
+const _DESIGN_TOOL_LABELS: Record<string, string> = {
+  generate_social_post:     "Social Post",
+  generate_ad_creative:     "Ad Creative",
+  generate_carousel_cover:  "Carousel Cover",
+  refine_design:            "Refined Design",
+  generate_creative_image:  "Generated Image",
+  generate_design_background: "Design Background",
+  edit_product_image:       "Product Image",
+};
+
+function DesignPreview({ steps }: { steps?: AssistantStep[] }) {
+  const designs = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { tool: string; url: string; platform?: string }[] = [];
+    for (const s of [...(steps ?? [])].reverse()) {
+      if (!_DESIGN_TOOLS.has(s.tool)) continue;
+      const r = s.result as Record<string, unknown> | null;
+      if (!r) continue;
+      const url = (r.image_url ?? r.background_url ?? r.url) as string | undefined;
+      if (!url || typeof url !== "string" || !url.startsWith("http")) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ tool: s.tool, url, platform: r.platform as string | undefined });
+    }
+    return out.reverse();
+  }, [steps]);
+
+  if (!designs.length) return null;
+
+  return (
+    <div className="mt-3 space-y-3">
+      {designs.map(({ tool, url, platform }, i) => (
+        <div key={i} className="overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
+              <ImageIcon size={13} className="text-brand shrink-0" />
+              {_DESIGN_TOOL_LABELS[tool] ?? "Design"}
+              {platform && <span className="ml-1 text-[10px] font-normal text-slate-400 capitalize">{platform.replace(/_/g, " ")}</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              >
+                Open full size
+              </a>
+              <button
+                type="button"
+                onClick={() => void downloadAsset(url, `design-${i + 1}`).catch(() => window.open(url, "_blank", "noopener,noreferrer"))}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              >
+                <Download size={10} />
+                Download
+              </button>
+            </div>
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={url}
+            alt={_DESIGN_TOOL_LABELS[tool] ?? "Design"}
+            className="block h-auto w-full object-contain bg-slate-50"
+            style={{ maxHeight: "min(80vh, 640px)" }}
+            loading="lazy"
+            decoding="async"
+            onError={(e) => {
+              const t = e.currentTarget;
+              t.style.display = "none";
+              const a = document.createElement("a");
+              a.href = url; a.target = "_blank"; a.rel = "noreferrer";
+              a.textContent = "View image (open in new tab)";
+              a.className = "block p-3 text-brand-dark underline text-sm";
+              t.parentNode?.appendChild(a);
+            }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function DesignRenderingCard() {
   const [phraseIdx, setPhraseIdx] = React.useState(0);
@@ -1914,6 +2183,319 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
           style={{ height: "700px" }}
           sandbox="allow-same-origin"
         />
+      )}
+    </div>
+  );
+}
+
+function PresentationPlanningCard() {
+  return (
+    <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+      <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand animate-pulse" aria-hidden>
+          <path d="M1.5 1h13A.5.5 0 0 1 15 1.5v13a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13A.5.5 0 0 1 1.5 1Zm1 2v1h11V3h-11Zm0 3v1h7V6h-7Zm0 3v1h9V9h-9Z" />
+        </svg>
+        <span className="text-[12px] font-semibold text-slate-700">Planning your deck…</span>
+        <Loader2 size={11} className="ml-auto animate-spin text-brand" />
+      </div>
+      <div className="space-y-2 p-3">
+        {[70, 55, 65, 50, 60].map((w, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <div className="h-5 w-5 shrink-0 animate-pulse rounded bg-slate-200" />
+            <div className="h-3 animate-pulse rounded bg-slate-200" style={{ width: `${w}%` }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: AssistantStep[]; onSuggestionSend?: (t: string) => void }) {
+  const step = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find(
+        (s) =>
+          s.tool === "plan_visual_presentation" &&
+          (s.result as Record<string, unknown>)?.plan_ready &&
+          (s.result as Record<string, unknown>)?.slides,
+      ),
+    [steps],
+  );
+
+  if (!step) return null;
+
+  const result = step.result as Record<string, unknown>;
+  const topic = (result.topic as string) ?? "Presentation";
+  const slides = (result.slides as Array<Record<string, unknown>>) ?? [];
+  const styleNote = (result.style_note as string | undefined) ?? "";
+  const audience = (result.audience as string | undefined) ?? "";
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-brand/30 shadow-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-brand/20 bg-brand/5 px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand" aria-hidden>
+            <path d="M1.5 1h13A.5.5 0 0 1 15 1.5v13a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13A.5.5 0 0 1 1.5 1Zm1 2v1h11V3h-11Zm0 3v1h7V6h-7Zm0 3v1h9V9h-9Z" />
+          </svg>
+          <span className="text-[12px] font-semibold text-slate-800">{topic}</span>
+          {audience && <span className="text-[10px] text-slate-500">· for {audience}</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand-dark">
+            {slides.length} slides · awaiting approval
+          </span>
+        </div>
+      </div>
+
+      {/* Slide list */}
+      <div className="divide-y divide-slate-100 bg-white">
+        {slides.map((s, i) => {
+          const title = (s.title as string) ?? `Slide ${i + 1}`;
+          const body = (s.body as string[] | undefined) ?? [];
+          const imageConcept = (s.image_concept as string | undefined) ?? "";
+          const isTitle = Boolean(s.is_title);
+          return (
+            <div key={i} className="px-3 py-2.5">
+              <div className="flex items-start gap-2">
+                <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold ${isTitle ? "bg-brand text-white" : "bg-slate-100 text-slate-500"}`}>
+                  {isTitle ? "★" : i + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12.5px] font-semibold text-slate-800">{title}</p>
+                  {body.length > 0 && (
+                    <ul className="mt-0.5 space-y-0.5">
+                      {body.slice(0, 4).map((b, bi) => (
+                        <li key={bi} className="text-[11px] text-slate-500">· {b}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {imageConcept && (
+                    <p className="mt-1 flex items-center gap-1 text-[10px] italic text-slate-400">
+                      <ImageIcon size={9} className="shrink-0" />
+                      {imageConcept}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Visual style note */}
+      {styleNote && (
+        <div className="border-t border-slate-100 bg-slate-50 px-3 py-2 text-[10.5px] text-slate-500">
+          <span className="font-medium text-slate-600">Visual style:</span> {styleNote}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      {onSuggestionSend && (
+        <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2.5">
+          <span className="text-[10.5px] text-slate-500">Happy with this plan?</span>
+          <button
+            type="button"
+            onClick={() => onSuggestionSend("Looks great, go ahead and generate all the slides")}
+            className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-brand-dark transition"
+          >
+            ✓ Approve &amp; Generate
+          </button>
+          <button
+            type="button"
+            onClick={() => onSuggestionSend("I'd like to make some changes to the slide plan")}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800 transition"
+          >
+            Edit plan
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SlideRegeneratingCard() {
+  return (
+    <div className="mt-2 overflow-hidden rounded-xl border border-brand/30 bg-brand/5 shadow-sm">
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <RefreshCw size={12} className="animate-spin text-brand shrink-0" />
+        <span className="text-[12px] font-semibold text-slate-700">Regenerating slide image…</span>
+        <Loader2 size={11} className="ml-auto animate-spin text-brand" />
+      </div>
+      <div className="flex items-center gap-3 px-3 pb-3">
+        <div className="h-14 w-24 animate-pulse rounded-lg border border-brand/20 bg-brand/10" />
+        <div className="flex-1 space-y-2">
+          <div className="h-3 w-3/4 animate-pulse rounded bg-slate-200" />
+          <div className="h-2.5 w-1/2 animate-pulse rounded bg-slate-100" />
+          <p className="text-[10px] text-slate-400">Generating new background · rebuilding .pptx</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PresentationRenderingCard() {
+  const [phraseIdx, setPhraseIdx] = React.useState(0);
+  const phrases = [
+    "Planning slides…",
+    "Generating slide 1 image…",
+    "Generating slide 2 image…",
+    "Generating slide 3 image…",
+    "Generating slide 4 image…",
+    "Assembling presentation…",
+    "Uploading .pptx…",
+  ];
+  React.useEffect(() => {
+    const t = setInterval(() => setPhraseIdx(i => (i + 1) % phrases.length), 2200);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div className="mt-2 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+      <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand animate-pulse" aria-hidden>
+          <path d="M2 2h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm1 2v2h8V4H3Zm0 4v1h4V8H3Zm0 3v1h6v-1H3Z" />
+        </svg>
+        <span className="text-[12px] font-semibold text-slate-700">Building visual presentation…</span>
+        <Loader2 size={11} className="ml-auto animate-spin text-brand" />
+      </div>
+      <div className="flex h-[140px] items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+        <div className="flex flex-col items-center gap-3 text-slate-400">
+          <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-slate-700">
+            <svg viewBox="0 0 16 16" className="h-6 w-6 fill-slate-400 animate-pulse" aria-hidden>
+              <path d="M2 2h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm1 2v2h8V4H3Zm0 4v1h4V8H3Zm0 3v1h6v-1H3Z" />
+            </svg>
+            <span className="absolute inset-0 rounded-xl border-2 border-brand/40 animate-ping" />
+          </div>
+          <p className="text-[11px] font-medium transition-all duration-500">{phrases[phraseIdx]}</p>
+          <div className="h-1 w-44 overflow-hidden rounded-full bg-slate-700">
+            <div className="h-full w-1/2 rounded-full bg-brand animate-[loading-bar_2s_ease-in-out_infinite]" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PresentationPreview({ steps, onSuggestionSend }: { steps?: AssistantStep[]; onSuggestionSend?: (t: string) => void }) {
+  // Always pick the LATEST successful presentation result (create or regenerate)
+  const step = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find(
+        (s) =>
+          (s.tool === "create_visual_presentation" || s.tool === "regenerate_slide") &&
+          (s.result as Record<string, unknown>)?.success &&
+          (s.result as Record<string, unknown>)?.url,
+      ),
+    [steps],
+  );
+
+  const [inputs, setInputs] = useState<Record<number, string>>({});
+  const [regenerating, setRegenerating] = useState<number | null>(null);
+
+  if (!step) return null;
+
+  const result = step.result as Record<string, unknown>;
+  const url = result.url as string;
+  const topic = (result.topic as string | undefined) ?? "Presentation";
+  const slideCount = (result.slide_count as number | undefined) ?? 0;
+  const slides = (result.slides as Array<Record<string, unknown>> | undefined) ?? [];
+  const imageUrls = (result.image_urls as string[] | undefined) ?? [];
+  const imagesGenerated = (result.images_generated as number | undefined) ?? 0;
+
+  function handleRegenerate(index: number) {
+    const instruction = (inputs[index] || "").trim();
+    if (!instruction || !onSuggestionSend) return;
+    setRegenerating(index);
+    const slideTitle = (slides[index]?.title as string | undefined) ?? `slide ${index + 1}`;
+    // Build a natural message the AI will parse to call regenerate_slide
+    const slidesJson = JSON.stringify(slides);
+    const urlsJson = JSON.stringify(imageUrls);
+    onSuggestionSend(
+      `Regenerate slide ${index + 1} ("${slideTitle}") with this instruction: ${instruction}. ` +
+      `Use slides=${slidesJson} and image_urls=${urlsJson} and topic="${topic}".`
+    );
+    setInputs(prev => ({ ...prev, [index]: "" }));
+  }
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand" aria-hidden>
+            <path d="M2 2h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm1 2v2h8V4H3Zm0 4v1h4V8H3Zm0 3v1h6v-1H3Z" />
+          </svg>
+          {topic}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-400">{slideCount} slides · {imagesGenerated} AI images</span>
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-brand/40 bg-brand/10 px-2.5 py-1 text-[11px] font-semibold text-brand-dark hover:bg-brand/20"
+          >
+            <Download size={11} />
+            Download .pptx
+          </a>
+        </div>
+      </div>
+
+      {/* Per-slide list with edit inputs */}
+      {slides.length > 0 ? (
+        <div className="divide-y divide-slate-100 bg-white">
+          {slides.map((s, i) => {
+            const title = (s.title as string | undefined) ?? `Slide ${i + 1}`;
+            const body = (s.body as string[] | undefined) ?? [];
+            const isTitle = Boolean(s.is_title);
+            const isRegenerating = regenerating === i;
+            return (
+              <div key={i} className="px-3 py-2.5">
+                <div className="flex items-start gap-2">
+                  {/* Slide number badge */}
+                  <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold ${isTitle ? "bg-brand text-white" : "bg-slate-100 text-slate-500"}`}>
+                    {isTitle ? "★" : i + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12px] font-semibold text-slate-800">{title}</p>
+                    {body.length > 0 && (
+                      <p className="text-[10.5px] text-slate-400">{body.slice(0, 2).join(" · ")}{body.length > 2 ? "…" : ""}</p>
+                    )}
+                    {/* Inline edit input */}
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={inputs[i] ?? ""}
+                        onChange={e => setInputs(prev => ({ ...prev, [i]: e.target.value }))}
+                        onKeyDown={e => { if (e.key === "Enter" && !isRegenerating) handleRegenerate(i); }}
+                        placeholder={`Change slide ${i + 1} background…`}
+                        disabled={isRegenerating || !onSuggestionSend}
+                        className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-800 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none disabled:opacity-50"
+                      />
+                      <button
+                        type="button"
+                        disabled={!(inputs[i] || "").trim() || isRegenerating || !onSuggestionSend}
+                        onClick={() => handleRegenerate(i)}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 text-[11px] font-semibold text-brand-dark transition hover:bg-brand/20 disabled:opacity-40"
+                      >
+                        {isRegenerating ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                        {isRegenerating ? "Regenerating…" : "Regenerate"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* Fallback: simple slide count preview when slides array isn't available */
+        <div className="flex h-[80px] items-center justify-center gap-3 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 px-4">
+          {Array.from({ length: Math.min(slideCount, 6) }).map((_, i) => (
+            <div key={i} className="h-10 w-16 rounded border border-slate-600 bg-slate-700" style={{ opacity: 1 - i * 0.12 }} />
+          ))}
+          {slideCount > 6 && <span className="text-[11px] text-slate-400">+{slideCount - 6} more</span>}
+        </div>
       )}
     </div>
   );

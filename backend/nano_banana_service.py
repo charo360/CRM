@@ -10,11 +10,19 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Load all available API keys: OPENROUTER_KEY, OPENROUTER_KEY_2, OPENROUTER_KEY_3, ...
-# Add more keys in .env to increase reliability and throughput.
+# Env: OPENROUTER_KEY (primary), OPENROUTER_API_KEY (common alias), OPENROUTER_KEY_2, ...
+# Keys are read at call time so local .env matches Render after restart (not cached at import).
+_OPENROUTER_KEY_MISSING = (
+    "OpenRouter is not configured. Set OPENROUTER_KEY or OPENROUTER_API_KEY in "
+    "CRM/backend/.env for local dev; on Render add the same variable in Environment."
+)
+
+
 def _load_openrouter_keys() -> list[str]:
-    keys = []
+    keys: list[str] = []
     primary = os.getenv("OPENROUTER_KEY", "").strip()
+    if not primary:
+        primary = os.getenv("OPENROUTER_API_KEY", "").strip()
     if primary:
         keys.append(primary)
     i = 2
@@ -26,9 +34,6 @@ def _load_openrouter_keys() -> list[str]:
         i += 1
     return keys
 
-_OPENROUTER_KEYS: list[str] = _load_openrouter_keys()
-# Keep a single-key alias for legacy references
-OPENROUTER_KEY = _OPENROUTER_KEYS[0] if _OPENROUTER_KEYS else ""
 
 _MAX_RETRIES_PER_KEY = 2  # attempts per key before moving to the next
 
@@ -71,8 +76,9 @@ async def edit_product_image(
     logo_url          : optional brand logo — overlaid in a corner of the final design
     brand_color       : optional hex color — used as accent in the scene
     """
-    if not OPENROUTER_KEY:
-        return {"error": "OPENROUTER_KEY not configured in .env"}
+    keys = _load_openrouter_keys()
+    if not keys:
+        return {"error": _OPENROUTER_KEY_MISSING}
 
     try:
         prod_b64, prod_mime = await _fetch_as_b64(product_image_url)
@@ -140,50 +146,76 @@ async def edit_product_image(
         "image_config": {"aspect_ratio": aspect_ratio},
     }
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+    base_headers = {
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",
     }
+    last_error = "Unknown error"
+    for key in keys:
+        for attempt in range(_MAX_RETRIES_PER_KEY):
+            try:
+                headers = {**base_headers, "Authorization": f"Bearer {key}"}
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                b64_data = _extract_b64_from_message((data.get("choices") or [{}])[0].get("message", {}))
+                if not b64_data:
+                    last_error = "No image data in edit response"
+                    logger.warning("[nano_banana] edit key=...%s attempt=%d no image: %s", key[-6:], attempt + 1, str(data)[:200])
+                    continue
+                from image_handler import S3Handler
+                filename = f"edited-product-{uuid.uuid4()}.png"
+                public_url = await S3Handler.upload_file(b64_data, filename, content_type="image/png")
+                if not public_url:
+                    last_error = "S3 upload returned empty URL"
+                    continue
+                logger.info("[nano_banana] edit_product_image ok key=...%s attempt=%d", key[-6:], attempt + 1)
+                return {"success": True, "image_url": public_url, "source": "gemini_edit"}
+            except httpx.HTTPStatusError as e:
+                last_error = f"HTTP {e.response.status_code}"
+                logger.warning("[nano_banana] edit key=...%s attempt=%d HTTP error: %s", key[-6:], attempt + 1, last_error)
+            except Exception as e:
+                last_error = str(e)
+                logger.warning("[nano_banana] edit key=...%s attempt=%d error: %s", key[-6:], attempt + 1, last_error)
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as e:
-        logger.error("[nano_banana] edit_product_image request failed: %s", e)
-        return {"error": str(e)}
+    logger.error("[nano_banana] edit_product_image exhausted all keys. last=%s", last_error)
+    return {"error": f"Edit generation failed after trying all API keys. Last error: {last_error}"}
 
-    try:
-        choices = data.get("choices", [])
-        if not choices:
-            return {"error": "No choices returned from Gemini image edit"}
-        message = choices[0].get("message", {})
-        images = message.get("images") or []
-        if not images:
-            content = message.get("content", "")
-            if isinstance(content, str) and content.startswith("data:image"):
-                b64_data = content
-            else:
-                logger.warning("[nano_banana] edit_product_image unexpected shape: %s", str(data)[:400])
-                return {"error": "No image data in edit response"}
-        else:
-            b64_data = images[0]["image_url"]["url"]
-    except (KeyError, IndexError, TypeError) as e:
-        return {"error": f"Failed to parse edit response: {e}"}
 
-    try:
-        from image_handler import S3Handler
-        filename = f"edited-product-{uuid.uuid4()}.png"
-        public_url = await S3Handler.upload_file(b64_data, filename, content_type="image/png")
-        if not public_url:
-            return {"error": "S3 upload returned empty URL"}
-        return {"success": True, "image_url": public_url, "source": "gemini_edit"}
-    except Exception as e:
-        logger.error("[nano_banana] S3 upload failed after edit: %s", e)
-        return {"error": f"S3 upload failed: {e}"}
+def _extract_b64_from_message(message: Dict[str, Any]) -> Optional[str]:
+    """Parse image data from an OpenRouter/Gemini response message.
+
+    Handles three response shapes:
+      1. message.images[0].image_url.url  (OpenRouter native)
+      2. message.content = "data:image/..."  (legacy string)
+      3. message.content = [{"type": "image_url", "image_url": {"url": "..."}}]  (list blocks)
+    """
+    images = message.get("images") or []
+    if images:
+        try:
+            return images[0]["image_url"]["url"]
+        except (KeyError, IndexError):
+            pass
+
+    content = message.get("content", "")
+    if isinstance(content, str) and content.startswith("data:image"):
+        return content
+
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "image_url":
+                    url = (item.get("image_url") or {}).get("url", "")
+                    if url.startswith("data:image"):
+                        return url
+                # Some responses embed base64 directly under "data"
+                if item.get("type") == "image" and item.get("data"):
+                    mime = item.get("mimeType") or item.get("mime_type") or "image/png"
+                    return f"data:{mime};base64,{item['data']}"
+
+    return None
 
 
 async def generate_creative_image(
@@ -191,16 +223,23 @@ async def generate_creative_image(
     format: str = "square",
     quality: str = "fast",
     logo_url: Optional[str] = None,
+    brand_color: str = "",
 ) -> Dict[str, Any]:
     """Call Nano Banana via OpenRouter to generate a creative image.
     Auto-retries across all available OPENROUTER_KEY_* env vars."""
-    if not _OPENROUTER_KEYS:
-        return {"error": "OPENROUTER_KEY not configured in .env"}
+    keys = _load_openrouter_keys()
+    if not keys:
+        return {"error": _OPENROUTER_KEY_MISSING}
 
     model = NANO_BANANA_PRO if quality == "pro" else NANO_BANANA_2
     aspect_ratio = _ASPECT_MAP.get(format, "1:1")
 
-    # Build multimodal content — include logo as reference if provided
+    # Build multimodal content — include logo and brand color as references
+    color_note = (
+        f"\n\nBRAND COLOUR MANDATE: {brand_color} — use this as the dominant accent colour: "
+        f"headline text, CTA button fill, and key graphic shapes. ~30% of canvas area."
+    ) if brand_color else ""
+
     if logo_url:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -210,23 +249,23 @@ async def generate_creative_image(
                 content_type = logo_resp.headers.get("content-type", "image/png").split(";")[0]
                 logo_instruction = (
                     "\n\nBRAND LOGO PLACEMENT:\n"
-                    "The image above is the brand logo. You MUST place it in the final design.\n"
+                    "The FIRST attached image is the brand logo. You MUST render it in the final design.\n"
                     "Rules:\n"
                     "1. Find the corner or edge with the most visual breathing room.\n"
-                    "2. Size it at roughly 12\u201316% of the canvas width.\n"
-                    "3. Match contrast to background: light logo on dark areas, dark on light.\n"
-                    "4. It must look DESIGNED-IN \u2014 not stamped on top.\n"
+                    "2. Size it at roughly 12-16% of the canvas width — readable but not competing.\n"
+                    "3. Match contrast to local background: light logo on dark areas, dark logo on light.\n"
+                    "4. It must look DESIGNED-IN — part of the composition, not stamped on top.\n"
                     "5. Do NOT distort, recolour, rotate, or crop the logo shape."
                 )
                 message_content = [
                     {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{logo_b64}"}},
-                    {"type": "text", "text": prompt + logo_instruction},
+                    {"type": "text", "text": prompt + color_note + logo_instruction},
                 ]
         except Exception as e:
             logger.warning("[nano_banana] Logo fetch failed, falling back to text-only: %s", e)
-            message_content = prompt
+            message_content = prompt + color_note if color_note else prompt
     else:
-        message_content = prompt
+        message_content = prompt + color_note if color_note else prompt
 
     payload = {
         "model": model,
@@ -241,7 +280,7 @@ async def generate_creative_image(
     }
 
     last_error = "Unknown error"
-    for key in _OPENROUTER_KEYS:
+    for key in keys:
         for attempt in range(_MAX_RETRIES_PER_KEY):
             try:
                 headers = {**base_headers, "Authorization": f"Bearer {key}"}
@@ -255,18 +294,11 @@ async def generate_creative_image(
                     last_error = "No choices returned"
                     logger.warning("[nano_banana] key=...%s attempt=%d no choices", key[-6:], attempt + 1)
                     continue
-                message = choices[0].get("message", {})
-                images = message.get("images") or []
-                if not images:
-                    content = message.get("content", "")
-                    if isinstance(content, str) and content.startswith("data:image"):
-                        b64_data = content
-                    else:
-                        last_error = "No image data in response"
-                        logger.warning("[nano_banana] key=...%s attempt=%d no image: %s", key[-6:], attempt + 1, str(data)[:200])
-                        continue
-                else:
-                    b64_data = images[0]["image_url"]["url"]
+                b64_data = _extract_b64_from_message(choices[0].get("message", {}))
+                if not b64_data:
+                    last_error = "No image data in response"
+                    logger.warning("[nano_banana] key=...%s attempt=%d no image: %s", key[-6:], attempt + 1, str(data)[:200])
+                    continue
 
                 from image_handler import S3Handler
                 filename = f"creative-{uuid.uuid4()}.png"
@@ -306,8 +338,9 @@ async def recreate_design_from_reference(
     no fabrication, leave empty when no fact). Returns
     ``{success, image_url}`` on success, or ``{error}`` otherwise.
     """
-    if not OPENROUTER_KEY:
-        return {"error": "OPENROUTER_KEY not configured in .env"}
+    keys = _load_openrouter_keys()
+    if not keys:
+        return {"error": _OPENROUTER_KEY_MISSING}
     if not reference_image_url:
         return {"error": "reference_image_url is required"}
 
@@ -353,47 +386,39 @@ async def recreate_design_from_reference(
         "modalities": ["image", "text"],
         "image_config": {"aspect_ratio": aspect_ratio},
     }
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+    base_headers = {
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
         "X-Title": "Zilo CRM Design Agent",
     }
+    last_error = "Unknown error"
+    for key in keys:
+        for attempt in range(_MAX_RETRIES_PER_KEY):
+            try:
+                headers = {**base_headers, "Authorization": f"Bearer {key}"}
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                b64_data = _extract_b64_from_message((data.get("choices") or [{}])[0].get("message", {}))
+                if not b64_data:
+                    last_error = "No image data in recreate response"
+                    logger.warning("[nano_banana] recreate key=...%s attempt=%d no image: %s", key[-6:], attempt + 1, str(data)[:200])
+                    continue
+                from image_handler import S3Handler
+                filename = f"recreate-{uuid.uuid4()}.png"
+                public_url = await S3Handler.upload_file(b64_data, filename, content_type="image/png")
+                if not public_url:
+                    last_error = "S3 upload returned empty URL"
+                    continue
+                logger.info("[nano_banana] recreate_design_from_reference ok key=...%s attempt=%d", key[-6:], attempt + 1)
+                return {"success": True, "image_url": public_url}
+            except httpx.HTTPStatusError as e:
+                last_error = f"HTTP {e.response.status_code}"
+                logger.warning("[nano_banana] recreate key=...%s attempt=%d HTTP error: %s", key[-6:], attempt + 1, last_error)
+            except Exception as e:
+                last_error = str(e)
+                logger.warning("[nano_banana] recreate key=...%s attempt=%d error: %s", key[-6:], attempt + 1, last_error)
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as e:
-        logger.error("[nano_banana] recreate request failed: %s", e)
-        return {"error": str(e)}
-
-    try:
-        choices = data.get("choices", [])
-        if not choices:
-            return {"error": "No choices returned from recreate"}
-        message = choices[0].get("message", {})
-        images = message.get("images") or []
-        if not images:
-            content = message.get("content", "")
-            if isinstance(content, str) and content.startswith("data:image"):
-                b64_data = content
-            else:
-                logger.warning("[nano_banana] recreate unexpected shape: %s", str(data)[:400])
-                return {"error": "No image data in recreate response"}
-        else:
-            b64_data = images[0]["image_url"]["url"]
-    except (KeyError, IndexError, TypeError) as e:
-        return {"error": f"Failed to parse recreate response: {e}"}
-
-    try:
-        from image_handler import S3Handler
-        filename = f"recreate-{uuid.uuid4()}.png"
-        public_url = await S3Handler.upload_file(b64_data, filename, content_type="image/png")
-        if not public_url:
-            return {"error": "S3 upload returned empty URL"}
-        return {"success": True, "image_url": public_url}
-    except Exception as e:
-        logger.error("[nano_banana] S3 upload failed after recreate: %s", e)
-        return {"error": f"S3 upload failed: {e}"}
+    logger.error("[nano_banana] recreate_design_from_reference exhausted all keys. last=%s", last_error)
+    return {"error": f"Recreate failed after trying all API keys. Last error: {last_error}"}

@@ -7,8 +7,20 @@ from dotenv import load_dotenv
 
 # Load env before ANY other imports
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env', override=True)
-load_dotenv(ROOT_DIR / '.env.local', override=True)
+load_dotenv(ROOT_DIR / ".env", override=True)
+
+# .env.local overrides for local dev — but blank values must NOT wipe keys already set
+# from .env (or the host). A stray `OPENROUTER_KEY=` line has cleared working keys.
+_local_env = ROOT_DIR / ".env.local"
+if _local_env.exists():
+    from dotenv import dotenv_values
+
+    for _k, _v in dotenv_values(_local_env).items():
+        if not _k or _v is None:
+            continue
+        if str(_v).strip() == "":
+            continue
+        os.environ[_k] = str(_v).strip()
 
 # Force UTF-8 for Windows console output (skip if already wrapped to avoid deadlock)
 import io
@@ -12147,6 +12159,82 @@ async def admin_list_users(
     return {"users": rows, "total": total, "limit": limit, "skip": skip}
 
 
+@api_router.get("/admin/metrics")
+async def admin_metrics(
+    period: str = "all",  # all | today | week | month | 3months | custom
+    start: str = "",
+    end: str = "",
+    actor=Depends(get_admin_actor),
+):
+    _ = actor  # keep explicit dependency use
+    now = datetime.utcnow()
+    start_dt = None
+    end_dt = None
+
+    p = (period or "all").strip().lower()
+    if p == "today":
+        start_dt = datetime(now.year, now.month, now.day)
+    elif p == "week":
+        # Sunday start
+        weekday = now.weekday()  # Monday=0..Sunday=6
+        days_since_sun = (weekday + 1) % 7
+        s = now - timedelta(days=days_since_sun)
+        start_dt = datetime(s.year, s.month, s.day)
+    elif p == "month":
+        start_dt = datetime(now.year, now.month, 1)
+    elif p == "3months":
+        m = now.month - 3
+        y = now.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        start_dt = datetime(y, m, 1)
+    elif p == "custom":
+        try:
+            if start:
+                start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).replace(tzinfo=None)
+            if end:
+                end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid start/end date")
+
+    user_query = {}
+    sales_query = {}
+    if start_dt or end_dt:
+        created = {}
+        if start_dt:
+            created["$gte"] = start_dt
+        if end_dt:
+            created["$lte"] = end_dt
+        user_query["created_at"] = created
+        sales_query["created_at"] = created
+
+    total_users = await db.users.count_documents(user_query)
+    subscribed_users = await db.users.count_documents({**user_query, "subscription_active": True})
+    setup_done_users = await db.users.count_documents({**user_query, "setup_complete": True})
+
+    # Sum revenue from sales.amount (fallback to total_amount if present in some docs)
+    pipeline = [
+        {"$match": sales_query} if sales_query else {"$match": {}},
+        {"$project": {"value": {"$ifNull": ["$amount", {"$ifNull": ["$total_amount", 0]}]}}},
+        {"$group": {"_id": None, "sum": {"$sum": "$value"}, "count": {"$sum": 1}}},
+    ]
+    rows = await db.sales.aggregate(pipeline).to_list(1)
+    total_earnings = float((rows[0].get("sum") if rows else 0) or 0)
+    sales_count = int((rows[0].get("count") if rows else 0) or 0)
+
+    return {
+        "period": p,
+        "total_users": total_users,
+        "subscribed_users": subscribed_users,
+        "setup_done_users": setup_done_users,
+        "total_earnings": round(total_earnings, 2),
+        "sales_count": sales_count,
+        "start": start_dt.isoformat() if start_dt else None,
+        "end": end_dt.isoformat() if end_dt else None,
+    }
+
+
 @api_router.get("/admin/access")
 async def admin_access(_actor=Depends(get_admin_actor)):
     try:
@@ -12199,13 +12287,52 @@ async def admin_delete_user(target_user_id: str, actor=Depends(get_admin_actor))
     await db.email_messages.delete_many({"business_id": target_user_id})
     return {"ok": True}
 
+
+def _composio_oauth_frontend_base(optional_client_origin: Optional[str]) -> str:
+    """Absolute origin for OAuth return URL. Composio rejects relative redirect_uri."""
+    from urllib.parse import urlparse
+
+    env_raw = (os.environ.get("FRONTEND_URL") or "").strip().rstrip("/")
+    default_local = "http://127.0.0.1:3000"
+
+    def _host(url: str) -> str:
+        try:
+            return (urlparse(url).hostname or "").lower()
+        except Exception:
+            return ""
+
+    o = (optional_client_origin or "").strip().rstrip("/")
+    if o:
+        try:
+            p = urlparse(o)
+            if p.scheme in ("http", "https") and p.netloc:
+                h = (p.hostname or "").lower()
+                if h in ("localhost", "127.0.0.1"):
+                    return o
+                if env_raw and h == _host(env_raw):
+                    return o
+        except Exception:
+            pass
+    if env_raw:
+        return env_raw
+    return default_local
+
+
 @api_router.post("/composio/connect/{toolkit}")
-async def composio_connect(toolkit: str, user=Depends(get_current_user)):
-    """Start Composio OAuth for a toolkit (gmail | googlecalendar).
-    Returns a redirect_url the frontend should open in a popup/tab."""
+async def composio_connect(toolkit: str, request: Request, user=Depends(get_current_user)):
+    """Start Composio OAuth for a toolkit. Returns redirect_url for the OAuth popup/tab."""
     from composio_service import get_connect_url
     user_id = str(user.get("business_id") or user["_id"])
-    frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    client_origin: Optional[str] = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            raw = body.get("redirect_base") or body.get("redirectBase")
+            if isinstance(raw, str):
+                client_origin = raw
+    except Exception:
+        pass
+    frontend = _composio_oauth_frontend_base(client_origin)
     redirect = f"{frontend}/dashboard/integrations?connected={toolkit}"
     result = await get_connect_url(user_id, toolkit, redirect)
     if "error" in result:
@@ -12287,6 +12414,52 @@ async def composio_disconnect(toolkit: str, user=Depends(get_current_user)):
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
     return result
+
+
+@api_router.post("/composio/http")
+async def composio_http_proxy(request: Request, user=Depends(get_current_user)):
+    """Raw HTTP through a user's Composio connection (e.g. Shopify Admin REST).
+
+    Body JSON: { "toolkit": "shopify", "method": "GET", "path": "/admin/api/2024-01/orders.json",
+                 "params": {...}, "json": {...}, "timeout": 30 }
+    """
+    from composio_service import composio_proxy as _composio_http
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+    toolkit = str(payload.get("toolkit") or "").strip()
+    if not toolkit:
+        raise HTTPException(status_code=400, detail="toolkit required")
+    method = str(payload.get("method") or "GET").upper()
+    path = str(payload.get("path") or "").strip()
+    if not path:
+        raise HTTPException(status_code=400, detail="path required")
+    params = payload.get("params")
+    json_body = payload.get("json")
+    if params is not None and not isinstance(params, dict):
+        raise HTTPException(status_code=400, detail="params must be an object")
+    if json_body is not None and not isinstance(json_body, dict):
+        raise HTTPException(status_code=400, detail="json must be an object")
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        tmo = float(payload.get("timeout") or 30)
+    except (TypeError, ValueError):
+        tmo = 30.0
+    try:
+        return await _composio_http(
+            user_id,
+            toolkit,
+            method,
+            path,
+            params=params,
+            json=json_body,
+            timeout=tmo,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _composio_text(val: Any) -> str:

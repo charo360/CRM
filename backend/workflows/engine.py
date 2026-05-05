@@ -256,7 +256,7 @@ async def _execute_capability(
                 logger.warning("[WorkflowEngine] shopify_fulfill_order: no order_id in event_data")
                 return False
             try:
-                from assistant.nango import nango_proxy
+                from assistant.composio_helper import composio_proxy as nango_proxy
                 fo_data = await nango_proxy(
                     user_id, "shopify", "GET",
                     f"/admin/api/2024-01/orders/{order_id}/fulfillment_orders.json",
@@ -294,7 +294,7 @@ async def _execute_capability(
 
         elif action == "shopify_create_discount":
             try:
-                from assistant.nango import nango_proxy
+                from assistant.composio_helper import composio_proxy as nango_proxy
                 import random, string as string_mod
                 from datetime import timezone as _tz
                 discount_type = params.get("type", "percentage")
@@ -339,7 +339,7 @@ async def _execute_capability(
             # Auto-create discount if requested and not already in event_data
             if discount_value > 0 and not event_data.get("discount_code"):
                 try:
-                    from assistant.nango import nango_proxy
+                    from assistant.composio_helper import composio_proxy as nango_proxy
                     import random, string as string_mod
                     from datetime import timezone as _tz
                     code = "".join(random.choices(string_mod.ascii_uppercase + string_mod.digits, k=8))
@@ -704,7 +704,7 @@ async def _get_users_with_shopify_workflows(db) -> list:
 
 async def _poll_shopify_for_user(db, user: dict, whatsapp_service) -> None:
     """Run all Shopify autopilot checks for a single user (tenant)."""
-    from assistant.nango import nango_proxy
+    from assistant.composio_helper import composio_proxy as nango_proxy
     user_id = user["_id"]
 
     # Load or create poll state

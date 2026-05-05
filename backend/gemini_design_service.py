@@ -508,6 +508,7 @@ async def generate_social_post(
             format=img_format,
             quality=quality,
             logo_url=logo_url,
+            brand_color=brand_color,
         )
 
     if result.get("error"):
@@ -575,6 +576,7 @@ async def generate_ad_creative(
             format=img_format,
             quality=quality,
             logo_url=logo_url,
+            brand_color=brand_color,
         )
 
     if result.get("error"):
@@ -635,6 +637,7 @@ async def generate_carousel_cover(
             format=img_format,
             quality=quality,
             logo_url=logo_url,
+            brand_color=brand_color,
         )
 
     if result.get("error"):
