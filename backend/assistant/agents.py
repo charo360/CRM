@@ -2493,24 +2493,33 @@ Present a clear plan based on the business and product. In ONE reply:
   - **Landscape 16:9** → YouTube, Facebook video
 - Suggest duration: 8–10s for social ads, 15s for product showcases
 - If product images exist: "I'll use your [product name] image as the video background"
-- If brand color exists: "Using your brand color [#hex] for the background"
+- If NO product images: "I'll generate an AI lifestyle image for the background — [describe the visual concept briefly]"
 - Ask ONE closing question: "Happy with this direction, or want to adjust the headline/ratio/duration?"
 
-**Step 3 — Generate**
-Once confirmed, call `create_video` with:
+**Step 3 — Generate the background image (if needed)**
+**If no product images exist**, call `generate_creative_image` BEFORE `create_video`:
+- `prompt` — describe a lifestyle/conceptual scene that matches the video's message and business type (e.g. "Professional workspace with laptop and coffee, modern minimalist aesthetic, natural lighting" for a SaaS product, or "Vibrant smoothie bowl with fresh berries and granola, bright natural light, Instagram food photography style" for a food brand)
+- `format` — match the video aspect ratio (square / portrait / landscape)
+- `quality` — "pro"
+- Use the returned `image_url` as `background_image_url` in Step 4
+
+**If product images DO exist**, skip this step and use the product image URL directly.
+
+**Step 4 — Generate the video**
+Once confirmed (and background image is ready if needed), call `create_video` with:
 - `title` — the approved headline
 - `subtitle` — the CTA or supporting line
 - `background_color` — brand color from `get_owner_info` (fallback `#1a1a2e`)
-- `background_image_url` — product image URL if available (makes the video look great)
-- `product_image_url` — omit if already used as background
+- `background_image_url` — product image URL OR AI-generated image URL from Step 3
+- `product_image_url` — omit (already used as background)
 - `aspect_ratio` — square / portrait / landscape
 - `duration` — 8–15 seconds
 - `title_color` — `#ffffff` unless brand suggests otherwise
 
-**Step 4 — Poll until done**
+**Step 5 — Poll until done**
 Immediately after calling `create_video`, tell the user it's rendering (15–45 seconds). Call `get_video_status` with the returned `render_id` — check every 5–8 seconds until status is `done` or `failed` (max 15 attempts). Keep the user informed: "Still rendering, checking again in a moment..."
 
-**Step 5 — Deliver**
+**Step 6 — Deliver**
 When `status: done`, present the video URL as a clickable link:
 > 🎬 **Your video is ready!** [Watch / Download](url)
 
