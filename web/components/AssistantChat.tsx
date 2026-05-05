@@ -2551,14 +2551,23 @@ function VideoPreview({ steps }: { steps?: AssistantStep[] }) {
   const title = (result.title as string | undefined) ?? "Promo Video";
   const aspectRatio = (result.aspect_ratio as string | undefined) ?? "16:9";
 
-  // Determine container max-width based on aspect ratio
+  // Canvas sizing — match the exact aspect ratio of the rendered video
   const isPortrait = aspectRatio === "9:16";
   const isSquare = aspectRatio === "1:1";
-  const containerClass = isPortrait
-    ? "mx-auto max-w-[270px]" // Portrait: 9:16 = narrow
+
+  // Outer wrapper: constrain portrait/square so they don't stretch to full chat width
+  const wrapperStyle: React.CSSProperties = isPortrait
+    ? { maxWidth: 320, margin: "0 auto" }   // 9:16 — narrow portrait column
     : isSquare
-      ? "mx-auto max-w-[480px]" // Square: 1:1
-      : ""; // Landscape: full width
+    ? { maxWidth: 480, margin: "0 auto" }   // 1:1 — mid-width square
+    : {};                                    // 16:9 — full width
+
+  // Explicit aspect-ratio CSS so the container reserves the right space before the video loads
+  const playerStyle: React.CSSProperties = isPortrait
+    ? { aspectRatio: "9 / 16" }
+    : isSquare
+    ? { aspectRatio: "1 / 1" }
+    : { aspectRatio: "16 / 9" };
 
   return (
     <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
@@ -2570,24 +2579,27 @@ function VideoPreview({ steps }: { steps?: AssistantStep[] }) {
           </svg>
           {title}
         </div>
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
-        >
-          <Download size={10} />
-          Download
-        </a>
+        <div className="flex items-center gap-1.5">
+          <span className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white">{aspectRatio}</span>
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+          >
+            <Download size={10} />
+            Download
+          </a>
+        </div>
       </div>
-      {/* Video player */}
-      <div className="bg-black">
-        <div className={containerClass}>
+      {/* Video player — constrained to correct aspect ratio */}
+      <div className="bg-black" style={wrapperStyle}>
+        <div style={playerStyle} className="relative w-full overflow-hidden">
           <video
             src={url}
             controls
             playsInline
-            className="block h-auto w-full"
+            className="absolute inset-0 h-full w-full object-contain"
           />
         </div>
       </div>

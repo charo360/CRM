@@ -8451,7 +8451,8 @@ async def get_video_status(ctx: ToolContext, args: Dict[str, Any]):
     status = (r.get("status") or "unknown").lower()
     url = r.get("url") or ""
 
-    # Update DB record
+    # Update DB record and read aspect_ratio + title
+    db_record: Dict[str, Any] = {}
     try:
         update: Dict[str, Any] = {"status": status}
         if url:
@@ -8460,10 +8461,21 @@ async def get_video_status(ctx: ToolContext, args: Dict[str, Any]):
             {"_id": render_id},
             {"$set": update},
         )
+        db_record = await ctx.db.video_renders.find_one({"_id": render_id}) or {}
     except Exception:
         pass
 
-    result: Dict[str, Any] = {"render_id": render_id, "status": status}
+    # Map stored aspect_ratio key to display string the frontend expects
+    _ratio_map = {"square": "1:1", "portrait": "9:16", "landscape": "16:9"}
+    stored_ratio = db_record.get("aspect_ratio", "square")
+    display_ratio = _ratio_map.get(stored_ratio, "1:1")
+
+    result: Dict[str, Any] = {
+        "render_id": render_id,
+        "status": status,
+        "aspect_ratio": display_ratio,
+        "title": db_record.get("title", ""),
+    }
     if status == "done" and url:
         result["url"] = url
         result["message"] = f"Your video is ready! [Watch / Download]({url})"
