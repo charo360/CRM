@@ -8274,10 +8274,29 @@ async def create_video(ctx: ToolContext, args: Dict[str, Any]):
             "position": "center",
         })
     else:
+        # Derive a darker shade for the gradient by blending bg_color toward black
+        import colorsys as _cs
+        def _darken(hex_col: str, factor: float = 0.45) -> str:
+            hex_col = hex_col.lstrip("#")
+            if len(hex_col) != 6:
+                return "#0a0a1a"
+            r, g, b = (int(hex_col[i:i+2], 16) for i in (0, 2, 4))
+            h, s, v = _cs.rgb_to_hsv(r/255, g/255, b/255)
+            v2 = max(0.0, v * factor)
+            r2, g2, b2 = _cs.hsv_to_rgb(h, min(1.0, s * 1.2), v2)
+            return f"#{int(r2*255):02x}{int(g2*255):02x}{int(b2*255):02x}"
+        dark = _darken(bg_color)
+        grad_html = (
+            f"<div style='width:{size['width']}px;height:{size['height']}px;"
+            f"background:linear-gradient(145deg,{bg_color} 0%,{dark} 100%)'></div>"
+        )
         clips.append({
-            "asset": {"type": "html",
-                       "html": f"<div style='width:{size['width']}px;height:{size['height']}px;background:{bg_color}'></div>",
-                       "width": size["width"], "height": size["height"]},
+            "asset": {
+                "type": "html",
+                "html": grad_html,
+                "width": size["width"],
+                "height": size["height"],
+            },
             "start": 0, "length": duration,
             "position": "center",
         })
