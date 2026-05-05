@@ -6,7 +6,7 @@ import {
   Image as ImageIcon, ChevronDown, Check, X, Loader2,
   FileText, Upload, ExternalLink, Grid3X3, List,
   ZoomIn, ChevronLeft, ChevronRight, Download, Film,
-  Presentation, Sparkles,
+  Presentation, Sparkles, Play, Clock, CheckCircle2, AlertCircle,
 } from "lucide-react";
 import { api, designTemplatesApi } from "@/lib/api";
 import { toast } from "sonner";
@@ -17,6 +17,15 @@ import { cn, resolveMediaUrl, downloadAsset as downloadAssetRaw } from "@/lib/ut
 type AssetKind = "image" | "video" | "pdf" | "ppt" | "";
 type AssetCategory = "image" | "video" | "pdf" | "ppt";
 type Category = "all" | "image" | "video";
+
+type VideoRender = {
+  render_id: string;
+  title: string;
+  status: "queued" | "rendering" | "done" | "failed" | "unknown";
+  aspect_ratio: "square" | "portrait" | "landscape";
+  url: string;
+  created_at: string;
+};
 
 type DesignTemplate = {
   id: string;
@@ -181,6 +190,22 @@ export default function DesignTemplatesPage() {
   const [filterContentType, setFilterContentType] = useState("any");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
 
+  // AI-generated video renders
+  const [videoRenders, setVideoRenders] = useState<VideoRender[]>([]);
+  const [loadingRenders, setLoadingRenders] = useState(false);
+
+  const loadVideoRenders = useCallback(async () => {
+    setLoadingRenders(true);
+    try {
+      const data = await api.get<{ renders: VideoRender[] }>("/video-renders");
+      setVideoRenders(data.renders ?? []);
+    } catch {
+      // silently fail — no renders yet
+    } finally {
+      setLoadingRenders(false);
+    }
+  }, []);
+
   // upload state
   const [uploadCategory, setUploadCategory] = useState<Category>("image");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -273,7 +298,7 @@ export default function DesignTemplatesPage() {
     } finally { setDocStyleSaving(false); }
   }
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); loadVideoRenders(); }, [load, loadVideoRenders]);
 
   const maxFiles = meta?.max_brand_image_batch ?? 10;
   const catConf = CATEGORIES.find((c) => c.key === uploadCategory)!;
@@ -937,25 +962,60 @@ export default function DesignTemplatesPage() {
           </div>
         </div>
 
+        {/* ΓöÇΓöÇ AI-Generated Videos section (only in video tab) ΓöÇΓöÇ */}
+        {(category === "video" || category === "all") && videoRenders.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-md bg-violet-100 flex items-center justify-center">
+                  <Sparkles className="w-3.5 h-3.5 text-violet-600" />
+                </div>
+                <h2 className="text-sm font-semibold text-gray-800">Generated Videos</h2>
+                <span className="text-xs text-gray-400">{videoRenders.length} video{videoRenders.length !== 1 ? "s" : ""} created by AI</span>
+              </div>
+              <button onClick={loadVideoRenders} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors" title="Refresh">
+                <RefreshCw className={cn("w-3.5 h-3.5", loadingRenders && "animate-spin")} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {videoRenders.map((r) => <VideoRenderCard key={r.render_id} render={r} onRefresh={loadVideoRenders} />)}
+            </div>
+          </div>
+        )}
+
         {/* ΓöÇΓöÇ Grid / List ΓöÇΓöÇ */}
-        {loading ? (
-          <div className={cn("grid gap-4", viewMode === "grid" ? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3" : "grid-cols-1")}>
-            {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className={cn("bg-white rounded-2xl border border-gray-100 animate-pulse", viewMode === "grid" ? "h-60" : "h-16")} />)}
+        {displayed.length > 0 && (
+          <div>
+            {(category === "video" || category === "all") && videoRenders.length > 0 && (
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Uploaded Videos</p>
+            )}
+            {loading ? (
+              <div className={cn("grid gap-4", viewMode === "grid" ? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3" : "grid-cols-1")}>
+                {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className={cn("bg-white rounded-2xl border border-gray-100 animate-pulse", viewMode === "grid" ? "h-60" : "h-16")} />)}
+              </div>
+            ) : viewMode === "grid" ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {displayed.map((t) => (
+                  <TemplateCard key={t.id} template={t} onPreview={() => setPreview(t)} onEdit={() => openEdit(t)} onDelete={() => handleDelete(t.id)} deleting={deleting === t.id} />
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {displayed.map((t) => (
+                  <TemplateRow key={t.id} template={t} onPreview={() => setPreview(t)} onEdit={() => openEdit(t)} onDelete={() => handleDelete(t.id)} deleting={deleting === t.id} />
+                ))}
+              </div>
+            )}
           </div>
-        ) : displayed.length === 0 ? (
+        )}
+
+        {/* Empty state: only when nothing at all */}
+        {!loading && displayed.length === 0 && videoRenders.length === 0 && (
           <EmptyState category={category} onUpload={() => { if (category !== "all") switchUploadCategory(category); }} onAdd={openCreate} />
-        ) : viewMode === "grid" ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {displayed.map((t) => (
-              <TemplateCard key={t.id} template={t} onPreview={() => setPreview(t)} onEdit={() => openEdit(t)} onDelete={() => handleDelete(t.id)} deleting={deleting === t.id} />
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {displayed.map((t) => (
-              <TemplateRow key={t.id} template={t} onPreview={() => setPreview(t)} onEdit={() => openEdit(t)} onDelete={() => handleDelete(t.id)} deleting={deleting === t.id} />
-            ))}
-          </div>
+        )}
+        {/* Empty uploaded, but has AI renders */}
+        {!loading && displayed.length === 0 && videoRenders.length > 0 && category === "video" && (
+          <div className="text-center py-8 text-sm text-gray-400">No uploaded videos — upload your own MP4/MOV files above.</div>
         )}
       </div>
 
@@ -1311,6 +1371,110 @@ function PreviewModal({ template: t, templates, onClose, onNavigate, onEdit }: {
           {t.content_type !== "general" && <Tag variant="purple">{contentTypeLabel(t.content_type)}</Tag>}
           {t.use_for.map((u) => <Tag key={u} variant="slate">{u}</Tag>)}
           <span className="ml-auto text-xs text-gray-400">{idx + 1} / {templates.length}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VideoRenderCard({ render: r, onRefresh }: { render: VideoRender; onRefresh: () => void }) {
+  const [polling, setPolling] = useState(false);
+
+  async function pollStatus() {
+    setPolling(true);
+    try {
+      await api.get(`/video-renders/${r.render_id}`);
+      await onRefresh();
+    } catch { /* ignore */ } finally { setPolling(false); }
+  }
+
+  const aspectClass = {
+    square: "aspect-square",
+    portrait: "aspect-[9/16]",
+    landscape: "aspect-video",
+  }[r.aspect_ratio] ?? "aspect-square";
+
+  const statusConfig = {
+    done: { icon: <CheckCircle2 className="w-4 h-4" />, label: "Ready", cls: "bg-emerald-100 text-emerald-700" },
+    queued: { icon: <Clock className="w-4 h-4" />, label: "Queued", cls: "bg-amber-100 text-amber-700" },
+    rendering: { icon: <Loader2 className="w-4 h-4 animate-spin" />, label: "Rendering…", cls: "bg-blue-100 text-blue-700" },
+    failed: { icon: <AlertCircle className="w-4 h-4" />, label: "Failed", cls: "bg-red-100 text-red-700" },
+    unknown: { icon: <Clock className="w-4 h-4" />, label: "Unknown", cls: "bg-gray-100 text-gray-500" },
+  }[r.status] ?? { icon: <Clock className="w-4 h-4" />, label: r.status, cls: "bg-gray-100 text-gray-500" };
+
+  return (
+    <div className="group bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200 transition-all overflow-hidden">
+      {/* Thumbnail / player area */}
+      <div className={cn("relative bg-gray-900 flex items-center justify-center overflow-hidden", aspectClass, "max-h-52")}>
+        {r.status === "done" && r.url ? (
+          <a href={r.url} target="_blank" rel="noopener noreferrer" className="absolute inset-0 flex items-center justify-center group/play">
+            <div className="w-12 h-12 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center group-hover/play:bg-white/30 transition-colors border border-white/30">
+              <Play className="w-5 h-5 text-white ml-0.5" />
+            </div>
+          </a>
+        ) : (
+          <div className="flex flex-col items-center gap-2 text-gray-500">
+            <Film className="w-10 h-10 text-violet-400" />
+            <span className="text-xs text-gray-400">{r.title}</span>
+          </div>
+        )}
+
+        {/* Status badge */}
+        <div className={cn("absolute top-2.5 left-2.5 flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold", statusConfig.cls)}>
+          {statusConfig.icon}
+          {statusConfig.label}
+        </div>
+
+        {/* Aspect ratio badge */}
+        <div className="absolute top-2.5 right-2.5 px-1.5 py-0.5 rounded bg-black/50 text-white text-[10px] font-semibold">
+          {{ square: "1:1", portrait: "9:16", landscape: "16:9" }[r.aspect_ratio] ?? r.aspect_ratio}
+        </div>
+      </div>
+
+      {/* Card footer */}
+      <div className="p-3 space-y-2">
+        <p className="font-semibold text-sm text-gray-900 leading-snug line-clamp-1">{r.title}</p>
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-semibold bg-violet-100 text-violet-700">
+            <Sparkles className="w-3 h-3" /> AI Video
+          </span>
+          {r.created_at && (
+            <span className="text-[11px] text-gray-400">
+              {new Date(r.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 pt-0.5">
+          {r.status === "done" && r.url ? (
+            <>
+              <a
+                href={r.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-brand-dark text-white text-xs font-medium rounded-lg hover:bg-brand-dark/90 transition-colors"
+              >
+                <Play className="w-3 h-3" /> Watch
+              </a>
+              <a
+                href={r.url}
+                download
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 text-gray-600 text-xs font-medium rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <Download className="w-3 h-3" />
+              </a>
+            </>
+          ) : r.status !== "failed" ? (
+            <button
+              onClick={pollStatus}
+              disabled={polling}
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 border border-gray-200 text-gray-600 text-xs font-medium rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+            >
+              {polling ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              Check status
+            </button>
+          ) : (
+            <span className="text-xs text-red-500">Render failed — try again in chat</span>
+          )}
         </div>
       </div>
     </div>

@@ -13147,6 +13147,75 @@ try:
 except Exception as _e:
     logging.error(f"[shotstack] failed to mount routes: {_e}")
 
+# ── Video Renders API (AI-generated Shotstack videos) ─────────────────────────
+@api_router.get("/video-renders")
+async def list_video_renders(limit: int = 50, user=Depends(get_current_user)):
+    """List all AI-generated Shotstack video renders for this business."""
+    business_id = user.get("business_id", user["_id"])
+    rows = await db.video_renders.find(
+        {"business_id": business_id}
+    ).sort("created_at", -1).limit(limit).to_list(None)
+    renders = []
+    for r in rows:
+        renders.append({
+            "render_id": str(r["_id"]),
+            "title": r.get("title", "Untitled Video"),
+            "status": r.get("status", "unknown"),
+            "aspect_ratio": r.get("aspect_ratio", "square"),
+            "url": r.get("url", ""),
+            "created_at": r.get("created_at", "").isoformat() if hasattr(r.get("created_at", ""), "isoformat") else str(r.get("created_at", "")),
+        })
+    return {"renders": renders, "total": len(renders)}
+
+@api_router.get("/video-renders/{render_id}")
+async def get_video_render(render_id: str, user=Depends(get_current_user)):
+    """Get a specific video render and poll Shotstack for latest status."""
+    import os as _os, httpx as _httpx
+    business_id = user.get("business_id", user["_id"])
+    row = await db.video_renders.find_one({"_id": render_id, "business_id": business_id})
+    if not row:
+        raise HTTPException(404, "Render not found")
+
+    # If not done yet, poll Shotstack for fresh status
+    if row.get("status") not in ("done", "failed"):
+        api_key = _os.getenv("SHOTSTACK_API_KEY", "")
+        env_val = _os.getenv("SHOTSTACK_ENV", "stage").strip()
+        if env_val.startswith("http"):
+            base = env_val.rstrip("/").split("/render")[0]
+        elif env_val == "production":
+            base = "https://api.shotstack.io/edit/v1"
+        else:
+            base = "https://api.shotstack.io/edit/stage"
+        try:
+            async with _httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f"{base}/render/{render_id}",
+                    headers={"x-api-key": api_key}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    r = data.get("response") or data
+                    status = (r.get("status") or "unknown").lower()
+                    url = r.get("url") or ""
+                    update: dict = {"status": status}
+                    if url:
+                        update["url"] = url
+                    await db.video_renders.update_one({"_id": render_id}, {"$set": update})
+                    row["status"] = status
+                    if url:
+                        row["url"] = url
+        except Exception:
+            pass
+
+    return {
+        "render_id": render_id,
+        "title": row.get("title", "Untitled Video"),
+        "status": row.get("status", "unknown"),
+        "aspect_ratio": row.get("aspect_ratio", "square"),
+        "url": row.get("url", ""),
+        "created_at": row.get("created_at", "").isoformat() if hasattr(row.get("created_at", ""), "isoformat") else str(row.get("created_at", "")),
+    }
+
 # ── SEO + Auto-Blogging ───────────────────────────────────────────────────────
 try:
     from seo.routes import make_seo_router as _mk_seo_router
