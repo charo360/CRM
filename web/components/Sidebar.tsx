@@ -46,6 +46,7 @@ import {
   Search,
   FolderKanban,
   Image,
+  Zap,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -138,6 +139,8 @@ export default function Sidebar() {
     { href: "/dashboard/shopify", label: "Shopify", icon: ShoppingBag },
     { href: "/dashboard/design-templates", label: "Design Library", icon: Image },
     { href: "/dashboard/documents", label: "Documents", icon: FileText },
+    { href: "/dashboard/growth", label: "Growth Suite", icon: Zap },
+    { href: "/dashboard/client-portal", label: "Client Portal", icon: Users },
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const NAV_GROUPS = [

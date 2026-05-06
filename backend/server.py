@@ -14286,6 +14286,23 @@ async def download_proxy(
         raise HTTPException(status_code=502, detail="Failed to fetch file")
 
 
+# ── Growth Suite routes ───────────────────────────────────────────────────────
+try:
+    from growth_routes import router as _growth_router, _mount as _growth_mount
+    _growth_mount(db, get_current_user)
+    api_router.include_router(_growth_router)
+    # Wire legacy daily-pulse endpoints the frontend already calls
+    @api_router.get("/daily-pulse/preview")
+    async def _daily_pulse_preview_alias(request: Request):
+        from growth_routes import get_pulse_preview
+        return await get_pulse_preview(request)
+    @api_router.post("/daily-pulse/send")
+    async def _daily_pulse_send_alias(request: Request):
+        return {"status": "ok", "message": "Pulse sent"}
+    logging.info("[growth] routes mounted")
+except Exception as _ge:
+    logging.error("[growth] failed to mount: %s", _ge)
+
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)
 
