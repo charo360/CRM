@@ -25,8 +25,9 @@ export default function GrowthPage() {
   const { currency } = useBusiness();
   const [digest, setDigest] = useState<DigestData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pulse, setPulse] = useState<string | null>(null);
 
-  useEffect(() => { loadDigest(); }, []);
+  useEffect(() => { loadDigest(); loadPulse(); }, []);
 
   async function loadDigest() {
     setLoading(true);
@@ -34,6 +35,13 @@ export default function GrowthPage() {
       const data = await api.get<DigestData>("/growth/digest");
       setDigest(data);
     } catch { /* ignore */ } finally { setLoading(false); }
+  }
+
+  async function loadPulse() {
+    try {
+      const data = await api.get<{ message: string }>("/growth/pulse/preview");
+      setPulse(data.message || null);
+    } catch { /* ignore */ }
   }
 
   const features = [
@@ -57,6 +65,14 @@ export default function GrowthPage() {
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
       </div>
+
+      {/* Live Pulse */}
+      {pulse && (
+        <div className="bg-slate-800 text-slate-100 rounded-xl px-5 py-3 text-sm font-medium flex items-center gap-2">
+          <BarChart2 size={15} className="text-slate-400 shrink-0" />
+          {pulse}
+        </div>
+      )}
 
       {/* Daily Digest */}
       {loading ? (

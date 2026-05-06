@@ -26,18 +26,13 @@ export default function ClientPortalViewer({ params }: { params: Promise<{ custo
   useEffect(() => {
     async function load() {
       try {
-        const [cRes, oRes, iRes, dRes] = await Promise.all([
-          fetch(`${API_BASE}/customers/${customerId}`),
-          fetch(`${API_BASE}/orders?customer_id=${customerId}`),
-          fetch(`${API_BASE}/invoices?customer_id=${customerId}`),
-          fetch(`${API_BASE}/growth/deal-room?customer_id=${customerId}`),
-        ]);
-        if (!cRes.ok) { setError("Client not found."); return; }
-        const c = await cRes.json();
-        setCustomer({ name: c.name || c.customer?.name || "Client", email: c.email || c.customer?.email });
-        const o = await oRes.json(); setOrders(o.orders || o || []);
-        const inv = await iRes.json(); setInvoices(inv.invoices || inv || []);
-        const d = await dRes.json(); setProposals((d.deal_rooms || []).filter((r: DealRoom) => r.status !== "declined"));
+        const res = await fetch(`${API_BASE}/growth/portal/${customerId}`);
+        if (!res.ok) { setError("Client not found."); return; }
+        const data = await res.json();
+        setCustomer(data.customer);
+        setOrders(data.orders || []);
+        setInvoices(data.invoices || []);
+        setProposals(data.proposals || []);
       } catch { setError("Unable to load portal."); }
       finally { setLoading(false); }
     }
