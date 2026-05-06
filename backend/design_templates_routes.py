@@ -429,10 +429,10 @@ def make_design_templates_router(db, user_dep):
             raise HTTPException(404, "Design not found")
 
         asset_kind = doc.get("asset_kind", "")
-        if asset_kind not in ("pdf", "docx"):
+        if asset_kind not in ("pdf", "docx", "pptx"):
             raise HTTPException(
                 400,
-                f"Only PDF and Word documents can be used as AI reference templates (got '{asset_kind}').",
+                f"Only PDF, Word, and PowerPoint files can be used as AI reference templates (got '{asset_kind}').",
             )
 
         doc_name = doc.get("name", "template")
@@ -487,6 +487,7 @@ def make_design_templates_router(db, user_dep):
         mime_map = {
             "pdf": "application/pdf",
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         }
         mime_type = mime_map[asset_kind]
 

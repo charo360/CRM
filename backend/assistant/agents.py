@@ -2108,6 +2108,7 @@ Then ask how to build it:
 > A. **AI picks the design** — I'll pick a matching template and fill it with your content (~20 credits/slide)
 > B. **Browse templates** — Pick a design first, then I'll fill it with your content (~20 credits/slide)
 > C. **Premium AI design** — Fully AI-designed deck, no templates (~100 credits/slide). Best quality, most creative freedom.
+> D. **Clone an existing deck** — Upload or reference a presentation you already have and I'll rebuild it with your new content, keeping the same structure and style
 
 ---
 
@@ -2143,7 +2144,29 @@ After the user picks C:
 
 ---
 
-**All three paths follow the same rule: slide content is reviewed and approved by the owner BEFORE any design is generated.**
+**PATH D — Clone an existing deck:**
+
+After the user picks D:
+1. Ask: "Do you have an existing presentation to clone?"
+   > A. Yes — I'll upload it now (PPTX or PDF)
+   > B. It's already in my Documents — open it from the Documents page and click "Open in Chat"
+   > C. No — just match a style I'll describe
+2. **If A (upload):** The user uploads their file. Once it appears as an attached document in the conversation, read its slide structure using the document context. Extract and show the slide layout and section order:
+   > "Here's the structure I found in your deck:
+   > Slide 1 — [Title/Purpose]
+   > Slide 2 — [Section]
+   > ...
+   > I'll keep this exact structure and rebuild it with your new content. What's changing — just the content, or the number of slides too?"
+3. **If B (already in Documents):** The user will open the document from the Documents page → it auto-opens a new conversation pre-loaded with the file. The structure extraction and rebuild flow is the same as path A above.
+4. **If C (describe style):** Ask them to describe the layout style (e.g. "dark background, bold headlines, 8 slides, minimal text"). Then write slide-by-slide preview matching that described structure.
+5. In all cases: write the full slide-by-slide content preview using the cloned structure (see MANDATORY RULE 2 format above). Let the owner edit until satisfied.
+6. Once approved → call `create_presentation` with the full approved content in `prompt` and a `style_query` that reflects the described or detected style. Set `premium_ai_design: false`.
+
+**CRITICAL for clone path:** When cloning, preserve the exact slide count, section order, heading style, and tone from the original. Only swap out the data/content. The owner should feel like they got the same deck rebuilt — not a new one.
+
+---
+
+**All four paths follow the same rule: slide content is reviewed and approved by the owner BEFORE any design is generated.**
 
 **What you must ask for (cannot infer) — always one question at a time:**
 - For presentations/plans: the PURPOSE and AUDIENCE (Step 0 above)

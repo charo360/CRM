@@ -29,6 +29,7 @@ MAX_EXTRACT_CHARS = 200_000           # cap stored text per file
 SUPPORTED_MIME = {
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
     "text/plain": "txt",
     "text/markdown": "md",
     "text/csv": "csv",
@@ -97,6 +98,24 @@ def _ocr_pdf_textract(data: bytes) -> str:
         return ""
 
 
+def _extract_pptx(data: bytes) -> str:
+    try:
+        from pptx import Presentation
+        prs = Presentation(io.BytesIO(data))
+        parts: List[str] = []
+        for slide_num, slide in enumerate(prs.slides, 1):
+            slide_texts: List[str] = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    slide_texts.append(shape.text.strip())
+            if slide_texts:
+                parts.append(f"--- Slide {slide_num} ---\n" + "\n".join(slide_texts))
+        return "\n\n".join(parts).strip()
+    except Exception as e:
+        logger.warning(f"[documents] PPTX extract failed: {e}")
+        return ""
+
+
 def _extract_docx(data: bytes) -> str:
     try:
         from docx import Document
@@ -123,7 +142,7 @@ def _extract_text(data: bytes) -> str:
 
 
 def extract(content: bytes, mime_type: str) -> Tuple[str, str]:
-    """Return (kind, extracted_text). Kind is one of: pdf, docx, txt, md, csv, image."""
+    """Return (kind, extracted_text). Kind is one of: pdf, docx, pptx, txt, md, csv, image."""
     kind = SUPPORTED_MIME.get(mime_type, "")
     if not kind:
         return "", ""
@@ -131,6 +150,8 @@ def extract(content: bytes, mime_type: str) -> Tuple[str, str]:
         text = _extract_pdf(content)
     elif kind == "docx":
         text = _extract_docx(content)
+    elif kind == "pptx":
+        text = _extract_pptx(content)
     elif kind in ("txt", "md", "csv"):
         text = _extract_text(content)
     else:
