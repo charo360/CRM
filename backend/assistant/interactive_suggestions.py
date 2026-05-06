@@ -1,13 +1,23 @@
 """Generate tap-to-send follow-up suggestions for interactive assistant turns.
 
 Fully AI-driven — no hardcoded fallback arrays or pattern matching.
+Results are cached by (agent_id, reply_hash) with a 5-minute TTL to avoid
+an extra LLM call on every single turn.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
-from typing import List
+import time
+from typing import Dict, List, Tuple
+
+# Simple in-process LRU-style cache: key → (chips, expires_at)
+# TTL of 300s means repeated identical replies (e.g. "ok noted") reuse chips.
+_SUGGESTION_CACHE: Dict[str, Tuple[List[str], float]] = {}
+_CACHE_TTL = 300  # seconds
+_CACHE_MAX = 500  # max entries before oldest are pruned
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +90,27 @@ def _parse_chips_json(raw: str) -> List[str]:
         return []
 
 
+def _cache_key(agent_id: str, user_message: str, assistant_reply: str) -> str:
+    raw = f"{agent_id}|{user_message[:200]}|{assistant_reply[:400]}"
+    return hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()
+
+
+def _cache_get(key: str) -> List[str] | None:
+    entry = _SUGGESTION_CACHE.get(key)
+    if entry and entry[1] > time.time():
+        return entry[0]
+    return None
+
+
+def _cache_set(key: str, chips: List[str]) -> None:
+    if len(_SUGGESTION_CACHE) >= _CACHE_MAX:
+        # Drop the oldest quarter of entries
+        oldest = sorted(_SUGGESTION_CACHE.items(), key=lambda x: x[1][1])
+        for k, _ in oldest[: _CACHE_MAX // 4]:
+            _SUGGESTION_CACHE.pop(k, None)
+    _SUGGESTION_CACHE[key] = (chips, time.time() + _CACHE_TTL)
+
+
 async def build_reply_suggestions(
     agent_id: str,
     user_message: str,
@@ -91,6 +122,12 @@ async def build_reply_suggestions(
     reply = (assistant_reply or "").strip()
     if not reply:
         return []
+
+    # Return cached chips for identical (agent, user_msg, reply) tuples
+    _key = _cache_key(agent_id, user_message, reply)
+    _cached = _cache_get(_key)
+    if _cached is not None:
+        return _cached
 
     try:
         import os, httpx
@@ -166,7 +203,9 @@ Output JSON only, one line: {{"chips": ["...", "...", "..."]}}"""
         if raw:
             chips = _parse_chips_json(raw)
             if chips:
-                return chips[:6]
+                result = chips[:6]
+                _cache_set(_key, result)
+                return result
             logger.warning("[interactive_suggestions] parsed 0 chips from: %s", raw[:200])
 
     except Exception as exc:

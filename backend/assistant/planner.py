@@ -14,9 +14,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Keywords that suggest a multi-step or multi-intent request
-_COMPLEXITY_TRIGGERS = [" and ", " also ", " then ", " plus ", " as well", " after that"]
-_MIN_COMPLEX_LEN = 60  # characters; short messages are rarely complex
+# Connector words that suggest multiple sequential intents
+_COMPLEXITY_TRIGGERS = [" and ", " also ", " then ", " plus ", " as well", " after that",
+                        " followed by", " once you", " when done", " next step"]
+
+# Action verbs that alone signal a multi-step task requiring planning
+_COMPLEX_ACTION_VERBS = [
+    "create", "generate", "build", "write", "draft", "send", "broadcast",
+    "analyze", "analyse", "compare", "summarize", "summarise", "report",
+    "export", "design", "prepare", "set up", "configure",
+]
+
+# Topics that are inherently multi-step regardless of connector words
+_COMPLEX_TOPICS = [
+    "pitch deck", "presentation", "slide deck", "business plan", "proposal",
+    "broadcast", "campaign", "workflow", "automation", "report", "invoice",
+    "onboarding", "contract", "agreement", "audit", "analysis",
+]
+
+_MIN_COMPLEX_LEN = 50  # characters; short messages are rarely complex
 
 PLANNER_SYSTEM = (
     "You are a task planner for a business CRM AI assistant. "
@@ -35,12 +51,26 @@ _FALLBACK = lambda msg: {  # noqa: E731
 
 
 def _is_complex(message: str) -> bool:
-    """Quick heuristic: returns True only if the message looks multi-intent."""
+    """Return True if the message looks multi-step or multi-intent and benefits from planning."""
+    if len(message) < _MIN_COMPLEX_LEN:
+        return False
     msg_lower = message.lower()
-    return (
-        len(message) > _MIN_COMPLEX_LEN
-        and any(t in msg_lower for t in _COMPLEXITY_TRIGGERS)
-    )
+
+    # Explicit connector words always signal multiple steps
+    if any(t in msg_lower for t in _COMPLEXITY_TRIGGERS):
+        return True
+
+    # Inherently multi-step topics — always need a plan regardless of connector words
+    # e.g. "Create a pitch deck for investors using our latest revenue data"
+    if any(topic in msg_lower for topic in _COMPLEX_TOPICS):
+        return True
+
+    # Action verb + sufficient length — "Generate a sales report for this month"
+    # Only trigger on longer messages to avoid simple single-step commands
+    if len(message) > 80 and any(verb in msg_lower for verb in _COMPLEX_ACTION_VERBS):
+        return True
+
+    return False
 
 
 async def plan(user_message: str, available_tools: list) -> dict:

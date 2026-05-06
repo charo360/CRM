@@ -6180,6 +6180,14 @@ async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "Language for the presentation content. Default: 'en'.",
             },
+            "premium_ai_design": {
+                "type": "boolean",
+                "description": (
+                    "Set to true ONLY when the user explicitly chooses the premium AI-designed option. "
+                    "Uses the create-pdf-slides endpoint which costs ~100 credits per slide — warn the user before calling. "
+                    "Produces a fully AI-designed deck with no template selection required. Default: false."
+                ),
+            },
         },
     },
 )
@@ -6192,6 +6200,7 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
     style_query = args.get("style_query", "")
     reference_image_url = args.get("reference_image_url")
     language = args.get("language", "en")
+    premium_ai_design = bool(args.get("premium_ai_design", False))
 
     # Enrich prompt with business context
     try:
@@ -6221,8 +6230,9 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
         theme_id=theme_id,
         n_slides=n_slides,
         language=language,
-        design_style=style_query or None,  # Pass to service for auto theme search
+        design_style=style_query or None,
         reference_image_url=reference_image_url,
+        use_ai_design=premium_ai_design,
     )
 
     if result.get("error"):

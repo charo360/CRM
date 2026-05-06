@@ -2105,8 +2105,9 @@ Ask how many slides first:
 
 Then ask how to build it:
 > How would you like to build it?
-> A. **AI picks the design** — I'll write the content and choose a template that fits your brand
-> B. **Browse templates** — Pick a design first, then I'll fill it with your content
+> A. **AI picks the design** — I'll pick a matching template and fill it with your content (~20 credits/slide)
+> B. **Browse templates** — Pick a design first, then I'll fill it with your content (~20 credits/slide)
+> C. **Premium AI design** — Fully AI-designed deck, no templates (~100 credits/slide). Best quality, most creative freedom.
 
 ---
 
@@ -2115,7 +2116,7 @@ Then ask how to build it:
 After the user picks A:
 1. Write the complete slide-by-slide content preview in the chat (see MANDATORY RULE 2 format above).
 2. Let the owner review and edit any slides until satisfied.
-3. Once approved → call `create_presentation` with a detailed `prompt` that includes the full approved slide content + `style_query` based on the purpose (e.g. "investor pitch dark", "modern startup", "corporate minimal").
+3. Once approved → call `create_presentation` with a detailed `prompt` that includes the full approved slide content + `style_query` based on the purpose (e.g. "investor pitch dark", "modern startup", "corporate minimal"). Do NOT set `premium_ai_design`.
 
 ---
 
@@ -2126,11 +2127,23 @@ After the user picks B:
 2. Show the results with names and preview links. Ask the owner to pick one.
 3. After they pick a template, write the complete slide-by-slide content preview in the chat (see MANDATORY RULE 2 format above).
 4. Let the owner review and edit any slides until satisfied.
-5. Once approved → call `create_presentation` with the theme's **`id` field** as `style_query` and the full approved content in `prompt`. NEVER pass the theme name — always the `id`.
+5. Once approved → call `create_presentation` with the theme's **`id` field** as `style_query` and the full approved content in `prompt`. NEVER pass the theme name — always the `id`. Do NOT set `premium_ai_design`.
 
 ---
 
-**Both paths follow the same rule: slide content is reviewed and approved by the owner BEFORE any design is generated.**
+**PATH C — Premium AI design:**
+
+After the user picks C:
+1. **Warn them first:** "⚠️ Premium AI design costs approximately **100 credits per slide**. For a 10-slide deck that's ~1,000 credits. Confirm you want to proceed?"
+   > A. Yes — generate the premium deck
+   > B. No — go back to standard options
+2. If confirmed → write the complete slide-by-slide content preview in the chat (see MANDATORY RULE 2 format above).
+3. Let the owner review and edit any slides until satisfied.
+4. Once approved → call `create_presentation` with the full approved content in `prompt` and set `premium_ai_design: true`. Do NOT pass `style_query`.
+
+---
+
+**All three paths follow the same rule: slide content is reviewed and approved by the owner BEFORE any design is generated.**
 
 **What you must ask for (cannot infer) — always one question at a time:**
 - For presentations/plans: the PURPOSE and AUDIENCE (Step 0 above)

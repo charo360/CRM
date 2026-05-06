@@ -58,14 +58,16 @@ async def generate_presentation(
     resolution: str = "2K",
     design_style: Optional[str] = None,
     reference_image_url: Optional[str] = None,
+    use_ai_design: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate a presentation via 2Slides API.
 
     Routes:
     - reference_image_url provided → POST /slides/create-like-this (style clone)
-    - theme_id provided            → POST /slides/generate (fast PPT, pre-built theme)
-    - neither                      → POST /slides/create-pdf-slides (AI-designed, no theme needed)
+    - use_ai_design=True           → POST /slides/create-pdf-slides (premium AI-designed, ~100 credits/slide)
+    - theme_id provided            → POST /slides/generate (fast PPT, pre-built theme, ~20 credits/slide)
+    - neither                      → auto-select theme and use /slides/generate
 
     Returns dict with: download_url, job_id, status, error
     """
@@ -82,7 +84,20 @@ async def generate_presentation(
         }
         return await _post_and_poll(f"{_BASE}/slides/create-like-this", payload)
 
-    # ── Route B: fast PPT with pre-built theme ─────────────────────────────
+    # ── Route B: premium AI-designed (no theme, fully AI layout) ───────────
+    if use_ai_design:
+        payload = {
+            "userInput": prompt,
+            "responseLanguage": language,
+            "resolution": resolution,
+            "page": n_slides,
+            "contentDetail": "detailed",
+            "mode": "async",
+        }
+        logger.info("[2slides] using premium AI design (create-pdf-slides), ~100 credits/slide")
+        return await _post_and_poll(f"{_BASE}/slides/create-pdf-slides", payload)
+
+    # ── Route C: fast PPT with pre-built theme ─────────────────────────────
     if theme_id:
         payload = {
             "userInput": prompt,

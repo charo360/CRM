@@ -581,9 +581,34 @@ async def _flush_owner_prefs_bg(business_id: str, turns: list, agent_id: str) ->
 
 async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str, Any]:
     """Attach tap-to-send suggestion chips for interactive specialists (e.g. Meta Ads)."""
+    _db_ft = payload.get("_db")
+    _conv_id_ft = payload.get("_conversation_id")
     if payload.get("needs_confirmation"):
         payload.setdefault("reply_suggestions", [])
+        # Persist the pending confirmation so the next turn can gate approval against it.
+        if _db_ft is not None and _conv_id_ft:
+            async def _store_pending_conf() -> None:
+                try:
+                    await _db_ft.assistant_conversations.update_one(
+                        {"_id": _conv_id_ft},
+                        {"$set": {"pending_confirmation": payload["needs_confirmation"]}},
+                    )
+                except Exception as _e:
+                    logger.debug("[orchestrator] store pending_confirmation failed: %s", _e)
+            asyncio.create_task(_store_pending_conf())
         return payload
+    # No pending confirmation this turn — clear any stale entry so future "yes" replies
+    # don't accidentally approve an old destructive action.
+    if _db_ft is not None and _conv_id_ft:
+        async def _clear_pending_conf() -> None:
+            try:
+                await _db_ft.assistant_conversations.update_one(
+                    {"_id": _conv_id_ft},
+                    {"$unset": {"pending_confirmation": ""}},
+                )
+            except Exception as _e:
+                logger.debug("[orchestrator] clear pending_confirmation failed: %s", _e)
+        asyncio.create_task(_clear_pending_conf())
     reply = payload.get("reply") or ""
     ag = payload.get("active_agent") or ""
     try:
@@ -896,21 +921,28 @@ Before calling ANY tools or asking ANY questions, check conversation history and
             # Memory flush: every MEMORY_FLUSH_EVERY turns, summarize + embed async.
             _flush_every = int(os.getenv("MEMORY_FLUSH_EVERY", "10"))
             _business_id = str(user.get("business_id") or user.get("_id", ""))
+            def _log_bg_task_error(task: asyncio.Task) -> None:
+                """Callback to surface unhandled exceptions from fire-and-forget tasks."""
+                if not task.cancelled():
+                    exc = task.exception()
+                    if exc:
+                        logger.warning("[orchestrator] background task %s failed: %s", task.get_name(), exc)
+
             if len(history) > 0 and (len(history) + 1) % _flush_every == 0:
                 from memory.flush import flush_to_long_term
-                asyncio.create_task(flush_to_long_term(
+                _t1 = asyncio.create_task(flush_to_long_term(
                     customer_id=str(user.get("_id", "")),
                     business_id=_business_id,
                     turns=history[-_flush_every:],
                 ))
+                _t1.add_done_callback(_log_bg_task_error)
             # Owner preference flush: fires every turn on the last N messages
-            # (uses a smaller window — preferences surface faster than memories).
-            # Always fires, not just every 10 turns.
-            asyncio.create_task(_flush_owner_prefs_bg(
+            _t2 = asyncio.create_task(_flush_owner_prefs_bg(
                 business_id=_business_id,
                 turns=messages_to_append,
                 agent_id=active_agent_id,
             ))
+            _t2.add_done_callback(_log_bg_task_error)
             return await _finalize_turn(
                 {
                     "reply": final,

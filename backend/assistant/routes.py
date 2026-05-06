@@ -411,11 +411,12 @@ def _mk_router(db, get_current_user):
 
             _asyncio.create_task(_update_title())
 
+        _MSG_CAP = 2000  # keep last 2000 messages; older ones are already summarised
         try:
             await db.assistant_conversations.update_one(
                 {"_id": conv_id, "user_id": user_id},
                 {
-                    "$push": {"messages": {"$each": new_msgs}},
+                    "$push": {"messages": {"$each": new_msgs, "$slice": -_MSG_CAP}},
                     "$set": {
                         "updated_at": datetime.utcnow(),
                         "model": result.get("model") or conv.get("model"),
@@ -551,18 +552,22 @@ def _mk_router(db, get_current_user):
                     if item is None:
                         break
                     etype = item.get("type")
-                    if etype == "tool_start":
-                        yield "data: " + json.dumps({"type": "tool_start", "tool": item.get("tool", "")}) + "\n\n"
-                    elif etype == "token":
-                        token = item.get("text", "")
-                        reply_text += token
-                        yield "data: " + json.dumps({"type": "token", "text": token}) + "\n\n"
-                    elif etype == "done":
-                        result = item
-                    elif etype == "error":
-                        yield "data: " + json.dumps({"type": "error", "message": item.get("message", "Unknown error")}) + "\n\n"
-                        _task.cancel()
-                        return
+                    try:
+                        if etype == "tool_start":
+                            yield "data: " + json.dumps({"type": "tool_start", "tool": item.get("tool", "")}, default=str) + "\n\n"
+                        elif etype == "token":
+                            token = item.get("text", "")
+                            reply_text += token
+                            yield "data: " + json.dumps({"type": "token", "text": token}, default=str) + "\n\n"
+                        elif etype == "done":
+                            result = item
+                        elif etype == "error":
+                            yield "data: " + json.dumps({"type": "error", "message": item.get("message", "Unknown error")}, default=str) + "\n\n"
+                            _task.cancel()
+                            return
+                    except Exception as _enc_err:
+                        logger.warning("[stream] SSE encoding failed for event %s: %s", etype, _enc_err)
+                        continue
             except Exception as e:
                 _task.cancel()
                 logger.exception("[assistant.chat/stream] run_turn_stream failure")
@@ -730,14 +735,21 @@ def _mk_router(db, get_current_user):
             if not conv or not can_access_conversation_row(conv, user):
                 raise HTTPException(404, "Conversation not found")
 
+        _MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB hard limit
         content = await file.read()
+        if len(content) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"File too large. Maximum allowed size is 20 MB.")
+        allowed_mime_prefixes = ("image/", "application/pdf", "text/", "application/vnd.", "application/msword")
+        mime = file.content_type or "application/octet-stream"
+        if not any(mime.startswith(p) for p in allowed_mime_prefixes):
+            raise HTTPException(415, f"Unsupported file type: {mime}")
         try:
             meta = await store_upload(
                 db,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 filename=file.filename or "file",
-                mime_type=file.content_type or "application/octet-stream",
+                mime_type=mime,
                 content=content,
             )
         except ValueError as e:

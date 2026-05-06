@@ -128,15 +128,46 @@ async def chat_with_tools(
     `attachments` (optional) is a list of documents to pass natively when the
         provider supports it (Anthropic). Each item: {kind, mime_type, filename, b64}.
     Returns: {content, tool_calls:[{id,name,arguments}], finish_reason, model, raw}.
+
+    Fallback chain: if the primary provider times out or returns 5xx, automatically
+    retries on the next available provider so a single vendor outage doesn't take
+    down the whole assistant.
     """
     cfg = resolve_model(model_id)
     provider = cfg["provider"]
 
-    if provider in ("openai", "deepseek", "grok"):
-        return await _call_openai_compatible(cfg, messages, tools, temperature, timeout)
-    if provider == "anthropic":
-        return await _call_anthropic(cfg, messages, tools, temperature, timeout, attachments=attachments)
-    raise RuntimeError(f"Unsupported provider: {provider}")
+    # Build fallback chain: primary first, then alternatives in priority order
+    _FALLBACK_CHAIN = [
+        ("deepseek", "deepseek-chat"),
+        ("openai",   "gpt-4o-mini"),
+        ("grok",     "grok-3-mini"),
+        ("anthropic","claude-haiku-4-5-20251001"),
+    ]
+    providers_to_try = [cfg] + [
+        {"provider": p, "model": m}
+        for p, m in _FALLBACK_CHAIN
+        if p != provider and os.environ.get({"deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY",
+                                              "grok": "GROK_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(p, ""))
+    ]
+
+    last_exc: Exception = RuntimeError("No providers available")
+    for attempt_cfg in providers_to_try:
+        try:
+            p = attempt_cfg["provider"]
+            if p in ("openai", "deepseek", "grok"):
+                return await _call_openai_compatible(attempt_cfg, messages, tools, temperature, timeout)
+            if p == "anthropic":
+                return await _call_anthropic(attempt_cfg, messages, tools, temperature, timeout, attachments=attachments)
+        except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            if attempt_cfg is not providers_to_try[-1]:
+                logger.warning("[models] provider %s failed (%s), trying fallback", attempt_cfg["provider"], exc)
+                last_exc = exc
+                continue
+            raise
+        except Exception:
+            raise
+
+    raise last_exc
 
 
 # ── OpenAI / DeepSeek / Grok (OpenAI-compatible) ─────────────────────────────
