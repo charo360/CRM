@@ -1650,7 +1650,7 @@ function MessageBubble({
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
-            <VideoPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
+            <VideoPreview steps={msg.steps} />
             <PresentationPlanPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
             <PresentationPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
             <DesignPreview steps={msg.steps} />
