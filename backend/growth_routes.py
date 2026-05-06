@@ -485,7 +485,7 @@ async def refresh_competitor_insights(request: Request):
         name = comp.get("name", "")
         website = comp.get("website", "")
         query = f"{name} {website} latest news pricing promotions".strip()
-        # Use DuckDuckGo search (already used elsewhere in the app)
+        search_results: list = []
         try:
             from duckduckgo_search import DDGS
             with DDGS() as ddgs:
@@ -502,7 +502,7 @@ async def refresh_competitor_insights(request: Request):
             "competitor_id": str(comp["_id"]),
             "competitor_name": name,
             "summary": summary,
-            "raw_results": search_results[:5] if "search_results" in dir() else [],
+            "raw_results": search_results[:5],
             "created_at": datetime.utcnow(),
         }
         await _db.competitor_insights.insert_one(insight)
