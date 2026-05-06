@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_LLM_ROUTE_CONFIDENCE_MIN = 0.68
+_LLM_ROUTE_CONFIDENCE_MIN = 0.75
 
 # Routed here only when the user clearly means the Shopify *store*, not generic catalog work.
 _SHOPIFY_AGENT_IDS = frozenset(
@@ -177,11 +177,9 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
     "meta_ads": [
         "facebook ad", "instagram ad", "meta ad", "meta campaign",
         "fb ad", "ads manager", "learning phase", "roas ", "cpm ",
-        "ad creative", "retargeting", "prospecting", "lookalike",
+        "retargeting", "prospecting", "lookalike",
         "facebook campaign", "instagram campaign", "meta ads",
         "ad budget", "ad spend", "ad account",
-        "ad design", "ad graphic", "ad image", "design the ad", "design an ad", "design my ad",
-        "visual ad", "social ad", "banner ad", "ad banner", "creative asset",
     ],
     "google_ads": [
         "google ad", "google campaign", "google search ad",
@@ -198,14 +196,11 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
 
     # ── Creative (social + design merged) ────────────────────────────────────
     "creative": [
-        # social content
-        "social media", "instagram post", "facebook post", "tiktok",
-        "twitter post", "linkedin post", "schedule post", "social inbox",
-        "social account", "social channel", "post to social",
-        "publish post", "connect social",
+        # visual content creation (graphics, images, designs)
+        "instagram post", "facebook post", "tiktok",
+        "twitter post", "linkedin post",
         "post graphic", "social graphic", "instagram graphic", "facebook graphic",
-        "caption", "hashtag", "content idea", "content strategy",
-        "what to post", "when to post", "best time to post",
+        "caption", "hashtag", "content idea",
         # design / visual — pure graphics only, NOT text documents
         "graphic", "create a graphic", "make a graphic",
         "ad design", "design the ad", "design an ad", "design my ad",
@@ -217,6 +212,7 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "promotional graphic", "ad visual", "social visual", "post graphic",
         "create visual", "make visual", "design visual", "visual content",
         "create post", "make a post", "build a post", "generate a post",
+        "creative asset",
     ],
 
     # ── CRM core ──────────────────────────────────────────────────────────────
@@ -259,10 +255,10 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "book a service", "booking today",
     ],
     "finance": [
-        "invoice", "expenses", "cash flow", "financial report",
+        "expenses", "cash flow", "financial report",
         "profit and loss", "money in", "money out",
-        "outstanding invoice", "unpaid invoice", "record expense",
-        "finance summary", "financial overview",
+        "record expense", "finance summary", "financial overview",
+        "p&l", "gross profit", "net profit", "operating cost",
     ],
     "automations": [
         "automate", "automation", "workflow", "whenever a customer",
@@ -315,7 +311,6 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "stripe balance", "stripe customers", "stripe subscriptions",
         "payment link", "stripe checkout", "create payment link",
         "stripe revenue", "stripe payout", "stripe account",
-        "overdue invoice", "paid invoice", "unpaid invoice",
     ],
 
     # ── Email marketing ───────────────────────────────────────────────────────
@@ -428,10 +423,13 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "proposal document", "proposal pdf", "proposal word",
     ],
     "analytics": [
-        "analytics", "dashboard", "performance report", "kpi",
+        # Use qualified phrases so bare "analytics" doesn't tie with team_analytics/social_monitor
+        "business analytics", "business dashboard", "performance report", "kpi",
         "business metrics", "revenue report", "monthly report",
-        "weekly report", "stats", "numbers", "how is my business",
-        "business overview", "trend report", "growth rate",
+        "weekly report", "how is my business", "business overview",
+        "trend report", "growth rate", "overall performance",
+        "business performance", "business stats", "business numbers",
+        "show my stats", "show me stats", "my kpis",
     ],
     "team_analytics": [
         "team performance", "staff performance", "team report",
@@ -505,6 +503,20 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "add to shop", "shop menu", "catalog", "product catalog",
         "shop setup", "shop link", "shop page", "my menu",
     ],
+
+    # ── Spreadsheet / Workspace integrations ──────────────────────────────────
+    "google_sheets": [
+        "google sheets", "google sheet", "sync to sheets", "export to sheets",
+        "spreadsheet", "my spreadsheet", "update sheet", "read sheet",
+        "sheets integration", "google spreadsheet", "sync customers to sheets",
+        "sync orders to sheets", "export to google", "google sheet report",
+    ],
+    "notion": [
+        "notion", "notion page", "notion database", "sync to notion",
+        "notion workspace", "update notion", "notion doc", "notion board",
+        "notion integration", "write to notion", "notion table",
+        "sync crm to notion", "notion notes",
+    ],
 }
 
 
@@ -549,6 +561,8 @@ def _is_continuation_message(msg_lower: str) -> bool:
     }:
         return True
     # Platform / format choice — user picking from chips (e.g. "Instagram Feed sounds good")
+    # Use whole-word matching to avoid "feed" matching "feedback", "story" matching
+    # "story on this order", "video" matching "video call", etc.
     platform_format_words = {
         "feed", "story", "stories", "reel", "reels", "square", "portrait",
         "landscape", "carousel", "vertical", "horizontal",
@@ -557,7 +571,8 @@ def _is_continuation_message(msg_lower: str) -> bool:
         "one", "two", "first", "second", "both", "left", "right",
         "option a", "option b", "template",
     }
-    if any(w in msg_lower for w in platform_format_words):
+    msg_words = set(msg_lower.split())
+    if any(w in msg_words for w in platform_format_words):
         # Short chip reply that picks a platform/format/option — definitely a continuation
         return True
     # "Let's go with X", "I like X", "X sounds good", "X please", "X works" — option-picking phrases
@@ -610,8 +625,22 @@ _DESIGN_EXIT_MARKERS = (
 
 
 def _is_explicit_design_exit(msg_lower: str) -> bool:
-    """True if the user clearly wants to leave a design session and go elsewhere."""
-    return any(m in msg_lower for m in _DESIGN_EXIT_MARKERS)
+    """True if the user clearly wants to leave a design session and go elsewhere.
+
+    Uses startswith / exact phrase checks for short ambiguous markers like
+    "switch to" to avoid false positives (e.g. "switch to creative" should NOT
+    exit creative, but "switch to meta ads" should).
+    """
+    # Markers that are only safe to match at the START of the message
+    _START_ONLY = ("switch to ", "back to ")
+    for m in _DESIGN_EXIT_MARKERS:
+        if any(m.startswith(s) for s in _START_ONLY):
+            if msg_lower.startswith(m):
+                return True
+        else:
+            if m in msg_lower:
+                return True
+    return False
 
 
 def _is_social_connection_status_intent(msg_lower: str) -> bool:
@@ -687,27 +716,55 @@ async def _llm_route_choice(
         prompt = (
             "You are the routing layer of a CRM assistant. "
             "Pick the single best specialist agent for this message.\n\n"
-            "Agent boundaries (strict):\n"
-            "- social_inbox: DMs, inbox conversations, replies, message history\n"
-            "- social_scheduler: scheduling, calendar, publishing plans\n"
-            "- social_monitor: post metrics, engagement analytics, social ROI\n"
-            "- creative: generating/refining visuals and creative assets\n"
-            "- general: integrations/account status, cross-domain and fallback\n\n"
-            "Rules: If the user is adding or editing products in general (catalog, prices, SKUs) but does NOT mention "
-            "Shopify or a Shopify store, prefer **inventory** or **shop** — NOT shopify / shopify_products / shopify_orders. "
-            "Shopify agents are only for explicit Shopify store/admin/sync questions.\n\n"
-            "**Critical:** If the user wants **ad graphics, social posts, social media content, captions, hashtags, "
-            "flyers/posters, PDF layouts, PowerPoint/slide decks, template-based renders, or any visual creative**, "
-            "route to **creative** when it appears in the list — never **inventory** or **shop**.\n\n"
-            "**Critical:** Questions about connected integrations/accounts (e.g. \"how many social accounts connected\") "
-            "should route to **general** unless a dedicated integration status agent is clearly better.\n\n"
+            "AGENT OWNERSHIP (strict — pick the most specific match):\n"
+            "- invoices: creating, viewing, sending, or tracking invoices and their status\n"
+            "- payments: recording/viewing payment receipts, who paid, outstanding payments (not invoices)\n"
+            "- finance: P&L, cash flow, expenses, financial overview — NOT individual invoices or payments\n"
+            "- stripe: ONLY when user explicitly mentions Stripe, payment links, Stripe subscriptions\n"
+            "- analytics: business-wide KPIs, dashboards, monthly/weekly performance reports\n"
+            "- sales: revenue by product, top sellers, sales trends — NOT financial P&L\n"
+            "- inventory: add/edit/delete products, stock levels, SKUs, pricing — only when Shopify NOT mentioned\n"
+            "- shop: storefront/shop page/catalog link/shop menu — NOT product editing\n"
+            "- shopify / shopify_*: ONLY when user explicitly mentions Shopify or Shopify store\n"
+            "- customers: customer records, segments, VIPs, health scores, at-risk customers\n"
+            "- contacts: leads, contact database, import contacts, contact records (not customers)\n"
+            "- quotes: short pricing docs — quotes, estimates, scope-of-work for a specific customer\n"
+            "- document: long-form written docs — business plans, pitch decks, contracts, reports, press releases, proposals\n"
+            "- meta_ads: Facebook/Instagram ad campaigns, budgets, ROAS, ad performance strategy\n"
+            "- google_ads: Google Search/Display/Performance Max campaigns, quality score, adwords\n"
+            "- creative: generating/refining VISUALS — graphics, flyers, ad images, social post images, carousels\n"
+            "- social_inbox: social DMs, inbox conversations, replies, message history from social platforms\n"
+            "- social_scheduler: scheduling posts, content calendar, publishing plans, when to post\n"
+            "- social_monitor: post performance metrics, engagement analytics, reach, social ROI, likes/shares\n"
+            "- messages: WhatsApp inbox, composing/reading WhatsApp messages to customers\n"
+            "- broadcasts: bulk/mass WhatsApp message sends — promos, announcements, send to all\n"
+            "- follow_ups: follow-up reminders, overdue contacts, reconnect scheduling\n"
+            "- bookings: appointments, reservations, scheduling services, availability\n"
+            "- automations: workflow triggers, auto-reply rules, sequences, automation setup\n"
+            "- general: integrations/account status questions, cross-domain fallback\n\n"
+            "DISAMBIGUATION RULES (apply in order):\n"
+            "1. 'invoice' / 'create invoice' / 'unpaid invoice' / 'overdue invoice' → invoices (not finance, not stripe)\n"
+            "2. 'expense' / 'cash flow' / 'P&L' / 'profit and loss' → finance (not invoices)\n"
+            "3. 'stripe [anything]' → stripe; otherwise payment records → payments\n"
+            "4. 'business plan' / 'pitch deck' / 'contract' / 'press release' / 'write a report' → document\n"
+            "5. 'quote' / 'estimate' / 'scope of work' for a specific customer → quotes (not document)\n"
+            "6. 'design an ad' / 'ad graphic' / 'ad image' / 'make a flyer' → creative (not meta_ads)\n"
+            "7. 'facebook ad campaign' / 'ad budget' / 'ROAS' / 'ad spend' / 'retargeting' → meta_ads (not creative)\n"
+            "8. 'add product' / 'edit product' / 'stock level' without Shopify → inventory (not shop, not shopify)\n"
+            "9. 'my customers' / 'customer segment' / 'VIP customers' → customers (not contacts)\n"
+            "10. 'leads' / 'contact database' / 'import contacts' → contacts (not customers)\n"
+            "11. 'post performance' / 'engagement rate' / 'how are my posts doing' → social_monitor (not creative)\n"
+            "12. 'schedule post' / 'content calendar' / 'when to post' → social_scheduler (not creative)\n"
+            "13. 'social DM' / 'social inbox' / 'reply to social message' → social_inbox (not messages — messages=WhatsApp)\n"
+            "14. 'send to all customers' / 'bulk message' / 'mass message' → broadcasts (not messages)\n"
+            "15. 'how many social accounts' / 'connected integrations' → general\n\n"
             f"Available agents:\n{agent_menu}\n\n"
             f"Recent context:\n{recent}\n\n"
             f"User message: \"{message}\"\n\n"
             "Reply ONLY with valid JSON on one line: "
             "{\"agent\": \"<agent_id>\", \"confidence\": <0.0-1.0>, \"reason\": \"<one sentence>\"}\n"
             "confidence: 1.0 = unambiguously clear, 0.5 = could go either way. "
-            "Choose the most specific agent. Use 'general' only if nothing else fits."
+            "Choose the most specific agent. Use 'general' only if truly nothing else fits."
         )
 
         resp = await _chat_with_tools(
@@ -800,6 +857,12 @@ async def route_to_agent(
     if llm_choice is not None:
         chosen, confidence = llm_choice
         if confidence >= _LLM_ROUTE_CONFIDENCE_MIN:
+            # Hard override: document intent must never land on general.
+            # general's old description said "documents" which caused the LLM to
+            # confidently pick it for presentation/proposal requests.
+            if chosen == "general" and _is_text_document_intent(msg_lower) and "document" in agent_registry:
+                logger.info("[IntentRouter] LLM → document (override: text-doc intent mis-routed to general)")
+                return "document"
             logger.info(
                 "[IntentRouter] LLM → %s (confidence=%.2f)", chosen, confidence
             )

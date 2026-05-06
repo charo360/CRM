@@ -2040,6 +2040,17 @@ Example — instead of *"What tone should this document have?"* write:
 > C. Bold & confident
 > D. Something else — describe it
 
+**Special case: Presentations**
+When the user asks for a presentation or slide deck, offer the choice with options:
+> Would you like me to:
+> A. **Generate one with AI** — I'll write the content and pick a beautiful template automatically
+> B. **Browse templates** — Pick a specific design first, then I'll generate the content
+> C. **Something else** — Describe what you have in mind
+
+- If they choose A → call `create_presentation` with detailed prompt + `style_query` based on their business
+- If they choose B → call `browse_presentation_themes`, show results, ask them to pick, then call `create_presentation` with the theme's **`id` field** (e.g. `st-1759636199694-mw3250rt0`) as `style_query` — NEVER pass the name, always the ID
+- If they choose C or "surprise me" → go with AI generation
+
 **What you must ask for (cannot infer):**
 - The specific recipient/client name and their company (for proposals, contracts, letters)
 - The specific problem the client has or the project scope (for SOWs and proposals)
@@ -2744,7 +2755,7 @@ Calm, precise, confident. No filler openers. Lead with the answer or the data. H
 AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
     GENERAL_AGENT_ID: {
         "label": "Zilo",
-        "description": "General CRM assistant — documents, analytics, anything not covered by a specialist",
+        "description": "Cross-domain triage, account status, integrations setup, and anything not covered by a named specialist — does NOT handle documents, proposals, or analytics (use the dedicated agents for those)",
         "allowed_tools": GENERAL_TOOLS,   # excludes design tools
         "use_default_system_prompt": False,
         "system_prompt": GENERAL_SYSTEM_PROMPT,
@@ -2779,7 +2790,7 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     SALES_AGENT_ID: {
         "label": "Sales & Revenue",
-        "description": "Revenue reports, product catalog, sales trends, top sellers, pipeline",
+        "description": "Revenue reports, sales trends, top-selling products, earnings, pipeline — NOT product editing or stock management",
         "allowed_tools": SALES_TOOLS,
         "use_default_system_prompt": False,
         "system_prompt": SALES_SYSTEM_PROMPT,
@@ -3015,7 +3026,7 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     INVENTORY_AGENT_ID: {
         "label": "Inventory",
-        "description": "Zilo product catalog and stock (default for add/edit products); Shopify live inventory only when Shopify is relevant",
+        "description": "Add, edit, delete products — stock levels, SKUs, pricing, restock alerts. Use this for ALL product management unless Shopify is explicitly mentioned",
         "allowed_tools": INVENTORY_TOOLS,
         "use_default_system_prompt": False,
         "system_prompt": INVENTORY_SYSTEM_PROMPT,
@@ -3064,7 +3075,7 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     SHOP_AGENT_ID: {
         "label": "Shop / Catalog",
-        "description": "Product catalog management, pricing, storefront, best-seller analysis",
+        "description": "Customer-facing storefront — shop page, shop link, shop menu, catalog view for customers. NOT for editing products or managing stock (use inventory for that)",
         "allowed_tools": SHOP_TOOLS,
         "use_default_system_prompt": False,
         "system_prompt": SHOP_SYSTEM_PROMPT,
