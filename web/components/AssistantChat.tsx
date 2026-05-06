@@ -37,6 +37,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
+import { TemplateGallery } from "@/components/TemplateGallery";
 import { getBusinessId, getUser } from "@/lib/auth";
 import { downloadAsset } from "@/lib/utils";
 import Link from "next/link";
@@ -87,7 +88,8 @@ const TOOL_LABELS: Record<string, string> = {
   web_search:            "Searching the web…",
   // Documents
   create_business_document: "Designing document…",
-  create_presentation:   "Building presentation…",
+  create_presentation:        "Building presentation…",
+  browse_presentation_themes: "Browse Presentation Themes",
   generate_document:     "Generating document…",
   get_document_style:    "Loading document style…",
   save_document_style:   "Saving document style…",
@@ -1648,11 +1650,12 @@ function MessageBubble({
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
-            <VideoPreview steps={msg.steps} />
+            <VideoPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
             <PresentationPlanPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
             <PresentationPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
             <DesignPreview steps={msg.steps} />
             <DocumentPreview steps={msg.steps} />
+            <TemplateGalleryPreview steps={msg.steps} onSelect={(id, name) => onSuggestionSend?.(`Use template "${name}" — ID: ${id}`)} />
             {msg.suggestions &&
               msg.suggestions.length > 0 &&
               onSuggestionSend && (
@@ -2087,6 +2090,94 @@ function StepsTrail({ steps }: { steps: AssistantStep[] }) {
         </span>
       ))}
     </div>
+  );
+}
+
+function TemplateGalleryPreview({
+  steps,
+  onSelect,
+}: {
+  steps?: AssistantStep[];
+  onSelect: (id: string, name: string) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+
+  const galleryStep = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find(
+        (s) =>
+          s.tool === "browse_presentation_themes" &&
+          Array.isArray((s.result as Record<string, unknown>)?.themes),
+      ),
+    [steps],
+  );
+
+  if (!galleryStep) return null;
+
+  const result = galleryStep.result as Record<string, unknown>;
+  const themes = result.themes as {
+    id: string;
+    name: string;
+    description: string;
+    tags: string;
+    preview_url: string;
+  }[];
+
+  if (!themes?.length) return null;
+
+  return (
+    <>
+      <div className="mt-3 rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+        {/* Header */}
+        <div className="flex items-center justify-between gap-2 bg-slate-50 px-3 py-2 border-b border-slate-200">
+          <span className="text-[12px] font-semibold text-slate-700 flex items-center gap-1.5">
+            <svg className="w-3.5 h-3.5 text-brand shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
+            </svg>
+            {themes.length} Templates Found
+          </span>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="text-[11px] font-semibold text-brand hover:text-brand-dark underline"
+          >
+            Browse & pick →
+          </button>
+        </div>
+        {/* Thumbnail strip — first 3 */}
+        <div className="grid grid-cols-3 gap-px bg-slate-200">
+          {themes.slice(0, 3).map((t) => (
+            <div key={t.id} className="relative aspect-video bg-gray-100 overflow-hidden group cursor-pointer" onClick={() => setOpen(true)}>
+              <iframe
+                src={t.preview_url}
+                title={t.name}
+                className="w-[200%] h-[200%] scale-50 pointer-events-none origin-top-left"
+                sandbox="allow-same-origin allow-scripts"
+                loading="lazy"
+              />
+              <div className="absolute inset-0 group-hover:bg-black/10 transition-colors" />
+              <p className="absolute bottom-0 inset-x-0 bg-black/50 text-white text-[9px] px-1.5 py-1 truncate">{t.name}</p>
+            </div>
+          ))}
+        </div>
+        {themes.length > 3 && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="w-full py-2 text-[11px] text-slate-500 hover:text-brand hover:bg-slate-50 transition-colors text-center"
+          >
+            +{themes.length - 3} more templates — click to view all
+          </button>
+        )}
+      </div>
+      {open && (
+        <TemplateGallery
+          themes={themes}
+          onSelect={onSelect}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
   );
 }
 

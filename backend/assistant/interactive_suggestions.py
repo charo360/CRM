@@ -13,10 +13,14 @@ logger = logging.getLogger(__name__)
 
 AGENTS_WITH_SUGGESTION_CHIPS = frozenset({
     "meta_ads", "google_ads", "x_ads", "social_media", "design", "creative",
-    "general", "sales", "customers", "orders", "broadcasts", "followups", 
-    "bookings", "finance", "automations", "shopify", "shopify_orders", 
+    "general", "sales", "customers", "orders", "broadcasts", "follow_ups", "followups",
+    "bookings", "finance", "automations", "shopify", "shopify_orders",
     "shopify_products", "shopify_analytics", "social_inbox", "social_scheduler",
-    "tiktok_ads", "linkedin_ads", "pinterest_ads", "youtube_ads"
+    "social_monitor", "tiktok_ads", "linkedin_ads", "pinterest_ads", "youtube_ads",
+    # Document / writing agents — chips let owners pick options without typing
+    "document", "quotes",
+    # Analytics & inventory — step-by-step selection flows
+    "analytics", "team_analytics", "inventory", "shop",
 })
 
 
@@ -28,6 +32,27 @@ def _agent_label(agent_id: str) -> str:
         "social_media": "Creative Director",
         "creative": "Creative Director",
         "design": "Creative Director",
+        "document": "Document Writer",
+        "quotes": "Quote & Proposal Writer",
+        "finance": "Finance",
+        "analytics": "Analytics",
+        "team_analytics": "Team Analytics",
+        "inventory": "Inventory",
+        "shop": "Shop",
+        "social_monitor": "Social Monitor",
+        "social_scheduler": "Social Scheduler",
+        "social_inbox": "Social Inbox",
+        "bookings": "Bookings",
+        "broadcasts": "Broadcasts",
+        "follow_ups": "Follow-Ups",
+        "customers": "Customers",
+        "orders": "Orders",
+        "sales": "Sales",
+        "automations": "Automations",
+        "shopify": "Shopify",
+        "shopify_orders": "Shopify Orders",
+        "shopify_products": "Shopify Products",
+        "shopify_analytics": "Shopify Analytics",
     }.get(agent_id, "Zilo")
 
 
