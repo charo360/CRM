@@ -433,15 +433,24 @@ app = FastAPI(title="WhatsApp CRM")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
-# Configure CORS — use ALLOWED_ORIGINS env var in production (comma-separated)
-_allowed_origins = os.environ.get('ALLOWED_ORIGINS', '*')
-_origins_list = [o.strip() for o in _allowed_origins.split(',')] if _allowed_origins != '*' else ["*"]
+# Configure CORS.
+# Priority: ALLOWED_ORIGINS env var (comma-separated) → FRONTEND_URL → wildcard fallback.
+# Credentials require explicit origins — never combine allow_credentials=True with ["*"].
+_allowed_origins_raw = os.environ.get('ALLOWED_ORIGINS', '').strip()
+_frontend_url_cors = os.environ.get('FRONTEND_URL', '').strip()
+if _allowed_origins_raw:
+    _origins_list = [o.strip() for o in _allowed_origins_raw.split(',') if o.strip()]
+elif _frontend_url_cors:
+    _origins_list = [_frontend_url_cors, "http://localhost:3000", "http://localhost:5173"]
+else:
+    _origins_list = ["*"]
+_use_credentials = "*" not in _origins_list
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins_list,
-    allow_credentials=_allowed_origins != '*',
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=_use_credentials,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Business-Id"],
 )
 
 @app.exception_handler(Exception)
@@ -11553,6 +11562,18 @@ async def startup_tasks():
         await db.activity_logs.create_index([("business_id", 1), ("user_id", 1), ("timestamp", -1)])
         await db.activity_logs.create_index([("business_id", 1), ("entity_type", 1), ("entity_id", 1)])
 
+        # Assistant conversations — queried by user_id on every chat load
+        await db.assistant_conversations.create_index([("user_id", 1), ("updated_at", -1)])
+        await db.assistant_conversations.create_index([("user_id", 1), ("agent", 1)])
+
+        # Assistant audit log — compliance and debugging queries
+        await db.assistant_audit_log.create_index([("user_id", 1), ("created_at", -1)])
+        await db.assistant_audit_log.create_index([("actor_id", 1), ("created_at", -1)])
+
+        # Assistant agent events (telemetry) — auto-expire after 30 days, queried by conversation
+        await db.assistant_agent_events.create_index("ts", expireAfterSeconds=2592000)
+        await db.assistant_agent_events.create_index([("conversation_id", 1), ("ts", -1)])
+
         logging.info("Database indexes ensured successfully")
     except Exception as e:
         logging.error(f"Failed to create indexes: {e}")
@@ -13002,9 +13023,13 @@ async def paystack_disconnect(user=Depends(get_current_user)):
 @api_router.get("/payhero/connection")
 async def payhero_get_connection(user=Depends(get_current_user)):
     user_id = user.get("business_id", user["_id"])
-    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1})
+    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_channel_id": 1})
     connected = bool(doc and doc.get("payhero_username"))
-    return {"connected": connected, "username": doc.get("payhero_username") if connected else None}
+    return {
+        "connected": connected,
+        "username": doc.get("payhero_username") if connected else None,
+        "channel_id": doc.get("payhero_channel_id") if connected else None,
+    }
 
 @api_router.post("/payhero/connect")
 async def payhero_connect(body: dict, user=Depends(get_current_user)):
@@ -13036,8 +13061,179 @@ async def payhero_connect(body: dict, user=Depends(get_current_user)):
 @api_router.delete("/payhero/connect")
 async def payhero_disconnect(user=Depends(get_current_user)):
     user_id = user.get("business_id", user["_id"])
-    await db.users.update_one({"_id": user_id}, {"$unset": {"payhero_username": "", "payhero_password": ""}})
+    await db.users.update_one({"_id": user_id}, {"$unset": {"payhero_username": "", "payhero_password": "", "payhero_channel_id": ""}})
     return {"status": "disconnected", "connected": False}
+
+
+@api_router.get("/payhero/channels")
+async def payhero_list_channels(user=Depends(get_current_user)):
+    """List PayHero channels (paybill / till numbers) for the connected account."""
+    user_id = user.get("business_id", user["_id"])
+    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_password": 1, "payhero_channel_id": 1})
+    if not doc or not doc.get("payhero_username"):
+        raise HTTPException(400, "PayHero not connected")
+    from payhero_service import list_channels as _ph_list_channels
+    try:
+        channels = await _ph_list_channels(doc["payhero_username"], doc["payhero_password"])
+    except Exception as e:
+        raise HTTPException(502, f"PayHero API error: {e}")
+    return {"channels": channels, "selected_channel_id": doc.get("payhero_channel_id")}
+
+
+@api_router.post("/payhero/channel")
+async def payhero_set_channel(body: dict, user=Depends(get_current_user)):
+    """Save which channel (paybill/till) to use for STK push and webhook matching."""
+    channel_id = body.get("channel_id")
+    if not channel_id:
+        raise HTTPException(400, "channel_id required")
+    user_id = user.get("business_id", user["_id"])
+    await db.users.update_one({"_id": user_id}, {"$set": {"payhero_channel_id": channel_id}})
+    return {"status": "ok", "channel_id": channel_id}
+
+
+@api_router.post("/payhero/stk-push")
+async def payhero_stk_push(body: dict, user=Depends(get_current_user)):
+    """Send an M-Pesa STK push (payment prompt) to a customer's phone."""
+    phone = (body.get("phone") or "").strip()
+    amount = body.get("amount")
+    external_reference = (body.get("external_reference") or body.get("order_number") or "").strip()
+    customer_name = (body.get("customer_name") or "").strip()
+
+    if not phone or not amount:
+        raise HTTPException(400, "phone and amount are required")
+
+    user_id = user.get("business_id", user["_id"])
+    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_password": 1, "payhero_channel_id": 1})
+    if not doc or not doc.get("payhero_username"):
+        raise HTTPException(400, "PayHero not connected")
+    if not doc.get("payhero_channel_id"):
+        raise HTTPException(400, "No PayHero channel selected — go to Integrations and pick a channel")
+
+    backend_url = os.environ.get("BACKEND_URL", "").rstrip("/")
+    callback_url = f"{backend_url}/api/webhooks/payhero"
+
+    from payhero_service import stk_push as _ph_stk_push
+    try:
+        result = await _ph_stk_push(
+            username=doc["payhero_username"],
+            password=doc["payhero_password"],
+            channel_id=int(doc["payhero_channel_id"]),
+            phone=phone,
+            amount=float(amount),
+            external_reference=external_reference,
+            callback_url=callback_url,
+            customer_name=customer_name,
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, f"PayHero rejected the request: {e.response.text[:200]}")
+    except Exception as e:
+        raise HTTPException(502, f"PayHero error: {e}")
+
+    return {"status": "sent", "payhero_response": result}
+
+
+@api_router.post("/webhooks/payhero")
+async def payhero_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Receive payment notifications from PayHero.
+    Configure in PayHero dashboard: Callback URL = https://your-domain/api/webhooks/payhero
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "ok"}  # always 200 to PayHero
+
+    from payhero_service import parse_webhook as _ph_parse, process_payment as _ph_process
+
+    parsed = _ph_parse(payload)
+    logging.info(f"[PayHero webhook] status={parsed['status']} phone={parsed['phone']} amount={parsed['amount']} ref={parsed['external_ref']}")
+
+    if not parsed["success"]:
+        return {"status": "ok", "note": "non-success event acknowledged"}
+
+    background_tasks.add_task(_payhero_process_and_notify, payload, parsed)
+    return {"status": "ok"}
+
+
+async def _payhero_process_and_notify(payload: dict, parsed: dict):
+    """Background: match payment → update order → send receipt + notifications."""
+    from payhero_service import process_payment as _ph_process
+    try:
+        ctx = await _ph_process(db, parsed)
+    except Exception as e:
+        logging.error(f"[PayHero] process_payment error: {e}")
+        return
+
+    if not ctx.get("handled"):
+        logging.warning(f"[PayHero] Payment not handled: {ctx.get('reason')}")
+        return
+
+    user_id = ctx["user_id"]
+    user = ctx["user"]
+    customer = ctx.get("customer")
+    customer_name = ctx["customer_name"]
+    phone = ctx["phone"]
+    amount = ctx["amount"]
+    order_number = ctx.get("order_number")
+    provider_ref = ctx.get("provider_ref", "")
+
+    # Build receipt text
+    receipt_lines = [f"✅ *Payment Received — KES {int(amount):,}*"]
+    if order_number:
+        receipt_lines.append(f"Order: *{order_number}*")
+    if provider_ref:
+        receipt_lines.append(f"M-Pesa Ref: *{provider_ref}*")
+    receipt_lines.append("Thank you! We'll process your order shortly. 🙏")
+    receipt_text = "\n".join(receipt_lines)
+
+    # Send WhatsApp receipt to customer
+    try:
+        from whatsapp_service import get_whatsapp_service
+        ws = get_whatsapp_service(db)
+        await ws.send_message(
+            user_id=str(user_id),
+            to_number=phone,
+            message=receipt_text,
+            customer_name=customer_name,
+            send_context="payment_receipt",
+        )
+        logging.info(f"[PayHero] Receipt sent to {phone}")
+    except Exception as e:
+        logging.error(f"[PayHero] WhatsApp receipt failed: {e}")
+
+    # Push notification to business owner
+    push_token = user.get("push_token")
+    if push_token:
+        try:
+            from notification_service import get_notification_service
+            ns = get_notification_service()
+            title = f"💰 KES {int(amount):,} received"
+            body = f"{customer_name}" + (f" — {order_number}" if order_number else "") + (f" (Ref: {provider_ref})" if provider_ref else "")
+            await ns.send_notification(push_token=push_token, title=title, body=body, data={"type": "payment_received"})
+        except Exception as e:
+            logging.error(f"[PayHero] Push notification failed: {e}")
+
+    # Fire workflow trigger
+    try:
+        from workflows.engine import fire_trigger
+        from workflows.models import WorkflowEvent
+        from whatsapp_service import get_whatsapp_service
+        ws = get_whatsapp_service(db)
+        event = WorkflowEvent(
+            trigger_type="payhero_payment_received",
+            user_id=user_id,
+            customer_id=ctx.get("customer_id"),
+            from_number=phone,
+            data={
+                "amount": amount,
+                "order_number": order_number,
+                "provider_ref": provider_ref,
+                "customer_name": customer_name,
+            },
+        )
+        await fire_trigger(db, event, ws)
+    except Exception as e:
+        logging.error(f"[PayHero] Workflow trigger failed: {e}")
 
 
 # ── AI Assistant routes ──
@@ -14288,14 +14484,49 @@ async def download_proxy(
 
 # ── Growth Suite routes ───────────────────────────────────────────────────────
 try:
-    from growth_routes import router as _growth_router, _mount as _growth_mount
-    _growth_mount(db, get_current_user)
+    logging.info("[growth] attempting to import and mount")
+    from growth_routes import make_growth_router
+    logging.info("[growth] imported make_growth_router")
+    _growth_router = make_growth_router(db, get_current_user)
+    logging.info("[growth] created router")
     api_router.include_router(_growth_router)
+    logging.info("[growth] included router")
     # Wire legacy daily-pulse endpoints the frontend already calls
     @api_router.get("/daily-pulse/preview")
-    async def _daily_pulse_preview_alias(request: Request):
-        from growth_routes import get_pulse_preview
-        return await get_pulse_preview(request)
+    async def _daily_pulse_preview_alias(request: Request, user=Depends(get_current_user)):
+        # Reuse the growth route implementation
+        uid = str(user["_id"])
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        orders_today = await db.orders.find({
+            "user_id": uid, "created_at": {"$gte": today_start}
+        }).to_list(200)
+        paid_today = [o for o in orders_today if o.get("payment_status") == "Paid"]
+        revenue = sum(o.get("total_amount", 0) for o in paid_today)
+        cold = await db.customers.count_documents({
+            "user_id": uid,
+            "$or": [
+                {"last_contacted": {"$lt": now - timedelta(days=30)}},
+                {"last_contacted": {"$exists": False}},
+            ],
+        })
+        pending_followups = await db.followups.count_documents({
+            "user_id": uid, "status": "pending",
+            "reminder_date": {"$lte": now},
+        })
+        biz = await db.users.find_one({"_id": uid})
+        biz_name = (biz or {}).get("business_name") or "your business"
+        parts = []
+        if paid_today:
+            parts.append(f"{len(paid_today)} sale{'s' if len(paid_today) != 1 else ''} today ({revenue:,.0f} revenue)")
+        if pending_followups:
+            parts.append(f"{pending_followups} follow-up{'s' if pending_followups != 1 else ''} due")
+        if cold:
+            parts.append(f"{cold} customer{'s' if cold != 1 else ''} need re-engagement")
+        if not parts:
+            parts.append("All caught up — no urgent items today")
+        message = f"📊 {biz_name}: " + " · ".join(parts) + "."
+        return {"message": message, "summary": message}
     @api_router.post("/daily-pulse/send")
     async def _daily_pulse_send_alias(request: Request):
         return {"status": "ok", "message": "Pulse sent"}

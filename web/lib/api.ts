@@ -997,6 +997,16 @@ export const paystackApi = {
 export interface PayheroConnection {
   connected: boolean;
   username?: string;
+  channel_id?: number | string | null;
+}
+
+export interface PayheroChannel {
+  id: number;
+  name: string;
+  description?: string;
+  channel_type?: string;
+  paybill?: string;
+  short_code?: string;
 }
 
 export const payheroApi = {
@@ -1008,6 +1018,20 @@ export const payheroApi = {
     ),
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/payhero/connect"),
+  channels: () =>
+    api.get<{ channels: PayheroChannel[]; selected_channel_id?: number | string | null }>(
+      "/payhero/channels"
+    ),
+  setChannel: (channel_id: number | string) =>
+    api.post<{ status: string; channel_id: number | string }>(
+      "/payhero/channel",
+      { channel_id }
+    ),
+  stkPush: (phone: string, amount: number, external_reference?: string, customer_name?: string) =>
+    api.post<{ status: string; payhero_response: unknown }>(
+      "/payhero/stk-push",
+      { phone, amount, external_reference, customer_name }
+    ),
 };
 
 // ── Assistant ────────────────────────────────────────────────────────────────
