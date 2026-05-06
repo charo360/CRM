@@ -217,11 +217,6 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "promotional graphic", "ad visual", "social visual", "post graphic",
         "create visual", "make visual", "design visual", "visual content",
         "create post", "make a post", "build a post", "generate a post",
-        # presentations and slide decks
-        "presentation", "powerpoint", "power point", "pptx", "ppt",
-        "slide deck", "slideshow", "slides for", "create presentation",
-        "make a presentation", "build a presentation", "make slides",
-        "create slides", "generate slides", "slide show",
     ],
 
     # ── CRM core ──────────────────────────────────────────────────────────────
@@ -426,7 +421,10 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "business document", "formal document", "professional document",
         "write a letter", "draft a letter", "business letter",
         "company profile", "write a company profile",
-        "brochure",
+        "brochure", "presentation", "powerpoint", "power point", "pptx", "ppt",
+        "slide deck", "slideshow", "slides for", "create presentation",
+        "make a presentation", "build a presentation", "make slides",
+        "create slides", "generate slides", "slide show",
         "proposal document", "proposal pdf", "proposal word",
     ],
     "analytics": [
@@ -586,7 +584,7 @@ _DESIGN_EXIT_MARKERS = (
     "write a proposal", "create a proposal", "draft a proposal",
     "write a document", "create a document", "draft a document",
     "write a report", "business plan", "business proposal",
-    "partnership proposal",
+    "partnership proposal", "presentation", "pitch deck", "slide deck",
     # Creative/visual requests always exit document sticky
     "use creative", "creative agent", "creative specialist",
     "i want the design", "i want the visual", "i want the graphic",

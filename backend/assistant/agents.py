@@ -268,7 +268,6 @@ CREATIVE_TOOLS: FrozenSet[str] = frozenset({
     "audit_social_integrations", "get_social_conversation_insights",
     "generate_social_post", "generate_ad_creative", "generate_carousel_cover", "refine_design",
     "generate_creative_image", "generate_design_background",
-    "create_business_document", "create_presentation", "browse_presentation_themes",
     "create_video", "get_video_status", "list_videos",
     "create_kling_video", "get_kling_video_status",
     "switch_to_agent",
