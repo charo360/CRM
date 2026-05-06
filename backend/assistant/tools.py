@@ -6157,14 +6157,15 @@ async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
             },
             "n_slides": {
                 "type": "integer",
-                "description": "Number of slides to generate. Default is 10. Range: 5–20.",
+                "description": "Number of slides to generate. Default is 5. Range: 5–15.",
             },
             "style_query": {
                 "type": "string",
                 "description": (
-                    "Keyword to search for a matching visual theme. "
-                    "Examples: 'modern dark', 'startup pitch', 'marketing', 'minimal', 'corporate', 'bold colorful'. "
-                    "If omitted, a professional default theme is used."
+                    "EITHER a theme ID from browse_presentation_themes (e.g. 'st-1759636199694-mw3250rt0') "
+                    "OR a keyword to search for a theme (e.g. 'modern dark', 'startup pitch', 'marketing'). "
+                    "ALWAYS pass the theme ID directly when the user has picked one from browse_presentation_themes. "
+                    "If omitted, a professional default theme is auto-selected."
                 ),
             },
             "reference_image_url": {
@@ -6187,7 +6188,7 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
 
     title = args.get("title", "Presentation")
     prompt = args.get("prompt", title)
-    n_slides = int(args.get("n_slides") or 10)
+    n_slides = int(args.get("n_slides") or 5)
     style_query = args.get("style_query", "")
     reference_image_url = args.get("reference_image_url")
     language = args.get("language", "en")
@@ -6203,13 +6204,17 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
     except Exception:
         pass
 
-    # Search for a matching theme if style_query provided
+    # If style_query looks like a theme ID (starts with 'st-'), use it directly
     theme_id = None
     if style_query:
-        themes = await search_themes(style_query)
-        if themes:
-            theme_id = themes[0].get("id") or themes[0].get("themeId")
-            logger.info("[create_presentation] using theme: %s for query '%s'", theme_id, style_query)
+        if style_query.startswith("st-"):
+            theme_id = style_query
+            logger.info("[create_presentation] using direct theme ID: %s", theme_id)
+        else:
+            themes = await search_themes(style_query)
+            if themes:
+                theme_id = themes[0].get("id") or themes[0].get("themeId")
+                logger.info("[create_presentation] using theme: %s for query '%s'", theme_id, style_query)
 
     result = await generate_presentation(
         prompt=prompt,

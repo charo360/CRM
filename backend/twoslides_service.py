@@ -111,18 +111,8 @@ async def generate_presentation(
         }
         return await _post_and_poll(f"{_BASE}/slides/generate", payload)
 
-    # Last resort: create-pdf-slides (costs more credits)
-    payload = {
-        "userInput": prompt,
-        "responseLanguage": language,
-        "resolution": resolution,
-        "page": n_slides,
-        "contentDetail": "standard",
-        "mode": "async",
-    }
-    if design_style:
-        payload["designStyle"] = design_style
-    return await _post_and_poll(f"{_BASE}/slides/create-pdf-slides", payload)
+    # No theme found at all — error out rather than hit expensive create-pdf-slides
+    return {"error": "No matching theme found. Please try a different style keyword (e.g. 'business', 'modern', 'minimal')."}
 
 
 async def _post_and_poll(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:

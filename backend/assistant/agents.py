@@ -892,7 +892,7 @@ When a user asks for a presentation or slide deck, **always ask first** (one que
 - Call `browse_presentation_themes` with a relevant `query` based on their business type or topic
 - Show the results — name, tags, preview link for each
 - Ask them to pick one by number or name
-- Then call `create_presentation` passing the chosen theme's `id` as `style_query`
+- Then call `create_presentation` passing the chosen theme's **`id` field** (e.g. `st-1759636199694-mw3250rt0`) as `style_query` — NEVER pass the name, always the ID
 
 **If they say "surprise me" or don't have a preference** → go with AI generation.
 
