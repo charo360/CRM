@@ -573,14 +573,14 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           <div>
             <div className="text-sm font-semibold text-slate-900">Zilo Chat</div>
             <div className="text-[10px] text-slate-400">
-              {compact ? "Ask me anything" : "Named specialists for each area — Zilo picks who fits best"}
+              {compact ? "Ask me anything" : "Namedff specialists for each area — Zilo picks who fits best"}
             </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-nowrap items-center gap-2">
           {/* Which named specialist is active (router picks; user always sees a person + specialty). */}
           <span
-            className={`inline-flex max-w-[14rem] items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
+            className={`inline-flex max-w-56 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
             title={
               activeAgent === "general"
                 ? "Zilo is your main guide. A named specialist will join when your question needs one."
@@ -629,7 +629,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               persistAssistantModelId(v);
             }}
             disabled={!models.length}
-            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none disabled:opacity-50"
+            className="max-w-35 truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none disabled:opacity-50"
           >
             {models.map((m) => (
               <option key={m.id} value={m.id}>
@@ -643,7 +643,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
 
       {shareOpen ? (
         <div
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-200 flex items-center justify-center bg-black/40 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Share chat"
@@ -891,7 +891,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       )}
 
       {/* Composer — centered Claude/ChatGPT-style pill */}
-      <div className="border-t border-slate-100 bg-gradient-to-b from-white to-slate-50/40">
+      <div className="border-t border-slate-100 bg-linear-to-b from-white to-slate-50/40">
         <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3">
           {/* Attachment chips */}
           {documents.length > 0 && (
