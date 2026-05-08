@@ -782,7 +782,7 @@ export default function WorkflowsPage() {
   const active = workflows.filter((w) => w.enabled).length;
 
   return (
-    <div className="mx-auto max-w-3xl p-6 text-slate-900">
+    <div className="mx-auto w-full max--3xl p-6 text-slate-900">
       {/* Header */}
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>

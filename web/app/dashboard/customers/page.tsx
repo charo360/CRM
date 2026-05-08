@@ -104,7 +104,7 @@ export default function CustomersPage() {
   const vip = customers.filter((c) => c.tags?.includes("VIP")).length;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-5">
+    <div className="p-6 w-full maxw-6xl mx-auto space-y-5">
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>

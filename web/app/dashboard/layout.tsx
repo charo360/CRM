@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import { isAuthenticated } from "@/lib/auth";
 import { BusinessProvider } from "@/contexts/BusinessContext";
 import Sidebar from "@/components/Sidebar";
+import Navbar from "@/components/Navbar";
 import AssistantLauncher from "@/components/AssistantLauncher";
 import CommandBar from "@/components/CommandBar";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
@@ -42,6 +43,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <BusinessProvider>
       <div className="flex h-screen bg-slate-50" suppressHydrationWarning>
+        {/* Sidebar */}
         {!mounted ? (
           <aside
             className="flex w-56 shrink-0 flex-col overflow-y-auto border-r border-brand-dark/20 bg-[#071a10] text-slate-100 min-h-screen"
@@ -50,7 +52,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         ) : (
           <Sidebar />
         )}
-        <main className="flex-1 overflow-auto bg-slate-50 text-slate-900">{children}</main>
+        
+        {/* Right side - Navbar and Main Content */}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Sticky Navbar */}
+          {mounted && <Navbar />}
+          
+          {/* Main Content */}
+          <main className="flex-1 overflow-auto bg-slate-50 text-slate-900">{children}</main>
+        </div>
       </div>
       {mounted && <AssistantLauncher />}
       {mounted && <CommandBar />}
