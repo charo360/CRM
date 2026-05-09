@@ -144,16 +144,21 @@ def _mk_router(db, get_current_user):
         import asyncio as _asyncio
         user_id = user.get("business_id", user["_id"])
 
-        # Fetch recent conversations + owner preferences in parallel
+        # Fetch recent conversations + owner preferences + business settings in parallel
         try:
-            recent_convs, owner_prefs_raw = await _asyncio.gather(
+            recent_convs, owner_prefs_raw, biz_settings, biz_knowledge = await _asyncio.gather(
                 db.assistant_conversations.find(
                     conversation_list_filter(user)
                 ).sort("updated_at", -1).to_list(5),
                 _get_all_owner_prefs_safe(user_id),
+                db.users.find_one({"_id": user_id}, {"settings": 1}),
+                db.users.find_one({"_id": user_id}, {"business_knowledge": 1}),
             )
         except Exception:
-            recent_convs, owner_prefs_raw = [], []
+            recent_convs, owner_prefs_raw, biz_settings, biz_knowledge = [], [], None, None
+
+        settings = (biz_settings or {}).get("settings", {}) or {}
+        knowledge = (biz_knowledge or {}).get("business_knowledge", {}) or {}
 
         # Build context string for the suggestion LLM call
         pref_lines = "\n".join(f"- {p['summary']}" for p in owner_prefs_raw[:10]) if owner_prefs_raw else ""
@@ -168,6 +173,24 @@ def _mk_router(db, get_current_user):
         topics_line = "\n".join(f"- {t}" for t in recent_topics) if recent_topics else ""
         agents_used = list(dict.fromkeys(recent_agents))[:4]  # unique, preserve order
 
+        # Business context lines — used even for brand new users
+        biz_lines: list[str] = []
+        biz_name = settings.get("business_name") or ""
+        biz_type = settings.get("business_type") or ""
+        biz_desc = settings.get("business_description") or knowledge.get("business_description") or ""
+        products = settings.get("products_services") or knowledge.get("products_services") or ""
+        location = settings.get("business_location") or knowledge.get("business_location") or ""
+        if biz_name:
+            biz_lines.append(f"Business name: {biz_name}")
+        if biz_type:
+            biz_lines.append(f"Industry: {biz_type}")
+        if location:
+            biz_lines.append(f"Location: {location}")
+        if biz_desc:
+            biz_lines.append(f"About: {biz_desc[:300]}")
+        if products:
+            biz_lines.append(f"Products/services: {products[:300]}")
+
         try:
             from .models import chat_with_tools as _chat
             prompt_parts = [
@@ -179,11 +202,13 @@ def _mk_router(db, get_current_user):
                 "- Each chip is 4-9 words, action-oriented, starts with a verb",
                 "- Mix across: analytics, marketing/campaigns, customers, content creation, operations",
                 "- Lean toward what this specific owner actually uses (see context below)",
-                "- Be specific — use their business context, not generic CRM phrases",
+                "- Be specific — reference the actual business name, services or industry where natural",
                 "- NO duplicate themes across the 8 chips",
                 "- Output ONLY a JSON array of 8 strings, nothing else",
                 "",
             ]
+            if biz_lines:
+                prompt_parts += ["Business profile:", *biz_lines, ""]
             if pref_lines:
                 prompt_parts += ["Owner preferences learned from past sessions:", pref_lines, ""]
             if topics_line:
@@ -209,7 +234,8 @@ def _mk_router(db, get_current_user):
             if match:
                 chips = _json.loads(match.group())
                 if isinstance(chips, list) and len(chips) >= 4:
-                    return {"suggestions": chips[:8], "personalized": bool(pref_lines or topics_line)}
+                    is_personalized = bool(pref_lines or topics_line or biz_lines)
+                    return {"suggestions": chips[:8], "personalized": is_personalized}
         except Exception as exc:
             logger.debug("[suggestions] LLM generation failed, using fallback: %s", exc)
 

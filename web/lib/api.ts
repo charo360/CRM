@@ -1527,9 +1527,15 @@ export const onboardingApi = {
     api.post<{
       status: string;
       url: string;
+      business_name: string;
       summary: string;
       business_about_draft: string;
       products_services_hint: string;
+      services: { name: string; description: string; price: string }[];
+      location: string;
+      contact_email: string;
+      contact_phone: string;
+      website_url: string;
       where_to_fill: { label: string; path: string; tip: string }[];
     }>("/onboarding/analyze-website", body),
 };

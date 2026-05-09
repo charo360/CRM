@@ -11145,64 +11145,83 @@ def _strip_html_to_text(html: str, max_chars: int = 14000) -> str:
 @api_router.post("/onboarding/analyze-website")
 async def onboarding_analyze_website(body: OnboardingWebsiteBody, user=Depends(get_current_user)):
     """
-    Fetch a public URL and use AI to summarize the business + suggest where to fill data in Zilo.
+    Fetch a public URL via Jina AI Reader (handles JS-rendered sites) then extract structured
+    business info with OpenAI. Returns name, summary, about draft, products, contact info.
     """
-    from ai_service import get_drafter
-
     raw = (body.url or "").strip()
     if not raw:
         raise HTTPException(400, "url is required")
     if not raw.startswith(("http://", "https://")):
         raw = "https://" + raw
 
+    # ── Step 1: Fetch via Jina AI Reader ──────────────────────────────────────
+    jina_url = f"https://r.jina.ai/{raw}"
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=22.0, follow_redirects=True) as client:
-            r = await client.get(
-                raw,
-                headers={"User-Agent": "ZiloOnboarding/1.0 (+https://zilo)"},
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as hc:
+            resp = await hc.get(
+                jina_url,
+                headers={"Accept": "text/plain", "X-Return-Format": "markdown"},
             )
-    except Exception as e:
-        raise HTTPException(502, f"Could not fetch URL: {e}")
+    except httpx.TimeoutException:
+        raise HTTPException(504, "The website took too long to respond. Try again or use a simpler URL.")
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Could not reach the website: {exc}")
 
-    if r.status_code >= 400:
-        raise HTTPException(502, f"Website returned HTTP {r.status_code}")
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Jina could not fetch that URL (HTTP {resp.status_code}). Check the URL and try again.")
 
-    if len(r.text) > 600_000:
-        raise HTTPException(400, "Page is too large to analyze — try your homepage.")
+    page_text = resp.text[:14000]  # cap to stay within token budget
+    if not page_text.strip():
+        raise HTTPException(422, "The page appears to be empty or blocked. Try a different URL.")
 
-    text = _strip_html_to_text(r.text)
-    if len(text) < 80:
-        raise HTTPException(422, "Not enough readable text on that page — try another URL or use chat instead.")
-
+    # ── Step 2: OpenAI structured extraction ─────────────────────────────────
     industry = (body.business_type or "general").strip() or "general"
-    drafter = get_drafter()
-    prompt = f"""You are helping a new Zilo user (industry: {industry}) onboard their business.
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not openai_key:
+        raise HTTPException(503, "AI extraction not available — OPENAI_API_KEY not configured.")
+
+    extraction_prompt = f"""You are a business analyst helping onboard a new user (industry: {industry}).
 Read the website text and output ONLY valid JSON (no markdown fences) with this exact shape:
 {{
-  "summary": "2-3 sentences: what this business does and who it serves",
-  "business_about_draft": "A polished 'About' paragraph (max 120 words) for their profile",
-  "products_services_hint": "One short line on what they sell or offer",
+  "business_name": "Name of the business",
+  "summary": "2-3 sentences: what this business does, who it serves, and where it operates",
+  "business_about_draft": "A polished 'About' paragraph (4-6 sentences, max 150 words) suitable for a CRM profile. Include business name, what they sell/offer, target customers, location if known, and a differentiator.",
+  "services": [
+    {{
+      "name": "Service or product name",
+      "description": "1-2 sentence description of what it includes or who it is for",
+      "price": "Price or price range as a string e.g. '$25', 'From $100', 'Contact for pricing' — empty string if not found"
+    }}
+  ],
+  "location": "City/country if found, else empty string",
+  "contact_email": "Email address if found, else empty string",
+  "contact_phone": "Phone number if found, else empty string",
+  "website_url": "The canonical website URL (the URL passed in, cleaned up)",
   "where_to_fill": [
     {{"label": "string", "path": "/dashboard/settings", "tip": "why go there"}}
   ]
 }}
+For "services": extract up to 12 individual products or services. Each must have its own entry — do NOT combine them into one. If prices are not listed, use empty string for price.
 Use 3 to 6 items in where_to_fill. Paths MUST be one of:
-/dashboard/settings (business details & knowledge)
-/dashboard/features (turn modules on)
-/dashboard/integrations (connect tools)
-/dashboard/whatsapp
-/dashboard/shopify
-/dashboard/messages
-/dashboard/customers
+/dashboard/settings, /dashboard/features, /dashboard/integrations,
+/dashboard/whatsapp, /dashboard/shopify, /dashboard/messages, /dashboard/customers
+
 Website text:
-{text}
-"""
+{page_text}"""
+
     try:
-        raw_llm = await drafter._call_llm(prompt=prompt, model_pref="standard")
-    except Exception as e:
-        logging.exception("[onboarding.analyze-website] LLM failed")
-        raise HTTPException(500, f"AI analysis failed: {e}")
+        import openai as _openai_mod
+        _oa_client = _openai_mod.OpenAI(api_key=openai_key)
+        completion = _oa_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": extraction_prompt}],
+            temperature=0.2,
+            max_tokens=1800,
+        )
+        raw_llm = completion.choices[0].message.content or ""
+    except Exception as exc:
+        logging.exception("[onboarding/analyze-website] OpenAI call failed")
+        raise HTTPException(500, f"AI analysis failed: {exc}")
 
     cleaned = raw_llm.strip()
     if cleaned.startswith("```"):
@@ -11210,20 +11229,28 @@ Website text:
         cleaned = _re.sub(r"\s*```$", "", cleaned)
 
     try:
-        import json as _json
-        data = _json.loads(cleaned)
+        data = json.loads(cleaned)
     except Exception:
         raise HTTPException(500, "AI returned invalid JSON — try again.")
 
     if not isinstance(data, dict):
         raise HTTPException(500, "Unexpected AI response shape")
 
+    raw_services = data.get("services")
+    services = raw_services if isinstance(raw_services, list) else []
+
     return {
         "status": "success",
         "url": raw,
+        "business_name": data.get("business_name") or "",
         "summary": data.get("summary") or "",
         "business_about_draft": data.get("business_about_draft") or "",
-        "products_services_hint": data.get("products_services_hint") or "",
+        "products_services_hint": ", ".join(s.get("name", "") for s in services if s.get("name")) or "",
+        "services": services,
+        "location": data.get("location") or "",
+        "contact_email": data.get("contact_email") or "",
+        "contact_phone": data.get("contact_phone") or "",
+        "website_url": data.get("website_url") or raw,
         "where_to_fill": data.get("where_to_fill") if isinstance(data.get("where_to_fill"), list) else [],
     }
 
