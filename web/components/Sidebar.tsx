@@ -178,15 +178,15 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="flex flex-col w-56 min-h-screen bg-[#071a10] text-slate-100 shrink-0 overflow-y-auto border-r border-brand-dark/25">
-      {/* Logo */}
-      <div className="flex items-center gap-1 px-5 py-4 border-b border-white/10">
+    <aside className="flex flex-col w-56 min-h-screen bg-[#071a10] text-slate-100 shrink-0 border-r border-brand-dark/25">
+      {/* Logo - Sticky Header */}
+      <div className="sticky top-0 z-10 flex items-center gap-1 px-5 py-4 border-b border-white/10 bg-[#071a10]">
         <ZiloLogo size={28} className="shrink-0" />
         <span className="font-semibold text-sm tracking-tight">Zilo</span>
       </div>
 
-      {/* Nav groups */}
-      <nav className="flex-1 px-3 py-3 space-y-4">
+      {/* Nav groups - Scrollable */}
+      <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
         {NAV_GROUPS.map((group) => (
           <div key={group.label}>
             <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/35 px-3 mb-1">
@@ -217,8 +217,9 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* ⌘K hint */}
-      <div className="px-3 pb-2">
+      {/* Footer - Sticky */}
+      <div className="sticky bottom-0 z-10 bg-[#071a10] border-t border-white/10 pt-3 pb-4 px-3 space-y-2">
+        {/* ⌘K hint */}
         <button
           type="button"
           onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true }))}
@@ -228,10 +229,8 @@ export default function Sidebar() {
           <span className="flex-1">Ask Zilo anything…</span>
           <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">⌘K</kbd>
         </button>
-      </div>
 
-      {/* Logout */}
-      <div className="px-3 pb-4 border-t border-white/10 pt-3">
+        {/* Logout */}
         <button
           onClick={handleLogout}
           className="flex items-center gap-2.5 px-3 py-2 w-full rounded-lg text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-slate-100 transition-colors"

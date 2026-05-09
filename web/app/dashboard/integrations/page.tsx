@@ -891,7 +891,7 @@ function IntegrationsPageInner() {
   const FREE_BADGE: BadgeDef = { label: "Free", className: "bg-emerald-100 text-emerald-700" };
 
   return (
-    <div className="mx-auto max-w-4xl min-w-0 space-y-6 p-4 sm:p-6">
+    <div className="mx-auto w-full max--4xl min-w-0 space-y-6 p-4 sm:p-6">
 
       {/* Header */}
       <div>

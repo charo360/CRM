@@ -536,7 +536,7 @@ export default function SocialSchedulerPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 p-4 sm:p-6 pb-16">
+    <div className="mx-auto w-full max--5xl space-y-4 p-4 sm:p-4 pb-16">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="mb-1 flex items-center gap-2 text-brand-dark">
@@ -554,10 +554,10 @@ export default function SocialSchedulerPage() {
           <button
             type="button"
             onClick={openNew}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white hover:bg-brand"
+            className="flex items-center justify-center gap-1 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white hover:bg-brand"
           >
-            <Plus size={16} />
-            New post
+            <Plus size={16} /> New post
+            
           </button>
         )}
       </div>
