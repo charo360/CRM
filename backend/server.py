@@ -82,6 +82,11 @@ def validate_startup_env():
     else:
         print("[INFO] COMPOSIO_API_KEY not set — Gmail/Calendar integrations will not work")
 
+    if os.environ.get('OPENROUTER_KEY') or os.environ.get('OPENROUTER_API_KEY'):
+        print("[OK] OpenRouter API Key DETECTED (Creative tools enabled)")
+    else:
+        print("[WARNING] OPENROUTER_KEY not set — Creative/design tools will not work")
+
 validate_startup_env()
 print("[DEBUG] Starting FastAPI imports...", flush=True)
 
@@ -1792,6 +1797,7 @@ class BusinessKnowledge(BaseModel):
     business_description: Optional[str] = None
     # General
     business_location: Optional[str] = None  # physical address / area
+    website_url: Optional[str] = None  # company website for SEO keyword extraction
     # Business type
     business_type: Optional[str] = None  # 'general', 'retail', 'creator', 'restaurant', 'service'
     # Restaurant-specific fields
@@ -7955,8 +7961,29 @@ async def evolution_webhook(request: Request):
 
         # Handle incoming AND outgoing messages
         if event == "messages.upsert":
+            # ── WhatsApp group keyword monitor ────────────────────────────────
+            # handle_incoming_message skips groups — intercept them here first.
+            group_parsed = await whatsapp_service.handle_group_message(instance_name, data)
+            if group_parsed:
+                try:
+                    from action_mode_routes import queue_social_match
+                    uid_gp = str(group_parsed["user"].get("_id", ""))
+                    if uid_gp:
+                        await queue_social_match(
+                            db,
+                            user_id    = uid_gp,
+                            text       = group_parsed["body"],
+                            author     = group_parsed["push_name"],
+                            group_name = group_parsed["group_name"],
+                            platform   = "whatsapp",
+                            url        = f"https://web.whatsapp.com/",
+                        )
+                except Exception as _gpe:
+                    logging.warning("[group_monitor] %s", _gpe)
+                return {"status": "ok"}
+
             parsed = await whatsapp_service.handle_incoming_message(instance_name, data)
-            
+
             if not parsed:
                 log_trace("Parsed is empty/None")
                 return {"status": "ok"}
@@ -9532,7 +9559,7 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     fields = [
         # Core fields
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
-        'faqs', 'special_offers', 'business_description', 'business_location', 'business_type',
+        'faqs', 'special_offers', 'business_description', 'business_location', 'business_type', 'website_url',
         # Restaurant
         'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
         'restaurant_table_range', 'restaurant_avg_wait', 'restaurant_min_delivery',
@@ -11456,6 +11483,42 @@ async def broadcast_catalog(
 @api_router.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@api_router.get("/extension/download")
+async def download_extension():
+    """Serve the Zilo Chrome extension as a ZIP file for easy installation."""
+    import io
+    import os
+    import zipfile
+    from fastapi.responses import StreamingResponse
+
+    # Always resolve to absolute path regardless of how the server was invoked
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    crm_dir     = os.path.dirname(backend_dir)
+    ext_dir     = os.path.join(crm_dir, "extension")
+
+    if not os.path.isdir(ext_dir):
+        from fastapi.responses import JSONResponse
+        logging.error("[extension/download] extension folder not found at: %s", ext_dir)
+        return JSONResponse({"error": f"Extension folder not found at {ext_dir}"}, status_code=404)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(ext_dir):
+            for filename in sorted(files):
+                if filename.endswith(".pyc") or "__pycache__" in root:
+                    continue
+                full_path = os.path.join(root, filename)
+                arcname   = os.path.relpath(full_path, ext_dir)
+                zf.write(full_path, arcname)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=zilo-extension.zip"},
+    )
 
 
 @api_router.head("/health")
@@ -14481,6 +14544,24 @@ async def download_proxy(
         logging.warning("[download-proxy] fetch failed: %s", exc)
         raise HTTPException(status_code=502, detail="Failed to fetch file")
 
+
+# ── Action Mode routes ───────────────────────────────────────────────────────
+try:
+    from action_mode_routes import make_action_mode_router
+    _action_mode_router = make_action_mode_router(db, get_current_user)
+    api_router.include_router(_action_mode_router)
+    logging.info("[action-mode] routes mounted")
+except Exception as _ame:
+    logging.error("[action-mode] failed to mount: %s", _ame)
+
+# ── Forms routes ──────────────────────────────────────────────────────────────
+try:
+    from forms_routes import make_forms_router
+    _forms_router = make_forms_router(db, get_current_user)
+    api_router.include_router(_forms_router)
+    logging.info("[forms] routes mounted")
+except Exception as _fe:
+    logging.error("[forms] failed to mount: %s", _fe)
 
 # ── Growth Suite routes ───────────────────────────────────────────────────────
 try:

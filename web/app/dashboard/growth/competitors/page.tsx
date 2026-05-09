@@ -14,11 +14,13 @@ export default function CompetitorsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [form, setForm] = useState({ name: "", website: "", industry: "" });
   const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => { load(); }, []);
 
   async function load() {
     setLoading(true);
+    setError("");
     try {
       const [c, i] = await Promise.all([
         api.get<{ competitors: Competitor[] }>("/growth/competitors"),
@@ -26,31 +28,43 @@ export default function CompetitorsPage() {
       ]);
       setCompetitors(c.competitors);
       setInsights(i.insights);
-    } catch { } finally { setLoading(false); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load data");
+    } finally { setLoading(false); }
   }
 
   async function addCompetitor() {
     if (!form.name.trim()) return;
     setAdding(true);
+    setError("");
     try {
       await api.post("/growth/competitors", form);
       setForm({ name: "", website: "", industry: "" });
       await load();
-    } catch { } finally { setAdding(false); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to add competitor");
+    } finally { setAdding(false); }
   }
 
   async function remove(id: string) {
-    await api.delete(`/growth/competitors/${id}`);
-    setCompetitors(c => c.filter(x => x._id !== id));
+    try {
+      await api.delete(`/growth/competitors/${id}`);
+      setCompetitors(c => c.filter(x => x._id !== id));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to remove");
+    }
   }
 
   async function refreshInsights() {
     if (competitors.length === 0) return;
     setRefreshing(true);
+    setError("");
     try {
       const data = await api.post<{ insights: Insight[] }>("/growth/competitors/insights/refresh", {});
       setInsights(data.insights);
-    } catch { } finally { setRefreshing(false); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to refresh insights");
+    } finally { setRefreshing(false); }
   }
 
   return (
@@ -68,6 +82,12 @@ export default function CompetitorsPage() {
           Refresh Insights
         </button>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3">
+          <AlertCircle size={15} className="shrink-0" /> {error}
+        </div>
+      )}
 
       {/* Add competitor */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">

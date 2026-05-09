@@ -467,7 +467,7 @@ async def generate_social_post(
     product_image_url: Optional[str] = None,
     logo_url: Optional[str] = None,
     platform: str = "instagram_post",
-    quality: str = "pro",
+    quality: str = "fast",
     trend_context: str = "",
 ) -> Dict[str, Any]:
     """Generate a social media post graphic using Gemini."""
@@ -535,7 +535,7 @@ async def generate_ad_creative(
     logo_url: Optional[str] = None,
     platform: str = "facebook_ad",
     urgency: str = "",
-    quality: str = "pro",
+    quality: str = "fast",
     trend_context: str = "",
 ) -> Dict[str, Any]:
     """Generate an ad creative using Gemini."""
@@ -602,7 +602,7 @@ async def generate_carousel_cover(
     product_image_url: Optional[str] = None,
     logo_url: Optional[str] = None,
     platform: str = "instagram_post",
-    quality: str = "pro",
+    quality: str = "fast",
 ) -> Dict[str, Any]:
     """Generate a carousel cover slide using Gemini."""
     from nano_banana_service import generate_creative_image, edit_product_image
@@ -662,7 +662,7 @@ async def regenerate_with_feedback(
     product_image_url: Optional[str] = None,
     logo_url: Optional[str] = None,
     platform: str = "instagram_post",
-    quality: str = "pro",
+    quality: str = "fast",
 ) -> Dict[str, Any]:
     """Regenerate a design based on user feedback, using the original as reference."""
     from nano_banana_service import recreate_design_from_reference

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   seoApi,
   seoAgentApi,
@@ -11,6 +11,7 @@ import {
   type BlogGenerateResult,
   type ContentCalendarItem,
   type SeoSummary,
+  type SeoBusinessContext,
   type SeoAgentToolStep,
 } from "@/lib/api";
 
@@ -20,6 +21,17 @@ type Tab = "overview" | "audit" | "keywords" | "blog" | "calendar" | "agent";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function HelpTooltip({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-block ml-1">
+      <span className="text-slate-400 hover:text-slate-600 cursor-help text-xs">ⓘ</span>
+      <span className="invisible group-hover:visible absolute left-0 top-5 z-10 w-48 bg-slate-800 text-white text-xs rounded-lg px-3 py-2 shadow-lg">
+        {text}
+      </span>
+    </span>
+  );
+}
+
 function ScoreBadge({ score, grade }: { score: number; grade: string }) {
   const color =
     score >= 90 ? "bg-green-100 text-green-700 border-green-200"
@@ -27,9 +39,10 @@ function ScoreBadge({ score, grade }: { score: number; grade: string }) {
     : score >= 60 ? "bg-yellow-100 text-yellow-700 border-yellow-200"
     : score >= 40 ? "bg-orange-100 text-orange-700 border-orange-200"
     : "bg-red-100 text-red-700 border-red-200";
+  const label = score >= 90 ? "Excellent" : score >= 75 ? "Good" : score >= 60 ? "Fair" : score >= 40 ? "Needs work" : "Poor";
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold border ${color}`}>
-      {grade} · {score}/100
+      {label} · {score}/100
     </span>
   );
 }
@@ -57,12 +70,100 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
   );
 }
 
+function SeoQuickNav({ active, onJump }: { active: Tab; onJump: (t: Tab) => void }) {
+  const items: { id: Tab; label: string }[] = [
+    { id: "agent", label: "Coach" },
+    { id: "keywords", label: "Keywords" },
+    { id: "audit", label: "Audit" },
+    { id: "blog", label: "Blog" },
+    { id: "calendar", label: "Calendar" },
+    { id: "overview", label: "Stats" },
+  ];
+  return (
+    <div className="flex flex-wrap gap-2 pt-1">
+      {items.map(({ id, label }) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onJump(id)}
+          className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
+            active === id
+              ? "bg-emerald-600 border-emerald-600 text-white shadow-sm"
+              : "bg-white/80 border-emerald-100 text-slate-600 hover:border-emerald-200 hover:bg-emerald-50/50"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function BusinessSnapshotBar({ profile, activeTab, onJump }: { profile: SeoBusinessContext | null; activeTab: Tab; onJump: (t: Tab) => void }) {
+  const name = profile?.business_name?.trim();
+  const industry = profile?.business_type?.trim()?.replace(/-/g, " ");
+  const loc = profile?.location?.trim();
+  const lang = profile?.language?.trim();
+  const linedUp = Boolean(name || industry || loc);
+
+  return (
+    <div className="rounded-xl border border-emerald-100/80 bg-white/70 backdrop-blur-sm px-4 py-3 sm:px-5 sm:py-4 shadow-sm space-y-3">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700/90">Your business</p>
+          <p className="text-base sm:text-lg font-semibold text-slate-900 truncate">
+            {name || (industry ? industry.charAt(0).toUpperCase() + industry.slice(1) : "Add your business")}
+          </p>
+          <p className="text-sm text-slate-600 leading-snug">
+            {linedUp ? (
+              <>
+                {[industry, loc].filter(Boolean).join(" · ") || "Industry & area from Settings"}
+                {lang ? <span className="text-slate-400"> · {lang}</span> : null}
+              </>
+            ) : (
+              <>Connect your profile once — keywords, blog, and calendar stay on-brand without retyping.</>
+            )}
+          </p>
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            <a
+              href="/dashboard/settings"
+              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 underline underline-offset-2"
+            >
+              Settings → Business info
+            </a>
+            {profile?.live_keyword_data && (
+              <span className="text-[10px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
+                Live keyword data on
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="border-t border-emerald-50 pt-3">
+        <p className="text-[11px] font-medium text-slate-500 mb-2">Jump to</p>
+        <SeoQuickNav active={activeTab} onJump={onJump} />
+      </div>
+    </div>
+  );
+}
+
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 
-function OverviewTab({ summary }: { summary: SeoSummary | null }) {
+function OverviewTab({ summary, onJump }: { summary: SeoSummary | null; onJump: (t: Tab) => void }) {
   if (!summary) return <p className="text-slate-400 text-sm">Loading summary…</p>;
   return (
     <div className="space-y-5">
+      <p className="text-sm text-slate-600 leading-relaxed">
+        Here&apos;s how your SEO activity looks. New? Start with{" "}
+        <button type="button" onClick={() => onJump("agent")} className="font-semibold text-emerald-700 hover:underline">
+          Coach
+        </button>
+        {" "}or grab{" "}
+        <button type="button" onClick={() => onJump("keywords")} className="font-semibold text-emerald-700 hover:underline">
+          keywords
+        </button>
+        {" "}for your business — both use your Settings profile automatically.
+      </p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <StatCard label="Total Blog Posts" value={summary.total_posts ?? 0} />
         <StatCard label="Published" value={summary.published_posts ?? 0} />
@@ -149,7 +250,8 @@ function AuditTab() {
   return (
     <div className="space-y-5">
       <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <p className="text-sm font-semibold text-slate-700 mb-3">Run Site Audit</p>
+        <p className="text-sm font-semibold text-slate-800 mb-1">Check any website</p>
+        <p className="text-xs text-slate-500 mb-3">Paste a page URL — we&apos;ll score titles, headings, meta, and images in seconds.</p>
         <div className="flex gap-2">
           <input
             className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
@@ -161,7 +263,7 @@ function AuditTab() {
           <button
             onClick={runAudit}
             disabled={loading || !url.trim()}
-            className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg font-medium hover:bg-green-700 disabled:opacity-50"
+            className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-50 shrink-0"
           >
             {loading ? "Auditing…" : "Audit"}
           </button>
@@ -181,11 +283,11 @@ function AuditTab() {
 
           <div className="grid grid-cols-3 gap-3 text-center">
             <div className="bg-slate-50 rounded-lg p-3">
-              <p className="text-xs text-slate-500">H1 tags</p>
+              <p className="text-xs text-slate-500">Main heading<HelpTooltip text="H1 tag = main page title. Should have exactly 1 per page." /></p>
               <p className={`text-xl font-bold ${audit.h1_count === 1 ? "text-green-600" : "text-red-500"}`}>{audit.h1_count}</p>
             </div>
             <div className="bg-slate-50 rounded-lg p-3">
-              <p className="text-xs text-slate-500">H2 tags</p>
+              <p className="text-xs text-slate-500">Subheadings<HelpTooltip text="H2 tags = section titles. Break up your content for easier reading." /></p>
               <p className="text-xl font-bold text-slate-700">{audit.h2_count}</p>
             </div>
             <div className="bg-slate-50 rounded-lg p-3">
@@ -257,19 +359,27 @@ function AuditTab() {
 
 // ── Keywords Tab ──────────────────────────────────────────────────────────────
 
-function KeywordsTab() {
+function KeywordsTab({ profile, onJump }: { profile: SeoBusinessContext | null; onJump: (t: Tab) => void }) {
   const [businessType, setBusinessType] = useState("");
   const [location, setLocation] = useState("");
   const [loading, setLoading] = useState(false);
   const [keywords, setKeywords] = useState<SeoKeyword[]>([]);
+  const [keywordSource, setKeywordSource] = useState<"dataforseo" | "ai" | null>(null);
   const [err, setErr] = useState("");
 
+  useEffect(() => {
+    if (!profile) return;
+    setBusinessType((t) => (t.trim() ? t : profile.business_type));
+    setLocation((t) => (t.trim() ? t : profile.location));
+  }, [profile]);
+
   async function generate() {
-    if (!businessType.trim()) return;
-    setLoading(true); setErr("");
+    setLoading(true);
+    setErr("");
     try {
-      const res = await seoApi.generateKeywords(businessType, location);
+      const res = await seoApi.generateKeywords(businessType.trim(), location.trim());
       setKeywords(res.keywords as SeoKeyword[]);
+      setKeywordSource(res.keyword_source);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -286,44 +396,95 @@ function KeywordsTab() {
     : i === "informational" ? "bg-purple-100 text-purple-700"
     : "bg-slate-100 text-slate-600";
 
+  const usingProfile =
+    Boolean(profile?.business_name?.trim()) ||
+    Boolean(profile?.business_type?.trim()) ||
+    Boolean(profile?.location?.trim());
+
   return (
     <div className="space-y-5">
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <p className="text-sm font-semibold text-slate-700 mb-3">AI Keyword Research</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <div>
-            <label className="text-xs text-slate-500 font-medium block mb-1">Business Type</label>
-            <input
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="e.g. hair salon, law firm, restaurant"
-              value={businessType}
-              onChange={e => setBusinessType(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 font-medium block mb-1">Location (optional)</label>
-            <input
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="e.g. Nairobi, Lagos, London"
-              value={location}
-              onChange={e => setLocation(e.target.value)}
-            />
-          </div>
+      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Keywords for your business</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {usingProfile
+              ? "We’ll use your Settings profile (below). One tap — optional tweaks in “Fine-tune”."
+              : "Add your business in Settings for best results — or fine-tune below."}
+          </p>
+          {usingProfile && (
+            <p className="text-xs text-slate-600 mt-2 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
+              <span className="font-medium text-slate-700">Using:</span>{" "}
+              {[profile?.business_name?.trim(), profile?.business_type?.replace(/-/g, " "), profile?.location?.trim()]
+                .filter(Boolean)
+                .join(" · ") || "Saved profile"}
+            </p>
+          )}
         </div>
         <button
+          type="button"
           onClick={generate}
-          disabled={loading || !businessType.trim()}
-          className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg font-medium hover:bg-green-700 disabled:opacity-50"
+          disabled={loading}
+          className="w-full sm:w-auto min-h-[44px] px-6 py-3 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-50 shadow-sm"
         >
-          {loading ? "Generating…" : "Generate Keywords"}
+          {loading ? "Finding keywords…" : "Get keyword ideas"}
         </button>
-        {err && <p className="text-red-500 text-xs mt-2">{err}</p>}
+
+        <details className="group rounded-xl border border-slate-100 bg-slate-50/50">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-600 px-3 py-2.5 list-none flex items-center justify-between [&::-webkit-details-marker]:hidden">
+            Fine-tune industry or location
+            <span className="text-slate-400 group-open:rotate-180 transition-transform">▼</span>
+          </summary>
+          <div className="px-3 pb-3 pt-0 grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-slate-100 bg-white rounded-b-xl">
+            <div className="pt-3">
+              <label className="text-xs text-slate-500 font-medium block mb-1">Industry</label>
+              <input
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="e.g. hair salon, law firm"
+                value={businessType}
+                onChange={e => setBusinessType(e.target.value)}
+              />
+            </div>
+            <div className="pt-3">
+              <label className="text-xs text-slate-500 font-medium block mb-1">Location</label>
+              <input
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="City or region"
+                value={location}
+                onChange={e => setLocation(e.target.value)}
+              />
+            </div>
+          </div>
+        </details>
+
+        <p className="text-[11px] text-slate-400">
+          Blank fields still work — the server fills them from Settings.
+          {profile?.live_keyword_data ? " Live Google volumes when DataForSEO is enabled." : ""}
+        </p>
+        {err && <p className="text-red-500 text-xs">{err}</p>}
       </div>
 
       {keywords.length > 0 && (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="px-5 py-3 border-b border-slate-100">
-            <p className="text-sm font-semibold text-slate-700">{keywords.length} Keywords Found</p>
+          <div className="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold text-slate-700">{keywords.length} keyword ideas<HelpTooltip text="These are phrases people search on Google. Use them in your blog posts and website." /></p>
+              <button
+                onClick={() => onJump("calendar")}
+                className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium"
+              >
+                Next: Create calendar →
+              </button>
+            </div>
+            {keywordSource === "dataforseo" && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
+                Live data · DataForSEO
+              </span>
+            )}
+            {keywordSource === "ai" && (
+              <span className="text-[10px] font-medium text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full">
+                AI suggestions{profile?.live_keyword_data ? " (DataForSEO unavailable or no results)" : ""}
+              </span>
+            )}
           </div>
           <div className="divide-y divide-slate-50">
             {keywords.map((kw, i) => (
@@ -331,17 +492,26 @@ function KeywordsTab() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-800">{kw.keyword}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{kw.content_idea}</p>
+                    <p className="text-xs text-slate-600 mt-0.5">💡 {kw.content_idea}</p>
+                    {kw.search_volume != null && kw.search_volume > 0 && (
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        ~{kw.search_volume.toLocaleString()} people search this monthly
+                      </p>
+                    )}
                   </div>
                   <div className="flex gap-2 shrink-0 items-center">
-                    <span className={`text-xs font-bold capitalize ${difficultyColor(String(kw.difficulty ?? ""))}`}>{kw.difficulty}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${intentColor(String(kw.intent ?? ""))}`}>{kw.intent as string}</span>
+                    <span className={`text-xs font-semibold capitalize ${difficultyColor(String(kw.difficulty ?? ""))}`}>
+                      {kw.difficulty === "low" ? "Easy" : kw.difficulty === "medium" ? "Medium" : "Hard"}
+                    </span>
                   </div>
                 </div>
-                <div className="mt-1 flex gap-1">
-                  {Array.from({ length: 5 }, (_, p) => (
-                    <div key={p} className={`h-1.5 w-4 rounded-full ${p < (kw.priority ?? 0) ? "bg-green-500" : "bg-slate-100"}`} />
-                  ))}
+                <div className="mt-1.5 flex items-center gap-2">
+                  <span className="text-[10px] text-slate-500 font-medium">Priority:</span>
+                  <div className="flex gap-1">
+                    {Array.from({ length: 5 }, (_, p) => (
+                      <div key={p} className={`h-1.5 w-3 rounded-full ${p < (kw.priority ?? 0) ? "bg-green-500" : "bg-slate-200"}`} />
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}
@@ -354,7 +524,7 @@ function KeywordsTab() {
 
 // ── Blog Tab ──────────────────────────────────────────────────────────────────
 
-function BlogTab() {
+function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
   const [tab, setTab] = useState<"write" | "posts">("posts");
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
@@ -365,6 +535,7 @@ function BlogTab() {
   const [tone, setTone] = useState("professional");
   const [length, setLength] = useState("medium");
   const [businessName, setBusinessName] = useState("");
+  const [blogLanguage, setBlogLanguage] = useState("English");
   const [includeFaq, setIncludeFaq] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [generated, setGenerated] = useState<BlogGenerateResult | null>(null);
@@ -390,6 +561,12 @@ function BlogTab() {
 
   useEffect(() => { loadPosts(); }, [loadPosts]);
 
+  useEffect(() => {
+    if (!profile) return;
+    setBusinessName((n) => (n.trim() ? n : profile.business_name));
+    if (profile.language?.trim()) setBlogLanguage(profile.language.trim());
+  }, [profile]);
+
   async function generate() {
     if (!topic.trim()) return;
     setGenerating(true); setErr(""); setGenerated(null);
@@ -400,6 +577,7 @@ function BlogTab() {
         tone,
         length,
         business_name: businessName,
+        language: blogLanguage,
         include_faq: includeFaq,
       });
       setGenerated(res);
@@ -472,94 +650,155 @@ function BlogTab() {
     : s === "scheduled" ? "bg-blue-100 text-blue-700"
     : "bg-slate-100 text-slate-600";
 
+  const topicStarters = useMemo(() => {
+    if (!profile) return [];
+    const bn = profile.business_name?.trim();
+    const bt = profile.business_type?.trim()?.replace(/-/g, " ") || "your services";
+    const loc = profile.location?.trim();
+    const city = loc ? loc.split(",")[0]?.trim() : "";
+    const geo = city ? ` in ${city}` : "";
+    const ideas: string[] = [];
+    if (bn) ideas.push(`Why customers choose ${bn} for ${bt}${geo}`);
+    ideas.push(`5 practical ${bt} tips every customer should know${geo}`);
+    ideas.push(city ? `${bt} in ${city}: what to look for` : `${bt}: a simple guide for first-time buyers`);
+    return ideas.slice(0, 4);
+  }, [profile]);
+
   return (
     <div className="space-y-5">
       <div className="flex gap-2">
         {(["posts", "write"] as const).map(t => (
           <button
             key={t}
+            type="button"
             onClick={() => setTab(t)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${tab === t ? "bg-green-600 text-white" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${tab === t ? "bg-emerald-600 text-white shadow-sm" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"}`}
           >
-            {t === "posts" ? "My Posts" : "Write New Post"}
+            {t === "posts" ? "My posts" : "Write post"}
           </button>
         ))}
       </div>
 
       {tab === "write" && (
         <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-          <p className="text-sm font-semibold text-slate-700">AI Blog Writer</p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="sm:col-span-2">
-              <label className="text-xs text-slate-500 font-medium block mb-1">Topic *</label>
-              <input
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="e.g. 5 reasons to choose a professional hair salon in Nairobi"
-                value={topic}
-                onChange={e => setTopic(e.target.value)}
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="text-xs text-slate-500 font-medium block mb-1">Target Keywords (comma-separated)</label>
-              <input
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="hair salon Nairobi, best salon, hair treatment"
-                value={keywords}
-                onChange={e => setKeywords(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 font-medium block mb-1">Tone</label>
-              <select
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                value={tone}
-                onChange={e => setTone(e.target.value)}
-              >
-                <option value="professional">Professional</option>
-                <option value="friendly">Friendly</option>
-                <option value="casual">Casual</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 font-medium block mb-1">Length</label>
-              <select
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                value={length}
-                onChange={e => setLength(e.target.value)}
-              >
-                <option value="short">Short (~400 words)</option>
-                <option value="medium">Medium (~800 words)</option>
-                <option value="long">Long (~1500 words)</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 font-medium block mb-1">Business Name (optional)</label>
-              <input
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                placeholder="Your business name"
-                value={businessName}
-                onChange={e => setBusinessName(e.target.value)}
-              />
-            </div>
-            <div className="flex items-center gap-2 pt-5">
-              <input
-                type="checkbox"
-                id="faq"
-                checked={includeFaq}
-                onChange={e => setIncludeFaq(e.target.checked)}
-                className="rounded"
-              />
-              <label htmlFor="faq" className="text-sm text-slate-600">Include FAQ section</label>
-            </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-800">Draft a blog post</p>
+            <p className="text-xs text-slate-500 mt-1">
+              Your business name and story come from Settings automatically — just pick a topic.
+            </p>
           </div>
 
+          {topicStarters.length > 0 && (
+            <div>
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Ideas for you</p>
+              <div className="flex flex-wrap gap-2">
+                {topicStarters.map((s, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setTopic(s)}
+                    className="text-left text-xs px-3 py-2.5 rounded-xl border border-emerald-100 bg-emerald-50/40 text-slate-700 hover:bg-emerald-50 transition-colors max-w-full sm:max-w-[340px] leading-snug"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs text-slate-500 font-medium block mb-1">What should this article cover?</label>
+            <input
+              className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              placeholder="Or type any topic you want…"
+              value={topic}
+              onChange={e => setTopic(e.target.value)}
+            />
+          </div>
+
+          <details className="group rounded-xl border border-slate-100 bg-slate-50/50">
+            <summary className="cursor-pointer text-xs font-semibold text-slate-600 px-3 py-2.5 list-none flex items-center justify-between [&::-webkit-details-marker]:hidden">
+              Keywords, tone, length & language
+              <span className="text-slate-400 group-open:rotate-180 transition-transform">▼</span>
+            </summary>
+            <div className="px-3 pb-3 pt-1 space-y-3 border-t border-slate-100 bg-white rounded-b-xl">
+              <div className="pt-2">
+                <label className="text-xs text-slate-500 font-medium block mb-1">Target keywords (optional)</label>
+                <input
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="Comma-separated"
+                  value={keywords}
+                  onChange={e => setKeywords(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-500 font-medium block mb-1">Tone</label>
+                  <select
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    value={tone}
+                    onChange={e => setTone(e.target.value)}
+                  >
+                    <option value="professional">Professional</option>
+                    <option value="friendly">Friendly</option>
+                    <option value="casual">Casual</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 font-medium block mb-1">Length</label>
+                  <select
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    value={length}
+                    onChange={e => setLength(e.target.value)}
+                  >
+                    <option value="short">Short (~400 words)</option>
+                    <option value="medium">Medium (~800 words)</option>
+                    <option value="long">Long (~1500 words)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 font-medium block mb-1">Business name</label>
+                  <input
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="From Settings by default"
+                    value={businessName}
+                    onChange={e => setBusinessName(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 font-medium block mb-1">Language</label>
+                  <select
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    value={blogLanguage}
+                    onChange={e => setBlogLanguage(e.target.value)}
+                  >
+                    <option value="English">English</option>
+                    <option value="Swahili">Swahili</option>
+                    <option value="French">French</option>
+                    <option value="Spanish">Spanish</option>
+                    <option value="Arabic">Arabic</option>
+                  </select>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeFaq}
+                  onChange={e => setIncludeFaq(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <span className="text-sm text-slate-600">Include FAQ section (great for Google)</span>
+              </label>
+            </div>
+          </details>
+
           <button
+            type="button"
             onClick={generate}
             disabled={generating || !topic.trim()}
-            className="px-5 py-2 bg-green-600 text-white text-sm rounded-lg font-medium hover:bg-green-700 disabled:opacity-50"
+            className="w-full sm:w-auto min-h-[44px] px-6 py-3 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-50 shadow-sm"
           >
-            {generating ? "Writing post…" : "Generate Blog Post"}
+            {generating ? "Writing…" : "Generate draft"}
           </button>
           {err && <p className="text-red-500 text-xs">{err}</p>}
 
@@ -602,7 +841,7 @@ function BlogTab() {
           ) : posts.length === 0 ? (
             <div className="p-8 text-center">
               <p className="text-slate-400 text-sm">No blog posts yet.</p>
-              <button onClick={() => setTab("write")} className="mt-3 px-4 py-2 bg-green-600 text-white text-sm rounded-lg font-medium">
+              <button onClick={() => setTab("write")} className="mt-3 px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg font-medium">
                 Write Your First Post
               </button>
             </div>
@@ -626,7 +865,7 @@ function BlogTab() {
                     {post.status !== "published" && (
                       <button
                         onClick={() => { setPublishPost(post); setPublishResult(""); }}
-                        className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                        className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
                       >
                         Publish
                       </button>
@@ -692,7 +931,7 @@ function BlogTab() {
             <button
               onClick={doPublish}
               disabled={publishing}
-              className="w-full py-2 bg-green-600 text-white text-sm rounded-lg font-medium hover:bg-green-700 disabled:opacity-50"
+              className="w-full py-2 bg-emerald-600 text-white text-sm rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50"
             >
               {publishing ? "Publishing…" : `Publish to ${publishPlatform === "wordpress" ? "WordPress" : "Shopify"}`}
             </button>
@@ -705,7 +944,7 @@ function BlogTab() {
 
 // ── Content Calendar Tab ──────────────────────────────────────────────────────
 
-function CalendarTab() {
+function CalendarTab({ profile, onJump }: { profile: SeoBusinessContext | null; onJump: (t: Tab) => void }) {
   const [businessType, setBusinessType] = useState("");
   const [location, setLocation] = useState("");
   const [postsPerWeek, setPostsPerWeek] = useState(2);
@@ -714,11 +953,16 @@ function CalendarTab() {
   const [calendar, setCalendar] = useState<ContentCalendarItem[]>([]);
   const [err, setErr] = useState("");
 
+  useEffect(() => {
+    if (!profile) return;
+    setBusinessType((t) => (t.trim() ? t : profile.business_type));
+    setLocation((t) => (t.trim() ? t : profile.location));
+  }, [profile]);
+
   async function generate() {
-    if (!businessType.trim()) return;
     setLoading(true); setErr("");
     try {
-      const res = await seoApi.contentCalendar(businessType, postsPerWeek, weeks, location);
+      const res = await seoApi.contentCalendar(businessType.trim(), postsPerWeek, weeks, location.trim());
       setCalendar(res.calendar);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed");
@@ -732,62 +976,103 @@ function CalendarTab() {
 
   const weeks_grouped = Array.from(new Set(calendar.map(c => c.week))).sort();
 
+  const usingProfile =
+    Boolean(profile?.business_name?.trim()) ||
+    Boolean(profile?.business_type?.trim()) ||
+    Boolean(profile?.location?.trim());
+
   return (
     <div className="space-y-5">
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <p className="text-sm font-semibold text-slate-700 mb-3">Generate Content Calendar</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-          <div>
-            <label className="text-xs text-slate-500 font-medium block mb-1">Business Type *</label>
-            <input
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="e.g. law firm, restaurant, e-commerce"
-              value={businessType}
-              onChange={e => setBusinessType(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 font-medium block mb-1">Location (optional)</label>
-            <input
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="e.g. Nairobi"
-              value={location}
-              onChange={e => setLocation(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 font-medium block mb-1">Posts per week</label>
-            <select
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
-              value={postsPerWeek}
-              onChange={e => setPostsPerWeek(Number(e.target.value))}
-            >
-              {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 font-medium block mb-1">Weeks</label>
-            <select
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
-              value={weeks}
-              onChange={e => setWeeks(Number(e.target.value))}
-            >
-              {[2, 4, 6, 8, 12].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </div>
+      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Your content calendar</p>
+          <p className="text-xs text-slate-500 mt-1">
+            Ideas tuned to your business — powered by your Settings profile. Adjust cadence below if you like.
+          </p>
+          {usingProfile && (
+            <p className="text-xs text-slate-600 mt-2 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
+              <span className="font-medium text-slate-700">Using:</span>{" "}
+              {[profile?.business_name?.trim(), profile?.business_type?.replace(/-/g, " "), profile?.location?.trim()]
+                .filter(Boolean)
+                .join(" · ") || "Saved profile"}
+            </p>
+          )}
         </div>
+
         <button
+          type="button"
           onClick={generate}
-          disabled={loading || !businessType.trim()}
-          className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg font-medium hover:bg-green-700 disabled:opacity-50"
+          disabled={loading}
+          className="w-full sm:w-auto min-h-[44px] px-6 py-3 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-50 shadow-sm"
         >
-          {loading ? "Generating…" : "Generate Calendar"}
+          {loading ? "Building calendar…" : "Generate my calendar"}
         </button>
-        {err && <p className="text-red-500 text-xs mt-2">{err}</p>}
+
+        <details className="group rounded-xl border border-slate-100 bg-slate-50/50">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-600 px-3 py-2.5 list-none flex items-center justify-between [&::-webkit-details-marker]:hidden">
+            Schedule & fine-tune
+            <span className="text-slate-400 group-open:rotate-180 transition-transform">▼</span>
+          </summary>
+          <div className="px-3 pb-3 pt-0 grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-slate-100 bg-white rounded-b-xl">
+            <div className="pt-3">
+              <label className="text-xs text-slate-500 font-medium block mb-1">Industry</label>
+              <input
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="Optional override"
+                value={businessType}
+                onChange={e => setBusinessType(e.target.value)}
+              />
+            </div>
+            <div className="pt-3">
+              <label className="text-xs text-slate-500 font-medium block mb-1">Location</label>
+              <input
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                placeholder="Optional"
+                value={location}
+                onChange={e => setLocation(e.target.value)}
+              />
+            </div>
+            <div className="pt-1">
+              <label className="text-xs text-slate-500 font-medium block mb-1">Posts per week</label>
+              <select
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                value={postsPerWeek}
+                onChange={e => setPostsPerWeek(Number(e.target.value))}
+              >
+                {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div className="pt-1">
+              <label className="text-xs text-slate-500 font-medium block mb-1">Weeks</label>
+              <select
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                value={weeks}
+                onChange={e => setWeeks(Number(e.target.value))}
+              >
+                {[2, 4, 6, 8, 12].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+          </div>
+        </details>
+
+        <p className="text-[11px] text-slate-400">Leave industry blank to use your saved type from Settings.</p>
+        {err && <p className="text-red-500 text-xs">{err}</p>}
       </div>
 
       {calendar.length > 0 && (
         <div className="space-y-4">
+          <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-green-900">✅ Calendar created!</p>
+              <p className="text-xs text-green-700 mt-0.5">Now write blog posts for these topics.</p>
+            </div>
+            <button
+              onClick={() => onJump("blog")}
+              className="text-xs px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium shrink-0"
+            >
+              Next: Write posts →
+            </button>
+          </div>
           {weeks_grouped.map(week => (
             <div key={week} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
@@ -841,7 +1126,7 @@ const QUICK_PROMPTS = [
   "Make a content plan for the next month",
 ];
 
-function AgentChatTab() {
+function AgentChatTab({ profile }: { profile: SeoBusinessContext | null }) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -919,24 +1204,32 @@ function AgentChatTab() {
   return (
     <div className="flex flex-col h-[calc(100vh-200px)] min-h-[500px] bg-white rounded-2xl border border-slate-200 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-slate-50">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-green-500" />
-          <span className="text-sm font-semibold text-slate-700">SEO Coach</span>
-          <span className="text-xs text-slate-400">knows your business · guides you step by step</span>
+      <div className="flex items-start justify-between gap-3 px-5 py-3 border-b border-slate-100 bg-gradient-to-r from-emerald-50/40 to-slate-50">
+        <div className="flex flex-col gap-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" aria-hidden />
+            <span className="text-sm font-semibold text-slate-800">SEO Coach</span>
+          </div>
+          <p className="text-[11px] sm:text-xs text-slate-500 leading-snug max-w-md">
+            {profile?.business_name?.trim()
+              ? <>Tailored for <span className="font-medium text-slate-700">{profile.business_name.trim()}</span> — same details as Settings.</>
+              : <>Answers use your business info from Settings (name, industry, location).</>}
+          </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0">
           <button
+            type="button"
             onClick={() => setShowHistory(h => !h)}
-            className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-100"
+            className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-white bg-white/60"
           >
             History
           </button>
           <button
+            type="button"
             onClick={newChat}
-            className="text-xs px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700"
+            className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
           >
-            New Chat
+            New chat
           </button>
         </div>
       </div>
@@ -976,14 +1269,18 @@ function AgentChatTab() {
               <div className="flex flex-col items-center justify-center h-full gap-5 text-center pb-10">
                 <div className="space-y-1">
                   <p className="text-slate-700 font-semibold text-base">Hi! I'm your SEO Coach.</p>
-                  <p className="text-slate-400 text-sm max-w-xs">I'll help your business show up on Google — step by step, in plain English. No SEO knowledge needed.</p>
+                  <p className="text-slate-400 text-sm max-w-xs mx-auto">
+                    {profile?.business_name?.trim()
+                      ? `We’ll keep ideas practical for ${profile.business_name.trim()}. Tap a prompt or ask your own question.`
+                      : "I'll help your business show up on Google — step by step, in plain English. No SEO knowledge needed."}
+                  </p>
                 </div>
                 <div className="flex flex-col gap-2 w-full max-w-sm">
                   {QUICK_PROMPTS.map(p => (
                     <button
                       key={p}
                       onClick={() => send(p)}
-                      className="text-sm text-left px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-green-50 hover:border-green-200 hover:text-green-700 transition-colors"
+                      className="text-sm text-left px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-800 transition-colors"
                     >
                       {p}
                     </button>
@@ -1009,7 +1306,7 @@ function AgentChatTab() {
                   <div
                     className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
                       m.role === "user"
-                        ? "bg-green-600 text-white rounded-tr-sm"
+                        ? "bg-emerald-600 text-white rounded-tr-sm"
                         : "bg-slate-100 text-slate-800 rounded-tl-sm"
                     }`}
                   >
@@ -1048,7 +1345,7 @@ function AgentChatTab() {
               <button
                 onClick={() => send()}
                 disabled={loading || !input.trim()}
-                className="px-4 py-2.5 bg-green-600 text-white rounded-xl text-sm font-medium hover:bg-green-700 disabled:opacity-40 shrink-0"
+                className="px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 disabled:opacity-40 shrink-0"
               >
                 Send
               </button>
@@ -1065,51 +1362,110 @@ function AgentChatTab() {
 
 export default function SeoPage() {
   const [tab, setTab] = useState<Tab>("agent");
+  const [showQuickStart, setShowQuickStart] = useState(true);
   const [summary, setSummary] = useState<SeoSummary | null>(null);
+  const [seoProfile, setSeoProfile] = useState<SeoBusinessContext | null>(null);
+
+  useEffect(() => {
+    seoApi.businessContext().then(setSeoProfile).catch(() => {});
+  }, []);
 
   useEffect(() => {
     seoApi.summary().then(setSummary).catch(() => {});
   }, [tab]);
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "agent", label: "✦ AI Agent" },
-    { id: "overview", label: "Overview" },
-    { id: "audit", label: "Site Audit" },
-    { id: "keywords", label: "Keywords" },
-    { id: "blog", label: "Blog" },
-    { id: "calendar", label: "Content Calendar" },
+  const tabs: { id: Tab; label: string; desc: string }[] = [
+    { id: "agent", label: "🤖 Coach", desc: "Ask anything" },
+    { id: "keywords", label: "🔍 Keywords", desc: "What to rank for" },
+    { id: "blog", label: "✍️ Blog", desc: "Write posts" },
+    { id: "calendar", label: "📅 Calendar", desc: "Content plan" },
+    { id: "audit", label: "🔧 Audit", desc: "Check a site" },
+    { id: "overview", label: "📊 Stats", desc: "Your progress" },
   ];
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-5">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">SEO & Blog</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Audit sites, research keywords, write and publish AI blog posts</p>
+    <div className="p-6 max-w-5xl mx-auto space-y-6 pb-14">
+      <header className="rounded-2xl border border-emerald-100/90 bg-gradient-to-br from-emerald-50/80 via-white to-slate-50 p-6 sm:p-7 shadow-sm">
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">SEO & Blog</h1>
+        <p className="text-slate-600 text-sm sm:text-[15px] leading-relaxed mt-2 max-w-2xl">
+          Get found on Google — no SEO knowledge needed. Everything uses your business info from Settings automatically.
+        </p>
+        <div className="mt-6">
+          <BusinessSnapshotBar profile={seoProfile} activeTab={tab} onJump={setTab} />
         </div>
-      </div>
+      </header>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-slate-100 p-1 rounded-xl overflow-x-auto">
+      {showQuickStart && summary && (summary.total_posts ?? 0) === 0 && (summary.total_audits ?? 0) === 0 && (
+        <div className="rounded-xl border-2 border-emerald-200 bg-gradient-to-r from-emerald-50 to-green-50 p-5 shadow-sm relative">
+          <button
+            onClick={() => setShowQuickStart(false)}
+            className="absolute top-3 right-3 text-slate-400 hover:text-slate-600 text-lg"
+          >×</button>
+          <p className="text-sm font-bold text-emerald-900 mb-3">🚀 Your SEO Journey — Follow these steps</p>
+          <div className="space-y-2.5">
+            <div className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">1</span>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Add your website to Settings</p>
+                <p className="text-xs text-slate-600">Settings → Business info → Website URL. We'll extract keywords from your actual site.</p>
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">2</span>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Get keyword ideas</p>
+                <p className="text-xs text-slate-600">Keywords tab → one tap to see what people search for (with real search volumes).</p>
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">3</span>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Create content calendar</p>
+                <p className="text-xs text-slate-600">Calendar tab → distribute your keywords across the month automatically.</p>
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">4</span>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Write & publish posts</p>
+                <p className="text-xs text-slate-600">Blog tab → generate articles → publish to WordPress/Shopify.</p>
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">5</span>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Audit & track progress</p>
+                <p className="text-xs text-slate-600">Audit tab → check your site's SEO health. Stats tab → see your progress.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <nav className="flex gap-1 bg-slate-100/90 p-1 rounded-xl overflow-x-auto">
         {tabs.map(t => (
           <button
             key={t.id}
+            type="button"
             onClick={() => setTab(t.id)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
-              tab === t.id ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
+            className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all shrink-0 flex flex-col items-center gap-0.5 min-w-[80px] ${
+              tab === t.id
+                ? "bg-white text-emerald-900 shadow-sm ring-1 ring-emerald-100/80"
+                : "text-slate-500 hover:text-slate-800"
             }`}
           >
-            {t.label}
+            <span>{t.label}</span>
+            <span className="text-[10px] opacity-70">{t.desc}</span>
           </button>
         ))}
-      </div>
+      </nav>
 
-      {tab === "agent" && <AgentChatTab />}
-      {tab === "overview" && <OverviewTab summary={summary} />}
+      {tab === "agent" && <AgentChatTab profile={seoProfile} />}
+      {tab === "overview" && <OverviewTab summary={summary} onJump={setTab} />}
       {tab === "audit" && <AuditTab />}
-      {tab === "keywords" && <KeywordsTab />}
-      {tab === "blog" && <BlogTab />}
-      {tab === "calendar" && <CalendarTab />}
+      {tab === "keywords" && <KeywordsTab profile={seoProfile} onJump={setTab} />}
+      {tab === "blog" && <BlogTab profile={seoProfile} />}
+      {tab === "calendar" && <CalendarTab profile={seoProfile} onJump={setTab} />}
     </div>
   );
 }

@@ -111,6 +111,20 @@ def _cache_set(key: str, chips: List[str]) -> None:
     _SUGGESTION_CACHE[key] = (chips, time.time() + _CACHE_TTL)
 
 
+_INLINE_OPTION_RE = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:\(?[A-Za-z][.):\]]|\(?\d{1,2}[.):\]])\s+\S",
+    re.MULTILINE,
+)
+
+
+def _reply_has_inline_options(reply: str) -> bool:
+    """Return True when the reply already contains a structured numbered/lettered
+    option list that the frontend will parse into tap chips automatically.
+    In that case a second LLM call for chips is redundant."""
+    matches = _INLINE_OPTION_RE.findall(reply)
+    return len(matches) >= 2
+
+
 async def build_reply_suggestions(
     agent_id: str,
     user_message: str,
@@ -121,6 +135,13 @@ async def build_reply_suggestions(
         return []
     reply = (assistant_reply or "").strip()
     if not reply:
+        return []
+
+    # Skip the extra LLM call when the reply already has a structured option list —
+    # the frontend's extractInlineOptionList will turn those into chips automatically.
+    # This applies to ALL agents (not just creative/design) and removes 1-3 s of
+    # latency on any turn where the AI presents numbered or lettered choices.
+    if _reply_has_inline_options(reply):
         return []
 
     # Return cached chips for identical (agent, user_msg, reply) tuples
@@ -144,19 +165,22 @@ Assistant's reply:
 Your job: read the conversation and produce chips that naturally advance it to the next logical step.
 
 Core rules:
-1. Match the exact phase of the conversation:
+1. Match the EXACT phase and content of the assistant's reply — not a generic version of the task:
+   - If the reply includes a draft (caption, copy, design, document) and asks for approval → chips are approval/tweak responses ONLY: e.g. "Caption looks great, let's proceed", "Tweak the caption", "Try a different tone", "Something else — I'll describe it". NEVER suggest chips that re-provide content already in the reply.
+   - If the reply asks about timing/scheduling → chips = concrete time options: "Post it now", "Tomorrow morning", "This evening", "I'll pick a custom date and time", "Something else — I'll describe it"
+   - If the reply asks multiple numbered questions (e.g. "1. Caption — ... 2. Timing — ...") → chips cover the most immediate action from the FIRST unanswered question, plus 1-2 for the second
    - If the reply is asking the user to choose from options → chips = the exact options listed
    - If the reply shows multiple choices (numbered 1/2/3, A/B/C, or any labelled list) → produce one chip per option shown, plus "Something else — I'll describe it" at the end
    - If a decision was made and next step is clear → "Proceed", "Yes, do it", plus 1-2 alternatives
    - If a design/image was shown → chips to react (approve, tweak, try different style)
-   - If the reply is asking a question → chips = likely answers + "Something else"
    - If the reply is purely informational (data tables, reports, analytics) → output {{"chips": []}} — no chips
    - If the reply is open-ended → chips to move toward a concrete next decision
-2. Each chip ≤ 90 characters, written in first person as if the user is speaking
-3. Chips advance the conversation — never repeat what was just answered
-4. Always include "Something else — I'll describe it" as the last option when presenting choices
-5. Never suggest downloading, exporting, sharing, or sending files
-6. Never include unfilled placeholder text like [product name] or [your website]
+2. CRITICAL — never suggest chips that ask for information the assistant already has or already provided in the reply. If a caption is drafted, don't suggest "I'll share the text now". If an image was shown, don't suggest "I have an image to post".
+3. Each chip ≤ 90 characters, written in first person as if the user is speaking
+4. Chips advance the conversation — never repeat what was just answered
+5. Always include "Something else — I'll describe it" as the last option when presenting choices
+6. Never suggest downloading, exporting, sharing, or sending files
+7. Never include unfilled placeholder text like [product name] or [your website]
 
 Output JSON only, one line: {{"chips": ["...", "...", "..."]}}"""
 

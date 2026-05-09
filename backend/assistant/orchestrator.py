@@ -579,6 +579,15 @@ async def _flush_owner_prefs_bg(business_id: str, turns: list, agent_id: str) ->
         logger.debug("[orchestrator] owner pref flush failed (non-critical): %s", _e)
 
 
+async def _build_chips_safe(agent_id: str, user_message: str, reply: str) -> List[str]:
+    """Wrapper around build_reply_suggestions that never raises."""
+    try:
+        return await build_reply_suggestions(agent_id, user_message, reply)
+    except Exception as exc:
+        logger.warning("[orchestrator] chips generation failed: %s", exc)
+        return []
+
+
 async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str, Any]:
     """Attach tap-to-send suggestion chips for interactive specialists (e.g. Meta Ads)."""
     _db_ft = payload.get("_db")
@@ -611,12 +620,13 @@ async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str
         asyncio.create_task(_clear_pending_conf())
     reply = payload.get("reply") or ""
     ag = payload.get("active_agent") or ""
-    try:
-        sugs = await build_reply_suggestions(ag, user_message, reply)
-    except Exception as exc:
-        logger.warning("[orchestrator] build_reply_suggestions failed: %s", exc)
-        sugs = []
-    payload["reply_suggestions"] = sugs
+    if "reply_suggestions" not in payload:
+        try:
+            sugs = await build_reply_suggestions(ag, user_message, reply)
+        except Exception as exc:
+            logger.warning("[orchestrator] build_reply_suggestions failed: %s", exc)
+            sugs = []
+        payload["reply_suggestions"] = sugs
     if sugs and payload.get("messages_to_append"):
         last = payload["messages_to_append"][-1]
         if last.get("role") == "assistant":
@@ -758,9 +768,16 @@ Before calling ANY tools or asking ANY questions, check conversation history and
     if ag_cfg.get("model"):
         model_id = ag_cfg["model"]
 
-    # Planner: decompose complex multi-step requests before the ReAct loop.
-    # Runs a fast LLM call only when the message looks multi-intent; skips instantly otherwise.
-    _execution_plan = await plan(user_message, list(allowed or []))
+    # Run plan + RAG context in parallel — both are independent reads.
+    _execution_plan, _rag_ctx = await asyncio.gather(
+        plan(user_message, list(allowed or [])),
+        build_context(
+            db=db,
+            user_id=str(user.get("_id", "")),
+            business_id=str(user.get("business_id") or user.get("_id", "")),
+            user_message=user_message,
+        ),
+    )
 
     # Load attached documents for this conversation
     attached_docs: List[Dict[str, Any]] = []
@@ -838,14 +855,6 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                     "you need passages that aren't in the excerpt above."
                 )
             messages.append({"role": "system", "content": preamble})
-    # Context builder: inject long-term memory + RAG knowledge chunks (parallel fetch).
-    # Gracefully no-ops if QDRANT_URL or OPENAI_API_KEY is not configured.
-    _rag_ctx = await build_context(
-        db=db,
-        user_id=str(user.get("_id", "")),
-        business_id=str(user.get("business_id") or user.get("_id", "")),
-        user_message=user_message,
-    )
     _ctx_block = format_context_block(_rag_ctx)
     if _ctx_block:
         messages.append({"role": "system", "content": _ctx_block})
@@ -864,10 +873,22 @@ Before calling ANY tools or asking ANY questions, check conversation history and
     steps: List[Dict[str, Any]] = []
     messages_to_append: List[Dict[str, Any]] = [{"role": "user", "content": user_message}]
 
-    # Simple heuristic: if the user's latest message reads as an affirmative confirmation,
-    # treat this turn as implicitly approving the *next* destructive tool call.
+    # Load stored pending confirmation to gate approval correctly.
+    # Without this, any "yes" reply to an unrelated question (e.g. "Yes, use blue")
+    # would auto-approve a destructive broadcast that was pending from a different context.
+    _stored_pending: Optional[Dict[str, Any]] = None
+    if conversation_id:
+        try:
+            _conv_snap = await db.assistant_conversations.find_one(
+                {"_id": conversation_id}, {"pending_confirmation": 1}
+            )
+            if _conv_snap:
+                _stored_pending = _conv_snap.get("pending_confirmation")
+        except Exception:
+            pass
+
     is_confirmation_reply = user_message.strip().lower() in AFFIRMATIVE
-    approved_destructive = auto_approve_destructive or is_confirmation_reply
+    approved_destructive = auto_approve_destructive or (is_confirmation_reply and _stored_pending is not None)
 
     pending_confirmation: Optional[Dict[str, Any]] = None
     model_used = model_id or ""
@@ -1204,7 +1225,17 @@ Before calling ANY tools or asking ANY questions, check conversation history and
     if ag_cfg.get("model"):
         model_id = ag_cfg["model"]
 
-    _execution_plan = await plan(user_message, list(allowed or []))
+    # Run plan + RAG context in parallel — both are independent reads.
+    # Previously sequential; now firing together saves the full planner latency.
+    _execution_plan, _rag_ctx = await asyncio.gather(
+        plan(user_message, list(allowed or [])),
+        build_context(
+            db=db,
+            user_id=str(user.get("_id", "")),
+            business_id=str(user.get("business_id") or user.get("_id", "")),
+            user_message=user_message,
+        ),
+    )
 
     attached_docs: List[Dict[str, Any]] = []
     native_attachments: List[Dict[str, Any]] = []
@@ -1255,13 +1286,6 @@ Before calling ANY tools or asking ANY questions, check conversation history and
             if has_long_doc:
                 preamble += "\n\nNote: at least one document is long. Call `search_documents` for additional excerpts."
             messages.append({"role": "system", "content": preamble})
-
-    _rag_ctx = await build_context(
-        db=db,
-        user_id=str(user.get("_id", "")),
-        business_id=str(user.get("business_id") or user.get("_id", "")),
-        user_message=user_message,
-    )
     _ctx_block = format_context_block(_rag_ctx)
     if _ctx_block:
         messages.append({"role": "system", "content": _ctx_block})
@@ -1278,8 +1302,20 @@ Before calling ANY tools or asking ANY questions, check conversation history and
 
     steps: List[Dict[str, Any]] = []
     messages_to_append: List[Dict[str, Any]] = [{"role": "user", "content": user_message}]
+
+    _stored_pending_s: Optional[Dict[str, Any]] = None
+    if conversation_id:
+        try:
+            _conv_snap_s = await db.assistant_conversations.find_one(
+                {"_id": conversation_id}, {"pending_confirmation": 1}
+            )
+            if _conv_snap_s:
+                _stored_pending_s = _conv_snap_s.get("pending_confirmation")
+        except Exception:
+            pass
+
     is_confirmation_reply = user_message.strip().lower() in AFFIRMATIVE
-    approved_destructive = auto_approve_destructive or is_confirmation_reply
+    approved_destructive = auto_approve_destructive or (is_confirmation_reply and _stored_pending_s is not None)
     pending_confirmation: Optional[Dict[str, Any]] = None
     model_used = model_id or ""
     _tokens_used = 0  # running total for circuit breaker
@@ -1304,20 +1340,42 @@ Before calling ANY tools or asking ANY questions, check conversation history and
         messages.append(asst_msg)
 
         if not tool_calls:
-            # ── Final reply: stream tokens in real-time ──────────────────────
-            stream_context = messages[:-1]  # drop the empty final assistant msg
+            # ── Final reply ───────────────────────────────────────────────────
+            # If this is the first step (no tool calls ran), we already have the
+            # full content from chat_with_tools — stream it directly without a
+            # second LLM round-trip. Only fall back to stream_reply after tool
+            # calls, where the model needs to see the tool results and generate
+            # a fresh response.
+            pre_fetched = (resp.get("content") or "").strip()
             reply_text = ""
-            try:
-                async for token in stream_reply(messages=stream_context, tools=[], model_id=model_id):
-                    reply_text += token
-                    yield {"type": "token", "text": token}
-            except Exception as stream_err:
-                logger.warning("[run_turn_stream] stream_reply failed, using pre-computed reply: %s", stream_err)
-                reply_text = resp.get("content", "")
-                yield {"type": "token", "text": reply_text}
+            if step_idx == 0 and pre_fetched:
+                # Emit the already-fetched content token-by-token (small chunks
+                # so the frontend renders progressively, just like real streaming).
+                _CHUNK = 24
+                for _i in range(0, len(pre_fetched), _CHUNK):
+                    _tok = pre_fetched[_i: _i + _CHUNK]
+                    reply_text += _tok
+                    yield {"type": "token", "text": _tok}
+            else:
+                # After tool calls: model must see tool results → real stream call.
+                stream_context = messages[:-1]  # drop the empty final assistant msg
+                try:
+                    async for token in stream_reply(messages=stream_context, tools=[], model_id=model_id):
+                        reply_text += token
+                        yield {"type": "token", "text": token}
+                except Exception as stream_err:
+                    logger.warning("[run_turn_stream] stream_reply failed, using pre-computed reply: %s", stream_err)
+                    reply_text = resp.get("content", "")
+                    yield {"type": "token", "text": reply_text}
 
             if not reply_text:
                 reply_text = resp.get("content", "")
+
+            # Fire chip generation immediately — runs in parallel with critique
+            # so the latency is hidden and chips are ready when the response is assembled.
+            _chips_task = asyncio.create_task(
+                _build_chips_safe(active_agent_id, user_message, reply_text)
+            )
 
             final = await critique(
                 draft=reply_text,
@@ -1335,6 +1393,12 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                 agent_id=active_agent_id,
             ))
 
+            # Collect chips — almost certainly done by now since critique ran in parallel
+            try:
+                _precomputed_sugs = await asyncio.wait_for(asyncio.shield(_chips_task), timeout=4.0)
+            except Exception:
+                _precomputed_sugs = []
+
             result = await _finalize_turn(
                 {
                     "reply": final,
@@ -1347,6 +1411,7 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                     "_conversation_id": conversation_id,
                     "_routing_method": "orchestrator",
                     "_tokens_used": _tokens_used,
+                    "reply_suggestions": _precomputed_sugs,
                 },
                 user_message,
             )

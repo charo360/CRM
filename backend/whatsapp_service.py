@@ -826,6 +826,53 @@ class WhatsAppService:
             return None
 
 
+    async def handle_group_message(self, instance_name: str, data: dict) -> Optional[dict]:
+        """
+        Extract a WhatsApp group message for keyword monitoring.
+        Called from the webhook handler before handle_incoming_message (which skips groups).
+        Returns None if not a group message, outgoing, or unparseable.
+        """
+        try:
+            user = await self.find_user_by_instance(instance_name)
+            if not user:
+                return None
+
+            messages = data if isinstance(data, list) else [data]
+            if not messages:
+                return None
+
+            msg_data  = messages[0]
+            key       = msg_data.get("key", {})
+            remote_jid = key.get("remoteJid", "")
+            from_me   = bool(key.get("fromMe", False))
+
+            if "@g.us" not in remote_jid:
+                return None
+            if from_me:
+                return None
+
+            msg_obj = msg_data.get("message") or {}
+            if "protocolMessage" in msg_obj or "senderKeyDistributionMessage" in msg_obj:
+                return None
+
+            body, _, _, _ = _extract_message_body(msg_obj)
+            if not body or len(body.strip()) < 5:
+                return None
+
+            push_name  = msg_data.get("pushName") or msg_data.get("notifyName") or "Member"
+            group_name = msg_data.get("groupName") or remote_jid.split("@")[0]
+
+            return {
+                "user":       user,
+                "body":       body.strip(),
+                "push_name":  push_name,
+                "group_jid":  remote_jid,
+                "group_name": group_name,
+            }
+        except Exception as e:
+            logger.error("[handle_group_message] %s: %s", instance_name, e)
+            return None
+
 # ── Singleton ────────────────────────────────────────────────────────────────
 
 _whatsapp_service: Optional[WhatsAppService] = None

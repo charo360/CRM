@@ -700,13 +700,18 @@ export default function SocialSchedulerPage() {
                   <td className="px-4 py-3">
                     <button
                       type="button"
-                      title="Click to toggle status"
+                      title={r.status === "failed" && r.publish_error ? r.publish_error : "Click to toggle status"}
                       onClick={() => void quickToggleStatus(r)}
                       className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium cursor-pointer hover:opacity-75 transition-opacity ${STATUS_STYLE[r.status] ?? "bg-slate-100"}`}
                     >
                       {STATUS_ICON[r.status]}
                       {r.status}
                     </button>
+                    {r.status === "failed" && r.publish_error && (
+                      <p className="mt-1 max-w-[180px] text-[10px] leading-tight text-red-500" title={r.publish_error}>
+                        {r.publish_error.length > 80 ? r.publish_error.slice(0, 80) + "…" : r.publish_error}
+                      </p>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button type="button" onClick={() => openEdit(r)}

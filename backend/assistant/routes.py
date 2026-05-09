@@ -15,11 +15,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .documents import delete_document, list_for_conversation, store_upload
 from .agents import AGENT_REGISTRY, list_agents_public, resolve_agent_id
-from .intent_router import route_to_agent
-from .models import DEFAULT_MODEL, list_available_models, stream_reply
-from .orchestrator import run_turn, run_turn_stream
+from .models import DEFAULT_MODEL, list_available_models
+from .v2_orchestrator import run_v2_turn_stream
 from .titler import generate_title
-from .agent_workspace import load_workspace, update_workspace, workspace_to_context_line
+from .agent_workspace import update_workspace
 from .conversation_access import (
     can_access_conversation_row,
     conversation_list_filter,
@@ -31,18 +30,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
-
-def _explicit_agent_from_body(body: Dict[str, Any]) -> Optional[str]:
-    """If the client pinned a specialist, return the raw id string; else None = use intent router only."""
-    raw = (body.get("agent") or "").strip()
-    if not raw:
-        return None
-    al = raw.lower()
-    if al in ("auto", "router", "automatic"):
-        return None
-    if resolve_agent_id(raw) == "general":
-        return None
-    return raw
 
 # ── Rate limit: 30 turns per 60 seconds per user ─────────────────────────────
 _RATE_WINDOW_SEC = 60
@@ -328,76 +315,54 @@ def _mk_router(db, get_current_user):
             await db.assistant_conversations.insert_one(conv)
 
         history: List[Dict[str, Any]] = conv.get("messages") or []
-        # Route to the best specialist — sticky for continuation messages.
-        # If a design flow is in progress (flow_step set and not 'done'), force
-        # design agent regardless of keywords — design is multi-turn stateful.
-        prev_agent = conv.get("agent") or None
-        design_flow_active = False
-        if "creative" in AGENT_REGISTRY or "design" in AGENT_REGISTRY:
-            try:
-                from .design_state import load_design_state
-                _ds = await load_design_state(db, conv_id, user_id)
-                _step = _ds.get("flow_step")
-                design_flow_active = bool(_step and _step != "done")
-            except Exception:
-                pass
-        agent_resolved = await route_to_agent(
-            msg,
-            history,
-            AGENT_REGISTRY,
-            prev_agent=prev_agent,
-            design_flow_active=design_flow_active,
-            explicit_agent=_explicit_agent_from_body(body),
-        )
-
-        # Load shared agent workspace — inject as context when agent switches
-        workspace = await load_workspace(db, conv_id)
-        workspace_ctx = workspace_to_context_line(workspace)
-        user_with_ctx = {**user, "_workspace_context": workspace_ctx} if workspace_ctx else user
-
-        # Strip non-serializable keys from history before passing to LLM
         clean_history = [_strip_storage_fields(m) for m in history]
 
-        try:
-            result = await run_turn(
+        # ── V2 multi-agent orchestrator ───────────────────────────────────────
+        import asyncio as _asyncio
+
+        result: Optional[Dict[str, Any]] = None
+        reply_text = ""
+
+        async def _drain_v2() -> None:
+            nonlocal result, reply_text
+            async for ev in run_v2_turn_stream(
                 db=db,
-                user=user_with_ctx,
+                user=user,
                 history=clean_history,
                 user_message=msg,
                 model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
-                auto_approve_destructive=bool(body.get("auto_approve")),
                 conversation_id=conv_id,
-                agent_id=agent_resolved,
-            )
+            ):
+                if ev.get("type") == "token":
+                    reply_text += ev.get("text", "")
+                elif ev.get("type") == "done":
+                    result = ev
+                elif ev.get("type") == "error":
+                    raise RuntimeError(ev.get("message", "Assistant error"))
+
+        try:
+            await _drain_v2()
         except Exception as e:
-            logger.exception("[assistant.chat] failure")
+            logger.exception("[assistant.chat] v2 failure")
             raise HTTPException(500, f"Assistant error: {e}")
 
-        active_agent = result.get("active_agent") or agent_resolved
+        if not result:
+            raise HTTPException(500, "Assistant did not return a result")
 
-        # Update shared workspace from tool results (fire-and-forget)
-        import asyncio as _asyncio
+        active_agent = result.get("active_agent") or "general"
+        if not reply_text:
+            reply_text = result.get("reply") or ""
+
+        # Workspace update from tool results (fire-and-forget)
         _asyncio.create_task(update_workspace(
             db, conv_id, user_id,
             _extract_workspace_updates(result),
             agent_id=active_agent,
         ))
 
-        # Persist the new messages + step trace
-        new_msgs = result["messages_to_append"]
-        # Attach tool-trace + agent badge to the last assistant message for UI display
-        if new_msgs and new_msgs[-1].get("role") == "assistant":
-            if result.get("steps"):
-                new_msgs[-1]["steps"] = result["steps"]
-            new_msgs[-1]["agent"] = active_agent
-
-        # Smart title: generated once after the first reply (background, best-effort).
+        # Auto-title on first turn (fire-and-forget)
         is_first_turn = not conv.get("messages")
-        current_title = conv.get("title") or msg[:60]
-        reply_text = result.get("reply") or ""
         if is_first_turn and reply_text:
-            import asyncio as _asyncio
-
             async def _update_title() -> None:
                 try:
                     smart = await generate_title(msg, reply_text)
@@ -408,33 +373,12 @@ def _mk_router(db, get_current_user):
                         )
                 except Exception:
                     pass
-
             _asyncio.create_task(_update_title())
 
-        _MSG_CAP = 2000  # keep last 2000 messages; older ones are already summarised
-        try:
-            await db.assistant_conversations.update_one(
-                {"_id": conv_id, "user_id": user_id},
-                {
-                    "$push": {"messages": {"$each": new_msgs, "$slice": -_MSG_CAP}},
-                    "$set": {
-                        "updated_at": datetime.utcnow(),
-                        "model": result.get("model") or conv.get("model"),
-                        "title": current_title,
-                        "agent": active_agent,
-                    },
-                },
-            )
-        except Exception as db_exc:
-            logger.exception("[assistant.chat] failed to save conversation messages")
-            raise HTTPException(
-                500,
-                "Could not save this chat turn (payload may be too large). Try a shorter message or start a new chat.",
-            ) from db_exc
-
+        # v2 handles message persistence internally
         return {
             "conversation_id": conv_id,
-            "reply": result["reply"],
+            "reply": reply_text,
             "steps": result.get("steps") or [],
             "model": result.get("model"),
             "needs_confirmation": result.get("needs_confirmation"),
@@ -489,57 +433,31 @@ def _mk_router(db, get_current_user):
 
             history = [_strip_storage_fields(m) for m in (conv.get("messages") or [])]
 
-            prev_agent = conv.get("agent") or None
-            design_flow_active = False
-            if "creative" in AGENT_REGISTRY or "design" in AGENT_REGISTRY:
-                try:
-                    from .design_state import load_design_state
-                    _ds = await load_design_state(db, conv_id, user_id)
-                    _step = _ds.get("flow_step")
-                    design_flow_active = bool(_step and _step != "done")
-                except Exception:
-                    pass
-            agent_resolved = await route_to_agent(
-                msg,
-                history,
-                AGENT_REGISTRY,
-                prev_agent=prev_agent,
-                design_flow_active=design_flow_active,
-                explicit_agent=_explicit_agent_from_body(body),
-            )
-            agent_label = AGENT_REGISTRY.get(agent_resolved, {}).get("label", "Zilo")
-
-            # Load shared agent workspace and inject context when agent switches
-            workspace = await load_workspace(db, conv_id)
-            workspace_ctx = workspace_to_context_line(workspace)
-            user_with_ctx = {**user, "_workspace_context": workspace_ctx} if workspace_ctx else user
-
-            yield "data: " + json.dumps({"type": "thinking", "agent": agent_resolved, "agent_label": agent_label}) + "\n\n"
-
-            result: Optional[Dict[str, Any]] = None
-            reply_text = ""
-
-            # Run the stream in a background task and read events from a queue.
-            # This lets us send SSE keepalive comments every 15 s without
-            # cancelling the in-progress LLM/tool work (which would happen if we
-            # used asyncio.wait_for directly on __anext__()).
+            # ── V2 multi-agent orchestrator ───────────────────────────────────
+            # The orchestrator reads AGENT_REGISTRY at runtime — adding a new agent
+            # to agents.py automatically makes it available here. No router needed.
             import asyncio as _asyncio
             _KEEPALIVE_SEC = 15
             _queue: _asyncio.Queue[Optional[Dict[str, Any]]] = _asyncio.Queue()
+            result: Optional[Dict[str, Any]] = None
+            reply_text = ""
+            agent_resolved = "general"
 
             async def _feed() -> None:
                 try:
-                    async for _ev in run_turn_stream(
-                        db=db, user=user_with_ctx, history=history, user_message=msg,
+                    async for _ev in run_v2_turn_stream(
+                        db=db,
+                        user=user,
+                        history=history,
+                        user_message=msg,
                         model_id=body.get("model") or conv.get("model") or DEFAULT_MODEL,
-                        auto_approve_destructive=bool(body.get("auto_approve")),
-                        conversation_id=conv_id, agent_id=agent_resolved,
+                        conversation_id=conv_id,
                     ):
                         await _queue.put(_ev)
                 except Exception as _exc:
                     await _queue.put({"type": "error", "message": str(_exc)})
                 finally:
-                    await _queue.put(None)  # sentinel
+                    await _queue.put(None)
 
             _task = _asyncio.create_task(_feed())
             try:
@@ -553,7 +471,10 @@ def _mk_router(db, get_current_user):
                         break
                     etype = item.get("type")
                     try:
-                        if etype == "tool_start":
+                        if etype == "thinking":
+                            agent_resolved = item.get("agent", "general")
+                            yield "data: " + json.dumps({"type": "thinking", "agent": item.get("agent"), "agent_label": item.get("agent_label")}, default=str) + "\n\n"
+                        elif etype == "tool_start":
                             yield "data: " + json.dumps({"type": "tool_start", "tool": item.get("tool", "")}, default=str) + "\n\n"
                         elif etype == "token":
                             token = item.get("text", "")
@@ -570,7 +491,7 @@ def _mk_router(db, get_current_user):
                         continue
             except Exception as e:
                 _task.cancel()
-                logger.exception("[assistant.chat/stream] run_turn_stream failure")
+                logger.exception("[assistant.chat/stream] v2 failure")
                 yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
                 return
 
@@ -582,26 +503,9 @@ def _mk_router(db, get_current_user):
             if not reply_text:
                 reply_text = result.get("reply") or ""
 
-            # Update shared workspace from tool results (fire-and-forget)
-            _asyncio.create_task(update_workspace(
-                db, conv_id, user_id,
-                _extract_workspace_updates(result),
-                agent_id=active_agent,
-            ))
-
-            # Persist
-            new_msgs = result.get("messages_to_append") or []
-            if new_msgs and new_msgs[-1].get("role") == "assistant":
-                if reply_text:
-                    new_msgs[-1]["content"] = reply_text
-                if result.get("steps"):
-                    new_msgs[-1]["steps"] = result["steps"]
-                new_msgs[-1]["agent"] = active_agent
-
+            # Auto-title on first turn
             is_first_turn = not conv.get("messages")
-            current_title = conv.get("title") or msg[:60]
             if is_first_turn and reply_text:
-                import asyncio as _asyncio
                 async def _update_title():
                     try:
                         smart = await generate_title(msg, reply_text)
@@ -612,17 +516,6 @@ def _mk_router(db, get_current_user):
                     except Exception:
                         pass
                 _asyncio.create_task(_update_title())
-
-            try:
-                await db.assistant_conversations.update_one(
-                    {"_id": conv_id, "user_id": user_id},
-                    {"$push": {"messages": {"$each": new_msgs}},
-                     "$set": {"updated_at": datetime.utcnow(),
-                              "model": result.get("model") or conv.get("model"),
-                              "title": current_title, "agent": active_agent}},
-                )
-            except Exception:
-                logger.exception("[assistant.chat/stream] failed to save")
 
             yield "data: " + json.dumps({
                 "type": "done",

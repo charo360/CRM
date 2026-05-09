@@ -1,6 +1,21 @@
 import { getToken } from "./auth";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
+/**
+ * Browser calls use `NEXT_PUBLIC_API_URL` + path (e.g. `/seo-agent/chat`).
+ * FastAPI mounts everything under `/api`, so the base must end with `/api`, unless
+ * using the Next rewrite (`/proxy` → backend `/api/*`). Render/env values often
+ * omit `/api` — that produces 404 on routes like the SEO coach.
+ */
+function normalizeCrmApiBase(raw: string): string {
+  const t = raw.trim().replace(/\/+$/, "");
+  if (!t) return "http://127.0.0.1:8000/api";
+  if (t.endsWith("/proxy") || t === "/proxy") return t;
+  if (t.endsWith("/api")) return t;
+  if (t.startsWith("http://") || t.startsWith("https://")) return `${t}/api`;
+  return t;
+}
+
+const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
 
 function formatErrorBody(res: Response, rawText: string): string {
   let err: { detail?: unknown; error?: unknown; message?: unknown; details?: unknown } = {};
@@ -1451,6 +1466,7 @@ export interface ScheduledPost {
   link_url?: string;
   assets?: ScheduledPostAsset[];
   image_url?: string;
+  publish_error?: string;
 }
 
 export type ScheduledPostInput = Omit<ScheduledPost, "id" | "created_at" | "updated_at">;
@@ -1878,6 +1894,11 @@ export interface SeoKeyword {
   difficulty: string;
   priority: number;
   content_idea: string;
+  /** Present when results come from DataForSEO Labs */
+  search_volume?: number | null;
+  cpc?: number | null;
+  competition?: string | null;
+  keyword_difficulty_score?: number | null;
 }
 
 export interface BlogPost {
@@ -1916,6 +1937,17 @@ export interface ContentCalendarItem {
   estimated_traffic: string;
 }
 
+export interface SeoBusinessContext {
+  business_type: string;
+  location: string;
+  language: string;
+  business_name: string;
+  /** Combined description + products/services for AI prompts (may be empty). */
+  context_snippet: string;
+  /** True when DATAFORSEO_TOKEN is set — Keywords tab can use live Google metrics. */
+  live_keyword_data?: boolean;
+}
+
 export interface SeoSummary {
   total_posts: number;
   published_posts: number;
@@ -1932,12 +1964,17 @@ export const seoApi = {
   aiFixSuggestions: (url: string) =>
     api.post<{ url: string; score: number; grade: string; suggestions: { field: string; issue: string; fix: string; example: string }[] }>("/seo/audit/ai-fix", { url }),
 
-  // Keywords
-  generateKeywords: (business_type: string, location?: string, language?: string) =>
-    api.post<{ keywords: SeoKeyword[]; business_type: string; location: string }>("/seo/keywords", {
-      business_type,
+  // Keywords — empty fields use saved business profile on the server
+  generateKeywords: (business_type?: string, location?: string, language?: string) =>
+    api.post<{
+      keywords: SeoKeyword[];
+      business_type: string;
+      location: string;
+      keyword_source: "dataforseo" | "ai";
+    }>("/seo/keywords", {
+      business_type: business_type ?? "",
       location: location ?? "",
-      language: language ?? "English",
+      language: language ?? "",
     }),
 
   // Blog generation
@@ -1970,15 +2007,35 @@ export const seoApi = {
     shopify_token?: string;
   }) => api.post<{ ok: boolean; platform: string; post_url?: string; error?: string }>("/seo/blog/publish", body),
 
-  // Content calendar
-  contentCalendar: (business_type: string, posts_per_week?: number, weeks?: number, location?: string) =>
+  // Content calendar — empty business_type / location → server uses profile
+  contentCalendar: (business_type?: string, posts_per_week?: number, weeks?: number, location?: string) =>
     api.post<{ calendar: ContentCalendarItem[]; weeks: number; posts_per_week: number }>(
-      `/seo/blog/content-calendar?business_type=${encodeURIComponent(business_type)}&posts_per_week=${posts_per_week ?? 2}&weeks=${weeks ?? 4}&location=${encodeURIComponent(location ?? "")}`,
+      `/seo/blog/content-calendar?business_type=${encodeURIComponent(business_type ?? "")}&posts_per_week=${posts_per_week ?? 2}&weeks=${weeks ?? 4}&location=${encodeURIComponent(location ?? "")}`,
       {}
     ),
 
-  // Summary
+  /** Saved business type, location, language, name — same sources as Settings / Business Knowledge. */
+  businessContext: () => api.get<SeoBusinessContext>("/seo/context"),
   summary: () => api.get<SeoSummary>("/seo/summary"),
+
+  /** Scrape a website (homepage + sub-pages) and use LLM to write rich content for all Settings fields. */
+  scrapeWebsite: (url: string) =>
+    api.post<{
+      url: string;
+      pages_scraped: number;
+      extracted: {
+        business_name?: string;
+        business_description?: string;
+        products_services?: string;
+        business_location?: string;
+        business_type?: string;
+        business_hours?: string;
+        pricing_info?: string;
+        faqs?: string;
+        special_offers?: string;
+        delivery_info?: string;
+      };
+    }>("/seo/scrape-website", { url }),
 };
 
 // ── Zernio Live Ads ───────────────────────────────────────────────────────────

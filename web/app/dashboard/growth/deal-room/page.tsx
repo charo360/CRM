@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Target, Plus, Eye, CheckCircle, XCircle, Clock, Copy, ExternalLink, Loader2, FileText } from "lucide-react";
+import { Target, Plus, Eye, CheckCircle, XCircle, Clock, Copy, ExternalLink, Loader2, FileText, AlertCircle } from "lucide-react";
 
 interface DealRoom {
   _id: string;
@@ -15,12 +15,6 @@ interface DealRoom {
   created_at: string;
   expires_at: string;
   signed_at?: string;
-}
-
-interface Document {
-  _id: string;
-  name: string;
-  asset_kind: string;
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -39,36 +33,44 @@ const STATUS_ICONS: Record<string, React.ElementType> = {
 
 export default function DealRoomPage() {
   const [rooms, setRooms] = useState<DealRoom[]>([]);
-  const [docs, setDocs] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
-  const [form, setForm] = useState({ document_id: "", title: "", recipient_name: "", recipient_email: "", expires_days: 30 });
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({
+    title: "",
+    description: "",
+    recipient_name: "",
+    recipient_email: "",
+    file_url: "",
+    expires_days: 30,
+  });
 
   useEffect(() => { load(); }, []);
 
   async function load() {
     setLoading(true);
     try {
-      const [r, d] = await Promise.all([
-        api.get<{ deal_rooms: DealRoom[] }>("/growth/deal-room"),
-        api.get<{ templates: Document[] }>("/design-templates"),
-      ]);
+      const r = await api.get<{ deal_rooms: DealRoom[] }>("/growth/deal-room");
       setRooms(r.deal_rooms);
-      setDocs((d.templates || []).filter((t: Document) => ["pdf", "docx", "pptx"].includes(t.asset_kind)));
-    } catch { } finally { setLoading(false); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load deal rooms");
+    } finally { setLoading(false); }
   }
 
   async function create() {
-    if (!form.document_id || !form.title) return;
+    if (!form.title.trim()) return;
     setCreating(true);
+    setError("");
     try {
       await api.post("/growth/deal-room", form);
       setShowForm(false);
-      setForm({ document_id: "", title: "", recipient_name: "", recipient_email: "", expires_days: 30 });
+      setForm({ title: "", description: "", recipient_name: "", recipient_email: "", file_url: "", expires_days: 30 });
       await load();
-    } catch { } finally { setCreating(false); }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to create deal room");
+    } finally { setCreating(false); }
   }
 
   function copyLink(token: string) {
@@ -87,52 +89,62 @@ export default function DealRoomPage() {
           </h1>
           <p className="text-sm text-slate-500 mt-1">Share proposals with clients and track when they view and sign.</p>
         </div>
-        <button onClick={() => setShowForm(true)}
+        <button onClick={() => { setShowForm(true); setError(""); }}
           className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm rounded-lg hover:bg-brand font-medium">
           <Plus size={15} /> New Deal Room
         </button>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-center gap-2 text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3">
+          <AlertCircle size={15} className="shrink-0" /> {error}
+        </div>
+      )}
 
       {/* Create form */}
       {showForm && (
         <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
           <h3 className="font-semibold text-slate-800">Create Deal Room</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs font-medium text-slate-600 block mb-1">Document *</label>
-              <select value={form.document_id} onChange={e => setForm(f => ({ ...f, document_id: e.target.value }))}
-                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand/30">
-                <option value="">Select a document…</option>
-                {docs.map(d => (
-                  <option key={d._id} value={d._id}>{d.name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
+            <div className="sm:col-span-2">
               <label className="text-xs font-medium text-slate-600 block mb-1">Deal Title *</label>
               <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
                 placeholder="e.g. Proposal for BlueLine Co."
                 className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand/30" />
             </div>
+            <div className="sm:col-span-2">
+              <label className="text-xs font-medium text-slate-600 block mb-1">Description / Message <span className="text-slate-400 font-normal">(optional)</span></label>
+              <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Brief summary or terms for the client…"
+                rows={2}
+                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand/30 resize-none" />
+            </div>
             <div>
-              <label className="text-xs font-medium text-slate-600 block mb-1">Recipient Name</label>
+              <label className="text-xs font-medium text-slate-600 block mb-1">Recipient Name <span className="text-slate-400 font-normal">(optional)</span></label>
               <input value={form.recipient_name} onChange={e => setForm(f => ({ ...f, recipient_name: e.target.value }))}
                 placeholder="John Smith"
                 className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand/30" />
             </div>
             <div>
-              <label className="text-xs font-medium text-slate-600 block mb-1">Recipient Email</label>
+              <label className="text-xs font-medium text-slate-600 block mb-1">Recipient Email <span className="text-slate-400 font-normal">(optional)</span></label>
               <input value={form.recipient_email} onChange={e => setForm(f => ({ ...f, recipient_email: e.target.value }))}
                 placeholder="john@company.com"
                 className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand/30" />
             </div>
+            <div className="sm:col-span-2">
+              <label className="text-xs font-medium text-slate-600 block mb-1">Document / File URL <span className="text-slate-400 font-normal">(optional — paste a link to a PDF, Google Doc, etc.)</span></label>
+              <input value={form.file_url} onChange={e => setForm(f => ({ ...f, file_url: e.target.value }))}
+                placeholder="https://docs.google.com/… or any file link"
+                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand/30" />
+            </div>
           </div>
           <div className="flex gap-2 pt-1">
-            <button onClick={create} disabled={creating || !form.document_id || !form.title}
+            <button onClick={create} disabled={creating || !form.title.trim()}
               className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm rounded-lg hover:bg-brand disabled:opacity-50 font-medium">
               {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Create & Get Link
             </button>
-            <button onClick={() => setShowForm(false)}
+            <button onClick={() => { setShowForm(false); setError(""); }}
               className="px-4 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600">
               Cancel
             </button>

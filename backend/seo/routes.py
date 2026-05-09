@@ -11,6 +11,46 @@ logger = logging.getLogger(__name__)
 
 def _tid(user): return user.get("business_id", user["_id"])
 
+
+def _seo_business_context(user: dict) -> Dict[str, str]:
+    """Merge Settings + Business Knowledge into defaults for SEO flows."""
+    bk = user.get("business_knowledge") or {}
+    settings = user.get("settings") or {}
+    business_type = (
+        str(bk.get("business_type") or "").strip()
+        or str(settings.get("business_type") or "").strip()
+        or str(user.get("business_type") or "").strip()
+        or "general"
+    )
+    loc_parts: List[str] = []
+    bl = str(bk.get("business_location") or "").strip()
+    if bl:
+        loc_parts.append(bl)
+    country = str(settings.get("country") or "").strip()
+    if country:
+        loc_parts.append(country)
+    location = ", ".join(loc_parts)
+    language = str(settings.get("primary_language") or "English").strip() or "English"
+    business_name = str(user.get("business_name") or "").strip()
+    desc = str(bk.get("business_description") or "").strip()
+    products = str(bk.get("products_services") or "").strip()
+    snippet_parts: List[str] = []
+    if desc:
+        snippet_parts.append(desc[:900])
+    if products:
+        snippet_parts.append(products[:900])
+    context_snippet = "\n\n".join(snippet_parts)
+    website_url = str(bk.get("website_url") or "").strip()
+    return {
+        "business_type": business_type,
+        "location": location,
+        "language": language,
+        "business_name": business_name,
+        "context_snippet": context_snippet,
+        "website_url": website_url,
+    }
+
+
 def _ser(doc: dict) -> dict:
     doc = dict(doc)
     doc["id"] = str(doc.pop("_id", doc.get("id", "")))
@@ -24,10 +64,39 @@ def _ser(doc: dict) -> dict:
 class AuditRequest(BaseModel):
     url: str
 
+class ScrapeWebsiteRequest(BaseModel):
+    url: str
+
 class KeywordRequest(BaseModel):
-    business_type: str
+    """Empty strings fall back to the signed-in user's business profile / settings."""
+    business_type: str = ""
     location: str = ""
-    language: str = "English"
+    language: str = ""
+
+
+def _merge_seo_keyword_payload(payload: KeywordRequest, user: dict) -> tuple[str, str, str, str]:
+    ctx = _seo_business_context(user)
+    bt = payload.business_type.strip() or ctx["business_type"]
+    loc = payload.location.strip() or ctx["location"]
+    lang = payload.language.strip() or ctx["language"]
+    snippet = ctx["context_snippet"]
+    return bt, loc, lang, snippet
+
+
+def _keyword_research_seed(business_type: str, business_name: str, snippet: str) -> str:
+    bn = (business_name or "").strip()
+    if len(bn) >= 2:
+        return bn[:100]
+    bt_clean = (business_type or "").strip().replace("-", " ")
+    generic = {"general", "retail", "business", "service", "services"}
+    if bt_clean and bt_clean.lower() not in generic:
+        return bt_clean[:100]
+    if snippet:
+        frag = snippet.replace("\n", " ").strip()[:100]
+        if len(frag) >= 8:
+            return frag
+    return bt_clean[:100] if bt_clean else "small business"
+
 
 class BlogGenerateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -229,6 +298,243 @@ async def _audit_url(url: str) -> dict:
 def make_seo_router(db, user_dep):
     router = APIRouter(prefix="/seo", tags=["seo"])
 
+    @router.get("/context")
+    async def get_seo_business_context_endpoint(user=user_dep):
+        """Merge Settings + Business Knowledge for keyword/blog/calendar defaults."""
+        from . import dataforseo as dfs
+        base = _seo_business_context(user)
+        return {**base, "live_keyword_data": dfs.dfs_enabled()}
+
+    # ── Scrape website to auto-fill business info ────────────────────────────
+
+    @router.post("/scrape-website")
+    async def scrape_website(payload: ScrapeWebsiteRequest, user=user_dep):
+        """Scrape a website and use LLM to write rich, full business profile content for all Settings fields."""
+        import html as _html
+        from html.parser import HTMLParser
+        from urllib.parse import urljoin, urlparse
+
+        url = payload.url.strip()
+        if not url.startswith("http"):
+            url = "https://" + url
+
+        # ── Deep HTML extractor ──────────────────────────────────────────────
+        class _DeepParser(HTMLParser):
+            SKIP_TAGS = {"script", "style", "noscript", "head", "svg", "iframe", "form", "button", "input"}
+
+            def __init__(self):
+                super().__init__()
+                self.title = ""; self.meta_desc = ""; self.og_name = ""; self.og_desc = ""
+                self.phone = ""; self.email = ""
+                self.chunks: list[str] = []          # all meaningful text blocks
+                self.links: list[str] = []           # href values for sub-page discovery
+                self._skip_depth = 0
+                self._in_title = False
+                self._current_tag = ""
+                self._buf = ""
+
+            def _flush(self):
+                t = self._buf.strip()
+                if t and len(t) > 8:
+                    self.chunks.append(t)
+                self._buf = ""
+
+            def handle_starttag(self, tag, attrs):
+                a = dict(attrs)
+                if tag in self.SKIP_TAGS:
+                    self._skip_depth += 1
+                    return
+                if tag == "title":
+                    self._in_title = True; self._buf = ""
+                if tag == "meta":
+                    n = a.get("name", "").lower(); prop = a.get("property", "").lower(); c = a.get("content", "")
+                    if n == "description": self.meta_desc = c
+                    if prop == "og:site_name": self.og_name = c
+                    if prop == "og:description": self.og_desc = c
+                if tag == "a":
+                    href = a.get("href", "")
+                    if href and not href.startswith("#") and not href.startswith("javascript"):
+                        self.links.append(href)
+                if tag in ("h1", "h2", "h3", "h4", "p", "li", "td", "th", "span", "div", "article", "section"):
+                    self._flush()
+                self._current_tag = tag
+
+            def handle_endtag(self, tag):
+                if tag in self.SKIP_TAGS:
+                    self._skip_depth = max(0, self._skip_depth - 1)
+                    return
+                if tag == "title" and self._in_title:
+                    self.title = self._buf.strip(); self._in_title = False; self._buf = ""
+                if tag in ("h1", "h2", "h3", "h4", "p", "li", "td", "th", "article", "section"):
+                    self._flush()
+
+            def handle_data(self, data):
+                if self._skip_depth > 0: return
+                if self._in_title:
+                    self._buf += data
+                else:
+                    cleaned = " ".join(data.split())
+                    if cleaned:
+                        self._buf += " " + cleaned
+
+            def get_text(self, max_chars: int = 6000) -> str:
+                seen: set[str] = set()
+                out: list[str] = []
+                total = 0
+                for c in self.chunks:
+                    norm = " ".join(c.split())
+                    if norm in seen or len(norm) < 10:
+                        continue
+                    seen.add(norm)
+                    out.append(norm)
+                    total += len(norm)
+                    if total >= max_chars:
+                        break
+                return "\n".join(out)
+
+        async def _fetch_page(client: httpx.AsyncClient, page_url: str) -> str:
+            try:
+                r = await client.get(page_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
+                if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                    return r.text
+            except Exception:
+                pass
+            return ""
+
+        # ── Fetch homepage + up to 3 sub-pages ──────────────────────────────
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+                home_html = await _fetch_page(client, url)
+                if not home_html:
+                    raise HTTPException(status_code=400, detail="Could not fetch website — check the URL.")
+
+                home_parser = _DeepParser()
+                home_parser.feed(home_html)
+
+                # Discover relevant sub-pages from internal links
+                base = urlparse(url)
+                PRIORITY_SLUGS = ["about", "services", "menu", "products", "contact",
+                                  "our-story", "what-we-do", "pricing", "who-we-are"]
+                candidate_pages: list[str] = []
+                seen_urls: set[str] = {url}
+                for href in home_parser.links:
+                    if href.startswith("//"):
+                        href = base.scheme + ":" + href
+                    elif href.startswith("/"):
+                        href = f"{base.scheme}://{base.netloc}{href}"
+                    elif not href.startswith("http"):
+                        href = urljoin(url, href)
+                    parsed = urlparse(href)
+                    if parsed.netloc != base.netloc:
+                        continue
+                    slug = parsed.path.strip("/").lower()
+                    if any(p in slug for p in PRIORITY_SLUGS) and href not in seen_urls:
+                        candidate_pages.append(href)
+                        seen_urls.add(href)
+                    if len(candidate_pages) >= 6:
+                        break
+
+                # Fetch up to 3 sub-pages concurrently
+                import asyncio
+                sub_htmls = await asyncio.gather(*[_fetch_page(client, u) for u in candidate_pages[:3]])
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not fetch website: {e}")
+
+        # ── Parse & merge all page text ──────────────────────────────────────
+        try:
+            all_text_parts: list[str] = []
+            main_text = home_parser.get_text(4000)
+            if main_text:
+                all_text_parts.append(f"=== Homepage ===\n{main_text}")
+
+            for i, (sub_url, sub_html) in enumerate(zip(candidate_pages[:3], sub_htmls)):
+                if not sub_html:
+                    continue
+                sp = _DeepParser()
+                sp.feed(sub_html)
+                sub_text = sp.get_text(2000)
+                if sub_text:
+                    slug = urlparse(sub_url).path.strip("/") or "page"
+                    all_text_parts.append(f"=== {slug} ===\n{sub_text}")
+
+            combined_text = "\n\n".join(all_text_parts)[:9000]
+            og_name = _html.unescape(home_parser.og_name)
+            meta_desc = _html.unescape(home_parser.meta_desc or home_parser.og_desc)
+            site_title = _html.unescape(home_parser.title)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to parse website: {e}")
+
+        # ── LLM: write rich, full content for every field ────────────────────
+        prompt = f"""You are an expert business profile writer. You have been given the full text content scraped from a business website across multiple pages. Your job is to write a complete, rich, professional business profile by reading everything and synthesising the best possible content.
+
+WEBSITE CONTENT (from homepage + sub-pages):
+{combined_text}
+
+---
+
+Write a complete business profile. For each field, write PROPER, FULL content — not just a quote from the site, but a well-crafted, informative text. Use everything you read to make each field as useful as possible.
+
+Return ONLY a valid JSON object with these fields:
+
+{{
+  "business_name": "The exact business name",
+
+  "business_description": "Write 2-4 full, engaging sentences describing what this business is, what they do, who they serve, and what makes them unique. This is shown to the AI assistant so be descriptive and accurate.",
+
+  "products_services": "Write a detailed list of all products and services offered. Group them if needed. Mention key offerings, specialties, and anything the business is known for. Aim for 3-8 items/lines.",
+
+  "business_location": "Full address or area. Include city, neighbourhood, and country if available.",
+
+  "business_hours": "All operating hours in a clear readable format. E.g. Mon-Fri 9am-6pm, Sat 10am-4pm, Closed Sunday.",
+
+  "pricing_info": "Any pricing details, ranges, package info, or value statements. Write '' if truly not mentioned anywhere.",
+
+  "business_type": "Exactly one of: retail, restaurant, salon, spa, services, repair, cleaning, fitness, events, healthcare, rental, hotel, support, creator, wholesale, bakery, grocery, general",
+
+  "faqs": "Write 3-5 realistic FAQ entries in Q&A format based on what the business offers. Format as: Q: ...\\nA: ...\\n\\nQ: ...\\nA: ...",
+
+  "special_offers": "Any promotions, loyalty programmes, discounts, or special deals mentioned. Write '' if none found.",
+
+  "delivery_info": "Any delivery, shipping, collection, or fulfilment information. Write '' if not applicable."
+}}
+
+Rules:
+- Always write something meaningful for business_description, products_services, and faqs — use context clues if explicit info is sparse.
+- Do NOT copy-paste raw HTML or navigation text.
+- Do NOT leave business_description or products_services blank.
+- Return ONLY the JSON object with no extra text or markdown fences."""
+
+        import json
+        raw = await _call_ai(prompt, max_tokens=2000)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+        # Sometimes LLMs wrap in extra braces — find first valid JSON object
+        try:
+            data = json.loads(raw)
+        except Exception:
+            # Try to extract JSON substring
+            m = re.search(r"\{[\s\S]+\}", raw)
+            if m:
+                try:
+                    data = json.loads(m.group())
+                except Exception:
+                    data = {}
+            else:
+                data = {}
+
+        # Fallbacks
+        if og_name and not data.get("business_name"):
+            data["business_name"] = og_name
+        if not data.get("business_description") and meta_desc:
+            data["business_description"] = meta_desc
+        if not data.get("business_description") and site_title:
+            data["business_description"] = site_title
+
+        return {"url": url, "extracted": data, "pages_scraped": 1 + len([h for h in sub_htmls if h])}
+
     # ── Site Audit ──────────────────────────────────────────────────────────
 
     @router.post("/audit")
@@ -296,8 +602,83 @@ Only return the JSON array, no other text."""
 
     @router.post("/keywords")
     async def generate_keywords(payload: KeywordRequest, user=user_dep):
-        location_str = f" in {payload.location}" if payload.location else ""
-        prompt = f"""You are an SEO keyword research expert. Generate keyword ideas for a {payload.business_type} business{location_str}.
+        from . import dataforseo as dfs
+
+        bt, loc, lang, snippet = _merge_seo_keyword_payload(payload, user)
+        ctx = _seo_business_context(user)
+        keywords: List[Any] = []
+        keyword_source = "ai"
+        website_content = ""
+
+        # If website URL is provided, scrape it to extract keywords from actual content
+        if ctx.get("website_url"):
+            try:
+                import html as _html
+                from html.parser import HTMLParser
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    resp = await client.get(ctx["website_url"], headers={"User-Agent": "Mozilla/5.0"})
+                    if resp.status_code == 200:
+                        class _KwParser(HTMLParser):
+                            def __init__(self):
+                                super().__init__()
+                                self.title=""; self.meta_desc=""; self.headings=[]; self.paragraphs=[]
+                                self._in_title=False; self._in_h=False; self._in_p=False; self._buf=""
+                            def handle_starttag(self, tag, attrs):
+                                a=dict(attrs)
+                                if tag=="title": self._in_title=True; self._buf=""
+                                elif tag in ("h1","h2","h3") and len(self.headings)<10: self._in_h=True; self._buf=""
+                                elif tag=="p" and len(self.paragraphs)<5: self._in_p=True; self._buf=""
+                                elif tag=="meta" and a.get("name","").lower()=="description": self.meta_desc=a.get("content","")
+                            def handle_endtag(self, tag):
+                                if tag=="title" and self._in_title: self.title=self._buf.strip(); self._in_title=False
+                                elif tag in ("h1","h2","h3") and self._in_h: self.headings.append(self._buf.strip()); self._in_h=False
+                                elif tag=="p" and self._in_p: self.paragraphs.append(self._buf.strip()); self._in_p=False
+                            def handle_data(self, data):
+                                if self._in_title or self._in_h or self._in_p: self._buf+=data
+                        kp = _KwParser(); kp.feed(resp.text)
+                        parts = []
+                        if kp.title: parts.append(f"Title: {_html.unescape(kp.title)}")
+                        if kp.meta_desc: parts.append(f"Description: {_html.unescape(kp.meta_desc)}")
+                        if kp.headings: parts.append("Headings: " + " | ".join([_html.unescape(h) for h in kp.headings]))
+                        if kp.paragraphs: parts.append(" ".join([_html.unescape(p) for p in kp.paragraphs]))
+                        website_content = "\n".join(parts)[:2000]
+            except Exception as e:
+                logger.warning("[seo] Failed to scrape website %s: %s", ctx.get("website_url"), e)
+
+        if dfs.dfs_enabled():
+            try:
+                settings = user.get("settings") or {}
+                lc = dfs.resolve_location_code(
+                    str(settings.get("country") or ""),
+                    str(settings.get("country_code") or user.get("country_code") or ""),
+                )
+                dlang = dfs.language_code_from_settings(lang)
+                seed = _keyword_research_seed(bt, ctx["business_name"], snippet)
+                keywords = await dfs.fetch_keyword_ideas_live(
+                    seed, location_code=lc, language_code=dlang, limit=25
+                )
+                if keywords:
+                    keyword_source = "dataforseo"
+                    keywords = keywords[:20]
+            except Exception as e:
+                logger.warning("[seo] DataForSEO keyword ideas skipped: %s", e)
+
+        if not keywords:
+            location_str = f" in {loc}" if loc else ""
+            extra = ""
+            if website_content:
+                extra = f"""
+
+Website content (extract real keywords from what's actually on their site):
+{website_content}"""
+            elif snippet:
+                extra = f"""
+
+Business context from the owner's profile (tailor keywords to what they actually offer; do not copy verbatim):
+{snippet[:1400]}"""
+
+            prompt = f"""You are an SEO keyword research expert. Generate keyword ideas for a {bt} business{location_str}.
+{extra}
 
 Return a JSON array of 20 keywords. Each item:
 {{
@@ -309,28 +690,47 @@ Return a JSON array of 20 keywords. Each item:
 }}
 
 Focus on: local keywords, buying intent keywords, long-tail phrases, question-based keywords.
-Language: {payload.language}
+Language: {lang}
 Only return the JSON array."""
 
-        raw = await _call_ai(prompt, max_tokens=2000)
-        try:
-            import json
-            raw = raw.strip()
-            if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
-            keywords = json.loads(raw)
-        except Exception:
-            keywords = []
+            raw = await _call_ai(prompt, max_tokens=2000)
+            try:
+                import json
+                raw = raw.strip()
+                if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+                keywords = json.loads(raw)
+            except Exception:
+                keywords = []
 
-        return {"keywords": keywords, "business_type": payload.business_type, "location": payload.location}
+        return {
+            "keywords": keywords,
+            "business_type": bt,
+            "location": loc,
+            "keyword_source": keyword_source,
+            "website_url": ctx.get("website_url", ""),
+        }
 
     # ── Blog Post Generation ────────────────────────────────────────────────
 
     @router.post("/blog/generate")
     async def generate_blog_post(payload: BlogGenerateRequest, user=user_dep):
+        ctx = _seo_business_context(user)
+        biz_name = payload.business_name.strip() or ctx["business_name"]
+        lang = payload.language.strip() or ctx["language"]
+        snippet = ctx["context_snippet"]
+
         word_targets = {"short": "400-500", "medium": "800-1000", "long": "1400-1600"}
         word_target = word_targets.get(payload.length, "800-1000")
         keywords_str = ", ".join(payload.keywords) if payload.keywords else payload.topic
-        business_str = f" for {payload.business_name}" if payload.business_name else ""
+        business_str = f" for {biz_name}" if biz_name else ""
+
+        context_block = ""
+        if snippet:
+            context_block = f"""
+
+Business context (stay accurate to what they offer):
+{snippet[:1400]}
+"""
 
         faq_instruction = """
 After the main content, add a FAQ section with 3-5 relevant questions and answers (good for AI search and Google featured snippets).""" if payload.include_faq else ""
@@ -340,7 +740,8 @@ After the main content, add a FAQ section with 3-5 relevant questions and answer
 Topic: {payload.topic}
 Target keywords to include naturally: {keywords_str}
 Tone: {payload.tone}
-Language: {payload.language}
+Language: {lang}
+{context_block}
 {faq_instruction}
 
 Structure the post with:
@@ -506,16 +907,28 @@ Write the full article now:"""
 
     @router.post("/blog/content-calendar")
     async def generate_content_calendar(
-        business_type: str,
+        business_type: str = "",
         posts_per_week: int = 2,
         weeks: int = 4,
         location: str = "",
         user=user_dep,
     ):
-        location_str = f" in {location}" if location else ""
+        ctx = _seo_business_context(user)
+        bt = business_type.strip() or ctx["business_type"]
+        loc = location.strip() or ctx["location"]
+        snippet = ctx["context_snippet"]
+        location_str = f" in {loc}" if loc else ""
         total = posts_per_week * weeks
-        prompt = f"""Create a {weeks}-week content calendar for a {business_type} business{location_str}.
+        extra = ""
+        if snippet:
+            extra = f"""
+
+Business context (align topics with real offerings; do not copy verbatim):
+{snippet[:1400]}"""
+
+        prompt = f"""Create a {weeks}-week content calendar for a {bt} business{location_str}.
 Generate {total} blog post ideas ({posts_per_week} per week).
+{extra}
 
 Return a JSON array:
 [

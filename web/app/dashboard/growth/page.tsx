@@ -7,7 +7,7 @@ import { useBusiness } from "@/contexts/BusinessContext";
 import {
   TrendingUp, TrendingDown, Users, Bell, Zap, Target,
   RefreshCw, ArrowUpRight, Clock, CheckCircle, XCircle,
-  Loader2, ChevronRight, BarChart2, Globe, Mic,
+  Loader2, ChevronRight, BarChart2, Globe, Mic, Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -45,6 +45,7 @@ export default function GrowthPage() {
   }
 
   const features = [
+    { href: "/dashboard/action-mode", icon: Sparkles, label: "Action Mode", desc: "AI runs your business — finds funding, leads & handles admin", color: "text-amber-600", bg: "bg-amber-50", badge: "NEW" },
     { href: "/dashboard/growth/autopilot", icon: Zap, label: "Follow-up Autopilot", desc: "AI-drafted messages for cold leads — approve or skip", color: "text-amber-600", bg: "bg-amber-50" },
     { href: "/dashboard/growth/deal-room", icon: Target, label: "Deal Room", desc: "Share proposals with view tracking and e-sign", color: "text-blue-600", bg: "bg-blue-50" },
     { href: "/dashboard/growth/competitors", icon: Globe, label: "Competitor Intel", desc: "Weekly AI insights on your competitors", color: "text-purple-600", bg: "bg-purple-50" },
@@ -213,9 +214,14 @@ export default function GrowthPage() {
       <div>
         <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">Growth Tools</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {features.map(({ href, icon: Icon, label, desc, color, bg }) => (
+          {features.map(({ href, icon: Icon, label, desc, color, bg, badge }) => (
             <Link key={href} href={href}
-              className="bg-white rounded-xl border border-slate-200 p-5 hover:border-brand/40 hover:shadow-sm transition-all group">
+              className="bg-white rounded-xl border border-slate-200 p-5 hover:border-brand/40 hover:shadow-sm transition-all group relative">
+              {badge && (
+                <span className="absolute top-3 right-3 text-[10px] bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded-full">
+                  {badge}
+                </span>
+              )}
               <div className={`w-9 h-9 ${bg} rounded-lg flex items-center justify-center mb-3`}>
                 <Icon size={18} className={color} />
               </div>

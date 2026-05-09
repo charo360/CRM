@@ -85,7 +85,21 @@ async def _publish_post(post: Dict[str, Any], profile_id: str) -> Dict[str, Any]
                 headers={"Authorization": f"Bearer {ZERNIO_API_KEY}", "Content-Type": "application/json"},
                 json=body,
             )
-            resp.raise_for_status()
+            if not resp.is_success:
+                # Extract the API error message from the response body if possible
+                try:
+                    err_body = resp.json()
+                    api_msg = (
+                        err_body.get("message")
+                        or err_body.get("error")
+                        or err_body.get("detail")
+                        or str(err_body)
+                    )
+                except Exception:
+                    api_msg = resp.text[:300] or f"HTTP {resp.status_code}"
+                error_reason = f"HTTP {resp.status_code}: {api_msg}"
+                logger.error("[social_publisher] Failed to publish post %s: %s", post["_id"], error_reason)
+                return {"success": False, "zernio_post_id": None, "error": error_reason}
             data = resp.json()
             # Extract Zernio's post ID from the response (try common key names)
             post_obj = data.get("post") or data.get("data") or data
@@ -94,10 +108,11 @@ async def _publish_post(post: Dict[str, Any], profile_id: str) -> Dict[str, Any]
                 if isinstance(post_obj, dict) else None
             )
             logger.info("[social_publisher] Published post %s → Zernio id=%s", post["_id"], zernio_post_id)
-            return {"success": True, "zernio_post_id": zernio_post_id}
+            return {"success": True, "zernio_post_id": zernio_post_id, "error": None}
     except Exception as e:
-        logger.error("[social_publisher] Failed to publish post %s: %s", post["_id"], e)
-        return {"success": False, "zernio_post_id": None}
+        error_reason = str(e)
+        logger.error("[social_publisher] Failed to publish post %s: %s", post["_id"], error_reason)
+        return {"success": False, "zernio_post_id": None, "error": error_reason}
 
 
 async def run_publisher(db) -> None:
@@ -137,9 +152,14 @@ async def run_publisher(db) -> None:
                         if result.get("zernio_post_id"):
                             db_update["zernio_post_id"] = result["zernio_post_id"]
                             db_update["engagement_synced_at"] = None
+                        if result.get("error"):
+                            db_update["publish_error"] = result["error"]
+                        elif result["success"]:
+                            db_update["publish_error"] = None
                     else:
                         # No Zernio profile — mark failed so it doesn't loop forever
                         db_update["status"] = "failed"
+                        db_update["publish_error"] = "No publishing profile found. Check that your Zernio account is connected under Integrations."
                         logger.warning("[social_publisher] No Zernio profile for user %s — marking post %s failed", user_id, pid)
 
                     await db.scheduled_posts.update_one(

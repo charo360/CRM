@@ -362,8 +362,10 @@ def make_growth_router(db, user_dep):
     # ════════════════════════════════════════════════════════════════════════
 
     class CreateDealRoom(BaseModel):
-        document_id: str
         title: str
+        document_id: Optional[str] = None
+        file_url: Optional[str] = None
+        description: Optional[str] = None
         recipient_name: Optional[str] = None
         recipient_email: Optional[str] = None
         expires_days: int = 30
@@ -372,9 +374,11 @@ def make_growth_router(db, user_dep):
     async def create_deal_room(body: CreateDealRoom, user=Depends(user_dep)):
         uid = _uid(user)
 
-        doc = await db.design_templates.find_one({"_id": body.document_id, "user_id": uid})
-        if not doc:
-            raise HTTPException(404, "Document not found")
+        file_url = body.file_url or ""
+        if body.document_id:
+            doc = await db.design_templates.find_one({"_id": body.document_id, "user_id": uid})
+            if doc:
+                file_url = doc.get("file_url", "")
 
         token = str(uuid.uuid4()).replace("-", "")[:16]
         now = datetime.utcnow()
@@ -383,11 +387,12 @@ def make_growth_router(db, user_dep):
             "user_id": uid,
             "document_id": body.document_id,
             "title": body.title,
+            "description": body.description,
             "token": token,
             "recipient_name": body.recipient_name,
             "recipient_email": body.recipient_email,
-            "file_url": doc.get("file_url", ""),
-            "status": "sent",  # sent | viewed | signed | declined
+            "file_url": file_url,
+            "status": "sent",
             "views": 0,
             "view_events": [],
             "expires_at": now + timedelta(days=body.expires_days),
