@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { socialSchedulerApi } from "@/lib/api";
 import {
   type ScheduledPostStatus,
   type SocialChannel,
   type PostAsset,
-  upsertScheduledPost,
   fileToPreviewDataUrl,
 } from "@/lib/marketing-stubs";
 import {
@@ -231,7 +232,7 @@ export function BulkScheduleSection({ onCommitted }: { onCommitted: () => void }
   async function scheduleAll() {
     const ready = drafts.filter((r) => r.title.trim());
     if (ready.length === 0) {
-      alert("Add at least one row with a title (upload media, text-only, or link).");
+      toast.error("Add at least one row with a title (upload media, text-only, or link).");
       return;
     }
     setBusy(true);
@@ -260,7 +261,7 @@ export function BulkScheduleSection({ onCommitted }: { onCommitted: () => void }
         const w = r.placement_id === "custom" ? r.custom_w : preset.width;
         const h = r.placement_id === "custom" ? r.custom_h : preset.height;
 
-        upsertScheduledPost({
+        await socialSchedulerApi.create({
           title: r.title.trim(),
           body: r.body.trim() || " ",
           channels: r.channels.length ? r.channels : ["facebook"],
@@ -272,13 +273,14 @@ export function BulkScheduleSection({ onCommitted }: { onCommitted: () => void }
           placement_height: h,
           link_url: kind === "link" ? r.link_url.trim() : undefined,
           assets: assetsOut.length ? assetsOut : undefined,
-          media_file_name: assetsOut[0]?.file_name,
-          media_preview_data_url: assetsOut[0]?.preview_data_url,
         });
       }
       revokePreviews(drafts);
       setDrafts([]);
       onCommitted();
+      toast.success(`${ready.length} post${ready.length > 1 ? "s" : ""} added to queue`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to schedule posts");
     } finally {
       setBusy(false);
     }
