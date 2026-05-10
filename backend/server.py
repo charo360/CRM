@@ -11664,6 +11664,20 @@ async def startup_tasks():
         await db.assistant_agent_events.create_index("ts", expireAfterSeconds=2592000)
         await db.assistant_agent_events.create_index([("conversation_id", 1), ("ts", -1)])
 
+        # SEO collections
+        await db.seo_audits.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_blog_posts.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_blog_posts.create_index([("user_id", 1), ("status", 1)])
+        await db.seo_saved_keywords.create_index([("user_id", 1), ("month", -1)])
+        await db.seo_publish_creds.create_index("user_id")
+        await db.seo_memory.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_summary.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_agent_conversations.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_serp_rankings.create_index([("user_id", 1), ("keyword", 1), ("domain", 1)])
+        await db.seo_serp_rankings.create_index([("user_id", 1), ("checked_at", -1)])
+        # TTL policy: auto-delete SERP rankings older than 1 year
+        await db.seo_serp_rankings.create_index("checked_at", expireAfterSeconds=31536000)
+
         logging.info("Database indexes ensured successfully")
     except Exception as e:
         logging.error(f"Failed to create indexes: {e}")

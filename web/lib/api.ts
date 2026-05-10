@@ -1913,6 +1913,8 @@ export interface BlogPost {
   content: string;
   meta_title: string;
   meta_description: string;
+  image_url?: string;
+  keywords?: string[];
   tags: string[];
   status: "draft" | "scheduled" | "published";
   scheduled_at?: string;
@@ -1927,6 +1929,7 @@ export interface BlogGenerateResult {
   content: string;
   meta_title: string;
   meta_description: string;
+  image_url?: string;
   tags: string[];
   word_count: number;
   topic: string;
@@ -2022,7 +2025,55 @@ export const seoApi = {
 
   /** Saved business type, location, language, name — same sources as Settings / Business Knowledge. */
   businessContext: () => api.get<SeoBusinessContext>("/seo/context"),
-  summary: () => api.get<SeoSummary>("/seo/summary"),
+  summary: () => api.get<SeoSummary & { audit_trend: { date: string; score: number; url: string }[] }>("/seo/summary"),
+
+  // Saved keywords (persisted per month)
+  saveKeywords: (body: { keywords: Record<string, unknown>[]; month?: string; business_type?: string; location?: string }) =>
+    api.post<{ ok: boolean; month: string; count: number }>("/seo/keywords/save", body),
+  listSavedKeywords: () =>
+    api.get<{ month: string; count: number; business_type: string; location: string; saved_at: string }[]>("/seo/keywords/saved"),
+  getSavedKeywords: (month: string) =>
+    api.get<{ month: string; keywords: Record<string, unknown>[]; business_type: string; location: string }>(`/seo/keywords/saved/${month}`),
+
+  // Publish credentials (saved so user doesn't re-enter)
+  savePublishCredentials: (body: {
+    platform: string;
+    wp_url?: string; wp_username?: string; wp_password?: string;
+    shopify_domain?: string; shopify_token?: string;
+  }) => api.put<{ ok: boolean }>("/seo/publish-credentials", body),
+  getPublishCredentials: (platform: string) =>
+    api.get<{ platform?: string; wp_url?: string; wp_username?: string; wp_password?: string; shopify_domain?: string; shopify_token?: string; updated_at?: string }>(`/seo/publish-credentials/${platform}`),
+
+  // Monthly improvement suggestions
+  improvementSuggestions: () =>
+    api.get<{ suggestions: { priority: string; action: string; detail: string }[]; generated_at: string }>("/seo/improvement-suggestions"),
+
+  // Bulk calendar draft generation
+  generateCalendarDrafts: (body: {
+    items: { title: string; keywords: string[]; topic?: string; week: number; day: string }[];
+    tone?: string;
+    length?: string;
+  }) => api.post<{
+    drafts: { post_id?: string; title: string; week: number; day: string; status: string; word_count?: number; error?: string }[];
+    total: number;
+  }>("/seo/calendar/generate-drafts", body),
+
+  // SEO memory — progressive improvement history
+  getSeoMemory: () => api.get<{
+    audit_history: { date: string; score: number; url: string; critical_issues: string[] }[];
+    published_count: number;
+    draft_count: number;
+    published_topics: { title: string; tags: string[]; keywords: string[] }[];
+    draft_topics: { title: string; tags: string[]; keywords: string[] }[];
+    score_trend: "improving" | "declining" | "stable";
+    analysis: {
+      working: string[];
+      not_working: string[];
+      next_month_focus: string[];
+      score_trend: string;
+    };
+    kw_months: string[];
+  }>("/seo/seo-memory"),
 
   /** Scrape a website (homepage + sub-pages) and use LLM to write rich content for all Settings fields. */
   scrapeWebsite: (url: string) =>

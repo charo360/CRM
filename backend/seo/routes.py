@@ -98,6 +98,29 @@ def _keyword_research_seed(business_type: str, business_name: str, snippet: str)
     return bt_clean[:100] if bt_clean else "small business"
 
 
+class SaveKeywordsRequest(BaseModel):
+    keywords: List[dict]
+    month: str = ""          # e.g. "2025-05"  — defaults to current month
+    business_type: str = ""
+    location: str = ""
+
+
+class CalendarDraftRequest(BaseModel):
+    """Bulk-generate blog drafts for a list of calendar items."""
+    items: List[dict]   # each: {title, keywords, topic, week, day}
+    tone: str = "professional"
+    length: str = "medium"
+
+
+class PublishCredentials(BaseModel):
+    platform: str          # wordpress | shopify
+    wp_url: str = ""
+    wp_username: str = ""
+    wp_password: str = ""
+    shopify_domain: str = ""
+    shopify_token: str = ""
+
+
 class BlogGenerateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     topic: str
@@ -115,6 +138,8 @@ class BlogPost(BaseModel):
     content: str
     meta_title: str = ""
     meta_description: str = ""
+    image_url: Optional[str] = None
+    keywords: List[str] = []
     tags: List[str] = []
     status: str = "draft"            # draft | scheduled | published
     scheduled_at: Optional[str] = None
@@ -126,6 +151,8 @@ class BlogPostUpdate(BaseModel):
     content: Optional[str] = None
     meta_title: Optional[str] = None
     meta_description: Optional[str] = None
+    image_url: Optional[str] = None
+    keywords: Optional[List[str]] = None
     tags: Optional[List[str]] = None
     status: Optional[str] = None
     scheduled_at: Optional[str] = None
@@ -179,8 +206,9 @@ async def _call_ai(prompt: str, model_pref: str = "standard", max_tokens: int = 
 
 
 async def _audit_url(url: str) -> dict:
-    """Fetch a URL and run basic SEO checks."""
+    """Fetch a URL and run comprehensive SEO checks including technical SEO."""
     from html.parser import HTMLParser
+    import json
 
     class _Parser(HTMLParser):
         def __init__(self):
@@ -191,8 +219,11 @@ async def _audit_url(url: str) -> dict:
             self.h2s: List[str] = []
             self.images_missing_alt: int = 0
             self.total_images: int = 0
+            self.structured_data: List[dict] = []
             self._in_title = False
             self._word_count = 0
+            self._in_script = False
+            self._script_content = ""
 
         def handle_starttag(self, tag, attrs):
             a = dict(attrs)
@@ -208,12 +239,26 @@ async def _audit_url(url: str) -> dict:
             if tag == "img":
                 self.total_images += 1
                 if not a.get("alt"): self.images_missing_alt += 1
+            if tag == "script":
+                self._in_script = True
+                if a.get("type") == "application/ld+json":
+                    self._script_content = ""
 
         def handle_endtag(self, tag):
             if tag == "title": self._in_title = False
+            if tag == "script" and self._in_script:
+                self._in_script = False
+                if self._script_content.strip():
+                    try:
+                        data = json.loads(self._script_content)
+                        self.structured_data.append(data)
+                    except:
+                        pass
+                self._script_content = ""
 
         def handle_data(self, data):
             if self._in_title: self.title += data
+            if self._in_script: self._script_content += data
             if self.h1s and data.strip(): self.h1s[-1] += data
             if self.h2s and data.strip(): self.h2s[-1] += data
 
@@ -223,6 +268,7 @@ async def _audit_url(url: str) -> dict:
             resp = await hc.get(url, headers=headers)
         html = resp.text
         word_count = len(re.sub(r"<[^>]+>", " ", html).split())
+        response_headers = dict(resp.headers)
     except Exception as e:
         raise HTTPException(400, f"Could not fetch URL: {e}")
 
@@ -232,6 +278,7 @@ async def _audit_url(url: str) -> dict:
     issues = []
     score = 100
 
+    # Basic on-page checks
     title = parser.title.strip()
     if not title:
         issues.append({"type": "critical", "field": "title", "message": "Missing page title tag"})
@@ -273,6 +320,82 @@ async def _audit_url(url: str) -> dict:
         issues.append({"type": "warning", "field": "content", "message": f"Low word count ({word_count} words). Aim for 500+ for better ranking."})
         score -= 10
 
+    # Technical SEO checks
+    # Robots.txt check
+    try:
+        robots_url = f"{url.rstrip('/')}/robots.txt"
+        robots_resp = await httpx.AsyncClient(timeout=10).get(robots_url, headers=headers)
+        if robots_resp.status_code == 200:
+            robots_content = robots_resp.text
+            if "User-agent: *" in robots_content and "Disallow:" in robots_content:
+                # Has some blocking rules - this is generally good
+                pass
+            else:
+                issues.append({"type": "info", "field": "robots_txt", "message": "Robots.txt exists but may not be properly configured"})
+        else:
+            issues.append({"type": "warning", "field": "robots_txt", "message": "Missing robots.txt file"})
+            score -= 5
+    except:
+        issues.append({"type": "warning", "field": "robots_txt", "message": "Could not check robots.txt"})
+        score -= 5
+
+    # Sitemap check
+    try:
+        sitemap_urls = [
+            f"{url.rstrip('/')}/sitemap.xml",
+            f"{url.rstrip('/')}/sitemap_index.xml"
+        ]
+        sitemap_found = False
+        for sitemap_url in sitemap_urls:
+            try:
+                sitemap_resp = await httpx.AsyncClient(timeout=10).get(sitemap_url, headers=headers)
+                if sitemap_resp.status_code == 200:
+                    sitemap_found = True
+                    break
+            except:
+                continue
+        if not sitemap_found:
+            issues.append({"type": "warning", "field": "sitemap", "message": "Missing XML sitemap"})
+            score -= 10
+    except:
+        issues.append({"type": "warning", "field": "sitemap", "message": "Could not check sitemap"})
+        score -= 10
+
+    # Structured data check
+    if not parser.structured_data:
+        issues.append({"type": "info", "field": "structured_data", "message": "No structured data (Schema.org) found"})
+        score -= 5
+    else:
+        # Check for common schema types
+        schema_types = []
+        for data in parser.structured_data:
+            if "@type" in data:
+                schema_types.append(data["@type"])
+            elif "type" in data:
+                schema_types.append(data["type"])
+        if schema_types:
+            issues.append({"type": "info", "field": "structured_data", "message": f"Found structured data types: {', '.join(schema_types)}"})
+
+    # Security headers check
+    security_headers = {
+        "strict-transport-security": "Missing HSTS header",
+        "x-content-type-options": "Missing X-Content-Type-Options header",
+        "x-frame-options": "Missing X-Frame-Options header",
+        "content-security-policy": "Missing Content Security Policy"
+    }
+    security_score_deducted = 0
+    for header, message in security_headers.items():
+        if header not in [h.lower() for h in response_headers.keys()]:
+            issues.append({"type": "warning", "field": "security_headers", "message": message})
+            security_score_deducted += 2
+    if security_score_deducted > 0:
+        score -= min(10, security_score_deducted)
+
+    # HTTPS check
+    if not url.startswith("https://"):
+        issues.append({"type": "critical", "field": "https", "message": "Website not using HTTPS"})
+        score -= 20
+
     score = max(0, score)
 
     grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 40 else "F"
@@ -288,8 +411,15 @@ async def _audit_url(url: str) -> dict:
         "word_count": word_count,
         "total_images": parser.total_images,
         "images_missing_alt": parser.images_missing_alt,
+        "structured_data_count": len(parser.structured_data),
         "issues": issues,
         "og_tags": {k: v for k, v in parser.meta.items() if k.startswith("og:")},
+        "technical_checks": {
+            "robots_txt": "present" if any("robots" in issue["field"] and "missing" not in issue["message"].lower() for issue in issues) else "missing",
+            "sitemap": "present" if any("sitemap" in issue["field"] and "missing" not in issue["message"].lower() for issue in issues) else "missing",
+            "https": url.startswith("https://"),
+            "security_headers_score": max(0, 10 - security_score_deducted // 2)
+        }
     }
 
 
@@ -297,6 +427,21 @@ async def _audit_url(url: str) -> dict:
 
 def make_seo_router(db, user_dep):
     router = APIRouter(prefix="/seo", tags=["seo"])
+
+    async def _record_event(event_type: str, payload: dict, user=user_dep):
+        """Record an analytics event to `seo_analytics` collection for the current user."""
+        try:
+            tid = _tid(user)
+            doc = {
+                "_id": str(uuid.uuid4()),
+                "user_id": tid,
+                "type": event_type,
+                "payload": payload,
+                "created_at": datetime.utcnow(),
+            }
+            await db.seo_analytics.insert_one(doc)
+        except Exception:
+            logger.exception("Failed to record SEO analytics event")
 
     @router.get("/context")
     async def get_seo_business_context_endpoint(user=user_dep):
@@ -810,6 +955,8 @@ Write the full article now:"""
             **payload.model_dump(),
         }
         await db.seo_blog_posts.insert_one(doc)
+        # Analytics: record post creation
+        await _record_event("post_created", {"post_id": doc["_id"], "title": doc.get("title"), "status": doc.get("status")}, user)
         return _ser(doc)
 
     @router.get("/blog/posts/{post_id}")
@@ -828,6 +975,8 @@ Write the full article now:"""
         result = await db.seo_blog_posts.update_one({"_id": post_id, "user_id": tid}, {"$set": upd})
         if result.matched_count == 0: raise HTTPException(404, "Post not found")
         doc = await db.seo_blog_posts.find_one({"_id": post_id})
+        # Analytics: record post update (include changed fields)
+        await _record_event("post_updated", {"post_id": post_id, "updated_fields": list(payload.model_dump(exclude_none=True).keys())}, user)
         return _ser(doc)
 
     @router.delete("/blog/posts/{post_id}")
@@ -900,6 +1049,8 @@ Write the full article now:"""
                 {"_id": payload.post_id},
                 {"$set": {"status": "published", "published_at": datetime.utcnow(), "publish_result": result}},
             )
+            # Analytics: record publish event
+            await _record_event("post_published", {"post_id": payload.post_id, "platform": payload.platform, "publish_result": result}, user)
 
         return result
 
@@ -913,22 +1064,72 @@ Write the full article now:"""
         location: str = "",
         user=user_dep,
     ):
+        import json as _json
+        tid = _tid(user)
         ctx = _seo_business_context(user)
         bt = business_type.strip() or ctx["business_type"]
         loc = location.strip() or ctx["location"]
         snippet = ctx["context_snippet"]
         location_str = f" in {loc}" if loc else ""
         total = posts_per_week * weeks
+
+        # ── Pull SEO memory for progressive improvement ──────────────────────
+        past_posts = await db.seo_blog_posts.find(
+            {"user_id": tid}
+        ).sort("created_at", -1).limit(30).to_list(30)
+
+        last_audit = await db.seo_audits.find_one({"user_id": tid}, sort=[("created_at", -1)])
+        saved_kw = await db.seo_saved_keywords.find_one({"user_id": tid}, sort=[("month", -1)])
+
+        # Topics already written — avoid repeats
+        existing_titles = [p.get("title", "") for p in past_posts if p.get("title")]
+
+        # Audit issues to address in new content
+        audit_issues: List[str] = []
+        if last_audit:
+            for iss in (last_audit.get("issues") or [])[:5]:
+                f = iss.get("field", "")
+                if f and iss.get("type") in ("critical", "warning"):
+                    audit_issues.append(f)
+
+        # Saved keywords to weave in
+        saved_keywords: List[str] = []
+        if saved_kw:
+            for k in (saved_kw.get("keywords") or [])[:10]:
+                kw = k.get("keyword", "") if isinstance(k, dict) else str(k)
+                if kw:
+                    saved_keywords.append(kw)
+
+        # Published vs draft counts
+        pub_count = sum(1 for p in past_posts if p.get("status") == "published")
+        draft_count = sum(1 for p in past_posts if p.get("status") == "draft")
+
+        # Build memory block for the prompt
+        memory_block = ""
+        if existing_titles:
+            titles_str = "\n".join(f"  - {t}" for t in existing_titles[:15])
+            memory_block += f"\nAlready written (DO NOT repeat these topics — find fresh angles or complementary content):\n{titles_str}\n"
+        if audit_issues:
+            memory_block += f"\nSEO audit flagged these issues — create content that helps fix them: {', '.join(audit_issues)}\n"
+        if saved_keywords:
+            memory_block += f"\nSaved keywords to naturally incorporate: {', '.join(saved_keywords)}\n"
+        if pub_count > 0 or draft_count > 0:
+            memory_block += f"\nContent history: {pub_count} published, {draft_count} drafts. Build on momentum — go deeper on high-traffic topics and fill gaps.\n"
+
         extra = ""
         if snippet:
-            extra = f"""
-
-Business context (align topics with real offerings; do not copy verbatim):
-{snippet[:1400]}"""
+            extra = f"\nBusiness context (align topics with real offerings):\n{snippet[:1000]}\n"
 
         prompt = f"""Create a {weeks}-week content calendar for a {bt} business{location_str}.
 Generate {total} blog post ideas ({posts_per_week} per week).
-{extra}
+
+This is a PROGRESSIVE calendar — it builds on what has already been done and improves each cycle.
+{memory_block}{extra}
+Rules:
+- Each title must be unique and NOT repeat any existing topic above
+- Vary intent: mix informational, transactional, and local posts
+- Prioritise keywords with high traffic potential
+- Week 1 should address any quick-win SEO issues; later weeks go deeper
 
 Return a JSON array:
 [
@@ -944,16 +1145,217 @@ Return a JSON array:
 ]
 Only return the JSON array."""
 
-        raw = await _call_ai(prompt, max_tokens=2000)
+        raw = await _call_ai(prompt, max_tokens=2200)
         try:
-            import json
             raw = raw.strip()
             if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
-            calendar = json.loads(raw)
+            calendar = _json.loads(raw)
         except Exception:
             calendar = []
 
-        return {"calendar": calendar, "weeks": weeks, "posts_per_week": posts_per_week}
+        return {
+            "calendar": calendar,
+            "weeks": weeks,
+            "posts_per_week": posts_per_week,
+            "memory_used": bool(existing_titles or audit_issues or saved_keywords),
+        }
+
+    # ── Bulk Calendar Draft Generation ──────────────────────────────────────
+
+    @router.post("/calendar/generate-drafts")
+    async def generate_calendar_drafts(payload: CalendarDraftRequest, user=user_dep):
+        """Generate blog drafts for every item in the current calendar in one shot."""
+        import json as _json
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+        biz_name = ctx["business_name"]
+        lang = ctx["language"]
+        snippet = ctx["context_snippet"]
+
+        word_targets = {"short": "400-500", "medium": "800-1000", "long": "1400-1600"}
+        word_target = word_targets.get(payload.length, "800-1000")
+
+        context_block = f"\nBusiness context:\n{snippet[:900]}\n" if snippet else ""
+
+        results = []
+        for item in payload.items[:20]:          # cap at 20 items per call
+            topic   = str(item.get("title") or item.get("topic") or "").strip()
+            kws     = item.get("keywords") or []
+            week    = item.get("week", 1)
+            day     = item.get("day", "")
+            if not topic:
+                continue
+
+            keywords_str = ", ".join(kws) if kws else topic
+            business_str = f" for {biz_name}" if biz_name else ""
+            prompt = f"""Write a {word_target}-word SEO-optimized blog post{business_str}.
+
+Topic: {topic}
+Target keywords: {keywords_str}
+Tone: {payload.tone}
+Language: {lang}
+{context_block}
+Structure: H1 title → intro → H2 sections → conclusion with CTA.
+After the article write:
+META_TITLE: [50-60 char SEO title]
+META_DESC: [140-160 char meta description]
+TAGS: [comma-separated tags]
+
+Write the full article now:"""
+
+            try:
+                raw = await _call_ai(prompt, max_tokens=2500)
+                meta_title = ""
+                meta_desc  = ""
+                tags: List[str] = []
+                mt = re.search(r"META_TITLE:\s*(.+)", raw)
+                md = re.search(r"META_DESC:\s*(.+)", raw)
+                tg = re.search(r"TAGS:\s*(.+)", raw)
+                if mt: meta_title = mt.group(1).strip()
+                if md: meta_desc  = md.group(1).strip()
+                if tg: tags = [t.strip() for t in tg.group(1).split(",")]
+                content = re.sub(r"\n(META_TITLE|META_DESC|TAGS):[^\n]+", "", raw).strip()
+                word_count = len(content.split())
+
+                doc = {
+                    "_id": str(uuid.uuid4()),
+                    "user_id": tid,
+                    "title": meta_title or topic,
+                    "content": content,
+                    "meta_title": meta_title,
+                    "meta_description": meta_desc,
+                    "keywords": kws,
+                    "tags": tags,
+                    "status": "draft",
+                    "platform": "internal",
+                    "created_at": datetime.utcnow(),
+                    "word_count": word_count,
+                    # Calendar provenance
+                    "calendar_week": week,
+                    "calendar_day": day,
+                    "calendar_topic": topic,
+                    "calendar_keywords": kws,
+                }
+                await db.seo_blog_posts.insert_one(doc)
+                    # Analytics: record draft generation
+                    try:
+                        await _record_event("draft_generated", {"post_id": doc["_id"], "title": doc.get("title"), "week": week, "day": day}, user)
+                    except Exception:
+                        logger.exception("Failed to record draft_generated event")
+                results.append({
+                    "post_id": doc["_id"],
+                    "title": doc["title"],
+                    "week": week,
+                    "day": day,
+                    "status": "draft",
+                    "word_count": word_count,
+                })
+            except Exception as e:
+                logger.warning("[seo] draft gen failed for '%s': %s", topic, e)
+                results.append({"title": topic, "week": week, "day": day, "status": "error", "error": str(e)})
+
+        return {"drafts": results, "total": len(results)}
+
+    # ── SEO Memory (progressive improvement) ────────────────────────────────
+
+    @router.get("/seo-memory")
+    async def get_seo_memory(user=user_dep):
+        """Return structured history of what worked/didn't so the next cycle can improve."""
+        import json as _json
+        tid = _tid(user)
+
+        # Last 3 months of audits
+        audits = await db.seo_audits.find({"user_id": tid}).sort("created_at", -1).limit(15).to_list(15)
+        # Blog posts with calendar provenance
+        posts = await db.seo_blog_posts.find({"user_id": tid}).sort("created_at", -1).limit(50).to_list(50)
+        # Saved keyword months
+        kw_months = await db.seo_saved_keywords.find({"user_id": tid}).sort("month", -1).limit(3).to_list(3)
+
+        # Build audit trend
+        audit_history = []
+        for a in audits:
+            sa = _ser(a)
+            issues = [i.get("field") for i in (a.get("issues") or []) if i.get("type") == "critical"]
+            audit_history.append({
+                "date": sa.get("created_at", "")[:10],
+                "score": a.get("score", 0),
+                "url": a.get("url", ""),
+                "critical_issues": issues[:5],
+            })
+
+        # What topics/keywords have been written about
+        published_topics = [
+            {"title": p.get("title", ""), "tags": p.get("tags", []), "keywords": p.get("calendar_keywords", [])}
+            for p in posts if p.get("status") == "published"
+        ]
+        draft_topics = [
+            {"title": p.get("title", ""), "tags": p.get("tags", []), "keywords": p.get("calendar_keywords", [])}
+            for p in posts if p.get("status") == "draft"
+        ]
+
+        # Score direction
+        score_trend = "stable"
+        if len(audit_history) >= 2:
+            delta = audit_history[0]["score"] - audit_history[-1]["score"]
+            score_trend = "improving" if delta > 5 else ("declining" if delta < -5 else "stable")
+
+        # AI analysis of what to do differently
+        analysis_prompt = None
+        if audit_history or published_topics:
+            audit_lines = "\n".join(
+                f"  {a['date']} score={a['score']} issues={a['critical_issues']}"
+                for a in audit_history[:5]
+            ) or "  No audits yet."
+            pub_lines = "\n".join(f"  - {p['title']}" for p in published_topics[:10]) or "  None published yet."
+            draft_lines = "\n".join(f"  - {p['title']}" for p in draft_topics[:5]) or "  None."
+            kw_line = ", ".join(
+                str(k.get("keyword", "")) for m in kw_months for k in (m.get("keywords") or [])[:5]
+            ) or "None saved."
+            analysis_prompt = f"""You are an SEO strategist. Analyse this business's SEO history and tell them:
+1. What is clearly working (topics/content types with good intent or high-traffic potential)
+2. What isn't working (recurring audit issues, gaps)
+3. What they should focus on NEXT month — specific topics or improvements
+
+Audit history:
+{audit_lines}
+
+Published posts:
+{pub_lines}
+
+Draft posts (not yet live):
+{draft_lines}
+
+Keywords saved this month: {kw_line}
+
+Respond with a JSON object:
+{{
+  "working": ["short point 1", ...],
+  "not_working": ["short point 1", ...],
+  "next_month_focus": ["specific action 1", ...],
+  "score_trend": "{score_trend}"
+}}
+Only return the JSON."""
+
+        analysis: dict = {"working": [], "not_working": [], "next_month_focus": [], "score_trend": score_trend}
+        if analysis_prompt:
+            try:
+                raw = await _call_ai(analysis_prompt, max_tokens=600)
+                raw = raw.strip()
+                if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+                analysis = _json.loads(raw)
+            except Exception:
+                pass
+
+        return {
+            "audit_history": audit_history,
+            "published_count": len(published_topics),
+            "draft_count": len(draft_topics),
+            "published_topics": published_topics[:10],
+            "draft_topics": draft_topics[:5],
+            "score_trend": score_trend,
+            "analysis": analysis,
+            "kw_months": [m.get("month") for m in kw_months],
+        }
 
     # ── SEO Stats summary ───────────────────────────────────────────────────
 
@@ -967,10 +1369,19 @@ Only return the JSON array."""
 
         last_audit = await db.seo_audits.find_one({"user_id": tid}, sort=[("created_at", -1)])
         avg_score = None
+        audit_trend: List[dict] = []
         if last_audit:
-            scores = await db.seo_audits.find({"user_id": tid}).sort("created_at", -1).limit(5).to_list(5)
+            scores = await db.seo_audits.find({"user_id": tid}).sort("created_at", -1).limit(10).to_list(10)
             if scores:
-                avg_score = round(sum(s.get("score", 0) for s in scores) / len(scores))
+                avg_score = round(sum(s.get("score", 0) for s in scores[:5]) / min(5, len(scores)))
+                audit_trend = [
+                    {
+                        "date": _ser(s).get("created_at", ""),
+                        "score": s.get("score", 0),
+                        "url": s.get("url", ""),
+                    }
+                    for s in reversed(scores)
+                ]
 
         return {
             "total_posts": total_posts,
@@ -979,6 +1390,415 @@ Only return the JSON array."""
             "total_audits": total_audits,
             "avg_seo_score": avg_score,
             "last_audit": _ser(last_audit) if last_audit else None,
+            "audit_trend": audit_trend,
         }
+
+    # ── Analytics endpoints ───────────────────────────────────────────────
+
+    @router.post("/analytics/event")
+    async def record_analytics_event(payload: dict, user=user_dep):
+        """Record a custom analytics event. Payload should include 'type' and optional 'payload' dict."""
+        tid = _tid(user)
+        event_type = str(payload.get("type") or "custom")
+        evt_payload = payload.get("payload") or payload
+        doc = {
+            "_id": str(uuid.uuid4()),
+            "user_id": tid,
+            "type": event_type,
+            "payload": evt_payload,
+            "created_at": datetime.utcnow(),
+        }
+        await db.seo_analytics.insert_one(doc)
+        return {"ok": True, "id": doc["_id"]}
+
+    @router.get("/analytics/events")
+    async def list_analytics_events(limit: int = 100, user=user_dep):
+        tid = _tid(user)
+        docs = await db.seo_analytics.find({"user_id": tid}).sort("created_at", -1).limit(limit).to_list(limit)
+        return [_ser(d) for d in docs]
+
+    # ── Saved Keywords ──────────────────────────────────────────────────────
+
+    @router.post("/keywords/save")
+    async def save_keywords(payload: SaveKeywordsRequest, user=user_dep):
+        tid = _tid(user)
+        import datetime as _dt
+        month = payload.month.strip() or _dt.datetime.utcnow().strftime("%Y-%m")
+        doc = {
+            "_id": f"{tid}:{month}",
+            "user_id": tid,
+            "month": month,
+            "keywords": payload.keywords,
+            "business_type": payload.business_type,
+            "location": payload.location,
+            "saved_at": datetime.utcnow(),
+        }
+        await db.seo_saved_keywords.replace_one({"_id": f"{tid}:{month}"}, doc, upsert=True)
+        return {"ok": True, "month": month, "count": len(payload.keywords)}
+
+    @router.get("/keywords/saved")
+    async def list_saved_keywords(user=user_dep):
+        tid = _tid(user)
+        docs = await db.seo_saved_keywords.find({"user_id": tid}).sort("month", -1).limit(12).to_list(12)
+        return [
+            {
+                "month": d.get("month"),
+                "keywords": d.get("keywords", []),
+                "business_type": d.get("business_type", ""),
+                "location": d.get("location", ""),
+                "saved_at": d.get("saved_at").isoformat() if d.get("saved_at") else "",
+                "count": len(d.get("keywords", [])),
+            }
+            for d in docs
+        ]
+
+    @router.get("/keywords/saved/{month}")
+    async def get_saved_keywords(month: str, user=user_dep):
+        tid = _tid(user)
+        doc = await db.seo_saved_keywords.find_one({"_id": f"{tid}:{month}"})
+        if not doc:
+            raise HTTPException(404, "No saved keywords for that month")
+        return {
+            "month": doc.get("month"),
+            "keywords": doc.get("keywords", []),
+            "business_type": doc.get("business_type", ""),
+            "location": doc.get("location", ""),
+        }
+
+    # ── Publish Credentials (save per platform so user doesn't re-enter) ────
+
+    @router.put("/publish-credentials")
+    async def save_publish_credentials(payload: PublishCredentials, user=user_dep):
+        tid = _tid(user)
+        doc_id = f"{tid}:{payload.platform}"
+        data: dict = {"user_id": tid, "platform": payload.platform, "updated_at": datetime.utcnow()}
+        if payload.platform == "wordpress":
+            if payload.wp_url: data["wp_url"] = payload.wp_url
+            if payload.wp_username: data["wp_username"] = payload.wp_username
+            if payload.wp_password: data["wp_password"] = payload.wp_password
+        elif payload.platform == "shopify":
+            if payload.shopify_domain: data["shopify_domain"] = payload.shopify_domain
+            if payload.shopify_token: data["shopify_token"] = payload.shopify_token
+        await db.seo_publish_creds.replace_one({"_id": doc_id}, {"_id": doc_id, **data}, upsert=True)
+        return {"ok": True}
+
+    @router.get("/publish-credentials/{platform}")
+    async def get_publish_credentials(platform: str, user=user_dep):
+        tid = _tid(user)
+        doc = await db.seo_publish_creds.find_one({"_id": f"{tid}:{platform}"})
+        if not doc:
+            return {}
+        doc.pop("_id", None)
+        doc.pop("user_id", None)
+        v = doc.pop("updated_at", None)
+        if v and hasattr(v, "isoformat"): doc["updated_at"] = v.isoformat()
+        return doc
+
+    # ── Monthly Improvement Suggestions ─────────────────────────────────────
+
+    @router.get("/improvement-suggestions")
+    async def get_improvement_suggestions(user=user_dep):
+        """Compare last 2 audits + current keyword/blog stats and return AI improvement tips."""
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+
+        audits = await db.seo_audits.find({"user_id": tid}).sort("created_at", -1).limit(2).to_list(2)
+        total_posts = await db.seo_blog_posts.count_documents({"user_id": tid})
+        published = await db.seo_blog_posts.count_documents({"user_id": tid, "status": "published"})
+        saved_kw_doc = await db.seo_saved_keywords.find_one({"user_id": tid}, sort=[("month", -1)])
+        kw_count = len((saved_kw_doc or {}).get("keywords", []))
+
+        # Build context for AI
+        audit_lines = []
+        for a in audits:
+            issues_summary = "; ".join(
+                f"{i['field']} ({i['type']})" for i in (a.get("issues") or [])[:5]
+            )
+            audit_lines.append(
+                f"- Score {a.get('score', 0)}/100 on {a.get('url', '')} "
+                f"({_ser(a).get('created_at', '')[:10]}): {issues_summary or 'No issues'}"
+            )
+
+        score_change = ""
+        if len(audits) == 2:
+            delta = audits[0].get("score", 0) - audits[1].get("score", 0)
+            score_change = f"Score changed by {'+' if delta >= 0 else ''}{delta} points since last audit."
+
+        prompt = f"""You are an SEO strategist reviewing a business's monthly SEO progress.
+
+Business: {ctx.get('business_name') or 'Unknown'} ({ctx.get('business_type', '')} in {ctx.get('location', '')})
+
+SEO activity this month:
+- Blog posts total: {total_posts} ({published} published)
+- Saved keywords: {kw_count}
+- Recent audits:
+{chr(10).join(audit_lines) if audit_lines else '  No audits run yet.'}
+{score_change}
+
+Generate 5 specific, actionable improvement suggestions for next month.
+Keep each suggestion to 1-2 sentences. Be concrete — reference their actual situation above.
+Return a JSON array:
+[
+  {{"priority": "high|medium|low", "action": "Short action title", "detail": "1-2 sentence explanation"}}
+]
+Only return the JSON array."""
+
+        try:
+            raw = await _call_ai(prompt, max_tokens=800)
+            raw = raw.strip()
+            if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+            import json as _json
+            suggestions = _json.loads(raw)
+        except Exception:
+            suggestions = [
+                {"priority": "high", "action": "Run a site audit", "detail": "You haven't audited your site yet. Start with the Audit tab to find quick wins."},
+                {"priority": "high", "action": "Save your keyword list", "detail": "Generate keywords and save them for this month so your content stays focused."},
+                {"priority": "medium", "action": "Publish at least 2 blog posts", "detail": "Fresh content signals activity to Google. Use the Calendar to plan topics."},
+                {"priority": "medium", "action": "Add meta descriptions", "detail": "Missing meta descriptions reduce click-through rates from Google results."},
+                {"priority": "low", "action": "Check for broken image alt text", "detail": "Images without alt text miss a ranking opportunity and hurt accessibility."},
+            ]
+
+        return {"suggestions": suggestions, "generated_at": datetime.utcnow().isoformat()}
+
+    # ── Local SEO Routes ───────────────────────────────────────────────────
+
+    @router.get("/local/listings")
+    async def get_local_listings(user=user_dep):
+        """Get business listings across platforms (Google, Yelp, etc.)"""
+        tid = _tid(user)
+        # TODO: Integrate with Google Business Profile API, Yelp API, etc.
+        # For now, return mock data based on business context
+        ctx = _seo_business_context(user)
+        business_name = ctx.get("business_name", "Your Business")
+        website = ctx.get("website_url", "")
+        location = ctx.get("location", "Your City, State")
+
+        mock_listings = [
+            {
+                "platform": "google-business",
+                "name": business_name,
+                "address": f"123 Main St, {location}",
+                "phone": "(555) 123-4567",
+                "website": website or "https://yourwebsite.com",
+                "rating": 4.8,
+                "reviews": 127,
+                "status": "verified",
+                "lastUpdated": "2024-01-15"
+            },
+            {
+                "platform": "yelp",
+                "name": business_name,
+                "address": f"123 Main St, {location}",
+                "phone": "(555) 123-4567",
+                "website": website or "https://yourwebsite.com",
+                "rating": 4.6,
+                "reviews": 89,
+                "status": "verified",
+                "lastUpdated": "2024-01-10"
+            },
+            {
+                "platform": "apple-maps",
+                "name": business_name,
+                "address": f"123 Main St, {location}",
+                "phone": "(555) 123-4567",
+                "website": website or "https://yourwebsite.com",
+                "status": "not-listed"
+            }
+        ]
+        return {"listings": mock_listings}
+
+    @router.post("/local/listings")
+    async def add_local_listing(payload: Dict[str, Any], user=user_dep):
+        """Add or update a business listing"""
+        tid = _tid(user)
+        # TODO: Actually integrate with platform APIs
+        # For now, just validate and return success
+        required = ["platform", "name", "address", "phone", "website"]
+        for field in required:
+            if field not in payload:
+                raise HTTPException(400, f"Missing required field: {field}")
+
+        # Simulate adding to database
+        listing = {
+            "user_id": tid,
+            "platform": payload["platform"],
+            "name": payload["name"],
+            "address": payload["address"],
+            "phone": payload["phone"],
+            "website": payload["website"],
+            "status": "pending",
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+
+        # TODO: Save to database
+        # await db.local_listings.insert_one(listing)
+
+        return {"success": True, "listing": listing}
+
+    @router.get("/local/keywords")
+    async def get_local_keywords(user=user_dep):
+        """Get local keyword rankings"""
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+        location = ctx.get("location", "Your City, State")
+        business_type = ctx.get("business_type", "business")
+
+        # TODO: Integrate with local search APIs or DataForSEO local pack
+        mock_keywords = [
+            {
+                "keyword": f"{business_type} near me",
+                "location": location,
+                "position": 3,
+                "searchVolume": 2400,
+                "difficulty": "high",
+                "trend": "up"
+            },
+            {
+                "keyword": f"emergency {business_type} {location.split(',')[0]}",
+                "location": location,
+                "position": 2,
+                "searchVolume": 880,
+                "difficulty": "medium",
+                "trend": "stable"
+            },
+            {
+                "keyword": f"{business_type} services {location.split(',')[0]}",
+                "location": location,
+                "position": 5,
+                "searchVolume": 590,
+                "difficulty": "medium",
+                "trend": "up"
+            }
+        ]
+        return {"keywords": mock_keywords}
+
+    @router.get("/local/competitors")
+    async def get_local_competitors(user=user_dep):
+        """Get local competitors"""
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+        location = ctx.get("location", "Your City, State")
+
+        # TODO: Use Google Places API or similar to find real competitors
+        mock_competitors = [
+            {
+                "name": f"XYZ {ctx.get('business_type', 'Services').title()}",
+                "address": f"456 Oak Ave, {location}",
+                "rating": 4.5,
+                "reviews": 203,
+                "categories": [ctx.get('business_type', 'Services').title(), "Emergency Services"]
+            },
+            {
+                "name": f"{location.split(',')[0]} {ctx.get('business_type', 'Services').title()} Co",
+                "address": f"789 Pine St, {location}",
+                "rating": 4.2,
+                "reviews": 156,
+                "categories": [ctx.get('business_type', 'Services').title(), "Professional Services"]
+            }
+        ]
+        return {"competitors": mock_competitors}
+
+    @router.get("/local/score")
+    async def get_local_seo_score(user=user_dep):
+        """Get local SEO score and breakdown"""
+        tid = _tid(user)
+        # TODO: Calculate real score based on listings, reviews, rankings
+        mock_score = {
+            "overall": 78,
+            "grade": "Good",
+            "breakdown": {
+                "business_listings": 85,
+                "reviews_ratings": 72,
+                "local_rankings": 68,
+                "citations": 90
+            },
+            "recommendations": [
+                "Add your business to Apple Maps to increase visibility",
+                "Encourage more customer reviews to improve ratings",
+                f"Target local keyword opportunities in {user.get('settings', {}).get('country', 'your area')}"
+            ]
+        }
+        return mock_score
+
+    # ── SERP Ranking History ───────────────────────────────────────────────
+
+    @router.post("/serp/rankings")
+    async def save_serp_ranking(payload: Dict[str, Any], user=user_dep):
+        """Save a SERP ranking check result for historical tracking"""
+        tid = _tid(user)
+        doc = {
+            "user_id": tid,
+            "keyword": payload["keyword"],
+            "domain": payload["domain"],
+            "position": payload.get("position"),
+            "location_code": payload.get("location_code", 2404),
+            "language_code": payload.get("language_code", "en"),
+            "checked_at": datetime.utcnow(),
+            "search_volume": payload.get("search_volume"),
+            "competition": payload.get("competition"),
+        }
+        await db.seo_serp_rankings.insert_one(doc)
+        return {"success": True}
+
+    @router.get("/serp/rankings")
+    async def get_serp_rankings(keyword: str = None, domain: str = None, limit: int = 50, user=user_dep):
+        """Get historical SERP ranking data"""
+        tid = _tid(user)
+        query = {"user_id": tid}
+        if keyword:
+            query["keyword"] = keyword
+        if domain:
+            query["domain"] = domain
+
+        rankings = await db.seo_serp_rankings.find(query).sort("checked_at", -1).limit(limit).to_list(limit)
+
+        # Format for frontend
+        formatted = []
+        for r in rankings:
+            formatted.append({
+                "keyword": r["keyword"],
+                "domain": r["domain"],
+                "position": r["position"],
+                "checked_at": r["checked_at"].isoformat() if hasattr(r["checked_at"], "isoformat") else str(r["checked_at"]),
+                "location_code": r.get("location_code"),
+                "search_volume": r.get("search_volume"),
+            })
+
+        return {"rankings": formatted}
+
+    @router.get("/serp/rankings/trends")
+    async def get_serp_trends(keyword: str, domain: str, days: int = 30, user=user_dep):
+        """Get ranking trends for a specific keyword/domain combination"""
+        tid = _tid(user)
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        rankings = await db.seo_serp_rankings.find({
+            "user_id": tid,
+            "keyword": keyword,
+            "domain": domain,
+            "checked_at": {"$gte": cutoff}
+        }).sort("checked_at", 1).to_list(1000)
+
+        # Group by date and calculate trends
+        trends = {}
+        for r in rankings:
+            date_key = r["checked_at"].date().isoformat()
+            if date_key not in trends:
+                trends[date_key] = []
+            trends[date_key].append(r["position"])
+
+        # Average positions per day
+        trend_data = []
+        for date, positions in sorted(trends.items()):
+            avg_position = sum(p for p in positions if p) / len([p for p in positions if p]) if positions else None
+            trend_data.append({
+                "date": date,
+                "position": avg_position,
+                "checks": len(positions)
+            })
+
+        return {"trends": trend_data, "keyword": keyword, "domain": domain}
 
     return router

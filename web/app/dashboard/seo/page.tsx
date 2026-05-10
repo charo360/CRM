@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   seoApi,
   seoAgentApi,
@@ -14,10 +16,19 @@ import {
   type SeoBusinessContext,
   type SeoAgentToolStep,
 } from "@/lib/api";
+import OnboardingChecklist from "@/components/seo/OnboardingChecklist";
+import SuccessMetrics from "@/components/seo/SuccessMetrics";
+import IndustryTemplateSelector from "@/components/seo/IndustryTemplateSelector";
+import ROITracking from "@/components/seo/ROITracking";
+import AutoScheduler from "@/components/seo/AutoScheduler";
+import AnalyticsIntegration from "@/components/seo/AnalyticsIntegration";
+import LocalSEO from "@/components/seo/LocalSEO";
+import SocialIntegration from "@/components/seo/SocialIntegration";
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 
-type Tab = "overview" | "audit" | "keywords" | "blog" | "calendar" | "agent";
+type Tab = "overview" | "audit" | "keywords" | "blog" | "calendar" | "agent" | "roi" | "scheduler" | "analytics" | "local" | "social";
+type CalendarWritePayload = { title: string; keywords: string[] };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -71,28 +82,34 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
 }
 
 function SeoQuickNav({ active, onJump }: { active: Tab; onJump: (t: Tab) => void }) {
-  const items: { id: Tab; label: string }[] = [
-    { id: "agent", label: "Coach" },
-    { id: "keywords", label: "Keywords" },
-    { id: "audit", label: "Audit" },
-    { id: "blog", label: "Blog" },
-    { id: "calendar", label: "Calendar" },
-    { id: "overview", label: "Stats" },
+  const items: { id: Tab; label: string; desc?: string }[] = [
+    { id: "agent", label: "Coach", desc: "AI guidance" },
+    { id: "keywords", label: "Keywords", desc: "Research" },
+    { id: "audit", label: "Audit", desc: "Analysis" },
+    { id: "blog", label: "Blog", desc: "Content" },
+    { id: "calendar", label: "Calendar", desc: "Planning" },
+    { id: "overview", label: "Stats", desc: "Overview" },
+    { id: "roi", label: "ROI", desc: "Performance" },
+    { id: "scheduler", label: "Schedule", desc: "Auto-publish" },
+    { id: "analytics", label: "Analytics", desc: "Data" },
+    { id: "local", label: "Local SEO", desc: "Listings" },
+    { id: "social", label: "Social", desc: "Sharing" },
   ];
   return (
-    <div className="flex flex-wrap gap-2 pt-1">
-      {items.map(({ id, label }) => (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 pt-1">
+      {items.map(({ id, label, desc }) => (
         <button
           key={id}
           type="button"
           onClick={() => onJump(id)}
-          className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
+          className={`text-left p-3 rounded-lg border transition-colors ${
             active === id
               ? "bg-emerald-600 border-emerald-600 text-white shadow-sm"
               : "bg-white/80 border-emerald-100 text-slate-600 hover:border-emerald-200 hover:bg-emerald-50/50"
           }`}
         >
-          {label}
+          <span className="block text-sm font-medium">{label}</span>
+          {desc && <span className="block text-xs opacity-70">{desc}</span>}
         </button>
       ))}
     </div>
@@ -149,41 +166,155 @@ function BusinessSnapshotBar({ profile, activeTab, onJump }: { profile: SeoBusin
 
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 
-function OverviewTab({ summary, onJump }: { summary: SeoSummary | null; onJump: (t: Tab) => void }) {
+type SeoMemory = {
+  audit_history: { date: string; score: number; url: string; critical_issues: string[] }[];
+  published_count: number;
+  draft_count: number;
+  published_topics: { title: string; tags: string[]; keywords: string[] }[];
+  score_trend: "improving" | "declining" | "stable";
+  analysis: { working: string[]; not_working: string[]; next_month_focus: string[]; score_trend: string };
+  kw_months: string[];
+};
+
+function OverviewTab({ summary, onJump, profile }: { summary: SeoSummary | null; onJump: (t: Tab) => void; profile: SeoBusinessContext | null }) {
+  const [suggestions, setSuggestions] = useState<{ priority: string; action: string; detail: string }[]>([]);
+  const [loadingSugg, setLoadingSugg] = useState(false);
+  const [memory, setMemory] = useState<SeoMemory | null>(null);
+  const [loadingMem, setLoadingMem] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  const extSummary = summary as (SeoSummary & { audit_trend?: { date: string; score: number; url: string }[] }) | null;
+
+  useEffect(() => {
+    setLoadingSugg(true);
+    seoApi.improvementSuggestions()
+      .then(r => setSuggestions(r.suggestions ?? []))
+      .catch(() => {})
+      .finally(() => setLoadingSugg(false));
+    setLoadingMem(true);
+    seoApi.getSeoMemory()
+      .then(setMemory)
+      .catch(() => {})
+      .finally(() => setLoadingMem(false));
+  }, []);
+
   if (!summary) return <p className="text-slate-400 text-sm">Loading summary…</p>;
+
+  const trend = extSummary?.audit_trend ?? [];
+
+  const priorityStyle = (p: string) =>
+    p === "high" ? "bg-red-50 border-red-100 text-red-700"
+    : p === "medium" ? "bg-yellow-50 border-yellow-100 text-yellow-700"
+    : "bg-slate-50 border-slate-100 text-slate-500";
+
   return (
-    <div className="space-y-5">
-      <p className="text-sm text-slate-600 leading-relaxed">
-        Here&apos;s how your SEO activity looks. New? Start with{" "}
-        <button type="button" onClick={() => onJump("agent")} className="font-semibold text-emerald-700 hover:underline">
-          Coach
-        </button>
-        {" "}or grab{" "}
-        <button type="button" onClick={() => onJump("keywords")} className="font-semibold text-emerald-700 hover:underline">
-          keywords
-        </button>
-        {" "}for your business — both use your Settings profile automatically.
-      </p>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatCard label="Total Blog Posts" value={summary.total_posts ?? 0} />
-        <StatCard label="Published" value={summary.published_posts ?? 0} />
-        <StatCard label="Drafts" value={summary.draft_posts ?? 0} />
-        <StatCard label="Site Audits Run" value={summary.total_audits ?? 0} />
+    <div className="space-y-6">
+      {/* Success Metrics Dashboard */}
+      <SuccessMetrics />
+
+      {/* Onboarding Checklist - show for new users */}
+      {(summary.total_posts === 0 || !profile?.business_type) && (
+        <OnboardingChecklist profile={profile} />
+      )}
+
+      {/* Industry Template Selector - show if no business type set */}
+      {!profile?.business_type && (
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-800">Get Started Faster</h3>
+              <p className="text-sm text-slate-500 mt-1">
+                Choose your industry to get pre-configured SEO strategies
+              </p>
+            </div>
+            <button
+              onClick={() => setShowTemplates(!showTemplates)}
+              className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 font-medium"
+            >
+              {showTemplates ? "Hide Templates" : "Browse Templates"}
+            </button>
+          </div>
+          
+          {showTemplates && (
+            <IndustryTemplateSelector
+              onSelect={(template) => {
+                // This would update the user's profile
+                window.location.href = "/dashboard/settings";
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Quick Stats */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-slate-800">Quick Overview</h3>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onJump("keywords")}
+              className="px-3 py-1.5 bg-purple-100 text-purple-700 text-xs rounded-lg hover:bg-purple-200 font-medium"
+            >
+              Keywords
+            </button>
+            <button
+              onClick={() => onJump("calendar")}
+              className="px-3 py-1.5 bg-emerald-100 text-emerald-700 text-xs rounded-lg hover:bg-emerald-200 font-medium"
+            >
+              Calendar
+            </button>
+            <button
+              onClick={() => onJump("blog")}
+              className="px-3 py-1.5 bg-blue-100 text-blue-700 text-xs rounded-lg hover:bg-blue-200 font-medium"
+            >
+              Posts
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <StatCard label="Total Blog Posts" value={summary.total_posts ?? 0} />
+          <StatCard label="Published" value={summary.published_posts ?? 0} />
+          <StatCard label="Drafts" value={summary.draft_posts ?? 0} />
+          <StatCard label="Site Audits Run" value={summary.total_audits ?? 0} />
+        </div>
       </div>
+
+      {/* Score trend */}
+      {trend.length > 1 && (
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <p className="text-sm font-semibold text-slate-700 mb-1">Audit Score Trend</p>
+          <div className="flex items-end gap-2 h-20">
+            {trend.map((t, i) => {
+              const h = Math.max(8, Math.round((t.score / 100) * 80));
+              const color = t.score >= 75 ? "bg-green-400" : t.score >= 50 ? "bg-yellow-400" : "bg-red-400";
+              return (
+                <div key={i} className="flex-1 flex flex-col items-center gap-1" title={`${t.url}\n${t.score}/100 · ${t.date?.slice(0, 10) ?? ""}`}>
+                  <span className="text-[9px] text-slate-400 font-medium">{t.score}</span>
+                  <div className={`w-full rounded-t-sm ${color}`} style={{ height: `${h}px` }} />
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-between mt-1">
+            <span className="text-[10px] text-slate-400">{trend[0]?.date?.slice(0, 10) ?? ""}</span>
+            <span className="text-[10px] text-slate-400">{trend[trend.length - 1]?.date?.slice(0, 10) ?? ""}</span>
+          </div>
+        </div>
+      )}
+
       {summary.avg_seo_score !== null && (
         <div className="bg-white rounded-xl border border-slate-200 p-5">
           <p className="text-sm font-semibold text-slate-700 mb-2">Average SEO Score (last 5 audits)</p>
           <div className="flex items-center gap-3">
             <div className="flex-1 bg-slate-100 rounded-full h-3">
-              <div
-                className="h-3 rounded-full bg-green-500 transition-all"
-                style={{ width: `${summary.avg_seo_score}%` }}
-              />
+              <div className="h-3 rounded-full bg-green-500 transition-all" style={{ width: `${summary.avg_seo_score}%` }} />
             </div>
             <span className="text-lg font-bold text-slate-800">{summary.avg_seo_score}/100</span>
           </div>
         </div>
       )}
+
       {summary.last_audit && (
         <div className="bg-white rounded-xl border border-slate-200 p-5">
           <p className="text-sm font-semibold text-slate-700 mb-3">Last Audit</p>
@@ -201,6 +332,114 @@ function OverviewTab({ summary, onJump }: { summary: SeoSummary | null; onJump: 
           </div>
         </div>
       )}
+
+      {/* SEO Memory — progressive improvement */}
+      {(loadingMem || memory) && (
+        <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-slate-700">🧠 SEO Memory — what worked this cycle</p>
+            {loadingMem && <span className="text-[10px] text-slate-400">Analysing history…</span>}
+            {memory && (
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                memory.score_trend === "improving" ? "bg-green-100 text-green-700"
+                : memory.score_trend === "declining" ? "bg-red-100 text-red-600"
+                : "bg-slate-100 text-slate-500"
+              }`}>
+                {memory.score_trend === "improving" ? "📈 Score improving"
+                  : memory.score_trend === "declining" ? "📉 Score declining"
+                  : "➡ Score stable"}
+              </span>
+            )}
+          </div>
+
+          {memory && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* What's working */}
+              <div className="rounded-xl bg-green-50 border border-green-100 p-3">
+                <p className="text-xs font-bold text-green-800 mb-2">✅ Working</p>
+                {memory.analysis.working.length === 0
+                  ? <p className="text-xs text-green-700 opacity-60">No data yet — publish posts and run audits to track progress.</p>
+                  : <ul className="space-y-1">
+                    {memory.analysis.working.map((w, i) => (
+                      <li key={i} className="text-xs text-green-800 flex gap-1.5"><span className="shrink-0 mt-0.5">•</span>{w}</li>
+                    ))}
+                  </ul>
+                }
+              </div>
+
+              {/* What's not working */}
+              <div className="rounded-xl bg-red-50 border border-red-100 p-3">
+                <p className="text-xs font-bold text-red-700 mb-2">⚠ Needs fixing</p>
+                {memory.analysis.not_working.length === 0
+                  ? <p className="text-xs text-red-700 opacity-60">Run an audit to find issues.</p>
+                  : <ul className="space-y-1">
+                    {memory.analysis.not_working.map((w, i) => (
+                      <li key={i} className="text-xs text-red-800 flex gap-1.5"><span className="shrink-0 mt-0.5">•</span>{w}</li>
+                    ))}
+                  </ul>
+                }
+              </div>
+
+              {/* Next month focus */}
+              <div className="rounded-xl bg-blue-50 border border-blue-100 p-3">
+                <p className="text-xs font-bold text-blue-800 mb-2">🎯 Next month</p>
+                {memory.analysis.next_month_focus.length === 0
+                  ? <p className="text-xs text-blue-700 opacity-60">Suggestions will appear once you have audit + content history.</p>
+                  : <ul className="space-y-1">
+                    {memory.analysis.next_month_focus.map((w, i) => (
+                      <li key={i} className="text-xs text-blue-800 flex gap-1.5"><span className="shrink-0 mt-0.5">→</span>{w}</li>
+                    ))}
+                  </ul>
+                }
+                {memory.analysis.next_month_focus.length > 0 && (
+                  <button
+                    onClick={() => onJump("calendar")}
+                    className="mt-3 text-[10px] px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold"
+                  >
+                    Plan next month →
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Published topics history */}
+          {memory && memory.published_topics.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-600 mb-2">📝 Published this cycle ({memory.published_count} posts)</p>
+              <div className="flex flex-wrap gap-1.5">
+                {memory.published_topics.map((t, i) => (
+                  <span key={i} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full border border-slate-200">
+                    {t.title.length > 45 ? t.title.slice(0, 45) + "…" : t.title}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Monthly improvement suggestions */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-slate-700">💡 Improvement suggestions for next month</p>
+          {loadingSugg && <span className="text-[10px] text-slate-400">Analysing…</span>}
+        </div>
+        {suggestions.length === 0 && !loadingSugg && (
+          <p className="text-xs text-slate-400">Run an audit and save keywords to get personalised suggestions.</p>
+        )}
+        <div className="space-y-2">
+          {suggestions.map((s, i) => (
+            <div key={i} className={`flex gap-3 items-start rounded-lg border p-3 ${priorityStyle(s.priority)}`}>
+              <span className="text-[10px] font-bold uppercase shrink-0 mt-0.5">{s.priority}</span>
+              <div>
+                <p className="text-xs font-semibold">{s.action}</p>
+                <p className="text-xs opacity-80 mt-0.5">{s.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -359,12 +598,16 @@ function AuditTab() {
 
 // ── Keywords Tab ──────────────────────────────────────────────────────────────
 
-function KeywordsTab({ profile, onJump }: { profile: SeoBusinessContext | null; onJump: (t: Tab) => void }) {
+function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusinessContext | null; onJump: (t: Tab) => void; onPushToCalendar?: (kws: SeoKeyword[]) => void }) {
   const [businessType, setBusinessType] = useState("");
   const [location, setLocation] = useState("");
   const [loading, setLoading] = useState(false);
   const [keywords, setKeywords] = useState<SeoKeyword[]>([]);
-  const [keywordSource, setKeywordSource] = useState<"dataforseo" | "ai" | null>(null);
+  const [keywordSource, setKeywordSource] = useState<"dataforseo" | "ai" | "saved" | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedMonth, setSavedMonth] = useState<string | null>(null);
+  const [savedKeywordSets, setSavedKeywordSets] = useState<{ month: string; count: number; business_type: string; location: string; saved_at: string }[]>([]);
+  const [loadingSavedSets, setLoadingSavedSets] = useState(false);
   const [err, setErr] = useState("");
 
   useEffect(() => {
@@ -373,9 +616,14 @@ function KeywordsTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
     setLocation((t) => (t.trim() ? t : profile.location));
   }, [profile]);
 
+  useEffect(() => {
+    loadSavedKeywordSets();
+  }, []);
+
   async function generate() {
     setLoading(true);
     setErr("");
+    setSavedMonth(null);
     try {
       const res = await seoApi.generateKeywords(businessType.trim(), location.trim());
       setKeywords(res.keywords as SeoKeyword[]);
@@ -384,6 +632,51 @@ function KeywordsTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
       setErr(e instanceof Error ? e.message : "Failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadSavedKeywordSets() {
+    setLoadingSavedSets(true);
+    try {
+      setSavedKeywordSets(await seoApi.listSavedKeywords());
+    } catch {
+      setSavedKeywordSets([]);
+    } finally {
+      setLoadingSavedSets(false);
+    }
+  }
+
+  async function saveForMonth() {
+    if (!keywords.length) return;
+    setSaving(true);
+    try {
+      const res = await seoApi.saveKeywords({
+        keywords: keywords as unknown as Record<string, unknown>[],
+        business_type: businessType.trim() || profile?.business_type || "",
+        location: location.trim() || profile?.location || "",
+      });
+      setSavedMonth(res.month);
+      await loadSavedKeywordSets();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadKeywordSet(month: string) {
+    try {
+      const res = await seoApi.getSavedKeywords(month);
+      const savedKeywords = res.keywords as SeoKeyword[];
+      setKeywords(savedKeywords);
+      setKeywordSource("saved");
+      setBusinessType(res.business_type || profile?.business_type || "");
+      setLocation(res.location || profile?.location || "");
+      setErr("");
+      onPushToCalendar?.(savedKeywords);
+      onJump("calendar");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not load saved keywords");
     }
   }
 
@@ -466,15 +759,48 @@ function KeywordsTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
       {keywords.length > 0 && (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <p className="text-sm font-semibold text-slate-700">{keywords.length} keyword ideas<HelpTooltip text="These are phrases people search on Google. Use them in your blog posts and website." /></p>
               <button
-                onClick={() => onJump("calendar")}
+                onClick={saveForMonth}
+                disabled={saving}
+                className="text-xs px-3 py-1 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-medium disabled:opacity-50"
+              >
+                {saving ? "Saving…" : savedMonth ? `✓ Saved ${savedMonth}` : "Save for this month"}
+              </button>
+              <button
+                onClick={() => { onPushToCalendar?.(keywords); onJump("calendar"); }}
                 className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium"
               >
-                Next: Create calendar →
+                Push to Calendar →
               </button>
             </div>
+          </div>
+
+          {savedKeywordSets.length > 0 && (
+            <div className="px-5 py-3 border-t border-slate-100 bg-slate-50">
+              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Saved keyword sets</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {savedKeywordSets.map(set => (
+                  <div key={set.month} className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-800">{set.month}</p>
+                      <p className="text-[11px] text-slate-500">{set.count} keywords · {set.business_type || "No industry"}{set.location ? ` · ${set.location}` : ""}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => loadKeywordSet(set.month)}
+                      className="text-[10px] px-3 py-1 bg-slate-800 text-white rounded-lg hover:bg-slate-900"
+                    >
+                      Load
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="px-5 py-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
             {keywordSource === "dataforseo" && (
               <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
                 Live data · DataForSEO
@@ -524,7 +850,7 @@ function KeywordsTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
 
 // ── Blog Tab ──────────────────────────────────────────────────────────────────
 
-function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
+function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null; prefillTopic?: CalendarWritePayload }) {
   const [tab, setTab] = useState<"write" | "posts">("posts");
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
@@ -537,10 +863,14 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
   const [businessName, setBusinessName] = useState("");
   const [blogLanguage, setBlogLanguage] = useState("English");
   const [includeFaq, setIncludeFaq] = useState(true);
+  const [imageUrl, setImageUrl] = useState("");
   const [generating, setGenerating] = useState(false);
   const [generated, setGenerated] = useState<BlogGenerateResult | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+
+  // Read modal
+  const [readPost, setReadPost] = useState<BlogPost | null>(null);
 
   // Publish modal
   const [publishPost, setPublishPost] = useState<BlogPost | null>(null);
@@ -552,6 +882,18 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
   const [shopifyToken, setShopifyToken] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState<string>("");
+
+  const [editingPost, setEditingPost] = useState<BlogPost | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editMetaTitle, setEditMetaTitle] = useState("");
+  const [editMetaDescription, setEditMetaDescription] = useState("");
+  const [editImageUrl, setEditImageUrl] = useState("");
+  const [editKeywords, setEditKeywords] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editingError, setEditingError] = useState("");
+  const [credsSaved, setCredsSaved] = useState(false);
 
   const loadPosts = useCallback(async () => {
     setLoadingPosts(true);
@@ -566,6 +908,31 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
     setBusinessName((n) => (n.trim() ? n : profile.business_name));
     if (profile.language?.trim()) setBlogLanguage(profile.language.trim());
   }, [profile]);
+
+  // Pre-fill from calendar "Write post" click
+  useEffect(() => {
+    if (!prefillTopic) return;
+    setTopic(prefillTopic.title);
+    setKeywords(prefillTopic.keywords.join(", "));
+    setTab("write");
+  }, [prefillTopic]);
+
+  // Load saved publish credentials when platform changes
+  useEffect(() => {
+    setCredsSaved(false);
+    seoApi.getPublishCredentials(publishPlatform).then(creds => {
+      if (!creds?.platform) return;
+      if (publishPlatform === "wordpress") {
+        if (creds.wp_url) setWpUrl(creds.wp_url);
+        if (creds.wp_username) setWpUser(creds.wp_username);
+        if (creds.wp_password) setWpPass(creds.wp_password);
+      } else if (publishPlatform === "shopify") {
+        if (creds.shopify_domain) setShopifyDomain(creds.shopify_domain);
+        if (creds.shopify_token) setShopifyToken(creds.shopify_token);
+      }
+      setCredsSaved(true);
+    }).catch(() => {});
+  }, [publishPlatform]);
 
   async function generate() {
     if (!topic.trim()) return;
@@ -597,6 +964,8 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
         content: generated.content,
         meta_title: generated.meta_title,
         meta_description: generated.meta_description,
+        image_url: imageUrl || undefined,
+        keywords: generated.keywords || [],
         tags: generated.tags,
         status: "draft",
         platform: "internal",
@@ -604,6 +973,7 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
       await loadPosts();
       setTab("posts");
       setGenerated(null);
+      setImageUrl("");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -619,10 +989,64 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
     } catch { /* ignore */ }
   }
 
+  function openEditModal(post: BlogPost) {
+    setEditingPost(post);
+    setEditTitle(post.title);
+    setEditContent(post.content);
+    setEditMetaTitle(post.meta_title);
+    setEditMetaDescription(post.meta_description);
+    setEditImageUrl(post.image_url || "");
+    setEditKeywords((post.keywords ?? []).join(", "));
+    setEditTags((post.tags ?? []).join(", "));
+    setEditingError("");
+  }
+
+  function closeEditModal() {
+    setEditingPost(null);
+    setEditImageUrl("");
+    setEditingError("");
+  }
+
+  async function savePostEdits() {
+    if (!editingPost) return;
+    setEditing(true);
+    setEditingError("");
+    try {
+      const updated = await seoApi.updatePost(editingPost.id, {
+        title: editTitle,
+        content: editContent,
+        meta_title: editMetaTitle,
+        meta_description: editMetaDescription,
+        image_url: editImageUrl || undefined,
+        keywords: editKeywords.split(",").map(k => k.trim()).filter(Boolean),
+        tags: editTags.split(",").map(t => t.trim()).filter(Boolean),
+      });
+      setPosts(current => current.map(p => p.id === updated.id ? updated : p));
+      if (readPost?.id === updated.id) setReadPost(updated);
+      if (publishPost?.id === updated.id) setPublishPost(updated);
+      setEditingPost(updated);
+      closeEditModal();
+    } catch (e) {
+      setEditingError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setEditing(false);
+    }
+  }
+
   async function doPublish() {
     if (!publishPost) return;
     setPublishing(true); setPublishResult("");
     try {
+      // Persist credentials so user doesn't re-enter next time
+      seoApi.savePublishCredentials({
+        platform: publishPlatform,
+        wp_url: wpUrl || undefined,
+        wp_username: wpUser || undefined,
+        wp_password: wpPass || undefined,
+        shopify_domain: shopifyDomain || undefined,
+        shopify_token: shopifyToken || undefined,
+      }).catch(() => {});
+
       const res = await seoApi.publishPost({
         post_id: publishPost.id,
         platform: publishPlatform,
@@ -780,6 +1204,17 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
                   </select>
                 </div>
               </div>
+              <div className="space-y-3">
+                <label className="block text-xs text-slate-500 font-medium">Optional featured image URL</label>
+                <input
+                  type="url"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="https://..."
+                  value={imageUrl}
+                  onChange={e => setImageUrl(e.target.value)}
+                />
+                <p className="text-xs text-slate-400">Paste a hero image URL for a premium blog preview.</p>
+              </div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -818,6 +1253,11 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
                 </button>
               </div>
 
+              {imageUrl && (
+                <div className="rounded-3xl overflow-hidden border border-slate-200 bg-slate-50 mb-3">
+                  <img src={imageUrl} alt={generated.title} className="w-full h-48 object-cover" />
+                </div>
+              )}
               {generated.meta_title && (
                 <div className="bg-slate-50 rounded-lg p-3 space-y-1">
                   <p className="text-xs font-semibold text-slate-600">SEO Meta</p>
@@ -827,7 +1267,9 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
               )}
 
               <div className="bg-white border border-slate-200 rounded-lg p-4 max-h-96 overflow-y-auto">
-                <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">{generated.content}</pre>
+                <div className="prose prose-sm prose-slate max-w-none prose-headings:font-semibold prose-p:text-xs prose-li:text-xs prose-p:leading-relaxed">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{generated.content}</ReactMarkdown>
+                </div>
               </div>
             </div>
           )}
@@ -848,10 +1290,23 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
           ) : (
             <div className="divide-y divide-slate-50">
               {posts.map(post => (
-                <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-800 truncate">{post.title}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{post.created_at ? new Date(post.created_at).toLocaleDateString() : ""}</p>
+                <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3 hover:bg-slate-50/50 transition-colors">
+                  <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setReadPost(post)}>
+                    <p className="text-sm font-semibold text-slate-800 hover:text-emerald-700 transition-colors">{post.title}</p>
+                    {post.image_url && (
+                      <img src={post.image_url} alt={post.title} className="w-full h-20 object-cover rounded-xl mt-3 border border-slate-200" />
+                    )}
+                    {(post.keywords ?? []).length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1">
+                        {(post.keywords ?? []).slice(0, 4).map((kw, index) => (
+                          <span key={`${post.id}-kw-${index}`} className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-xs text-slate-400 mt-2">
+                      {post.created_at ? new Date(post.created_at).toLocaleDateString() : ""}
+                      {(post as BlogPost & { word_count?: number }).word_count ? ` · ${(post as BlogPost & { word_count?: number }).word_count} words` : ""}
+                    </p>
                     {(post.tags ?? []).length > 0 && (
                       <div className="flex gap-1 mt-1 flex-wrap">
                         {(post.tags ?? []).slice(0, 3).map(t => (
@@ -859,9 +1314,16 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
                         ))}
                       </div>
                     )}
+                    <p className="text-[10px] text-slate-300 mt-1">Click to read →</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusColor(post.status ?? "")}`}>{post.status}</span>
+                    <button
+                      onClick={() => openEditModal(post)}
+                      className="text-xs px-2 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
+                    >
+                      Edit
+                    </button>
                     {post.status !== "published" && (
                       <button
                         onClick={() => { setPublishPost(post); setPublishResult(""); }}
@@ -884,9 +1346,213 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
         </div>
       )}
 
+      {/* Read / Preview Modal */}
+      {readPost && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-start justify-end p-0 sm:p-4">
+          <div className="bg-white w-full sm:w-[680px] h-full sm:h-[calc(100vh-2rem)] sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3 shrink-0">
+              <div className="min-w-0">
+                <p className="text-base font-bold text-slate-800 leading-snug">{readPost.title}</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {readPost.created_at ? new Date(readPost.created_at).toLocaleDateString() : ""}
+                  {(readPost as BlogPost & { word_count?: number }).word_count
+                    ? ` · ${(readPost as BlogPost & { word_count?: number }).word_count} words`
+                    : ""}
+                  {" · "}
+                  <span className={`font-medium ${readPost.status === "published" ? "text-green-600" : "text-slate-500"}`}>{readPost.status}</span>
+                </p>
+              </div>
+              <button
+                onClick={() => setReadPost(null)}
+                className="text-slate-400 hover:text-slate-700 text-2xl leading-none shrink-0 mt-0.5"
+              >×</button>
+            </div>
+
+            {readPost.image_url && (
+              <div className="w-full overflow-hidden bg-slate-100 border-b border-slate-200">
+                <img src={readPost.image_url} alt={readPost.title} className="w-full h-56 object-cover" />
+              </div>
+            )}
+
+            {/* SEO meta bar */}
+            {(readPost.meta_title || readPost.meta_description) && (
+              <div className="px-5 py-3 bg-slate-50 border-b border-slate-100 shrink-0 space-y-0.5">
+                {readPost.meta_title && (
+                  <p className="text-xs text-slate-600"><span className="font-semibold">Meta title:</span> {readPost.meta_title}</p>
+                )}
+                {readPost.meta_description && (
+                  <p className="text-xs text-slate-500">{readPost.meta_description}</p>
+                )}
+                {(readPost.tags ?? []).length > 0 && (
+                  <div className="flex gap-1 flex-wrap pt-1">
+                    {(readPost.tags ?? []).map(t => (
+                      <span key={t} className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded border border-emerald-100">{t}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Body */}
+            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 space-y-2">
+              {(readPost.keywords ?? []).length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Keywords:</span>
+                  {(readPost.keywords ?? []).map((kw, idx) => (
+                    <span key={`${readPost.id}-preview-keyword-${idx}`} className="text-[11px] px-2 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
+                  ))}
+                </div>
+              )}
+              {readPost.calendar_week != null && (
+                <p className="text-[10px] text-slate-500 uppercase tracking-wide">Calendar post · Week {readPost.calendar_week}{readPost.calendar_day ? ` · ${readPost.calendar_day}` : ""}</p>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="prose prose-sm prose-slate max-w-none prose-headings:font-semibold prose-h1:text-xl prose-h2:text-base prose-h2:mt-6 prose-p:leading-relaxed prose-li:text-sm prose-p:text-sm">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{readPost.content}</ReactMarkdown>
+              </div>
+            </div>
+
+            {/* Footer actions */}
+            <div className="px-5 py-3 border-t border-slate-100 flex items-center gap-2 shrink-0 bg-white">
+              {readPost.status !== "published" && (
+                <button
+                  onClick={() => { setPublishPost(readPost); setPublishResult(""); setReadPost(null); }}
+                  className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg font-medium hover:bg-emerald-700"
+                >
+                  Publish
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setTopic(readPost.title);
+                  setKeywords((readPost.tags ?? []).join(", "));
+                  setTab("write");
+                  setReadPost(null);
+                }}
+                className="px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg font-medium hover:bg-slate-200"
+              >
+                Rewrite
+              </button>
+              <button
+                onClick={() => { openEditModal(readPost); setReadPost(null); }}
+                className="px-3 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg font-medium hover:bg-slate-200"
+              >
+                Edit Post
+              </button>
+              <button
+                onClick={async () => { await deletePost(readPost.id); setReadPost(null); }}
+                className="px-3 py-2 bg-red-50 text-red-500 text-sm rounded-lg font-medium hover:bg-red-100 ml-auto"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Post Modal */}
+      {editingPost && (
+        <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-lg font-bold text-slate-800">Edit Blog Post</p>
+                <p className="text-sm text-slate-500">Save changes to the generated blog post content and SEO metadata.</p>
+              </div>
+              <button onClick={closeEditModal} className="text-slate-400 hover:text-slate-700 text-xl">×</button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Title</label>
+                <input
+                  value={editTitle}
+                  onChange={e => setEditTitle(e.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">SEO meta title</label>
+                <input
+                  value={editMetaTitle}
+                  onChange={e => setEditMetaTitle(e.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Meta description</label>
+                <textarea
+                  value={editMetaDescription}
+                  onChange={e => setEditMetaDescription(e.target.value)}
+                  rows={3}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Featured image URL</label>
+                <input
+                  type="url"
+                  value={editImageUrl}
+                  onChange={e => setEditImageUrl(e.target.value)}
+                  placeholder="https://..."
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <p className="text-xs text-slate-400 mt-1">Optional hero image shown in the premium blog preview.</p>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Keywords (comma-separated)</label>
+                <input
+                  value={editKeywords}
+                  onChange={e => setEditKeywords(e.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <p className="text-xs text-slate-400 mt-1">Add the target keywords that this post should rank for.</p>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Tags (comma-separated)</label>
+                <input
+                  value={editTags}
+                  onChange={e => setEditTags(e.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Content</label>
+                <textarea
+                  value={editContent}
+                  onChange={e => setEditContent(e.target.value)}
+                  rows={12}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                />
+              </div>
+            </div>
+
+            {editingError && <p className="text-sm text-red-600">{editingError}</p>}
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={savePostEdits}
+                disabled={editing}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {editing ? "Saving…" : "Save changes"}
+              </button>
+              <button
+                onClick={closeEditModal}
+                className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Publish Modal */}
       {publishPost && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-base font-bold text-slate-800">Publish Post</p>
@@ -908,6 +1574,7 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
 
             {publishPlatform === "wordpress" && (
               <div className="space-y-2">
+                {credsSaved && <p className="text-[10px] text-emerald-600 font-medium">✓ Credentials loaded from last time</p>}
                 <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="WordPress URL (e.g. https://yoursite.com)" value={wpUrl} onChange={e => setWpUrl(e.target.value)} />
                 <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Username" value={wpUser} onChange={e => setWpUser(e.target.value)} />
                 <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Application Password" type="password" value={wpPass} onChange={e => setWpPass(e.target.value)} />
@@ -917,6 +1584,7 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
 
             {publishPlatform === "shopify" && (
               <div className="space-y-2">
+                {credsSaved && <p className="text-[10px] text-emerald-600 font-medium">✓ Credentials loaded from last time</p>}
                 <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Shopify domain (e.g. mystore.myshopify.com)" value={shopifyDomain} onChange={e => setShopifyDomain(e.target.value)} />
                 <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Access Token" type="password" value={shopifyToken} onChange={e => setShopifyToken(e.target.value)} />
               </div>
@@ -944,7 +1612,14 @@ function BlogTab({ profile }: { profile: SeoBusinessContext | null }) {
 
 // ── Content Calendar Tab ──────────────────────────────────────────────────────
 
-function CalendarTab({ profile, onJump }: { profile: SeoBusinessContext | null; onJump: (t: Tab) => void }) {
+type DraftStatus = { [title: string]: "generating" | "done" | "error" };
+
+function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
+  profile: SeoBusinessContext | null;
+  onJump: (t: Tab) => void;
+  prefillKeywords?: SeoKeyword[];
+  onWritePost?: (p: CalendarWritePayload) => void;
+}) {
   const [businessType, setBusinessType] = useState("");
   const [location, setLocation] = useState("");
   const [postsPerWeek, setPostsPerWeek] = useState(2);
@@ -953,14 +1628,50 @@ function CalendarTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
   const [calendar, setCalendar] = useState<ContentCalendarItem[]>([]);
   const [err, setErr] = useState("");
 
+  // Bulk draft generation state
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>({});
+  const [generatingDrafts, setGeneratingDrafts] = useState(false);
+  const [draftsDone, setDraftsDone] = useState(0);
+  const [draftsTotal, setDraftsTotal] = useState(0);
+  const [generationMode, setGenerationMode] = useState<"all" | "one-by-one">("all");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = window.localStorage.getItem("seo-calendar-v1");
+      if (saved) setCalendar(JSON.parse(saved));
+    } catch {
+      // ignore invalid local data
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("seo-calendar-v1", JSON.stringify(calendar));
+    } catch {
+      // ignore storage write failures
+    }
+  }, [calendar]);
+
   useEffect(() => {
     if (!profile) return;
     setBusinessType((t) => (t.trim() ? t : profile.business_type));
     setLocation((t) => (t.trim() ? t : profile.location));
   }, [profile]);
 
+  // Auto-generate calendar when keywords are pushed from Keywords tab
+  const prefillRef = useRef<SeoKeyword[] | undefined>(undefined);
+  useEffect(() => {
+    if (prefillKeywords && prefillKeywords !== prefillRef.current && calendar.length === 0) {
+      prefillRef.current = prefillKeywords;
+      void generate();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillKeywords]);
+
   async function generate() {
-    setLoading(true); setErr("");
+    setLoading(true); setErr(""); setDraftStatus({});
     try {
       const res = await seoApi.contentCalendar(businessType.trim(), postsPerWeek, weeks, location.trim());
       setCalendar(res.calendar);
@@ -969,6 +1680,81 @@ function CalendarTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
     } finally {
       setLoading(false);
     }
+  }
+
+  // Generate all drafts for a subset (week) or all items at once
+  function getPendingItems(items: ContentCalendarItem[]) {
+    return items.filter(it => draftStatus[it.title] !== "done" && draftStatus[it.title] !== "generating");
+  }
+
+  async function generateDrafts(items: ContentCalendarItem[], mode: "all" | "one-by-one" = generationMode) {
+    if (!items.length || generatingDrafts) return;
+    const targets = mode === "one-by-one" ? getPendingItems(items).slice(0, 1) : items;
+    if (!targets.length) return;
+
+    setGeneratingDrafts(true);
+    setDraftsTotal(targets.length);
+    setDraftsDone(0);
+
+    // Mark all selected targets as generating
+    const init: DraftStatus = {};
+    targets.forEach(it => { init[it.title] = "generating"; });
+    setDraftStatus(prev => ({ ...prev, ...init }));
+
+    if (mode === "one-by-one") {
+      const item = targets[0];
+      try {
+        const res = await seoApi.generateCalendarDrafts({
+          items: [{
+            title: item.title,
+            keywords: item.keywords ?? [],
+            topic: String(item.topic ?? ""),
+            week: item.week,
+            day: String(item.day ?? ""),
+          }],
+          tone: "professional",
+          length: "medium",
+        });
+        const status = res.drafts?.[0]?.status === "error" ? "error" : "done";
+        setDraftStatus(prev => ({ ...prev, [item.title]: status }));
+      } catch {
+        setDraftStatus(prev => ({ ...prev, [item.title]: "error" }));
+      } finally {
+        setDraftsDone(1);
+      }
+    } else {
+      // Send in batches of 5 to avoid timeout
+      const BATCH = 5;
+      for (let i = 0; i < targets.length; i += BATCH) {
+        const batch = targets.slice(i, i + BATCH);
+        try {
+          const res = await seoApi.generateCalendarDrafts({
+            items: batch.map(it => ({
+              title: it.title,
+              keywords: it.keywords ?? [],
+              topic: String(it.topic ?? ""),
+              week: it.week,
+              day: String(it.day ?? ""),
+            })),
+            tone: "professional",
+            length: "medium",
+          });
+          const updates: DraftStatus = {};
+          res.drafts.forEach(d => {
+            updates[d.title] = d.status === "error" ? "error" : "done";
+          });
+          setDraftStatus(prev => ({ ...prev, ...updates }));
+          setDraftsDone(prev => prev + batch.length);
+        } catch {
+          const updates: DraftStatus = {};
+          batch.forEach(it => { updates[it.title] = "error"; });
+          setDraftStatus(prev => ({ ...prev, ...updates }));
+          setDraftsDone(prev => prev + batch.length);
+        }
+      }
+    }
+
+    setGeneratingDrafts(false);
   }
 
   const trafficColor = (t: string) =>
@@ -981,13 +1767,19 @@ function CalendarTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
     Boolean(profile?.business_type?.trim()) ||
     Boolean(profile?.location?.trim());
 
+  const allDone = calendar.length > 0 &&
+    calendar.every(it => draftStatus[it.title] === "done");
+
+  const anyGenerating = Object.values(draftStatus).some(s => s === "generating");
+
   return (
     <div className="space-y-5">
+      {/* Control card */}
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
         <div>
           <p className="text-sm font-semibold text-slate-800">Your content calendar</p>
           <p className="text-xs text-slate-500 mt-1">
-            Ideas tuned to your business — powered by your Settings profile. Adjust cadence below if you like.
+            Step 1 — generate the plan. Step 2 — write all posts in one click. The AI already knows what to write.
           </p>
           {usingProfile && (
             <p className="text-xs text-slate-600 mt-2 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
@@ -999,14 +1791,74 @@ function CalendarTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={generate}
-          disabled={loading}
-          className="w-full sm:w-auto min-h-[44px] px-6 py-3 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-50 shadow-sm"
-        >
-          {loading ? "Building calendar…" : "Generate my calendar"}
-        </button>
+        <div className="flex flex-wrap gap-3 items-center">
+          <button
+            type="button"
+            onClick={generate}
+            disabled={loading || generatingDrafts}
+            className="min-h-[44px] px-6 py-3 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-50 shadow-sm"
+          >
+            {loading ? "Building calendar…" : calendar.length > 0 ? "Regenerate calendar" : "Generate my calendar"}
+          </button>
+
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span>Generation mode:</span>
+            <button
+              type="button"
+              onClick={() => setGenerationMode("all")}
+              className={`px-3 py-2 rounded-xl border ${generationMode === "all" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200"}`}
+            >
+              All at once
+            </button>
+            <button
+              type="button"
+              onClick={() => setGenerationMode("one-by-one")}
+              className={`px-3 py-2 rounded-xl border ${generationMode === "one-by-one" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200"}`}
+            >
+              One by one
+            </button>
+          </div>
+
+          {calendar.length > 0 && !allDone && (
+            <button
+              type="button"
+              onClick={() => generateDrafts(calendar, generationMode)}
+              disabled={generatingDrafts}
+              className="min-h-[44px] px-6 py-3 bg-slate-800 text-white text-sm font-semibold rounded-xl hover:bg-slate-900 disabled:opacity-50 shadow-sm flex items-center gap-2"
+            >
+              {generatingDrafts ? (
+                <>
+                  <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                  Writing {draftsDone}/{draftsTotal} posts…
+                </>
+              ) : generationMode === "one-by-one" ? "✨ Write one by one" : "✨ Write all posts"}
+            </button>
+          )}
+
+          {allDone && (
+            <button
+              onClick={() => onJump("blog")}
+              className="min-h-[44px] px-6 py-3 bg-green-600 text-white text-sm font-semibold rounded-xl hover:bg-green-700 shadow-sm"
+            >
+              📖 Review & publish drafts →
+            </button>
+          )}
+        </div>
+
+        {generatingDrafts && (
+          <div className="space-y-1.5">
+            <div className="flex justify-between text-xs text-slate-500">
+              <span>Generating blog posts…</span>
+              <span>{draftsDone}/{draftsTotal}</span>
+            </div>
+            <div className="w-full bg-slate-100 rounded-full h-2">
+              <div
+                className="bg-emerald-500 h-2 rounded-full transition-all duration-500"
+                style={{ width: `${draftsTotal > 0 ? (draftsDone / draftsTotal) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         <details className="group rounded-xl border border-slate-100 bg-slate-50/50">
           <summary className="cursor-pointer text-xs font-semibold text-slate-600 px-3 py-2.5 list-none flex items-center justify-between [&::-webkit-details-marker]:hidden">
@@ -1055,55 +1907,111 @@ function CalendarTab({ profile, onJump }: { profile: SeoBusinessContext | null; 
           </div>
         </details>
 
-        <p className="text-[11px] text-slate-400">Leave industry blank to use your saved type from Settings.</p>
+        <p className="text-[11px] text-slate-400">Leave fields blank to use your saved Settings profile.</p>
         {err && <p className="text-red-500 text-xs">{err}</p>}
       </div>
 
+      {/* Calendar weeks */}
       {calendar.length > 0 && (
         <div className="space-y-4">
-          <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-start justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold text-green-900">✅ Calendar created!</p>
-              <p className="text-xs text-green-700 mt-0.5">Now write blog posts for these topics.</p>
-            </div>
-            <button
-              onClick={() => onJump("blog")}
-              className="text-xs px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium shrink-0"
-            >
-              Next: Write posts →
-            </button>
-          </div>
-          {weeks_grouped.map(week => (
-            <div key={week} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
-                <p className="text-sm font-semibold text-slate-700">Week {week}</p>
-              </div>
-              <div className="divide-y divide-slate-50">
-                {calendar.filter(c => c.week === week).map((item, i) => (
-                  <div key={i} className="px-5 py-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="text-xs text-slate-400 font-medium">{item.day}</span>
-                          <span className={`text-xs font-medium capitalize ${trafficColor(String(item.estimated_traffic ?? ""))}`}>
-                            {item.estimated_traffic as string} traffic
-                          </span>
-                        </div>
-                        <p className="text-sm font-semibold text-slate-800">{item.title}</p>
-                        <p className="text-xs text-slate-400 mt-0.5">{item.topic as string}</p>
-                        <div className="flex gap-1 mt-1 flex-wrap">
-                          {(item.keywords ?? []).map(kw => (
-                            <span key={kw} className="text-[10px] bg-green-50 text-green-700 px-1.5 py-0.5 rounded">{kw}</span>
-                          ))}
+          {weeks_grouped.map(week => {
+            const weekItems = calendar.filter(c => c.week === week);
+            const weekDone = weekItems.every(it => draftStatus[it.title] === "done");
+            const weekGenerating = weekItems.some(it => draftStatus[it.title] === "generating");
+
+            return (
+              <div key={week} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                {/* Week header */}
+                <div className="px-5 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-700">Week {week}</p>
+                    {weekDone && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">All drafted ✓</span>}
+                    {weekGenerating && <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-semibold animate-pulse">Writing…</span>}
+                  </div>
+                  {!weekDone && !anyGenerating && (
+                    <button
+                      type="button"
+                      onClick={() => generateDrafts(weekItems, generationMode)}
+                      className="text-[10px] px-2.5 py-1 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-semibold whitespace-nowrap"
+                    >
+                      {generationMode === "one-by-one" ? `Write week ${week} one-by-one` : `Write week ${week}`}
+                    </button>
+                  )}
+                  {weekDone && !weekGenerating && (
+                    <button
+                      onClick={() => onJump("blog")}
+                      className="text-[10px] px-2.5 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold whitespace-nowrap"
+                    >
+                      Review drafts →
+                    </button>
+                  )}
+                </div>
+
+                {/* Calendar items */}
+                <div className="divide-y divide-slate-50">
+                  {weekItems.map((item, i) => {
+                    const status = draftStatus[item.title];
+                    return (
+                      <div key={i} className={`px-5 py-3 transition-colors ${status === "done" ? "bg-green-50/40" : status === "error" ? "bg-red-50/30" : ""}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                              <span className="text-xs text-slate-400 font-medium">{item.day}</span>
+                              <span className={`text-xs font-medium capitalize ${trafficColor(String(item.estimated_traffic ?? ""))}`}>
+                                {item.estimated_traffic as string} traffic
+                              </span>
+                              {status === "done" && <span className="text-[10px] text-green-600 font-semibold">✓ Draft ready</span>}
+                              {status === "generating" && <span className="text-[10px] text-blue-500 font-semibold animate-pulse">Writing…</span>}
+                              {status === "error" && <span className="text-[10px] text-red-500 font-semibold">⚠ Failed</span>}
+                            </div>
+                            <p className="text-sm font-semibold text-slate-800">{item.title}</p>
+                            <p className="text-xs text-slate-400 mt-0.5">{item.topic as string}</p>
+                            <div className="flex gap-1 mt-1 flex-wrap">
+                              {(item.keywords ?? []).map(kw => (
+                                <span key={kw} className="text-[10px] bg-green-50 text-green-700 px-1.5 py-0.5 rounded">{kw}</span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col items-end gap-1.5 shrink-0">
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium">{item.intent as string}</span>
+                            {/* If no draft yet — manual write button */}
+                            {!status && onWritePost && (
+                              <button
+                                type="button"
+                                onClick={() => onWritePost({ title: item.title, keywords: item.keywords ?? [] })}
+                                className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 font-medium whitespace-nowrap"
+                              >
+                                Edit & write
+                              </button>
+                            )}
+                            {status === "done" && (
+                              <button
+                                type="button"
+                                onClick={() => onJump("blog")}
+                                className="text-[10px] px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium whitespace-nowrap"
+                              >
+                                View draft →
+                              </button>
+                            )}
+                            {status === "error" && (
+                              <button
+                                type="button"
+                                onClick={() => generateDrafts([item])}
+                                className="text-[10px] px-2 py-1 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 font-medium whitespace-nowrap"
+                              >
+                                Retry
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium shrink-0">{item.intent as string}</span>
-                    </div>
-                  </div>
-                ))}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -1133,11 +2041,55 @@ function AgentChatTab({ profile }: { profile: SeoBusinessContext | null }) {
   const [convId, setConvId] = useState<string | undefined>();
   const [conversations, setConversations] = useState<{ id: string; title: string }[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [businessData, setBusinessData] = useState<any>(null);
+  const [performanceData, setPerformanceData] = useState<any>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     seoAgentApi.listConversations().then(setConversations).catch(() => {});
+    // Load comprehensive business data for intelligent coaching
+    loadBusinessContext();
   }, []);
+
+  async function loadBusinessContext() {
+    try {
+      // Load all relevant data for intelligent coaching
+      const [summary, memory, posts, keywords] = await Promise.all([
+        seoApi.summary(),
+        seoApi.getSeoMemory().catch(() => null),
+        seoApi.listPosts().catch(() => []),
+        seoApi.listSavedKeywords().catch(() => [])
+      ]);
+
+      setBusinessData({
+        profile,
+        summary,
+        memory,
+        posts: posts.slice(0, 10), // Recent posts
+        keywords: keywords.slice(0, 5), // Recent keywords
+        lastUpdated: new Date().toISOString()
+      });
+
+      // Calculate performance insights
+      const insights = {
+        contentVelocity: posts.filter(p => {
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+          return new Date(p.created_at || '') > thirtyDaysAgo;
+        }).length,
+        avgSeoScore: summary?.last_audit?.score || 0,
+        topPerformingContent: posts
+          .filter(p => p.status === 'published')
+          .sort((a, b) => (b as any).word_count - (a as any).word_count)
+          .slice(0, 3),
+        keywordGaps: memory?.analysis?.not_working || [],
+        improvementOpportunities: memory?.analysis?.next_month_focus || []
+      };
+
+      setPerformanceData(insights);
+    } catch (error) {
+      console.error("Failed to load business context:", error);
+    }
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1153,6 +2105,8 @@ function AgentChatTab({ profile }: { profile: SeoBusinessContext | null }) {
 
     try {
       const history = messages.map(m => ({ role: m.role, content: m.content }));
+      
+      // Enhanced context for intelligent coaching (passed via system prompt in backend)
       const res = await seoAgentApi.chat(msg, convId, history);
       setConvId(res.conversation_id);
       setMessages(prev => [...prev, {
@@ -1170,6 +2124,18 @@ function AgentChatTab({ profile }: { profile: SeoBusinessContext | null }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  function detectIntent(message: string): string {
+    const lower = message.toLowerCase();
+    if (lower.includes('keyword') || lower.includes('research')) return 'keyword_research';
+    if (lower.includes('audit') || lower.includes('check')) return 'seo_audit';
+    if (lower.includes('blog') || lower.includes('content') || lower.includes('write')) return 'content_creation';
+    if (lower.includes('rank') || lower.includes('position')) return 'ranking_analysis';
+    if (lower.includes('compete') || lower.includes('competitor')) return 'competitor_analysis';
+    if (lower.includes('improve') || lower.includes('better') || lower.includes('fix')) return 'improvement_strategy';
+    if (lower.includes('plan') || lower.includes('strategy') || lower.includes('calendar')) return 'content_planning';
+    return 'general_advice';
   }
 
   async function loadConversation(id: string) {
@@ -1268,23 +2234,54 @@ function AgentChatTab({ profile }: { profile: SeoBusinessContext | null }) {
             {isEmpty && (
               <div className="flex flex-col items-center justify-center h-full gap-5 text-center pb-10">
                 <div className="space-y-1">
-                  <p className="text-slate-700 font-semibold text-base">Hi! I'm your SEO Coach.</p>
+                  <p className="text-slate-700 font-semibold text-base">Hi! I'm your Intelligent SEO Coach.</p>
                   <p className="text-slate-400 text-sm max-w-xs mx-auto">
                     {profile?.business_name?.trim()
-                      ? `We’ll keep ideas practical for ${profile.business_name.trim()}. Tap a prompt or ask your own question.`
+                      ? `I know everything about ${profile.business_name.trim()}. Let me help you grow your SEO.`
                       : "I'll help your business show up on Google — step by step, in plain English. No SEO knowledge needed."}
                   </p>
                 </div>
-                <div className="flex flex-col gap-2 w-full max-w-sm">
-                  {QUICK_PROMPTS.map(p => (
+
+                {/* Business Context Summary */}
+                {businessData && (
+                  <div className="w-full max-w-sm p-4 bg-emerald-50 border border-emerald-100 rounded-lg">
+                    <p className="text-xs font-medium text-emerald-800 mb-2">📊 I know about your business:</p>
+                    <div className="text-xs text-emerald-700 space-y-1 text-left">
+                      <p>📍 {businessData.profile?.business_name || 'Your business'} in {businessData.profile?.location || 'your area'}</p>
+                      <p>🎯 {businessData.posts?.length || 0} blog posts published</p>
+                      <p>📈 SEO Score: {businessData.summary?.last_audit?.score || 'N/A'}/100</p>
+                      <p>📝 {performanceData?.contentVelocity || 0} posts this month</p>
+                      {performanceData?.keywordGaps?.length > 0 && (
+                        <p>⚠️ {performanceData.keywordGaps.length} areas to improve</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Intelligent Suggestions */}
+                <div className="flex flex-col gap-3 w-full max-w-sm">
+                  {performanceData?.improvementOpportunities?.slice(0, 2).map((opportunity: string, i: number) => (
                     <button
-                      key={p}
-                      onClick={() => send(p)}
-                      className="text-sm text-left px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-800 transition-colors"
+                      key={i}
+                      onClick={() => send(`How can I ${opportunity.toLowerCase()}?`)}
+                      className="text-sm text-left px-4 py-2.5 rounded-xl bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition-colors border border-emerald-200"
                     >
-                      {p}
+                      🎯 {opportunity}
                     </button>
                   ))}
+                  
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-slate-500 text-left">💡 Or ask me anything:</p>
+                    {QUICK_PROMPTS.map(p => (
+                      <button
+                        key={p}
+                        onClick={() => send(p)}
+                        className="text-sm text-left px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-800 transition-colors w-full"
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
@@ -1365,6 +2362,9 @@ export default function SeoPage() {
   const [showQuickStart, setShowQuickStart] = useState(true);
   const [summary, setSummary] = useState<SeoSummary | null>(null);
   const [seoProfile, setSeoProfile] = useState<SeoBusinessContext | null>(null);
+  // Cross-tab state: keywords pushed to calendar, calendar item to write
+  const [pushedKeywords, setPushedKeywords] = useState<SeoKeyword[] | undefined>(undefined);
+  const [calendarWritePayload, setCalendarWritePayload] = useState<CalendarWritePayload | undefined>(undefined);
 
   useEffect(() => {
     seoApi.businessContext().then(setSeoProfile).catch(() => {});
@@ -1373,6 +2373,15 @@ export default function SeoPage() {
   useEffect(() => {
     seoApi.summary().then(setSummary).catch(() => {});
   }, [tab]);
+
+  function handlePushToCalendar(kws: SeoKeyword[]) {
+    setPushedKeywords(kws);
+  }
+
+  function handleWritePost(payload: CalendarWritePayload) {
+    setCalendarWritePayload(payload);
+    setTab("blog");
+  }
 
   const tabs: { id: Tab; label: string; desc: string }[] = [
     { id: "agent", label: "🤖 Coach", desc: "Ask anything" },
@@ -1461,11 +2470,16 @@ export default function SeoPage() {
       </nav>
 
       {tab === "agent" && <AgentChatTab profile={seoProfile} />}
-      {tab === "overview" && <OverviewTab summary={summary} onJump={setTab} />}
+      {tab === "overview" && <OverviewTab summary={summary} onJump={setTab} profile={seoProfile} />}
       {tab === "audit" && <AuditTab />}
-      {tab === "keywords" && <KeywordsTab profile={seoProfile} onJump={setTab} />}
-      {tab === "blog" && <BlogTab profile={seoProfile} />}
-      {tab === "calendar" && <CalendarTab profile={seoProfile} onJump={setTab} />}
+      {tab === "keywords" && <KeywordsTab profile={seoProfile} onJump={setTab} onPushToCalendar={handlePushToCalendar} />}
+      {tab === "blog" && <BlogTab profile={seoProfile} prefillTopic={calendarWritePayload} />}
+      {tab === "calendar" && <CalendarTab profile={seoProfile} onJump={setTab} prefillKeywords={pushedKeywords} onWritePost={handleWritePost} />}
+      {tab === "roi" && <ROITracking />}
+      {tab === "scheduler" && <AutoScheduler />}
+      {tab === "analytics" && <AnalyticsIntegration />}
+      {tab === "local" && <LocalSEO />}
+      {tab === "social" && <SocialIntegration />}
     </div>
   );
 }
