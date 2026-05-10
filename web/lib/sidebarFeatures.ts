@@ -102,8 +102,8 @@ export function mergeSidebarFeatures(raw: unknown): Record<string, boolean> {
 }
 
 export function isSidebarHrefEnabled(href: string, features: Record<string, boolean>): boolean {
-  if (href === "/dashboard/collaboration") {
-    return features.nav_team === true && features.nav_collaboration === true;
+  if (href === "/dashboard/team" || href === "/dashboard/collaboration") {
+    return true;
   }
   const key = HREF_TO_FEATURE_KEY[href];
   if (!key) return true;
@@ -211,8 +211,8 @@ export const PRESET_BUSINESS: Partial<Record<string, boolean>> = {
   nav_analytics: true,
   nav_team_analytics: false,
   nav_whatsapp: true,
-  nav_team: false,
-  nav_collaboration: false,
+  nav_team: true,
+  nav_collaboration: true,
   nav_shop: false,
   nav_imports: false,
   nav_inventory: false,
@@ -243,8 +243,8 @@ export const PRESET_PERSONAL: Partial<Record<string, boolean>> = {
   nav_analytics: false,
   nav_team_analytics: false,
   nav_whatsapp: true,
-  nav_team: false,
-  nav_collaboration: false,
+  nav_team: true,
+  nav_collaboration: true,
   nav_shop: false,
   nav_imports: false,
   nav_inventory: false,
@@ -273,8 +273,8 @@ export const PRESET_STARTER: Partial<Record<string, boolean>> = {
   nav_analytics: false,
   nav_team_analytics: false,
   nav_whatsapp: true,
-  nav_team: false,
-  nav_collaboration: false,
+  nav_team: true,
+  nav_collaboration: true,
   nav_shop: false,
   nav_imports: false,
   nav_kds: false,

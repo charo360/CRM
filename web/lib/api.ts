@@ -663,7 +663,19 @@ export const designTemplatesApi = {
 
 export const teamApi = {
   list: () => api.get<TeamMember[]>("/team/members"),
-  create: (member: Partial<TeamMember>) => api.post<TeamMember>("/team/members", member),
+  /**
+   * Backend behavior:
+   * - POST /team/members (web dashboard flow) returns `temp_password` when creating an email-login member.
+   * - POST /team/invite (mobile/phone flow) is used when you don't have an email; it may not return `temp_password`.
+   *
+   * We route based on whether an email is present so the UI can reliably show the one-time password
+   * when the backend actually generates it.
+   */
+  create: (member: Partial<TeamMember>) => {
+    const hasEmail = typeof member.email === "string" && member.email.trim().length > 0;
+    const path = hasEmail ? "/team/members" : "/team/invite";
+    return api.post<TeamMember>(path, member);
+  },
   update: (id: string, member: Partial<TeamMember>) => api.put<TeamMember>(`/team/members/${id}`, member),
   delete: (id: string) => api.delete<void>(`/team/members/${id}`),
 };
