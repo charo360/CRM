@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { ImageSelector } from "./ImageSelector";
+import ImageSelector from "./ImageSelector";
 import { ShopifyProductSelector } from "./ShopifyProductSelector";
 import { isShopifyConnected, type ProductImageSource } from "@/lib/seo/shopifyImageService";
 
