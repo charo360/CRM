@@ -716,6 +716,10 @@ export default function SocialSchedulerPage() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"posts" | "analytics">("posts");
 
+  // Delete confirmation dialog
+  const [pendingDelete, setPendingDelete] = useState<ScheduledPost | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   // Drawer UX state
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1178,17 +1182,7 @@ export default function SocialSchedulerPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={async () => {
-                              if (confirm("Delete this post?")) {
-                                try {
-                                  await socialSchedulerApi.delete(r.id);
-                                  await refresh();
-                                  toast.success("Post deleted");
-                                } catch {
-                                  toast.error("Failed to delete post");
-                                }
-                              }
-                            }}
+                            onClick={() => setPendingDelete(r)}
                             className="inline-flex rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
                             title="Delete"
                           >
@@ -1266,7 +1260,7 @@ export default function SocialSchedulerPage() {
                 )}
               </div>
 
-              
+
               <button
                 type="button"
                 onClick={closeDrawer}
@@ -1726,6 +1720,76 @@ export default function SocialSchedulerPage() {
                   {saving ? "Saving…" : modal.id ? "Update post" : "Save post"}
                 </button>
               </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Delete confirmation dialog ───────────────────────────────────────── */}
+      {pendingDelete && (
+        <>
+          {/* Backdrop */}
+          <div
+            aria-hidden="true"
+            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm"
+            onClick={() => !deleting && setPendingDelete(null)}
+          />
+
+          {/* Dialog */}
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="del-title"
+            aria-describedby="del-desc"
+            className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            {/* Icon */}
+            <div className="mb-4 flex items-center justify-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-50">
+                <Trash2 size={22} className="text-red-500" />
+              </div>
+            </div>
+
+            <h2 id="del-title" className="mb-1 text-center text-base font-semibold text-slate-900">
+              Delete post?
+            </h2>
+            <p id="del-desc" className="mb-6 text-center text-sm text-slate-500">
+              <span className="font-medium text-slate-700">
+                &ldquo;{pendingDelete.title || "Untitled post"}&rdquo;
+              </span>{" "}
+              will be permanently removed and cannot be recovered.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setPendingDelete(null)}
+                className="flex-1 rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  try {
+                    await socialSchedulerApi.delete(pendingDelete.id);
+                    await refresh();
+                    toast.success("Post deleted");
+                    setPendingDelete(null);
+                  } catch {
+                    toast.error("Failed to delete post");
+                  } finally {
+                    setDeleting(false);
+                  }
+                }}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-red-500 py-2.5 text-sm font-medium text-white transition hover:bg-red-600 disabled:opacity-60"
+              >
+                {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
             </div>
           </div>
         </>
