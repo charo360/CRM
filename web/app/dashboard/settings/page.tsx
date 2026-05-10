@@ -5,12 +5,13 @@ import {
   settingsApi,
   businessKnowledgeApi,
   authApi,
+  seoApi,
   BusinessSettings,
   BusinessKnowledge,
 } from "@/lib/api";
 import { getUser, setUser } from "@/lib/auth";
 import { useBusiness } from "@/contexts/BusinessContext";
-import { Save, Loader2, Building, Globe, MessageSquare, Zap, Briefcase, Sparkles, RefreshCw } from "lucide-react";
+import { Save, Loader2, Building, Globe, MessageSquare, Zap, Briefcase, Sparkles, RefreshCw, Link } from "lucide-react";
 import { TypeFields } from "./TypeFields";
 import {
   ALL_CURRENCY_CODES,
@@ -82,6 +83,8 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [activeTab, setActiveTab] = useState("business");
   const [aiAboutBusy, setAiAboutBusy] = useState(false);
+  const [scraping, setScraping] = useState(false);
+  const [scrapeMsg, setScrapeMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const currencyDisplay = useMemo(() => {
     try {
@@ -134,6 +137,68 @@ export default function SettingsPage() {
   const patchBk = useCallback((p: Record<string, unknown>) => {
     setBk((prev) => ({ ...prev, ...p }));
   }, []);
+
+  async function handleAutoFill() {
+    const url = String(bk.website_url ?? "").trim();
+    if (!url) return;
+    setScraping(true);
+    setScrapeMsg(null);
+    try {
+      const res = await seoApi.scrapeWebsite(url);
+      const e = res.extracted as Record<string, string>;
+      const pagesScraped = (res as Record<string, unknown>).pages_scraped as number | undefined;
+
+      // Apply ALL fields the LLM wrote — overwrite empty fields, keep existing if already set
+      const patch: Record<string, unknown> = {};
+      const TEXT_FIELDS: Array<keyof typeof e> = [
+        "business_description",
+        "products_services",
+        "business_location",
+        "business_hours",
+        "pricing_info",
+        "faqs",
+        "special_offers",
+        "delivery_info",
+      ];
+      let filledCount = 0;
+      for (const field of TEXT_FIELDS) {
+        if (e[field] && String(e[field]).trim()) {
+          patch[field] = e[field];
+          filledCount++;
+        }
+      }
+      if (Object.keys(patch).length) patchBk(patch);
+
+      // Business name — only fill if currently empty
+      if (e.business_name && String(e.business_name).trim()) {
+        setUserSettings(prev => {
+          if (!prev.business_name) {
+            filledCount++;
+            return { ...prev, business_name: e.business_name };
+          }
+          return prev;
+        });
+      }
+
+      // Business type — only fill if currently empty
+      if (e.business_type) {
+        const validTypes = ["retail","restaurant","salon","spa","services","repair","cleaning","fitness","events","healthcare","rental","hotel","support","creator","wholesale","bakery","grocery","general"];
+        if (validTypes.includes(e.business_type)) {
+          setUserSettings(prev => {
+            if (!prev.business_type) return { ...prev, business_type: e.business_type };
+            return prev;
+          });
+        }
+      }
+
+      const pageWord = pagesScraped === 1 ? "1 page" : `${pagesScraped ?? 1} pages`;
+      setScrapeMsg({ ok: true, text: `✅ Read ${pageWord} — filled ${filledCount} fields. Review everything and hit Save.` });
+    } catch (err) {
+      setScrapeMsg({ ok: false, text: err instanceof Error ? err.message : "Could not read website" });
+    } finally {
+      setScraping(false);
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -305,6 +370,38 @@ export default function SettingsPage() {
       <div className="bg-white rounded-xl border border-slate-200 p-6">
         {activeTab === "business" && (
           <div className="space-y-6">
+            {/* Website URL at top — auto-fills all fields below */}
+            <div className="rounded-xl border-2 border-brand/20 bg-brand/5 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Link size={16} className="text-brand-dark shrink-0" />
+                <p className="text-sm font-semibold text-slate-800">Your website</p>
+                <span className="text-xs text-slate-500">— we'll read it to fill your profile automatically</span>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={String(bk.website_url ?? "")}
+                  onChange={(e) => patchBk({ website_url: e.target.value })}
+                  placeholder="https://yourwebsite.com"
+                  className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-brand"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleAutoFill()}
+                  disabled={scraping || !String(bk.website_url ?? "").trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand disabled:opacity-50 whitespace-nowrap shrink-0"
+                >
+                  {scraping ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  {scraping ? "Reading site…" : "AI Auto-fill"}
+                </button>
+              </div>
+              {scrapeMsg && (
+                <p className={`text-xs font-medium px-3 py-2 rounded-lg ${
+                  scrapeMsg.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"
+                }`}>{scrapeMsg.text}</p>
+              )}
+            </div>
+
             <Field
               label="Business name"
               value={userSettings.business_name || ""}

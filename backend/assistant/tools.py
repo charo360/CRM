@@ -326,19 +326,18 @@ async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
     public_imgs = [_to_public(u) for u in imgs]
     public_orig = _to_public(orig)
 
-    # Advance design flow: product is now locked → ask for platform next
+    # Store product info but DON'T advance flow yet — the user might just be browsing.
+    # Only advance to awaiting_platform when they explicitly choose to use this image.
     try:
-        from .design_state import load_design_state, update_design_state
+        from .design_state import update_design_state
         conv_id = ctx.user.get("_active_conversation_id")
         if conv_id:
-            ds = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            if ds.get("flow_step") in ("awaiting_product", None):
-                await update_design_state(
-                    ctx.db, conv_id, ctx.business_id,
-                    product_id=product_id,
-                    product_name=product.get("name", "Unnamed Product"),
-                    flow_step="awaiting_platform",
-                )
+            await update_design_state(
+                ctx.db, conv_id, ctx.business_id,
+                product_id=product_id,
+                product_name=product.get("name", "Unnamed Product"),
+                # Do NOT set flow_step here — let the AI advance it when user confirms image usage
+            )
     except Exception:
         logger.exception("[get_product_images] design_state update skipped")
 
@@ -6077,7 +6076,10 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
         "Browse and search the 2Slides template library to show the user available presentation themes. "
         "Call this when the user wants to pick a template before generating a presentation. "
         "Returns a list of themes with names, descriptions, preview URLs, and IDs. "
-        "Present the results to the user so they can choose one, then pass the chosen theme_id to create_presentation."
+        "The UI will automatically display a visual template gallery picker below your message. "
+        "Just call this tool and say something brief like 'Here are X templates — click one to select it.' "
+        "Do NOT describe each template in detail — the visual gallery shows everything. "
+        "When the user picks one, they'll send you the template ID to use in create_presentation."
     ),
     parameters={
         "type": "object",
@@ -8819,6 +8821,100 @@ async def list_scheduled_posts(ctx: ToolContext, args: Dict[str, Any]):
         }
 
     return {"count": len(rows), "posts": [_fmt(r) for r in rows]}
+
+
+@tool(
+    name="create_scheduled_post",
+    description=(
+        "Create and schedule a social media post directly in the Zilo scheduler. "
+        "Use this to save the finalised caption, image, channels, and scheduled time — "
+        "the post will appear on the Social Scheduler dashboard ready to publish. "
+        "Set status='scheduled' with a future scheduled_at to queue it, or status='draft' to save without a time."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short internal title for the post (not shown publicly), e.g. 'Zilo Starter promo — Instagram'.",
+            },
+            "body": {
+                "type": "string",
+                "description": "The full post caption including hashtags, exactly as it should appear.",
+            },
+            "channels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Platforms to publish on: instagram, facebook, linkedin, x, tiktok. E.g. ['instagram'].",
+            },
+            "scheduled_at": {
+                "type": "string",
+                "description": "ISO 8601 datetime string for when the post should go live, e.g. '2025-05-08T09:00:00Z'. Required when status is 'scheduled'.",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["draft", "scheduled"],
+                "description": "Use 'scheduled' to queue the post for publishing at scheduled_at, or 'draft' to save without a time.",
+            },
+            "image_url": {
+                "type": "string",
+                "description": "URL of the AI-generated or uploaded post image to attach.",
+            },
+        },
+        "required": ["title", "body", "channels"],
+    },
+)
+async def create_scheduled_post(ctx: ToolContext, args: Dict[str, Any]):
+    now = datetime.utcnow()
+    status = (args.get("status") or "draft").strip().lower()
+    if status not in ("draft", "scheduled"):
+        status = "draft"
+
+    sched_raw = (args.get("scheduled_at") or "").strip()
+    sched: datetime = now
+    if sched_raw:
+        try:
+            sched = datetime.fromisoformat(sched_raw.replace("Z", "+00:00"))
+        except Exception:
+            sched = now
+
+    channels = [c.strip().lower() for c in (args.get("channels") or ["instagram"]) if c.strip()]
+    if not channels:
+        channels = ["instagram"]
+
+    # Strip timezone info for MongoDB compatibility (store as naive UTC)
+    if hasattr(sched, "tzinfo") and sched.tzinfo is not None:
+        sched = sched.replace(tzinfo=None)
+
+    doc: Dict[str, Any] = {
+        "_id": str(uuid.uuid4()),
+        "user_id": ctx.business_id,
+        "title": (args.get("title") or "Untitled Post").strip(),
+        "body": (args.get("body") or "").strip(),
+        "channels": channels,
+        "scheduled_at": sched,
+        "status": status,
+        "image_url": args.get("image_url") or None,
+        "created_at": now,
+        "updated_at": now,
+        "source": "ai_assistant",
+    }
+    try:
+        await ctx.db.scheduled_posts.insert_one(doc)
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Database write failed: {exc}",
+            "message": "Could not save the post to the Zilo scheduler. Please try again.",
+        }
+    return {
+        "success": True,
+        "post_id": doc["_id"],
+        "status": status,
+        "channels": channels,
+        "scheduled_at": sched.isoformat(),
+        "message": f"✅ Post scheduled on {', '.join(channels)} for {sched.strftime('%d %b %Y %H:%M')} UTC.",
+    }
 
 
 @tool(

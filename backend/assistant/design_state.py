@@ -47,7 +47,7 @@ _STEP_NEXT_ACTION: Dict[str, str] = {
     "awaiting_product": (
         "MANDATORY FIRST STEP — run this before anything else this turn. "
         "Silently call `list_products` right now. Then present ALL of these options to the user:\n"
-        "1. Every real product from the catalog — show each as a chip (name + short tag).\n"
+        "1. Every real product from the catalog — show each as a chip (exact product name only — NO invented tags, subtitles, specs, or descriptions).\n"
         "2. '📎 I have my own image — I'll attach it via the paperclip' — for custom/non-catalog images.\n"
         "3. '🎉 It's a promotion or offer — no specific product'\n"
         "4. '📣 Announcement or news'\n"

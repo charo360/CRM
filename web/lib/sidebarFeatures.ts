@@ -40,6 +40,8 @@ export const SIDEBAR_FEATURE_DEFAULTS: Record<string, boolean> = {
   nav_design_templates: false,
   nav_documents: false,
   nav_seo: false,
+  nav_growth: false,
+  nav_client_portal: false,
 };
 
 /** Map route href → settings key */
@@ -82,6 +84,8 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
   "/dashboard/design-templates": "nav_design_templates",
   "/dashboard/documents": "nav_documents",
   "/dashboard/seo": "nav_seo",
+  "/dashboard/growth": "nav_growth",
+  "/dashboard/client-portal": "nav_client_portal",
 };
 
 export function mergeSidebarFeatures(raw: unknown): Record<string, boolean> {
@@ -179,6 +183,8 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_shopify", label: "Shopify", description: "Orders, inventory, customers, abandoned carts & discounts" },
     { key: "nav_design_templates", label: "Design library", description: "Chat-generated graphics, PDFs, and decks plus optional manual template metadata" },
     { key: "nav_documents", label: "Documents", description: "AI-generated PDFs, Word docs, and presentations from Zilo Chat" },
+    { key: "nav_growth", label: "Growth Suite", description: "Daily digest, autopilot follow-ups, deal room, competitor intel, voice input" },
+    { key: "nav_client_portal", label: "Client Portal", description: "Share a portal link with clients to view their invoices, proposals & orders" },
     ],
   },
   {

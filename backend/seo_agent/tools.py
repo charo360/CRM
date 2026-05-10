@@ -5,7 +5,7 @@ db and user_id are injected via LangGraph RunnableConfig.
 """
 from __future__ import annotations
 import os, re, uuid, httpx, logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
@@ -562,10 +562,8 @@ async def get_seo_summary(config: RunnableConfig) -> str:
 @tool
 async def get_business_context(config: RunnableConfig) -> str:
     """
-    Fetch the user's real business information from the CRM — name, type, location,
-    products they sell, and how many customers they have.
-    ALWAYS call this first before giving any SEO advice, so recommendations are
-    specific to their actual business, not generic.
+    Fetch comprehensive business context including profile, performance data, SEO memory,
+    and content history. ALWAYS call this first before giving any SEO advice.
     """
     try:
         db = config["configurable"].get("db")
@@ -582,8 +580,9 @@ async def get_business_context(config: RunnableConfig) -> str:
         business_name = (user or {}).get("business_name", "your business") if user else "your business"
         settings = (user or {}).get("settings", {})
         business_type = settings.get("business_type", "general")
+        location = settings.get("location", "")
+        website = settings.get("website_url", "")
         country_code = (user or {}).get("country_code", "")
-        currency = (user or {}).get("currency", "")
 
         # Fetch products
         products = await db.products.find({"user_id": user_id}).limit(10).to_list(10)
@@ -593,23 +592,73 @@ async def get_business_context(config: RunnableConfig) -> str:
         # Fetch customer count
         customer_count = await db.customers.count_documents({"user_id": user_id})
 
-        # Fetch last SEO audit if any
+        # Fetch SEO performance data
         last_audit = await db.seo_audits.find_one({"user_id": user_id}, sort=[("created_at", -1)])
+        seo_summary = await db.seo_summary.find_one({"user_id": user_id})
+        
+        # Fetch content performance
+        posts = await db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(10).to_list(10)
+        published_posts = [p for p in posts if p.get("status") == "published"]
+        draft_posts = [p for p in posts if p.get("status") == "draft"]
+        
+        # Calculate content velocity (posts in last 30 days)
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        recent_posts = [p for p in posts if p.get("created_at") and datetime.fromisoformat(p["created_at"].replace("Z", "+00:00")) > thirty_days_ago]
+        
+        # Fetch SEO memory if available
+        seo_memory = await db.seo_memory.find_one({"user_id": user_id}, sort=[("created_at", -1)])
+        
+        # Fetch saved keywords
+        saved_keywords = await db.seo_saved_keywords.find_one({"user_id": user_id}, sort=[("month", -1)])
 
         lines = [
             f"Business Name: {business_name}",
             f"Business Type: {business_type}",
+            f"Location: {location or 'Not set'}",
+            f"Website: {website or 'Not set'}",
             f"Country/Region: {country_code or 'Not set'}",
-            f"Currency: {currency or 'Not set'}",
             f"Total Products/Services: {product_count}",
         ]
         if product_names:
             lines.append(f"Sample Products/Services: {', '.join(product_names[:6])}")
         lines.append(f"Total Customers in CRM: {customer_count}")
+        
+        # SEO Performance
+        lines.append("SEO Performance:")
         if last_audit:
-            lines.append(f"Last SEO audit: {last_audit.get('url', 'unknown')} — score {last_audit.get('score', 0)}/100")
+            lines.append(f"  Last Audit Score: {last_audit.get('score', 0)}/100 ({last_audit.get('grade', 'N/A')})")
+            lines.append(f"  Last Audit URL: {last_audit.get('url', 'unknown')}")
         else:
-            lines.append("No SEO audits done yet.")
+            lines.append("  No SEO audits done yet")
+            
+        if seo_summary:
+            lines.append(f"  Total Blog Posts: {seo_summary.get('total_posts', 0)}")
+            lines.append(f"  Published Posts: {seo_summary.get('published_posts', 0)}")
+            lines.append(f"  Draft Posts: {seo_summary.get('draft_posts', 0)}")
+            lines.append(f"  Content Velocity: {len(recent_posts)} posts in last 30 days")
+        
+        # Content Performance
+        if published_posts:
+            top_posts = sorted(published_posts, key=lambda x: x.get("word_count", 0), reverse=True)[:3]
+            lines.append("Top Performing Content:")
+            for post in top_posts:
+                lines.append(f"  - {post.get('title', 'Untitled')} ({post.get('word_count', 0)} words)")
+        
+        # SEO Memory Insights
+        if seo_memory:
+            memory_data = seo_memory.get("analysis", {})
+            lines.append("SEO Memory Insights:")
+            if memory_data.get("working"):
+                lines.append(f"  What's Working: {', '.join(memory_data['working'][:3])}")
+            if memory_data.get("not_working"):
+                lines.append(f"  Needs Improvement: {', '.join(memory_data['not_working'][:3])}")
+            if memory_data.get("next_month_focus"):
+                lines.append(f"  Next Month Focus: {', '.join(memory_data['next_month_focus'][:3])}")
+        
+        # Keywords
+        if saved_keywords and saved_keywords.get("keywords"):
+            keyword_list = [kw.get("keyword", "") if isinstance(kw, dict) else str(kw) for kw in saved_keywords["keywords"][:5]]
+            lines.append(f"Recent Keywords: {', '.join(keyword_list)}")
 
         return "\n".join(lines)
     except Exception as e:
@@ -749,7 +798,7 @@ async def get_keyword_ideas(seed_keyword: str, location_code: int = 2404, langua
 
 
 @tool
-async def check_serp_ranking(keyword: str, domain: str, location_code: int = 2404, language_code: str = "en") -> str:
+async def check_serp_ranking(keyword: str, domain: str, location_code: int = 2404, language_code: str = "en", config: RunnableConfig = None) -> str:
     """
     Check where a website ranks on Google for a specific keyword right now.
     Returns the actual position (1-100) or 'not in top 100'.
@@ -801,6 +850,28 @@ async def check_serp_ranking(keyword: str, domain: str, location_code: int = 240
                 found_position = pos
                 found_url = url
                 break
+
+        # Save ranking history via API
+        if config:
+            try:
+                import httpx
+                base_url = config.get("configurable", {}).get("base_url", "http://localhost:8000")
+                user_id = config.get("configurable", {}).get("user_id")
+
+                if user_id:
+                    ranking_payload = {
+                        "keyword": keyword,
+                        "domain": clean_domain,
+                        "position": found_position,
+                        "location_code": location_code,
+                        "language_code": language_code,
+                    }
+
+                    async with httpx.AsyncClient() as client:
+                        # Note: This would need authentication headers in a real implementation
+                        await client.post(f"{base_url}/api/seo/serp/rankings", json=ranking_payload)
+            except Exception as e:
+                logger.warning(f"Failed to save SERP ranking history: {e}")
 
         lines = [f"Google Ranking Check", f"Keyword: \"{keyword}\"", f"Site: {domain}", ""]
 

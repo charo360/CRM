@@ -60,28 +60,25 @@ export function TemplateGallery({ themes, onSelect, onClose }: TemplateGalleryPr
                       : "border-gray-200 hover:border-gray-300 hover:shadow-sm"
                   }`}
                 >
-                  {/* Preview — iframe pointing directly at 2Slides template URL */}
-                  <div className="relative aspect-video bg-gray-100 overflow-hidden">
-                    <iframe
-                      src={theme.preview_url}
-                      title={theme.name}
-                      className="w-[200%] h-[200%] -translate-x-1/4 -translate-y-1/4 scale-50 pointer-events-none origin-top-left"
-                      sandbox="allow-same-origin allow-scripts"
-                      loading="lazy"
-                    />
-                    {/* Click shield so clicks select the card, not the iframe */}
-                    <div className="absolute inset-0" />
+                  {/* Preview card */}
+                  <div className="relative aspect-video overflow-hidden" style={{ background: `hsl(${(theme.id.charCodeAt(0) * 37) % 360}, 45%, 88%)` }}>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3">
+                      <Presentation className="w-8 h-8 opacity-40" style={{ color: `hsl(${(theme.id.charCodeAt(0) * 37) % 360}, 55%, 35%)` }} />
+                      <p className="text-center text-xs font-medium line-clamp-2 opacity-60" style={{ color: `hsl(${(theme.id.charCodeAt(0) * 37) % 360}, 55%, 25%)` }}>{theme.name}</p>
+                    </div>
                     {/* External link */}
-                    <a
-                      href={theme.preview_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Open full preview"
-                      className="absolute top-2 right-2 p-1.5 bg-white/80 hover:bg-white rounded-md shadow opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5 text-gray-600" />
-                    </a>
+                    {theme.preview_url && (
+                      <a
+                        href={theme.preview_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        title="Open full preview"
+                        className="absolute top-2 right-2 p-1.5 bg-white/80 hover:bg-white rounded-md shadow opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 text-gray-600" />
+                      </a>
+                    )}
                     {/* Selected badge */}
                     {isSelected && (
                       <div className="absolute top-2 left-2 bg-green-600 text-white rounded-full p-0.5">

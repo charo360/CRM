@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zilo Social Monitor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      width: 320px;
+      background: #f8fafc;
+      color: #1e293b;
+    }
+
+    .header {
+      background: #0f172a;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-logo {
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, #06b6d4, #8b5cf6);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+    }
+    .header-title { color: #fff; font-size: 14px; font-weight: 700; }
+    .header-sub   { color: #94a3b8; font-size: 11px; margin-top: 1px; }
+
+    .body { padding: 16px; }
+
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: 99px;
+      font-size: 11px; font-weight: 600; margin-bottom: 14px;
+    }
+    .status-pill.connected    { background: #d1fae5; color: #065f46; }
+    .status-pill.disconnected { background: #fee2e2; color: #991b1b; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .status-pill.connected .status-dot    { background: #10b981; }
+    .status-pill.disconnected .status-dot { background: #ef4444; }
+
+    label {
+      font-size: 11px; font-weight: 600; color: #64748b;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      display: block; margin-bottom: 5px;
+    }
+
+    input[type="text"], input[type="password"] {
+      width: 100%; padding: 9px 12px;
+      border: 1px solid #e2e8f0; border-radius: 8px;
+      font-size: 12px; background: #fff; color: #1e293b;
+      outline: none; margin-bottom: 10px;
+    }
+    input:focus { border-color: #06b6d4; box-shadow: 0 0 0 2px rgba(6,182,212,0.15); }
+
+    .btn {
+      width: 100%; padding: 9px 16px;
+      border: none; border-radius: 8px;
+      font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary   { background: #0f172a; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1e293b; }
+    .btn-secondary { background: #f1f5f9; color: #475569; margin-top: 6px; }
+    .btn-secondary:hover:not(:disabled) { background: #e2e8f0; }
+    .btn-danger    { background: #fff; color: #ef4444; border: 1px solid #fca5a5; margin-top: 6px; }
+    .btn-danger:hover { background: #fef2f2; }
+
+    .info-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 10px; background: #fff;
+      border: 1px solid #e2e8f0; border-radius: 8px;
+      margin-bottom: 8px; font-size: 12px;
+    }
+    .info-row span:first-child { color: #64748b; }
+    .info-row span:last-child  { font-weight: 600; color: #0f172a; }
+
+    .keyword-list { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+    .kw-chip {
+      background: #f1f5f9; border: 1px solid #e2e8f0;
+      border-radius: 99px; padding: 3px 10px;
+      font-size: 11px; color: #475569;
+    }
+    .empty-kw { font-size: 11px; color: #94a3b8; font-style: italic; }
+
+    .msg { font-size: 11px; padding: 7px 10px; border-radius: 7px; margin-top: 8px; }
+    .msg.success { background: #d1fae5; color: #065f46; }
+    .msg.error   { background: #fee2e2; color: #991b1b; }
+
+    .divider { border: none; border-top: 1px solid #f1f5f9; margin: 12px 0; }
+
+    .platforms { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+    .platform-badge {
+      font-size: 10px; padding: 3px 8px;
+      background: #fff; border: 1px solid #e2e8f0;
+      border-radius: 99px; color: #475569;
+    }
+
+    /* Groups */
+    .section-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 6px;
+    }
+    .section-header label { margin: 0; }
+    .btn-link {
+      background: none; border: none; cursor: pointer;
+      font-size: 11px; color: #06b6d4; font-weight: 600; padding: 0;
+    }
+    .btn-link:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .group-list { max-height: 110px; overflow-y: auto; margin-bottom: 6px; }
+    .group-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 4px 8px; background: #fff;
+      border: 1px solid #e2e8f0; border-radius: 6px;
+      margin-bottom: 3px;
+    }
+    .group-name {
+      font-size: 11px; color: #1e293b;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 230px;
+    }
+    .remove-group {
+      background: none; border: none; cursor: pointer;
+      color: #94a3b8; font-size: 10px; padding: 1px 4px;
+      border-radius: 3px; flex-shrink: 0;
+    }
+    .remove-group:hover { color: #ef4444; background: #fee2e2; }
+
+    .add-row { display: flex; gap: 5px; margin-bottom: 8px; }
+    .add-row input {
+      flex: 1; margin: 0; font-size: 11px;
+      padding: 7px 10px;
+    }
+    .add-row button {
+      background: #0f172a; color: #fff; border: none;
+      border-radius: 8px; padding: 0 12px;
+      font-size: 11px; font-weight: 600; cursor: pointer;
+      white-space: nowrap;
+    }
+    .add-row button:hover { background: #1e293b; }
+
+    /* Discover results */
+    .discover-results { margin-bottom: 8px; display: none; }
+    .discover-label {
+      font-size: 10px; color: #64748b; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+    .discover-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 4px 8px; background: #f0fdf4;
+      border: 1px solid #bbf7d0; border-radius: 6px;
+      margin-bottom: 3px;
+    }
+    .discover-name {
+      font-size: 11px; color: #065f46;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 200px;
+    }
+    .add-discovered {
+      background: #10b981; color: #fff; border: none;
+      cursor: pointer; font-size: 10px; padding: 2px 8px;
+      border-radius: 4px; font-weight: 600; white-space: nowrap; flex-shrink: 0;
+    }
+    .add-discovered:disabled { background: #d1fae5; color: #065f46; cursor: default; }
+
+    .scan-status {
+      text-align: center; font-size: 10px; color: #94a3b8;
+      min-height: 14px; margin-top: 4px;
+    }
+
+    #setup-view, #connected-view { display: none; }
+    #setup-view.active, #connected-view.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-logo">⚡</div>
+    <div>
+      <div class="header-title">Zilo Social Monitor</div>
+      <div class="header-sub">Find customers while you browse</div>
+    </div>
+  </div>
+
+  <div class="body">
+
+    <!-- Setup view (not connected) -->
+    <div id="setup-view">
+      <p style="font-size:12px;color:#64748b;margin-bottom:14px;line-height:1.5;">
+        Connect to your Zilo CRM to start monitoring groups for your keywords.
+      </p>
+      <label>CRM API URL</label>
+      <input type="text" id="api-url" placeholder="http://localhost:8000/api" />
+      <label>Your API Token</label>
+      <input type="password" id="api-token" placeholder="Paste your token from Zilo CRM" />
+      <button class="btn btn-primary" id="connect-btn">Connect to Zilo CRM</button>
+      <div id="setup-msg" class="msg" style="display:none;"></div>
+    </div>
+
+    <!-- Connected view -->
+    <div id="connected-view">
+      <div class="status-pill connected">
+        <span class="status-dot"></span>
+        Connected &amp; monitoring
+      </div>
+
+      <div class="info-row">
+        <span>CRM</span>
+        <span id="api-url-display">—</span>
+      </div>
+
+      <hr class="divider" />
+
+      <label>Monitoring platforms</label>
+      <div class="platforms" id="platforms-display"></div>
+
+      <label>Keywords (<span id="kw-count">0</span>)</label>
+      <div class="keyword-list" id="kw-list"></div>
+
+      <button class="btn btn-secondary" id="sync-btn">↻ Sync keywords from CRM</button>
+      <div id="sync-msg" class="msg" style="display:none;"></div>
+
+      <hr class="divider" />
+
+      <!-- Groups to monitor -->
+      <div class="section-header">
+        <label>Facebook Groups (<span id="group-count">0</span>)</label>
+        <button class="btn-link" id="discover-btn">🔍 Discover</button>
+      </div>
+
+      <div class="group-list" id="group-list"></div>
+
+      <div class="discover-results" id="discover-results">
+        <p class="discover-label">Suggested groups</p>
+        <div id="discover-list"></div>
+      </div>
+
+      <div class="add-row">
+        <input type="text" id="group-url-input" placeholder="facebook.com/groups/name" />
+        <button id="add-group-btn">+ Add</button>
+      </div>
+
+      <button class="btn btn-primary" id="scan-now-btn">⚡ Scan Groups Now</button>
+      <p class="scan-status" id="scan-status"></p>
+      <div id="groups-msg" class="msg" style="display:none;"></div>
+
+      <hr class="divider" />
+
+      <div class="info-row" style="cursor:pointer;" id="auto-post-row">
+        <div>
+          <div style="font-weight:600;color:#1e293b;font-size:12px;">Auto-post approved comments</div>
+          <div style="font-size:10px;color:#94a3b8;margin-top:2px;">Posts while browser is open</div>
+        </div>
+        <div id="auto-post-toggle" style="width:36px;height:20px;border-radius:99px;position:relative;transition:background 0.2s;background:#e2e8f0;">
+          <span id="auto-post-knob" style="position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:left 0.2s;"></span>
+        </div>
+      </div>
+
+      <hr class="divider" />
+
+      <button class="btn btn-danger" id="disconnect-btn">Disconnect</button>
+    </div>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

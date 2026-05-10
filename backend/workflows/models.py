@@ -17,6 +17,7 @@ class WorkflowTrigger(BaseModel):
         "tag_added",
         "customer_created",
         "pipeline_stage_changed",
+        "payhero_payment_received",
     ]
     condition: Optional[str] = None  # e.g. "intent == 'order'" or "always"
 

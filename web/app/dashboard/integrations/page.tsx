@@ -6,7 +6,7 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection } from "@/lib/api";
+import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
@@ -347,13 +347,32 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
   );
 }
 
-// ── PayHero (Basic Auth) ──────────────────────────────────────────────────────
+// ── PayHero (Basic Auth + Channel selector) ───────────────────────────────────
 
 function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnection; onChanged: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Channel selection state
+  const [channels, setChannels] = useState<PayheroChannel[]>([]);
+  const [loadingChannels, setLoadingChannels] = useState(false);
+  const [selectedChannel, setSelectedChannel] = useState<string>("");
+  const [savingChannel, setSavingChannel] = useState(false);
+
+  // Load channels when connected
+  useEffect(() => {
+    if (!connection?.connected) return;
+    setLoadingChannels(true);
+    payheroApi.channels()
+      .then(res => {
+        setChannels(res.channels ?? []);
+        if (res.selected_channel_id) setSelectedChannel(String(res.selected_channel_id));
+      })
+      .catch(() => {})
+      .finally(() => setLoadingChannels(false));
+  }, [connection?.connected]);
 
   async function handleConnect() {
     if (!username.trim() || !password.trim()) return;
@@ -371,13 +390,69 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
     finally { setBusy(false); }
   }
 
+  async function handleSaveChannel() {
+    if (!selectedChannel) return;
+    setSavingChannel(true); setErr(null);
+    try {
+      await payheroApi.setChannel(selectedChannel);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not save channel");
+    } finally {
+      setSavingChannel(false);
+    }
+  }
+
   if (connection?.connected) {
+    const savedChannelId = connection.channel_id ? String(connection.channel_id) : null;
+    const isChannelSaved = savedChannelId && selectedChannel === savedChannelId;
+
     return (
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
           <CheckCircle size={12} />
           {connection.username || "Connected"}
         </div>
+
+        {/* Channel selector */}
+        <div className="space-y-1">
+          <p className="text-[10px] text-slate-500">Select your M-Pesa channel (paybill / till):</p>
+          {loadingChannels ? (
+            <p className="flex items-center gap-1 text-[10px] text-slate-400"><Loader2 size={10} className="animate-spin" /> Loading channels…</p>
+          ) : channels.length === 0 ? (
+            <p className="text-[10px] text-slate-400">No channels found in your PayHero account.</p>
+          ) : (
+            <div className="flex gap-1.5">
+              <select
+                value={selectedChannel}
+                onChange={e => setSelectedChannel(e.target.value)}
+                className="flex-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
+              >
+                <option value="">— Pick a channel —</option>
+                {channels.map(ch => (
+                  <option key={ch.id} value={String(ch.id)}>
+                    {ch.name}{ch.paybill ? ` (${ch.paybill})` : ch.short_code ? ` (${ch.short_code})` : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleSaveChannel}
+                disabled={savingChannel || !selectedChannel || isChannelSaved === true}
+                className="flex items-center gap-1 rounded-lg bg-[#1DB954] px-2 py-1 text-[10px] font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50"
+              >
+                {savingChannel ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
+                {isChannelSaved ? "Saved" : "Save"}
+              </button>
+            </div>
+          )}
+          {savedChannelId && (
+            <p className="text-[10px] text-green-700">
+              ✓ Payments to this channel auto-confirm orders &amp; send receipts
+            </p>
+          )}
+        </div>
+
         <button type="button" onClick={handleDisconnect} disabled={busy}
           className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
           {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect

@@ -1,0 +1,146 @@
+{
+  "plumbing": {
+    "name": "Plumbing Services",
+    "business_type": "plumbing",
+    "sample_keywords": [
+      "emergency plumber near me",
+      "water heater repair",
+      "pipe leak detection",
+      "drain cleaning services",
+      "bathroom plumbing installation"
+    ],
+    "content_pillars": [
+      "Emergency services availability",
+      "Preventive maintenance tips",
+      "Cost guides for common repairs",
+      "DIY vs professional advice"
+    ],
+    "local_keywords": ["plumber [city]", "emergency plumber [city]", "24 hour plumber [city]"],
+    "sample_posts": [
+      "5 Signs You Need Emergency Plumbing Services",
+      "Water Heater Maintenance Guide: Extend Your Unit's Life",
+      "How Much Do Common Plumbing Repairs Cost in [City]?",
+      "DIY Plumbing: When to Call a Professional"
+    ]
+  },
+  "dental": {
+    "name": "Dental Practice",
+    "business_type": "dental-services",
+    "sample_keywords": [
+      "dentist near me",
+      "teeth cleaning cost",
+      "emergency dental care",
+      "cosmetic dentistry options",
+      "family dental services"
+    ],
+    "content_pillars": [
+      "Preventive care education",
+      "Treatment cost transparency",
+      "Technology and comfort",
+      "Patient testimonials"
+    ],
+    "local_keywords": ["dentist [city]", "emergency dentist [city]", "family dentist [city]"],
+    "sample_posts": [
+      "Complete Guide to Dental Cleaning: What to Expect",
+      "Are Dental Implants Worth the Cost? A 2024 Analysis",
+      "5 Ways to Reduce Dental Anxiety for Your Next Visit",
+      "Choosing the Right Family Dentist in [City]"
+    ]
+  },
+  "consulting": {
+    "name": "Business Consulting",
+    "business_type": "business-consulting",
+    "sample_keywords": [
+      "business strategy consultant",
+      "small business growth",
+      "operational efficiency",
+      "digital transformation",
+      "management consulting services"
+    ],
+    "content_pillars": [
+      "Industry insights",
+      "Case studies and results",
+      "Strategic frameworks",
+      "Technology trends"
+    ],
+    "local_keywords": ["business consultant [city]", "small business advisor [city]"],
+    "sample_posts": [
+      "7 Strategies Small Businesses Need in 2024",
+      "Case Study: How We Increased Client Revenue by 40%",
+      "Digital Transformation ROI: A Complete Analysis",
+      "Choosing the Right Business Consultant for Your Company"
+    ]
+  },
+  "restaurant": {
+    "name": "Restaurant",
+    "business_type": "restaurant",
+    "sample_keywords": [
+      "best restaurant [city]",
+      "fine dining near me",
+      "local cuisine [city]",
+      "restaurant reservations",
+      "private dining events"
+    ],
+    "content_pillars": [
+      "Menu highlights",
+      "Chef and kitchen stories",
+      "Events and private dining",
+      "Local sourcing and sustainability"
+    ],
+    "local_keywords": ["restaurant [city]", "fine dining [city]", "best food [city]"],
+    "sample_posts": [
+      "Behind the Scenes: Our Chef's Philosophy on Local Ingredients",
+      "Complete Guide to Planning Your Private Dining Event",
+      "Why [Restaurant Name] is the Best Restaurant in [City]",
+      "Seasonal Menu: What's Fresh This Spring"
+    ]
+  },
+  "fitness": {
+    "name": "Fitness/Gym",
+    "business_type": "fitness",
+    "sample_keywords": [
+      "gym near me",
+      "personal trainer [city]",
+      "fitness classes",
+      "weight loss programs",
+      "strength training"
+    ],
+    "content_pillars": [
+      "Workout guides",
+      "Nutrition advice",
+      "Success stories",
+      "Class schedules and benefits"
+    ],
+    "local_keywords": ["gym [city]", "fitness center [city]", "personal trainer [city]"],
+    "sample_posts": [
+      "Complete Beginner's Guide to Starting a Fitness Routine",
+      "5 Myths About Weight Loss Busted by Our Trainers",
+      "How Our Members Achieved Their Fitness Goals",
+      "Choosing the Right Personal Trainer for Your Goals"
+    ]
+  },
+  "legal": {
+    "name": "Law Firm",
+    "business_type": "legal-services",
+    "sample_keywords": [
+      "lawyer near me",
+      "family law attorney",
+      "business lawyer",
+      "estate planning services",
+      "legal consultation"
+    ],
+    "content_pillars": [
+      "Legal education",
+      "Case studies",
+      "Process explanations",
+      "Client rights"
+    ],
+    "local_keywords": ["lawyer [city]", "attorney [city]", "legal services [city]"],
+    "sample_posts": [
+      "Complete Guide to Estate Planning: What You Need to Know",
+      "5 Questions to Ask Before Hiring a Family Law Attorney",
+      "Business Legal Checklist: Are You Compliant?",
+      "How to Choose the Right Lawyer for Your Case"
+    ]
+  }
+}

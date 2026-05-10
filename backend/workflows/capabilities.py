@@ -277,6 +277,14 @@ TRIGGER_TYPES: dict = {
         ],
     },
 
+    # ── PayHero (M-Pesa) ──────────────────────────────────────────────────────
+    "payhero_payment_received": {
+        "description": "When a customer pays via M-Pesa through PayHero (auto-confirmed, no screenshot needed)",
+        "condition_examples": [
+            "always",
+        ],
+    },
+
     # ── Shopify autopilot triggers ─────────────────────────────────────────────
     "shopify_order_created": {
         "description": "When a new Shopify order is placed",
