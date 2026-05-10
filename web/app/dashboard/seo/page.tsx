@@ -667,7 +667,7 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
   async function loadKeywordSet(month: string) {
     try {
       const res = await seoApi.getSavedKeywords(month);
-      const savedKeywords = res.keywords as SeoKeyword[];
+      const savedKeywords = res.keywords as unknown as SeoKeyword[];
       setKeywords(savedKeywords);
       setKeywordSource("saved");
       setBusinessType(res.business_type || profile?.business_type || "");
