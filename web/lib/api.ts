@@ -1922,6 +1922,10 @@ export interface BlogPost {
   created_at: string;
   updated_at: string;
   published_at?: string;
+  /** Calendar generation metadata */
+  calendar_week?: number;
+  calendar_day?: string;
+  word_count?: number;
 }
 
 export interface BlogGenerateResult {
