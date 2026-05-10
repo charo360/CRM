@@ -60,7 +60,10 @@ function stripExtension(name: string) {
 }
 
 function defaultDatetimeLocal(): string {
-  return new Date(Date.now() + 3600_000).toISOString().slice(0, 16);
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
 }
 
 function newDraft(partial: Partial<BulkDraft> & Pick<BulkDraft, "key">): BulkDraft {
@@ -230,11 +233,21 @@ export function BulkScheduleSection({ onCommitted }: { onCommitted: () => void }
   }
 
   async function scheduleAll() {
-    const ready = drafts.filter((r) => r.title.trim());
-    if (ready.length === 0) {
+    const withTitle = drafts.filter((r) => r.title.trim());
+    if (withTitle.length === 0) {
       toast.error("Add at least one row with a title (upload media, text-only, or link).");
       return;
     }
+
+    const missingCaption = withTitle.filter((r) => !r.body.trim());
+    if (missingCaption.length > 0) {
+      toast.error(
+        `${missingCaption.length} row${missingCaption.length > 1 ? "s are" : " is"} missing a caption. The API requires at least one character.`
+      );
+      return;
+    }
+
+    const ready = withTitle;
     setBusy(true);
     try {
       for (const r of ready) {
@@ -263,7 +276,7 @@ export function BulkScheduleSection({ onCommitted }: { onCommitted: () => void }
 
         await socialSchedulerApi.create({
           title: r.title.trim(),
-          body: r.body.trim() || " ",
+          body: r.body.trim(),
           channels: r.channels.length ? r.channels : ["facebook"],
           scheduled_at: new Date(r.scheduled_at).toISOString(),
           status: r.status,
@@ -568,11 +581,15 @@ export function BulkScheduleSection({ onCommitted }: { onCommitted: () => void }
                   </td>
                   <td className="p-2">
                     <textarea
-                      className="w-full min-w-[120px] rounded border border-slate-200 px-1.5 py-1 text-[11px] leading-snug"
+                      className={`w-full min-w-[120px] rounded border px-1.5 py-1 text-[11px] leading-snug ${
+                        r.title.trim() && !r.body.trim()
+                          ? "border-red-400 bg-red-50"
+                          : "border-slate-200"
+                      }`}
                       rows={2}
                       value={r.body}
                       onChange={(e) => updateDraft(r.key, { body: e.target.value })}
-                      placeholder="Caption"
+                      placeholder="Caption (required)"
                     />
                   </td>
                   <td className="p-2">
