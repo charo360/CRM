@@ -29,7 +29,7 @@ class ManualPublishRequest(BaseModel):
 
 
 def make_blog_router(db, get_current_user):
-    router = APIRouter(prefix="/api/blog", tags=["blog"])
+    router = APIRouter(prefix="/blog", tags=["blog"])
     blog_service = ZiloBlogService(db)
 
     # ── Create / activate a client blog ───────────────────────────────────────
