@@ -18,6 +18,32 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 
+class AutopilotAction(BaseModel):
+    customer_id: str
+    action: str
+    message: Optional[str] = None
+
+
+class CreateDealRoom(BaseModel):
+    title: str
+    document_id: Optional[str] = None
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    message: Optional[str] = None
+    valid_days: Optional[int] = 30
+
+
+class DealRoomUpdate(BaseModel):
+    status: Optional[str] = None
+
+
+class CompetitorAdd(BaseModel):
+    name: str
+    website: Optional[str] = None
+    industry: Optional[str] = None
+
+
+
 def _uid(user) -> str:
     return str(user["_id"])
 
@@ -313,11 +339,6 @@ def make_growth_router(db, user_dep):
 
         return {"queue": queue[:20], "total": len(queue)}
 
-    class AutopilotAction(BaseModel):
-        customer_id: str
-        action: str  # "approve" | "skip" | "edit"
-        message: Optional[str] = None
-
     @router.post("/autopilot/action")
     async def autopilot_action(body: AutopilotAction, user=Depends(user_dep)):
         """Approve (send), skip, or save-edited message for a queued follow-up."""
@@ -360,15 +381,6 @@ def make_growth_router(db, user_dep):
     # ════════════════════════════════════════════════════════════════════════
     # 4. DEAL ROOM — shareable proposal link with view tracking
     # ════════════════════════════════════════════════════════════════════════
-
-    class CreateDealRoom(BaseModel):
-        title: str
-        document_id: Optional[str] = None
-        file_url: Optional[str] = None
-        description: Optional[str] = None
-        recipient_name: Optional[str] = None
-        recipient_email: Optional[str] = None
-        expires_days: int = 30
 
     @router.post("/deal-room")
     async def create_deal_room(body: CreateDealRoom, user=Depends(user_dep)):
@@ -423,9 +435,6 @@ def make_growth_router(db, user_dep):
         room["_id"] = str(room["_id"])
         return room
 
-    class DealRoomUpdate(BaseModel):
-        status: Optional[str] = None  # "signed" | "declined"
-
     @router.patch("/deal-room/{deal_id}")
     async def update_deal_room(deal_id: str, body: DealRoomUpdate, user=Depends(user_dep)):
         uid = _uid(user)
@@ -438,11 +447,6 @@ def make_growth_router(db, user_dep):
     # ════════════════════════════════════════════════════════════════════════
     # 5. COMPETITOR INTELLIGENCE FEED
     # ════════════════════════════════════════════════════════════════════════
-
-    class CompetitorAdd(BaseModel):
-        name: str
-        website: Optional[str] = None
-        industry: Optional[str] = None
 
     @router.post("/competitors")
     async def add_competitor(body: CompetitorAdd, user=Depends(user_dep)):
