@@ -28,6 +28,13 @@ class ManualPublishRequest(BaseModel):
     client_id: str
 
 
+class ProvisionBlogRequest(BaseModel):
+    business_name: str
+    client_email: str
+    industry: str
+    location: str
+
+
 def make_blog_router(db, get_current_user):
     router = APIRouter(prefix="/blog", tags=["blog"])
     blog_service = ZiloBlogService(db)
@@ -74,6 +81,47 @@ def make_blog_router(db, get_current_user):
             "last_posted_at": last_posted.isoformat() if last_posted else None,
             "active": blog.get("active", True),
         }
+
+    # ── Auto-provision blog from settings (idempotent) ────────────────────────
+
+    @router.post("/provision")
+    async def provision_blog(req: ProvisionBlogRequest, user=Depends(get_current_user)):
+        """
+        Called automatically when the user saves Business Settings or completes onboarding.
+        Uses the user's own _id as client_id — idempotent, safe to call multiple times.
+        If blog already exists, returns it without recreating.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+
+        existing = await db.blogs.find_one({"client_id": user_id})
+        if existing:
+            last_posted = existing.get("last_posted_at")
+            return {
+                "status": "already_exists",
+                "connected": True,
+                "blog_url": existing.get("blog_url"),
+                "wp_slug": existing.get("wp_slug"),
+                "industry": existing.get("industry"),
+                "location": existing.get("location"),
+                "active": existing.get("active", True),
+                "posts_count": existing.get("posts_count", 0),
+                "last_posted_at": last_posted.isoformat() if last_posted else None,
+            }
+
+        try:
+            result = await blog_service.create_client_blog(
+                client_id=user_id,
+                business_name=req.business_name,
+                client_email=req.client_email,
+                industry=req.industry,
+                location=req.location,
+            )
+            return {**result, "status": "created", "connected": True}
+        except Exception as e:
+            logger.error(f"[blog/provision] {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     # ── My blog (current authenticated user) ──────────────────────────────────
 

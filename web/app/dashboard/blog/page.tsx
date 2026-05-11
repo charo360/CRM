@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { blogApi, type BlogStatus, type BlogPost } from "@/lib/api";
+import { blogApi, settingsApi, businessKnowledgeApi, type BlogStatus, type BlogPost } from "@/lib/api";
+import { getUser } from "@/lib/auth";
 import {
   Rss,
   Globe,
@@ -15,22 +16,8 @@ import {
   TrendingUp,
   Loader2,
   AlertCircle,
+  Settings,
 } from "lucide-react";
-
-const INDUSTRIES = [
-  { value: "startup", label: "Startup / Tech" },
-  { value: "retail", label: "Retail / Shop" },
-  { value: "restaurant", label: "Restaurant / Food" },
-  { value: "health", label: "Health / Wellness" },
-  { value: "beauty", label: "Beauty / Salon" },
-  { value: "real_estate", label: "Real Estate" },
-  { value: "education", label: "Education / Coaching" },
-  { value: "finance", label: "Finance / Accounting" },
-  { value: "legal", label: "Legal Services" },
-  { value: "logistics", label: "Logistics / Delivery" },
-  { value: "hospitality", label: "Hospitality / Hotel" },
-  { value: "services", label: "General Services" },
-];
 
 function Badge({ active }: { active: boolean }) {
   return (
@@ -47,6 +34,21 @@ function Badge({ active }: { active: boolean }) {
   );
 }
 
+const INDUSTRIES = [
+  { value: "startup", label: "Startup / Tech" },
+  { value: "retail", label: "Retail / Shop" },
+  { value: "restaurant", label: "Restaurant / Food" },
+  { value: "health", label: "Health / Wellness" },
+  { value: "beauty", label: "Beauty / Salon" },
+  { value: "real_estate", label: "Real Estate" },
+  { value: "education", label: "Education / Coaching" },
+  { value: "finance", label: "Finance / Accounting" },
+  { value: "legal", label: "Legal Services" },
+  { value: "logistics", label: "Logistics / Delivery" },
+  { value: "hospitality", label: "Hospitality / Hotel" },
+  { value: "services", label: "General Services" },
+];
+
 export default function BlogPage() {
   const [blog, setBlog] = useState<BlogStatus | null>(null);
   const [posts, setPosts] = useState<BlogPost[]>([]);
@@ -55,27 +57,67 @@ export default function BlogPage() {
   const [activating, setActivating] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
-  // Activate form state
+  // Pre-filled from business settings
   const [form, setForm] = useState({
     business_name: "",
     client_email: "",
-    industry: "startup",
+    industry: "services",
     location: "",
   });
 
   useEffect(() => {
-    fetchBlog();
+    loadAll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function fetchBlog() {
+  async function loadAll() {
     setLoading(true);
     try {
-      const data = await blogApi.getMyBlog();
-      setBlog(data);
-      if (data.connected && data.wp_slug) {
-        const postsData = await blogApi.getPosts(data.wp_slug);
+      // Load blog status + settings in parallel
+      const [blogData, settings, bk] = await Promise.all([
+        blogApi.getMyBlog(),
+        settingsApi.get(),
+        businessKnowledgeApi.get(),
+      ]);
+
+      setBlog(blogData);
+      if (blogData.connected && blogData.wp_slug) {
+        const postsData = await blogApi.getPosts(blogData.wp_slug);
         setPosts(postsData.posts ?? []);
+      }
+
+      // Pre-fill form from settings so user doesn't have to re-enter
+      const email = (getUser()?.email as string | undefined) || "";
+      const location = String((bk as Record<string,unknown>).business_location ?? "").trim()
+        || settings.country || "";
+      setForm({
+        business_name: settings.business_name || "",
+        client_email: email,
+        industry: settings.business_type || "services",
+        location,
+      });
+      setSettingsLoaded(true);
+
+      // If settings are complete and blog is not yet provisioned, auto-provision silently
+      if (!blogData.connected && settings.business_name?.trim() && location && email) {
+        try {
+          const result = await blogApi.provision({
+            business_name: settings.business_name.trim(),
+            client_email: email,
+            industry: settings.business_type || "services",
+            location,
+          });
+          if (result.connected) {
+            const refreshed = await blogApi.getMyBlog();
+            setBlog(refreshed);
+            if (refreshed.connected && refreshed.wp_slug) {
+              const postsData = await blogApi.getPosts(refreshed.wp_slug);
+              setPosts(postsData.posts ?? []);
+            }
+          }
+        } catch { /* non-fatal */ }
       }
     } catch {
       setError("Failed to load blog data.");
@@ -90,17 +132,14 @@ export default function BlogPage() {
     setError("");
     setSuccess("");
     try {
-      // Use user email as client_id seed
-      const clientId = `user-${Date.now()}`;
-      await blogApi.create({
-        client_id: clientId,
+      await blogApi.provision({
         business_name: form.business_name,
         client_email: form.client_email,
         industry: form.industry,
         location: form.location,
       });
       setSuccess("Blog activated! Your WordPress subsite is being set up.");
-      await fetchBlog();
+      await loadAll();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to activate blog.");
     } finally {
@@ -114,9 +153,9 @@ export default function BlogPage() {
     setError("");
     setSuccess("");
     try {
-      const result = await blogApi.publishNow(blog.wp_slug);
+      const result = await blogApi.publishNow(blog.wp_slug!);
       setSuccess(`Published: "${result.topic}"`);
-      await fetchBlog();
+      await loadAll();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to publish post.");
     } finally {
@@ -129,13 +168,13 @@ export default function BlogPage() {
     setError("");
     try {
       if (blog.active) {
-        await blogApi.deactivate(blog.wp_slug);
+        await blogApi.deactivate(blog.wp_slug!);
         setSuccess("Blog paused.");
       } else {
-        await blogApi.activate(blog.wp_slug);
+        await blogApi.activate(blog.wp_slug!);
         setSuccess("Blog resumed.");
       }
-      await fetchBlog();
+      await loadAll();
     } catch {
       setError("Failed to update blog status.");
     }
@@ -185,6 +224,21 @@ export default function BlogPage() {
             <Zap className="w-5 h-5 text-amber-500" />
             <h2 className="text-lg font-semibold text-slate-800">Activate Your Blog</h2>
           </div>
+
+          {/* Settings incomplete hint */}
+          {settingsLoaded && (!form.business_name || !form.location) && (
+            <div className="mb-5 flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+              <Settings className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+              <div>
+                <p className="font-semibold">Business settings are incomplete</p>
+                <p className="text-amber-700 mt-0.5">
+                  Fill in your business name and location in{" "}
+                  <a href="/dashboard/settings" className="underline font-medium">Settings</a>
+                  {" "}— Autoblog will activate automatically when you save.
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="mb-6 p-4 bg-indigo-50 rounded-xl text-sm text-indigo-700 space-y-1">
             <p className="font-semibold">What happens when you activate:</p>

@@ -2285,18 +2285,21 @@ export interface BlogPost {
 }
 
 export const blogApi = {
-  getMyBlog: () => api.get<BlogStatus>("/blog/my"),
+  getMyBlog: () => api.get<BlogStatus & { connected: boolean }>("/blog/my"),
   getStatus: (clientId: string) => api.get<BlogStatus>(`/blog/status/${clientId}`),
   create: (body: { client_id: string; business_name: string; client_email: string; industry: string; location: string }) =>
     api.post<{ status: string; blog_url: string; wp_slug: string }>("/blog/create", body),
+  /** Idempotent — call after settings save or onboarding. Auto-uses user._id as client_id. */
+  provision: (body: { business_name: string; client_email: string; industry: string; location: string }) =>
+    api.post<{ status: string; connected: boolean; blog_url?: string; wp_slug?: string }>("/blog/provision", body),
   publishNow: (client_id: string) =>
     api.post<{ status: string; topic: string; post_url: string; post_id: number }>("/blog/publish-now", { client_id }),
   getPosts: (clientId: string) =>
     api.get<{ posts: BlogPost[] }>(`/blog/posts/${clientId}`),
   deactivate: (clientId: string) =>
-    api.post<{ status: string }>(`/blog/deactivate/${clientId}`, {}),
+    request<{ status: string }>(`/blog/deactivate/${clientId}`, { method: "PATCH" }),
   activate: (clientId: string) =>
-    api.post<{ status: string }>(`/blog/activate/${clientId}`, {}),
+    request<{ status: string }>(`/blog/activate/${clientId}`, { method: "PATCH" }),
 };
 
 export const seoAgentApi = {

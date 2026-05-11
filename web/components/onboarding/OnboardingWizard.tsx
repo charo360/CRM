@@ -16,8 +16,8 @@ import {
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
-import { settingsApi } from "@/lib/api";
-import { patchStoredUserSettings } from "@/lib/auth";
+import { settingsApi, blogApi } from "@/lib/api";
+import { patchStoredUserSettings, getUser } from "@/lib/auth";
 import { useBusiness } from "@/contexts/BusinessContext";
 import { cn } from "@/lib/utils";
 import { ZiloLogo } from "@/components/ZiloLogo";
@@ -78,12 +78,27 @@ export function OnboardingWizard() {
     if (match) setIndustry(match.id);
   }, [businessType, visible, loading]);
 
+  async function _provisionBlogFromSettings() {
+    try {
+      const s = await settingsApi.get();
+      const bk = await import("@/lib/api").then(m => m.businessKnowledgeApi.get());
+      const businessName = (s.business_name ?? "").trim();
+      const location = String((bk as Record<string,unknown>).business_location ?? "").trim() || s.country || "";
+      const industry = s.business_type || "services";
+      const email = (getUser()?.email as string | undefined) || "";
+      if (businessName && location && email) {
+        await blogApi.provision({ business_name: businessName, client_email: email, industry, location });
+      }
+    } catch { /* non-fatal */ }
+  }
+
   async function completeOnboarding() {
     setSaving(true);
     try {
       await settingsApi.update({ onboarding_v1_completed: true });
       patchStoredUserSettings({ onboarding_v1_completed: true });
       refreshSettings();
+      _provisionBlogFromSettings();
       setVisible(false);
       toast.success("You're all set — welcome to Zilo.");
     } catch (e) {
@@ -99,6 +114,7 @@ export function OnboardingWizard() {
       await settingsApi.update({ onboarding_v1_completed: true });
       patchStoredUserSettings({ onboarding_v1_completed: true });
       refreshSettings();
+      _provisionBlogFromSettings();
       setVisible(false);
       router.push(href);
       toast.success("Setup saved — you're in.");
