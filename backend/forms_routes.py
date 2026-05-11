@@ -25,23 +25,21 @@ def _make_slug(title: str) -> str:
     return f"{slug}-{uuid.uuid4().hex[:6]}"
 
 
+class CreateForm(BaseModel):
+    title: str
+    description: Optional[str] = None
+    fields: Optional[List[Dict[str, Any]]] = None
+    settings: Optional[Dict[str, Any]] = None
+    branding: Optional[Dict[str, Any]] = None
+    active: bool = True
+
+
+class SubmitForm(BaseModel):
+    data: Dict[str, Any]
+
+
 def make_forms_router(db, user_dep):
     router = APIRouter(prefix="/forms", tags=["forms"])
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Models
-    # ─────────────────────────────────────────────────────────────────────────
-
-    class CreateForm(BaseModel):
-        title: str
-        description: Optional[str] = None
-        fields: Optional[List[Dict[str, Any]]] = None
-        settings: Optional[Dict[str, Any]] = None
-        branding: Optional[Dict[str, Any]] = None
-        active: bool = True
-
-    class SubmitForm(BaseModel):
-        data: Dict[str, Any]
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public — serve & submit (NO auth — must be defined before /{form_id})
