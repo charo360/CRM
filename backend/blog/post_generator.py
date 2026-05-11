@@ -5,11 +5,12 @@ Generates full SEO-optimised blog posts via Claude Sonnet.
 import os
 import json
 import logging
+from typing import Optional
 from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
-_client: Anthropic | None = None
+_client: Optional[Anthropic] = None
 
 
 def _get_claude() -> Anthropic:

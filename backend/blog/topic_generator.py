@@ -4,11 +4,12 @@ Analyses a client's WhatsApp message history to derive high-intent blog topics.
 """
 import os
 import logging
+from typing import Optional
 from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
-_client: Anthropic | None = None
+_client: Optional[Anthropic] = None
 
 
 def _get_claude() -> Anthropic:

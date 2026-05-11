@@ -5,6 +5,7 @@ respecting per-plan weekly post limits.
 """
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -22,7 +23,7 @@ WEEKLY_LIMITS: dict = {
     "premium": 7,
 }
 
-_blog_scheduler: AsyncIOScheduler | None = None
+_blog_scheduler: Optional[AsyncIOScheduler] = None
 
 
 async def _get_posts_this_week(db, client_id: str) -> int:
