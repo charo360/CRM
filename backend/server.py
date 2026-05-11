@@ -11770,6 +11770,15 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"Failed to start digest scheduler: {e}")
 
+    # Start autoblogging scheduler (9 AM EAT daily)
+    try:
+        from blog.blog_scheduler import start_blog_scheduler
+        logging.info("Starting autoblog scheduler...")
+        start_blog_scheduler(db)
+        logging.info("Autoblog scheduler started - posts published daily at 9 AM EAT")
+    except Exception as e:
+        logging.error(f"Failed to start autoblog scheduler: {e}")
+
     # Start workflow deferred step runner
     try:
         from workflows.engine import deferred_runner as _wf_deferred_runner
@@ -13531,6 +13540,14 @@ try:
     logging.info("[seo-agent] routes mounted at /api/seo-agent/*")
 except Exception as _e:
     logging.error(f"[seo-agent] failed to mount routes: {_e}")
+
+# ── Zilo Autoblogging ─────────────────────────────────────────────────────────
+try:
+    from blog.routes import make_blog_router as _mk_blog_router
+    api_router.include_router(_mk_blog_router(db, get_current_user))
+    logging.info("[blog] routes mounted at /api/blog/*")
+except Exception as _e:
+    logging.error(f"[blog] failed to mount routes: {_e}")
 
 # NOTE: app.include_router(api_router) is deferred to end of file so all routes and
 # sub-routers are registered first (avoids missing routes with uvicorn --reload on Windows).
