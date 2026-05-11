@@ -2,8 +2,6 @@
 Growth Suite Routes — Daily Digest, AI Follow-up Autopilot, Deal Room,
 Competitor Intelligence, Voice Input, Client Portal
 """
-from __future__ import annotations
-
 import logging
 import uuid
 import os

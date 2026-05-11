@@ -2,8 +2,6 @@
 Form Builder — create shareable lead-capture forms.
 Submissions auto-create contacts in the CRM.
 """
-from __future__ import annotations
-
 import logging
 import re
 import uuid
