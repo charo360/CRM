@@ -2263,6 +2263,42 @@ export interface SeoAgentConversationDetail extends SeoAgentConversation {
   messages: { role: "user" | "assistant"; content: string; tool_steps?: SeoAgentToolStep[]; ts: string }[];
 }
 
+// ── Zilo Autoblogging ─────────────────────────────────────────────────────────
+
+export interface BlogStatus {
+  connected: boolean;
+  blog_url?: string;
+  wp_slug?: string;
+  industry?: string;
+  location?: string;
+  plan?: string;
+  posts_count?: number;
+  last_posted_at?: string;
+  active?: boolean;
+}
+
+export interface BlogPost {
+  title: string;
+  post_url: string;
+  published_at: string;
+  keywords?: string[];
+}
+
+export const blogApi = {
+  getMyBlog: () => api.get<BlogStatus>("/blog/my"),
+  getStatus: (clientId: string) => api.get<BlogStatus>(`/blog/status/${clientId}`),
+  create: (body: { client_id: string; business_name: string; client_email: string; industry: string; location: string }) =>
+    api.post<{ status: string; blog_url: string; wp_slug: string }>("/blog/create", body),
+  publishNow: (client_id: string) =>
+    api.post<{ status: string; topic: string; post_url: string; post_id: number }>("/blog/publish-now", { client_id }),
+  getPosts: (clientId: string) =>
+    api.get<{ posts: BlogPost[] }>(`/blog/posts/${clientId}`),
+  deactivate: (clientId: string) =>
+    api.post<{ status: string }>(`/blog/deactivate/${clientId}`, {}),
+  activate: (clientId: string) =>
+    api.post<{ status: string }>(`/blog/activate/${clientId}`, {}),
+};
+
 export const seoAgentApi = {
   chat: (message: string, conversation_id?: string, history?: { role: string; content: string }[]) =>
     api.post<SeoAgentChatResponse>("/seo-agent/chat", {
