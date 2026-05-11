@@ -13547,7 +13547,8 @@ try:
     api_router.include_router(_mk_blog_router(db, get_current_user))
     logging.info("[blog] routes mounted at /api/blog/*")
 except Exception as _e:
-    logging.error(f"[blog] failed to mount routes: {_e}")
+    import traceback
+    logging.error(f"[blog] failed to mount routes: {_e}\n{traceback.format_exc()}")
 
 # NOTE: app.include_router(api_router) is deferred to end of file so all routes and
 # sub-routers are registered first (avoids missing routes with uvicorn --reload on Windows).
