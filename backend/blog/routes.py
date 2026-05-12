@@ -5,6 +5,7 @@ Prefix: /api/blog
 import base64
 import logging
 import os
+import re
 from datetime import datetime
 
 import httpx
@@ -17,6 +18,79 @@ from blog.post_generator import generate_blog_post
 from blog.blog_scheduler import publish_daily_posts
 
 logger = logging.getLogger(__name__)
+
+
+def _inline_md(text: str) -> str:
+    """Convert inline markdown (bold, italic, code) to HTML."""
+    text = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
+    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    return text
+
+
+def markdown_to_wp_html(content: str) -> str:
+    """
+    Convert markdown blog content to clean HTML for WordPress.
+    Strips the leading # H1 (WP renders the post title itself).
+    Pure Python — no external packages.
+    """
+    # Strip ALL leading H1 lines (title may repeat)
+    content = re.sub(r"^#+\s+[^\n]*\n?", "", content, count=1).lstrip()
+
+    lines = content.split("\n")
+    html_parts: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Headings
+        h_match = re.match(r"^(#{2,6})\s+(.*)", line)
+        if h_match:
+            level = len(h_match.group(1))
+            html_parts.append(f"<h{level}>{_inline_md(h_match.group(2))}</h{level}>")
+            i += 1
+            continue
+
+        # Unordered list
+        if re.match(r"^[\*\-]\s+", line):
+            items = []
+            while i < len(lines) and re.match(r"^[\*\-]\s+", lines[i]):
+                items.append(f"<li>{_inline_md(lines[i][2:])}</li>")
+                i += 1
+            html_parts.append("<ul>" + "".join(items) + "</ul>")
+            continue
+
+        # Ordered list
+        if re.match(r"^\d+\.\s+", line):
+            items = []
+            while i < len(lines) and re.match(r"^\d+\.\s+", lines[i]):
+                items.append(f"<li>{_inline_md(re.sub(r'^\\d+\\.\\s+', '', lines[i]))}</li>")
+                i += 1
+            html_parts.append("<ol>" + "".join(items) + "</ol>")
+            continue
+
+        # Blockquote
+        if line.startswith("> "):
+            html_parts.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
+            i += 1
+            continue
+
+        # Blank line
+        if line.strip() == "":
+            i += 1
+            continue
+
+        # Paragraph — collect consecutive plain lines
+        para_lines = []
+        while i < len(lines) and lines[i].strip() != "" and not re.match(r"^#{1,6}\s+", lines[i]) and not re.match(r"^[\*\-]\s+", lines[i]) and not re.match(r"^\d+\.\s+", lines[i]):
+            para_lines.append(_inline_md(lines[i]))
+            i += 1
+        if para_lines:
+            html_parts.append("<p>" + "<br/>\n".join(para_lines) + "</p>")
+
+    return "\n".join(html_parts)
 
 
 def _canonical_blog_url(blog: dict) -> str | None:
@@ -251,11 +325,13 @@ def make_blog_router(db, get_current_user):
 
         try:
             topic = await generate_topic_from_chats(db, req.client_id)
+            posts_count = blog.get("posts_count", 0)
             post = await generate_blog_post(
                 business_name=blog["business_name"],
                 industry=blog["industry"],
                 location=blog["location"],
                 topic=topic,
+                posts_count=posts_count,
             )
             result = await blog_service.publish_post(
                 wp_slug=blog["wp_slug"],
@@ -269,6 +345,7 @@ def make_blog_router(db, get_current_user):
                 "topic": topic,
                 "post_url": result["post_url"],
                 "post_id": result["post_id"],
+                "template_used": post.get("template_used", ""),
             }
         except Exception as e:
             logger.error(f"[blog/publish-now] {e}")
@@ -294,12 +371,14 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(status_code=400, detail="Blog is paused. Activate it first.")
 
         blog_url_out = await _blog_url_for_response(db, blog)
-        excerpt = req.excerpt or (req.content[:155].replace("<", "").replace(">", "") + "…")
+        # Convert markdown → HTML and strip leading H1 (WP renders the title itself)
+        html_content = markdown_to_wp_html(req.content)
+        excerpt = req.excerpt or (req.content[:155].replace("<", "").replace(">", "").strip() + "…")
         try:
             result = await blog_service.publish_post(
                 wp_slug=blog["wp_slug"],
                 title=req.title,
-                content=req.content,
+                content=html_content,
                 excerpt=excerpt,
                 keywords=req.keywords,
             )

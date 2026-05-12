@@ -1,8 +1,7 @@
 "use client";
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import BlogRenderer from "@/components/seo/BlogRenderer";
 import {
   seoApi,
   blogApi,
@@ -990,6 +989,61 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
   );
 }
 
+// ── Blog Templates ────────────────────────────────────────────────────────────
+
+const BLOG_TEMPLATES = [
+  {
+    id: "how-to",
+    name: "How-to Guide",
+    icon: "🔧",
+    desc: "Step-by-step instructions",
+    structure: "Intro → Steps 1-5 → Pro tips → FAQ → Conclusion",
+    hint: "Structure as a practical how-to guide with clearly numbered steps, a tips box, and a strong conclusion with a CTA.",
+  },
+  {
+    id: "listicle",
+    name: "Top 5 List",
+    icon: "📋",
+    desc: "Engaging numbered list",
+    structure: "Hook → 5-7 items with details → Summary → CTA",
+    hint: "Structure as a compelling listicle with a punchy hook, numbered items each with a heading and 2-3 sentences, and a summary.",
+  },
+  {
+    id: "case-study",
+    name: "Success Story",
+    icon: "⭐",
+    desc: "Problem → Solution → Results",
+    structure: "The Challenge → Our Approach → Results → Takeaways",
+    hint: "Structure as a case study: relatable problem, the solution taken, concrete results with numbers, and key takeaways.",
+  },
+  {
+    id: "local",
+    name: "Local Authority",
+    icon: "📍",
+    desc: "Rank in your city/area",
+    structure: "Local intro → Area insights → Expert tips → Local CTA",
+    hint: "Reference the specific city or region, provide local context and tips, and establish the business as a trusted local authority.",
+  },
+  {
+    id: "educational",
+    name: "Deep Dive",
+    icon: "🎓",
+    desc: "Educate your audience",
+    structure: "What is it? → Why it matters → How it works → Common mistakes → FAQ",
+    hint: "Structure as an educational article: explain concepts clearly, use examples, debunk common myths, and provide actionable takeaways.",
+  },
+  {
+    id: "comparison",
+    name: "Comparison / vs.",
+    icon: "⚖️",
+    desc: "Compare options clearly",
+    structure: "Overview → Option A vs B → Pros & Cons table → Verdict",
+    hint: "Structure as a comparison piece: introduce the options, compare them across key criteria with a pros/cons style, and give a clear recommendation.",
+  },
+] as const;
+
+type BlogTemplateId = (typeof BLOG_TEMPLATES)[number]["id"];
+
 // ── Blog Tab ──────────────────────────────────────────────────────────────────
 
 function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null; prefillTopic?: CalendarWritePayload }) {
@@ -1010,6 +1064,11 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
   const [generated, setGenerated] = useState<BlogGenerateResult | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [selectedTemplate, setSelectedTemplate] = useState<BlogTemplateId | null>(null);
+
+  // One-click publish-to-site state
+  const [publishingSiteId, setPublishingSiteId] = useState<string | null>(null);
+  const [publishedUrls, setPublishedUrls] = useState<Record<string, string>>({});
 
   // Read modal
   const [readPost, setReadPost] = useState<BlogPost | null>(null);
@@ -1076,12 +1135,33 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
     }).catch(() => {});
   }, [publishPlatform]);
 
+  async function publishToSite(post: BlogPost) {
+    setPublishingSiteId(post.id);
+    try {
+      const result = await blogApi.publishFromSeo({
+        title: post.title,
+        content: post.content,
+        keywords: post.keywords ?? [],
+        excerpt: post.meta_description,
+      });
+      setPublishedUrls(prev => ({ ...prev, [post.id]: result.post_url }));
+      toast.success("Published to your website!");
+      await loadPosts();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Publish failed — is Autoblog activated?");
+    } finally {
+      setPublishingSiteId(null);
+    }
+  }
+
   async function generate() {
     if (!topic.trim()) return;
     setGenerating(true); setErr(""); setGenerated(null);
+    const tpl = BLOG_TEMPLATES.find(t => t.id === selectedTemplate);
+    const enrichedTopic = tpl ? `${topic.trim()} [${tpl.hint}]` : topic.trim();
     try {
       const res = await seoApi.generateBlog({
-        topic: topic.trim(),
+        topic: enrichedTopic,
         keywords: keywords.split(",").map(k => k.trim()).filter(Boolean),
         tone,
         length,
@@ -1254,6 +1334,38 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
             </p>
           </div>
 
+          {/* Template picker */}
+          <div>
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Article style</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {BLOG_TEMPLATES.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setSelectedTemplate(selectedTemplate === t.id ? null : t.id)}
+                  className={cn(
+                    "rounded-xl border p-3 text-left transition-all",
+                    selectedTemplate === t.id
+                      ? "border-emerald-500 bg-emerald-50 shadow-sm"
+                      : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                  )}
+                >
+                  <span className="text-lg leading-none">{t.icon}</span>
+                  <p className="text-xs font-semibold text-slate-800 mt-1.5">{t.name}</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">{t.desc}</p>
+                </button>
+              ))}
+            </div>
+            {selectedTemplate && (() => {
+              const tpl = BLOG_TEMPLATES.find(t => t.id === selectedTemplate);
+              return tpl ? (
+                <p className="mt-2 rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2 text-[11px] text-emerald-800">
+                  <span className="font-semibold">Structure:</span> {tpl.structure}
+                </p>
+              ) : null;
+            })()}
+          </div>
+
           {topicStarters.length > 0 && (
             <div>
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Ideas for you</p>
@@ -1381,37 +1493,55 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
 
           {generated && (
             <div className="space-y-3 pt-2 border-t border-slate-100">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-base font-bold text-slate-800">{generated.title}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">{generated.word_count} words · {(generated.tags ?? []).slice(0, 3).join(", ")}</p>
-                </div>
+              {/* Action bar */}
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      const saved = await seoApi.createPost({
+                        title: generated.title, content: generated.content,
+                        meta_title: generated.meta_title, meta_description: generated.meta_description,
+                        image_url: imageUrl || undefined,
+                        keywords: generated.keywords || [], tags: generated.tags,
+                        status: "draft", platform: "internal",
+                      });
+                      const result = await blogApi.publishFromSeo({
+                        title: saved.title, content: saved.content,
+                        keywords: saved.keywords ?? [], excerpt: saved.meta_description,
+                      });
+                      toast.success("Published to your website!");
+                      setPublishedUrls(prev => ({ ...prev, [saved.id]: result.post_url }));
+                      await loadPosts(); setTab("posts"); setGenerated(null); setImageUrl("");
+                    } catch (e) { toast.error(e instanceof Error ? e.message : "Publish failed"); }
+                    finally { setSaving(false); }
+                  }}
+                  disabled={saving}
+                  className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-xl font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {saving ? "Publishing…" : "🚀 Publish to My Site"}
+                </button>
                 <button
                   onClick={saveAsDraft}
                   disabled={saving}
-                  className="px-3 py-1.5 bg-slate-800 text-white text-xs rounded-lg font-medium hover:bg-slate-900 disabled:opacity-50 shrink-0"
+                  className="px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-xl font-medium hover:bg-slate-200 disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save as Draft"}
                 </button>
               </div>
 
-              {imageUrl && (
-                <div className="rounded-3xl overflow-hidden border border-slate-200 bg-slate-50 mb-3">
-                  <img src={imageUrl} alt={generated.title} className="w-full h-48 object-cover" />
-                </div>
-              )}
-              {generated.meta_title && (
-                <div className="bg-slate-50 rounded-lg p-3 space-y-1">
-                  <p className="text-xs font-semibold text-slate-600">SEO Meta</p>
-                  <p className="text-xs text-slate-700"><span className="font-medium">Title:</span> {generated.meta_title}</p>
-                  <p className="text-xs text-slate-500">{generated.meta_description}</p>
-                </div>
-              )}
-
-              <div className="bg-white border border-slate-200 rounded-lg p-4 max-h-96 overflow-y-auto">
-                <div className="prose prose-sm prose-slate max-w-none prose-headings:font-semibold prose-p:text-xs prose-li:text-xs prose-p:leading-relaxed">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{generated.content}</ReactMarkdown>
-                </div>
+              {/* Beautiful rendered article */}
+              <div className="max-h-[600px] overflow-y-auto rounded-xl">
+                <BlogRenderer
+                  title={generated.title}
+                  content={generated.content}
+                  templateId={selectedTemplate ?? undefined}
+                  wordCount={generated.word_count}
+                  tags={generated.tags}
+                  keywords={generated.keywords}
+                  metaTitle={generated.meta_title}
+                  metaDescription={generated.meta_description}
+                />
               </div>
             </div>
           )}
@@ -1467,12 +1597,24 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                       Edit
                     </button>
                     {post.status !== "published" && (
-                      <button
-                        onClick={() => { setPublishPost(post); setPublishResult(""); }}
-                        className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
-                      >
-                        Publish
-                      </button>
+                      publishedUrls[post.id] ? (
+                        <a
+                          href={publishedUrls[post.id]}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium whitespace-nowrap"
+                        >
+                          ✓ View live →
+                        </a>
+                      ) : (
+                        <button
+                          onClick={() => publishToSite(post)}
+                          disabled={publishingSiteId === post.id}
+                          className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-60 font-medium whitespace-nowrap"
+                        >
+                          {publishingSiteId === post.id ? "Publishing…" : "🚀 Publish"}
+                        </button>
+                      )
                     )}
                     <button
                       onClick={() => deletePost(post.id)}
@@ -1511,60 +1653,41 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
               >×</button>
             </div>
 
-            {readPost.image_url && (
-              <div className="w-full overflow-hidden bg-slate-100 border-b border-slate-200">
-                <img src={readPost.image_url} alt={readPost.title} className="w-full h-56 object-cover" />
-              </div>
-            )}
-
-            {/* SEO meta bar */}
-            {(readPost.meta_title || readPost.meta_description) && (
-              <div className="px-5 py-3 bg-slate-50 border-b border-slate-100 shrink-0 space-y-0.5">
-                {readPost.meta_title && (
-                  <p className="text-xs text-slate-600"><span className="font-semibold">Meta title:</span> {readPost.meta_title}</p>
-                )}
-                {readPost.meta_description && (
-                  <p className="text-xs text-slate-500">{readPost.meta_description}</p>
-                )}
-                {(readPost.tags ?? []).length > 0 && (
-                  <div className="flex gap-1 flex-wrap pt-1">
-                    {(readPost.tags ?? []).map(t => (
-                      <span key={t} className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded border border-emerald-100">{t}</span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Body */}
-            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 space-y-2">
-              {(readPost.keywords ?? []).length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Keywords:</span>
-                  {(readPost.keywords ?? []).map((kw, idx) => (
-                    <span key={`${readPost.id}-preview-keyword-${idx}`} className="text-[11px] px-2 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
-                  ))}
-                </div>
-              )}
-              {readPost.calendar_week != null && (
+            {readPost.calendar_week != null && (
+              <div className="px-5 py-2 bg-slate-50 border-b border-slate-100 shrink-0">
                 <p className="text-[10px] text-slate-500 uppercase tracking-wide">Calendar post · Week {readPost.calendar_week}{readPost.calendar_day ? ` · ${readPost.calendar_day}` : ""}</p>
-              )}
-            </div>
-            <div className="flex-1 overflow-y-auto px-6 py-5">
-              <div className="prose prose-sm prose-slate max-w-none prose-headings:font-semibold prose-h1:text-xl prose-h2:text-base prose-h2:mt-6 prose-p:leading-relaxed prose-li:text-sm prose-p:text-sm">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{readPost.content}</ReactMarkdown>
               </div>
+            )}
+            <div className="flex-1 overflow-y-auto p-4">
+              <BlogRenderer
+                title={readPost.title}
+                content={readPost.content}
+                templateId={(readPost as BlogPost & { template_id?: string }).template_id}
+                tags={readPost.tags}
+                keywords={readPost.keywords}
+                metaTitle={readPost.meta_title}
+                metaDescription={readPost.meta_description}
+                publishedUrl={publishedUrls[readPost.id]}
+              />
             </div>
 
             {/* Footer actions */}
-            <div className="px-5 py-3 border-t border-slate-100 flex items-center gap-2 shrink-0 bg-white">
+            <div className="px-5 py-3 border-t border-slate-100 flex items-center gap-2 shrink-0 bg-white flex-wrap">
               {readPost.status !== "published" && (
-                <button
-                  onClick={() => { setPublishPost(readPost); setPublishResult(""); setReadPost(null); }}
-                  className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg font-medium hover:bg-emerald-700"
-                >
-                  Publish
-                </button>
+                publishedUrls[readPost.id] ? (
+                  <a href={publishedUrls[readPost.id]} target="_blank" rel="noopener noreferrer"
+                    className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg font-medium hover:bg-green-700">
+                    ✓ View live →
+                  </a>
+                ) : (
+                  <button
+                    onClick={async () => { await publishToSite(readPost); setReadPost(null); }}
+                    disabled={publishingSiteId === readPost.id}
+                    className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    {publishingSiteId === readPost.id ? "Publishing…" : "🚀 Publish to My Site"}
+                  </button>
+                )
               )}
               <button
                 onClick={() => {
@@ -1692,7 +1815,7 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
         </div>
       )}
 
-      {/* Publish Modal */}
+      {/* Publish Modal — simplified: Zilo site is primary, custom WP is advanced */}
       {publishPost && (
         <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
@@ -1702,49 +1825,74 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
             </div>
             <p className="text-sm text-slate-600 font-medium truncate">{publishPost.title}</p>
 
-            <div>
-              <label className="text-xs text-slate-500 font-medium block mb-1">Platform</label>
-              <select
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                value={publishPlatform}
-                onChange={e => setPublishPlatform(e.target.value)}
+            {/* Primary: publish to provisioned Zilo site */}
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 space-y-3">
+              <p className="text-xs font-semibold text-emerald-900">Publish to My Website</p>
+              <p className="text-xs text-emerald-800">One click — posts directly to your Zilo website. No credentials needed.</p>
+              {publishResult && !publishResult.startsWith("Error") && (
+                <a href={publishResult.replace("Published! ", "")} target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-green-700 underline font-medium block">
+                  ✓ View live post →
+                </a>
+              )}
+              {publishResult?.startsWith("Error") && (
+                <p className="text-xs text-red-600">{publishResult}</p>
+              )}
+              <button
+                onClick={async () => {
+                  setPublishing(true); setPublishResult("");
+                  try {
+                    const result = await blogApi.publishFromSeo({
+                      title: publishPost.title, content: publishPost.content,
+                      keywords: publishPost.keywords ?? [], excerpt: publishPost.meta_description,
+                    });
+                    setPublishResult(`Published! ${result.post_url}`);
+                    setPublishedUrls(prev => ({ ...prev, [publishPost.id]: result.post_url }));
+                    toast.success("Published to your website!");
+                    await loadPosts();
+                  } catch (e) { setPublishResult(`Error: ${e instanceof Error ? e.message : "Failed"}`); }
+                  finally { setPublishing(false); }
+                }}
+                disabled={publishing}
+                className="w-full py-2.5 bg-emerald-600 text-white text-sm rounded-xl font-semibold hover:bg-emerald-700 disabled:opacity-50"
               >
-                <option value="wordpress">WordPress</option>
-                <option value="shopify">Shopify</option>
-              </select>
+                {publishing ? "Publishing…" : "🚀 Publish to My Site"}
+              </button>
             </div>
 
-            {publishPlatform === "wordpress" && (
-              <div className="space-y-2">
-                {credsSaved && <p className="text-[10px] text-emerald-600 font-medium">✓ Credentials loaded from last time</p>}
-                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="WordPress URL (e.g. https://yoursite.com)" value={wpUrl} onChange={e => setWpUrl(e.target.value)} />
-                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Username" value={wpUser} onChange={e => setWpUser(e.target.value)} />
-                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Application Password" type="password" value={wpPass} onChange={e => setWpPass(e.target.value)} />
-                <p className="text-xs text-slate-400">Use a WordPress Application Password (Users → Profile → Application Passwords)</p>
+            {/* Advanced: manual credentials */}
+            <details className="group rounded-xl border border-slate-200">
+              <summary className="cursor-pointer px-4 py-3 text-xs font-semibold text-slate-500 list-none flex items-center justify-between [&::-webkit-details-marker]:hidden">
+                Advanced — publish to another WordPress / Shopify
+                <span className="text-slate-400 group-open:rotate-180 transition-transform">▼</span>
+              </summary>
+              <div className="px-4 pb-4 pt-1 space-y-3 border-t border-slate-100">
+                <select className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  value={publishPlatform} onChange={e => setPublishPlatform(e.target.value)}>
+                  <option value="wordpress">WordPress</option>
+                  <option value="shopify">Shopify</option>
+                </select>
+                {publishPlatform === "wordpress" && (
+                  <>
+                    {credsSaved && <p className="text-[10px] text-emerald-600 font-medium">✓ Credentials loaded from last time</p>}
+                    <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="WordPress URL" value={wpUrl} onChange={e => setWpUrl(e.target.value)} />
+                    <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Username" value={wpUser} onChange={e => setWpUser(e.target.value)} />
+                    <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Application Password" type="password" value={wpPass} onChange={e => setWpPass(e.target.value)} />
+                  </>
+                )}
+                {publishPlatform === "shopify" && (
+                  <>
+                    {credsSaved && <p className="text-[10px] text-emerald-600 font-medium">✓ Credentials loaded from last time</p>}
+                    <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="mystore.myshopify.com" value={shopifyDomain} onChange={e => setShopifyDomain(e.target.value)} />
+                    <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Access Token" type="password" value={shopifyToken} onChange={e => setShopifyToken(e.target.value)} />
+                  </>
+                )}
+                <button onClick={doPublish} disabled={publishing}
+                  className="w-full py-2 bg-slate-800 text-white text-sm rounded-lg font-medium hover:bg-slate-900 disabled:opacity-50">
+                  {publishing ? "Publishing…" : `Publish to ${publishPlatform === "wordpress" ? "WordPress" : "Shopify"}`}
+                </button>
               </div>
-            )}
-
-            {publishPlatform === "shopify" && (
-              <div className="space-y-2">
-                {credsSaved && <p className="text-[10px] text-emerald-600 font-medium">✓ Credentials loaded from last time</p>}
-                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Shopify domain (e.g. mystore.myshopify.com)" value={shopifyDomain} onChange={e => setShopifyDomain(e.target.value)} />
-                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Access Token" type="password" value={shopifyToken} onChange={e => setShopifyToken(e.target.value)} />
-              </div>
-            )}
-
-            {publishResult && (
-              <p className={`text-xs rounded-lg p-2 ${publishResult.startsWith("Error") ? "bg-red-50 text-red-600" : "bg-green-50 text-green-700"}`}>
-                {publishResult}
-              </p>
-            )}
-
-            <button
-              onClick={doPublish}
-              disabled={publishing}
-              className="w-full py-2 bg-emerald-600 text-white text-sm rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50"
-            >
-              {publishing ? "Publishing…" : `Publish to ${publishPlatform === "wordpress" ? "WordPress" : "Shopify"}`}
-            </button>
+            </details>
           </div>
         </div>
       )}

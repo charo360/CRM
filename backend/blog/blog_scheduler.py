@@ -60,11 +60,13 @@ async def publish_daily_posts(db) -> None:
                 continue
 
             topic = await generate_topic_from_chats(db, client_id)
+            posts_count = blog.get("posts_count", 0)
             post = await generate_blog_post(
                 business_name=business_name,
                 industry=blog.get("industry", "services"),
                 location=blog.get("location", "Nairobi"),
                 topic=topic,
+                posts_count=posts_count,
             )
             result = await blog_service.publish_post(
                 wp_slug=blog["wp_slug"],

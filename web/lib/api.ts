@@ -2319,7 +2319,7 @@ export const blogApi = {
   provision: (body: { business_name: string; client_email: string; industry: string; location: string }) =>
     api.post<{ status: string; connected: boolean; blog_url?: string; wp_slug?: string }>("/blog/provision", body),
   publishNow: (client_id: string) =>
-    api.post<{ status: string; topic: string; post_url: string; post_id: number }>("/blog/publish-now", { client_id }),
+    api.post<{ status: string; topic: string; post_url: string; post_id: number; template_used?: string }>("/blog/publish-now", { client_id }),
   getPosts: (clientId: string) =>
     api.get<{ posts: AutoblogPost[] }>(`/blog/posts/${clientId}`),
   deactivate: (clientId: string) =>

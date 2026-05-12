@@ -166,7 +166,8 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
     setSuccess("");
     try {
       const result = await blogApi.publishNow(cid);
-      setSuccess(`Published: "${result.topic}"`);
+      const tplLabel = result.template_used ? ` · ${result.template_used.replace(/-/g, " ")} style` : "";
+      setSuccess(`Published: "${result.topic}"${tplLabel}`);
       await loadAll();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to publish post.");
