@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   seoApi,
-  seoAgentApi,
+  blogApi,
   type SeoAudit,
   type SeoAuditIssue,
   type SeoKeyword,
@@ -14,7 +14,6 @@ import {
   type ContentCalendarItem,
   type SeoSummary,
   type SeoBusinessContext,
-  type SeoAgentToolStep,
 } from "@/lib/api";
 import OnboardingChecklist from "@/components/seo/OnboardingChecklist";
 import SuccessMetrics from "@/components/seo/SuccessMetrics";
@@ -24,10 +23,83 @@ import AutoScheduler from "@/components/seo/AutoScheduler";
 import AnalyticsIntegration from "@/components/seo/AnalyticsIntegration";
 import LocalSEO from "@/components/seo/LocalSEO";
 import SocialIntegration from "@/components/seo/SocialIntegration";
+import SeoHubWorkspace from "@/components/seo/SeoHubWorkspace";
+import { toast } from "sonner";
+import AutoblogPanel from "@/components/seo/AutoblogPanel";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import Link from "next/link";
+import type { LucideIcon } from "lucide-react";
+import {
+  Activity,
+  ArrowRight,
+  BarChart3,
+  CalendarDays,
+  Clock,
+  MapPin,
+  PenLine,
+  Rss,
+  Search,
+  Share2,
+  Sparkles,
+  TrendingUp,
+  Wrench,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 
-type Tab = "overview" | "audit" | "keywords" | "blog" | "calendar" | "agent" | "roi" | "scheduler" | "analytics" | "local" | "social";
+type Tab =
+  | "hub"
+  | "overview"
+  | "audit"
+  | "keywords"
+  | "blog"
+  | "calendar"
+  | "autoblog"
+  | "roi"
+  | "scheduler"
+  | "analytics"
+  | "local"
+  | "social";
+
+const SEO_TABS: Tab[] = [
+  "hub",
+  "keywords",
+  "blog",
+  "calendar",
+  "scheduler",
+  "autoblog",
+  "social",
+  "local",
+  "analytics",
+  "overview",
+  "audit",
+  "roi",
+];
+
+function normalizeSeoTabParam(raw: string | null): Tab {
+  if (!raw) return "hub";
+  if (raw === "agent") return "hub";
+  if (SEO_TABS.includes(raw as Tab)) return raw as Tab;
+  return "hub";
+}
+
+/** Left-to-right = typical workflow: coach → research → write → plan → automate → distribute → measure → improve */
+const SEO_TAB_DEFS: { id: Tab; label: string; short: string; desc: string; Icon: LucideIcon }[] = [
+  { id: "hub", label: "Start here", short: "Start", desc: "Coach & tracker", Icon: Sparkles },
+  { id: "keywords", label: "Keywords", short: "Keys", desc: "Research topics", Icon: Search },
+  { id: "blog", label: "Write posts", short: "Write", desc: "Drafts & articles", Icon: PenLine },
+  { id: "calendar", label: "Calendar", short: "Plan", desc: "Content calendar", Icon: CalendarDays },
+  { id: "scheduler", label: "Schedule", short: "Sched", desc: "When posts go live", Icon: Clock },
+  { id: "autoblog", label: "Autoblog", short: "Auto", desc: "Hands-off blog site", Icon: Rss },
+  { id: "social", label: "Social", short: "Social", desc: "Share & syndicate", Icon: Share2 },
+  { id: "local", label: "Local SEO", short: "Local", desc: "Maps & listings", Icon: MapPin },
+  { id: "analytics", label: "Analytics", short: "Data", desc: "Traffic & tracking", Icon: Activity },
+  { id: "overview", label: "Stats", short: "Stats", desc: "Progress overview", Icon: BarChart3 },
+  { id: "audit", label: "Audit", short: "Audit", desc: "Site health check", Icon: Wrench },
+  { id: "roi", label: "ROI", short: "ROI", desc: "Results & value", Icon: TrendingUp },
+];
+
 type CalendarWritePayload = { title: string; keywords: string[] };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -81,42 +153,7 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
   );
 }
 
-function SeoQuickNav({ active, onJump }: { active: Tab; onJump: (t: Tab) => void }) {
-  const items: { id: Tab; label: string; desc?: string }[] = [
-    { id: "agent", label: "Coach", desc: "AI guidance" },
-    { id: "keywords", label: "Keywords", desc: "Research" },
-    { id: "audit", label: "Audit", desc: "Analysis" },
-    { id: "blog", label: "Blog", desc: "Content" },
-    { id: "calendar", label: "Calendar", desc: "Planning" },
-    { id: "overview", label: "Stats", desc: "Overview" },
-    { id: "roi", label: "ROI", desc: "Performance" },
-    { id: "scheduler", label: "Schedule", desc: "Auto-publish" },
-    { id: "analytics", label: "Analytics", desc: "Data" },
-    { id: "local", label: "Local SEO", desc: "Listings" },
-    { id: "social", label: "Social", desc: "Sharing" },
-  ];
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 pt-1">
-      {items.map(({ id, label, desc }) => (
-        <button
-          key={id}
-          type="button"
-          onClick={() => onJump(id)}
-          className={`text-left p-3 rounded-lg border transition-colors ${
-            active === id
-              ? "bg-emerald-600 border-emerald-600 text-white shadow-sm"
-              : "bg-white/80 border-emerald-100 text-slate-600 hover:border-emerald-200 hover:bg-emerald-50/50"
-          }`}
-        >
-          <span className="block text-sm font-medium">{label}</span>
-          {desc && <span className="block text-xs opacity-70">{desc}</span>}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function BusinessSnapshotBar({ profile, activeTab, onJump }: { profile: SeoBusinessContext | null; activeTab: Tab; onJump: (t: Tab) => void }) {
+function BusinessSnapshotBar({ profile }: { profile: SeoBusinessContext | null }) {
   const name = profile?.business_name?.trim();
   const industry = profile?.business_type?.trim()?.replace(/-/g, " ");
   const loc = profile?.location?.trim();
@@ -124,41 +161,35 @@ function BusinessSnapshotBar({ profile, activeTab, onJump }: { profile: SeoBusin
   const linedUp = Boolean(name || industry || loc);
 
   return (
-    <div className="rounded-xl border border-emerald-100/80 bg-white/70 backdrop-blur-sm px-4 py-3 sm:px-5 sm:py-4 shadow-sm space-y-3">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700/90">Your business</p>
-          <p className="text-base sm:text-lg font-semibold text-slate-900 truncate">
-            {name || (industry ? industry.charAt(0).toUpperCase() + industry.slice(1) : "Add your business")}
-          </p>
-          <p className="text-sm text-slate-600 leading-snug">
-            {linedUp ? (
-              <>
-                {[industry, loc].filter(Boolean).join(" · ") || "Industry & area from Settings"}
-                {lang ? <span className="text-slate-400"> · {lang}</span> : null}
-              </>
-            ) : (
-              <>Connect your profile once — keywords, blog, and calendar stay on-brand without retyping.</>
-            )}
-          </p>
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            <a
-              href="/dashboard/settings"
-              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 underline underline-offset-2"
-            >
-              Settings → Business info
-            </a>
-            {profile?.live_keyword_data && (
-              <span className="text-[10px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
-                Live keyword data on
-              </span>
-            )}
-          </div>
-        </div>
+    <div className="flex flex-col gap-3 rounded-lg border border-slate-200/90 bg-slate-50/50 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-4 sm:py-3">
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Business context</p>
+        <p className="truncate text-sm font-semibold text-slate-900">
+          {name || (industry ? industry.charAt(0).toUpperCase() + industry.slice(1) : "Add your business")}
+        </p>
+        <p className="text-xs leading-snug text-slate-500">
+          {linedUp ? (
+            <>
+              {[industry, loc].filter(Boolean).join(" · ") || "Industry & area from Settings"}
+              {lang ? <span className="text-slate-400"> · {lang}</span> : null}
+            </>
+          ) : (
+            <>Add name and location in Settings so keywords and content match your brand.</>
+          )}
+        </p>
       </div>
-      <div className="border-t border-emerald-50 pt-3">
-        <p className="text-[11px] font-medium text-slate-500 mb-2">Jump to</p>
-        <SeoQuickNav active={activeTab} onJump={onJump} />
+      <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
+        <Link
+          href="/dashboard/settings"
+          className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+        >
+          Business settings
+        </Link>
+        {profile?.live_keyword_data && (
+          <span className="inline-flex items-center rounded-md border border-emerald-100 bg-white px-2 py-1 text-[10px] font-medium text-emerald-800">
+            Live search data
+          </span>
+        )}
       </div>
     </div>
   );
@@ -178,20 +209,18 @@ type SeoMemory = {
 
 function OverviewTab({ summary, onJump, profile }: { summary: SeoSummary | null; onJump: (t: Tab) => void; profile: SeoBusinessContext | null }) {
   const [suggestions, setSuggestions] = useState<{ priority: string; action: string; detail: string }[]>([]);
-  const [loadingSugg, setLoadingSugg] = useState(false);
+  const [loadingSugg, setLoadingSugg] = useState(true);
   const [memory, setMemory] = useState<SeoMemory | null>(null);
-  const [loadingMem, setLoadingMem] = useState(false);
+  const [loadingMem, setLoadingMem] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
 
   const extSummary = summary as (SeoSummary & { audit_trend?: { date: string; score: number; url: string }[] }) | null;
 
   useEffect(() => {
-    setLoadingSugg(true);
     seoApi.improvementSuggestions()
       .then(r => setSuggestions(r.suggestions ?? []))
       .catch(() => {})
       .finally(() => setLoadingSugg(false));
-    setLoadingMem(true);
     seoApi.getSeoMemory()
       .then(setMemory)
       .catch(() => {})
@@ -609,6 +638,36 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
   const [savedKeywordSets, setSavedKeywordSets] = useState<{ month: string; count: number; business_type: string; location: string; saved_at: string }[]>([]);
   const [loadingSavedSets, setLoadingSavedSets] = useState(false);
   const [err, setErr] = useState("");
+  // Publish-to-autoblog state per keyword index
+  const [kwPublishing, setKwPublishing] = useState<Record<number, "idle" | "generating" | "publishing" | "done" | "error">>({});
+  const [kwPublishUrl, setKwPublishUrl] = useState<Record<number, string>>({});
+
+  async function publishKeywordToBlog(kw: SeoKeyword, idx: number) {
+    setKwPublishing(p => ({ ...p, [idx]: "generating" }));
+    try {
+      const post = await seoApi.generateBlog({
+        topic: kw.content_idea || kw.keyword,
+        keywords: [kw.keyword],
+        tone: "professional",
+        length: "medium",
+        business_name: profile?.business_name,
+        language: profile?.language || "English",
+        include_faq: true,
+      });
+      setKwPublishing(p => ({ ...p, [idx]: "publishing" }));
+      const result = await blogApi.publishFromSeo({
+        title: post.title,
+        content: post.content,
+        keywords: post.keywords || [kw.keyword],
+        excerpt: post.meta_description,
+      });
+      setKwPublishUrl(p => ({ ...p, [idx]: result.post_url }));
+      setKwPublishing(p => ({ ...p, [idx]: "done" }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Publish failed — is your Autoblog activated?");
+      setKwPublishing(p => ({ ...p, [idx]: "error" }));
+    }
+  }
 
   useEffect(() => {
     if (!profile) return;
@@ -626,8 +685,19 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
     setSavedMonth(null);
     try {
       const res = await seoApi.generateKeywords(businessType.trim(), location.trim());
-      setKeywords(res.keywords as SeoKeyword[]);
+      const list = res.keywords as SeoKeyword[];
+      setKeywords(list);
       setKeywordSource(res.keyword_source);
+      const { ok, month } = await saveForMonthQuiet(list);
+      if (ok && month) {
+        toast.success(`Saved for ${month}`, {
+          description: `${list.length} keyword ideas — reload anytime under Earlier saved lists.`,
+        });
+      } else if (list.length > 0) {
+        toast.error("Could not save to the cloud", {
+          description: "Your list is still on screen — tap Save again or check your connection.",
+        });
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -646,17 +716,37 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
     }
   }
 
+  /** Persist keyword rows (includes search_volume, difficulty, intent when present). */
+  async function persistKeywordsToServer(toSave: SeoKeyword[]) {
+    const res = await seoApi.saveKeywords({
+      keywords: toSave as unknown as Record<string, unknown>[],
+      business_type: businessType.trim() || profile?.business_type || "",
+      location: location.trim() || profile?.location || "",
+    });
+    setSavedMonth(res.month);
+    await loadSavedKeywordSets();
+    return res;
+  }
+
+  async function saveForMonthQuiet(toSave: SeoKeyword[]): Promise<{ ok: boolean; month?: string }> {
+    if (!toSave.length) return { ok: false };
+    try {
+      const res = await persistKeywordsToServer(toSave);
+      return { ok: true, month: res.month };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   async function saveForMonth() {
     if (!keywords.length) return;
     setSaving(true);
+    setErr("");
     try {
-      const res = await seoApi.saveKeywords({
-        keywords: keywords as unknown as Record<string, unknown>[],
-        business_type: businessType.trim() || profile?.business_type || "",
-        location: location.trim() || profile?.location || "",
+      const res = await persistKeywordsToServer(keywords);
+      toast.success(`Saved for ${res.month}`, {
+        description: `${keywords.length} phrases kept (volumes included when present).`,
       });
-      setSavedMonth(res.month);
-      await loadSavedKeywordSets();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not save");
     } finally {
@@ -670,11 +760,13 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
       const savedKeywords = res.keywords as unknown as SeoKeyword[];
       setKeywords(savedKeywords);
       setKeywordSource("saved");
+      setSavedMonth(month);
       setBusinessType(res.business_type || profile?.business_type || "");
       setLocation(res.location || profile?.location || "");
       setErr("");
-      onPushToCalendar?.(savedKeywords);
-      onJump("calendar");
+      toast.success(`Loaded ${savedKeywords.length} keywords`, {
+        description: `Saved list for ${month} — volumes and intent restored when stored.`,
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not load saved keywords");
     }
@@ -750,7 +842,9 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
         </details>
 
         <p className="text-[11px] text-slate-400">
-          Blank fields still work — the server fills them from Settings.
+          After you run a search, keywords are <span className="font-medium text-slate-500">saved for the current month</span>
+          (phrase, volume when available, difficulty, intent, content idea). Reload another month from the list below if you need it.
+          Blank fields use Settings.
           {profile?.live_keyword_data ? " Live Google volumes when DataForSEO is enabled." : ""}
         </p>
         {err && <p className="text-red-500 text-xs">{err}</p>}
@@ -759,27 +853,73 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
       {keywords.length > 0 && (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              <p className="text-sm font-semibold text-slate-700">{keywords.length} keyword ideas<HelpTooltip text="These are phrases people search on Google. Use them in your blog posts and website." /></p>
-              <button
-                onClick={saveForMonth}
-                disabled={saving}
-                className="text-xs px-3 py-1 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-medium disabled:opacity-50"
-              >
-                {saving ? "Saving…" : savedMonth ? `✓ Saved ${savedMonth}` : "Save for this month"}
-              </button>
-              <button
-                onClick={() => { onPushToCalendar?.(keywords); onJump("calendar"); }}
-                className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium"
-              >
-                Push to Calendar →
-              </button>
+            <div className="flex items-center gap-2 flex-wrap min-w-0">
+              <p className="text-sm font-semibold text-slate-700">
+                {keywords.length} keyword ideas
+                <HelpTooltip text="These are phrases people search on Google. Use them in your blog posts and website." />
+              </p>
+              {keywordSource === "dataforseo" && (
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
+                  Live data · DataForSEO
+                </span>
+              )}
+              {keywordSource === "ai" && (
+                <span className="text-[10px] font-medium text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full">
+                  AI suggestions{profile?.live_keyword_data ? " (DataForSEO unavailable or no results)" : ""}
+                </span>
+              )}
+              {keywordSource === "saved" && (
+                <span className="text-[10px] font-medium text-slate-600 bg-violet-50 border border-violet-100 px-2 py-0.5 rounded-full">
+                  Loaded from saved month
+                </span>
+              )}
             </div>
+          </div>
+
+          {savedMonth && (
+            <div className="mx-5 mt-4 rounded-xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-3">
+              <p className="text-sm font-semibold text-emerald-900">Saved for {savedMonth}</p>
+              <p className="text-xs text-emerald-800/90 mt-1 leading-relaxed">
+                {keywords.length} phrases on file (volumes and intent kept when available). Reload an older month from the list below if you need past research.
+              </p>
+            </div>
+          )}
+
+          <div className="px-5 pt-4 pb-2">
+            <button
+              type="button"
+              onClick={() => {
+                toast.message("Opening your calendar", {
+                  description: "We'll build your schedule from these keyword ideas.",
+                });
+                onPushToCalendar?.(keywords);
+                onJump("calendar");
+              }}
+              className="flex w-full min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700"
+            >
+              <CalendarDays className="h-4 w-4 shrink-0 opacity-95" aria-hidden />
+              Continue to calendar — plan posts from these topics
+              <ArrowRight className="h-4 w-4 shrink-0 opacity-90" aria-hidden />
+            </button>
+            <p className="mt-2 text-center text-[11px] text-slate-500">
+              Your list is already saved for this month when possible — this step just opens the planner with these topics.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 px-5 pb-4">
+            <button
+              type="button"
+              onClick={saveForMonth}
+              disabled={saving}
+              className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {saving ? "Saving…" : "Save again (overwrites this month)"}
+            </button>
           </div>
 
           {savedKeywordSets.length > 0 && (
             <div className="px-5 py-3 border-t border-slate-100 bg-slate-50">
-              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Saved keyword sets</p>
+              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Earlier saved lists (volumes kept)</p>
               <div className="grid gap-2 sm:grid-cols-2">
                 {savedKeywordSets.map(set => (
                   <div key={set.month} className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between gap-3">
@@ -800,18 +940,6 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
             </div>
           )}
 
-          <div className="px-5 py-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-            {keywordSource === "dataforseo" && (
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
-                Live data · DataForSEO
-              </span>
-            )}
-            {keywordSource === "ai" && (
-              <span className="text-[10px] font-medium text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full">
-                AI suggestions{profile?.live_keyword_data ? " (DataForSEO unavailable or no results)" : ""}
-              </span>
-            )}
-          </div>
           <div className="divide-y divide-slate-50">
             {keywords.map((kw, i) => (
               <div key={i} className="px-5 py-3">
@@ -825,10 +953,24 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
                       </p>
                     )}
                   </div>
-                  <div className="flex gap-2 shrink-0 items-center">
+                  <div className="flex gap-2 shrink-0 items-center flex-wrap justify-end">
                     <span className={`text-xs font-semibold capitalize ${difficultyColor(String(kw.difficulty ?? ""))}`}>
                       {kw.difficulty === "low" ? "Easy" : kw.difficulty === "medium" ? "Medium" : "Hard"}
                     </span>
+                    {kwPublishing[i] === "done" ? (
+                      <a href={kwPublishUrl[i]} target="_blank" rel="noopener noreferrer"
+                        className="text-[10px] px-2 py-1 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 whitespace-nowrap">
+                        ✓ View post →
+                      </a>
+                    ) : (
+                      <button
+                        onClick={() => publishKeywordToBlog(kw, i)}
+                        disabled={kwPublishing[i] === "generating" || kwPublishing[i] === "publishing"}
+                        className="text-[10px] px-2 py-1 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 whitespace-nowrap"
+                      >
+                        {kwPublishing[i] === "generating" ? "Writing…" : kwPublishing[i] === "publishing" ? "Publishing…" : "→ Publish to My Blog"}
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="mt-1.5 flex items-center gap-2">
@@ -2018,353 +2160,26 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
   );
 }
 
-// ── Agent Chat Tab ────────────────────────────────────────────────────────────
-
-interface ChatMsg {
-  role: "user" | "assistant";
-  content: string;
-  tool_steps?: SeoAgentToolStep[];
-}
-
-const QUICK_PROMPTS = [
-  "I want to do SEO — where do I start?",
-  "Check my website and tell me what's wrong",
-  "What keywords should my business rank for?",
-  "Write a blog post for me",
-  "Make a content plan for the next month",
-];
-
-function AgentChatTab({ profile }: { profile: SeoBusinessContext | null }) {
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [convId, setConvId] = useState<string | undefined>();
-  const [conversations, setConversations] = useState<{ id: string; title: string }[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
-  const [businessData, setBusinessData] = useState<any>(null);
-  const [performanceData, setPerformanceData] = useState<any>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    seoAgentApi.listConversations().then(setConversations).catch(() => {});
-    // Load comprehensive business data for intelligent coaching
-    loadBusinessContext();
-  }, []);
-
-  async function loadBusinessContext() {
-    try {
-      // Load all relevant data for intelligent coaching
-      const [summary, memory, posts, keywords] = await Promise.all([
-        seoApi.summary(),
-        seoApi.getSeoMemory().catch(() => null),
-        seoApi.listPosts().catch(() => []),
-        seoApi.listSavedKeywords().catch(() => [])
-      ]);
-
-      setBusinessData({
-        profile,
-        summary,
-        memory,
-        posts: posts.slice(0, 10), // Recent posts
-        keywords: keywords.slice(0, 5), // Recent keywords
-        lastUpdated: new Date().toISOString()
-      });
-
-      // Calculate performance insights
-      const insights = {
-        contentVelocity: posts.filter(p => {
-          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-          return new Date(p.created_at || '') > thirtyDaysAgo;
-        }).length,
-        avgSeoScore: summary?.last_audit?.score || 0,
-        topPerformingContent: posts
-          .filter(p => p.status === 'published')
-          .sort((a, b) => (b as any).word_count - (a as any).word_count)
-          .slice(0, 3),
-        keywordGaps: memory?.analysis?.not_working || [],
-        improvementOpportunities: memory?.analysis?.next_month_focus || []
-      };
-
-      setPerformanceData(insights);
-    } catch (error) {
-      console.error("Failed to load business context:", error);
-    }
-  }
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  async function send(text?: string) {
-    const msg = (text ?? input).trim();
-    if (!msg || loading) return;
-    setInput("");
-    const userMsg: ChatMsg = { role: "user", content: msg };
-    setMessages(prev => [...prev, userMsg]);
-    setLoading(true);
-
-    try {
-      const history = messages.map(m => ({ role: m.role, content: m.content }));
-      
-      // Enhanced context for intelligent coaching (passed via system prompt in backend)
-      const res = await seoAgentApi.chat(msg, convId, history);
-      setConvId(res.conversation_id);
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: res.reply,
-        tool_steps: res.tool_steps,
-      }]);
-      // Refresh conversation list
-      seoAgentApi.listConversations().then(setConversations).catch(() => {});
-    } catch (e) {
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: `Error: ${e instanceof Error ? e.message : "Something went wrong. Please try again."}`,
-      }]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function detectIntent(message: string): string {
-    const lower = message.toLowerCase();
-    if (lower.includes('keyword') || lower.includes('research')) return 'keyword_research';
-    if (lower.includes('audit') || lower.includes('check')) return 'seo_audit';
-    if (lower.includes('blog') || lower.includes('content') || lower.includes('write')) return 'content_creation';
-    if (lower.includes('rank') || lower.includes('position')) return 'ranking_analysis';
-    if (lower.includes('compete') || lower.includes('competitor')) return 'competitor_analysis';
-    if (lower.includes('improve') || lower.includes('better') || lower.includes('fix')) return 'improvement_strategy';
-    if (lower.includes('plan') || lower.includes('strategy') || lower.includes('calendar')) return 'content_planning';
-    return 'general_advice';
-  }
-
-  async function loadConversation(id: string) {
-    try {
-      const data = await seoAgentApi.getConversation(id);
-      setConvId(id);
-      setMessages(
-        data.messages.map(m => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          tool_steps: m.tool_steps,
-        }))
-      );
-      setShowHistory(false);
-    } catch { /* ignore */ }
-  }
-
-  async function deleteConversation(id: string) {
-    await seoAgentApi.deleteConversation(id).catch(() => {});
-    setConversations(c => c.filter(x => x.id !== id));
-    if (convId === id) { setConvId(undefined); setMessages([]); }
-  }
-
-  function newChat() {
-    setConvId(undefined);
-    setMessages([]);
-    setShowHistory(false);
-  }
-
-  const isEmpty = messages.length === 0;
-
-  return (
-    <div className="flex flex-col h-[calc(100vh-200px)] min-h-[500px] bg-white rounded-2xl border border-slate-200 overflow-hidden">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 px-5 py-3 border-b border-slate-100 bg-gradient-to-r from-emerald-50/40 to-slate-50">
-        <div className="flex flex-col gap-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" aria-hidden />
-            <span className="text-sm font-semibold text-slate-800">SEO Coach</span>
-          </div>
-          <p className="text-[11px] sm:text-xs text-slate-500 leading-snug max-w-md">
-            {profile?.business_name?.trim()
-              ? <>Tailored for <span className="font-medium text-slate-700">{profile.business_name.trim()}</span> — same details as Settings.</>
-              : <>Answers use your business info from Settings (name, industry, location).</>}
-          </p>
-        </div>
-        <div className="flex gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => setShowHistory(h => !h)}
-            className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-white bg-white/60"
-          >
-            History
-          </button>
-          <button
-            type="button"
-            onClick={newChat}
-            className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-          >
-            New chat
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-1 min-h-0">
-        {/* Sidebar — conversation history */}
-        {showHistory && (
-          <div className="w-56 border-r border-slate-100 bg-slate-50 flex flex-col overflow-hidden shrink-0">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-100">
-              Past chats
-            </p>
-            <div className="flex-1 overflow-y-auto">
-              {conversations.length === 0 && (
-                <p className="text-xs text-slate-400 px-4 py-3">No conversations yet</p>
-              )}
-              {conversations.map(c => (
-                <div
-                  key={c.id}
-                  className={`flex items-start gap-2 px-4 py-2.5 cursor-pointer hover:bg-white border-b border-slate-50 ${convId === c.id ? "bg-white" : ""}`}
-                  onClick={() => loadConversation(c.id)}
-                >
-                  <p className="text-xs text-slate-600 flex-1 leading-tight line-clamp-2">{c.title}</p>
-                  <button
-                    onClick={e => { e.stopPropagation(); deleteConversation(c.id); }}
-                    className="text-slate-300 hover:text-red-400 text-xs shrink-0"
-                  >×</button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Chat area */}
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-            {isEmpty && (
-              <div className="flex flex-col items-center justify-center h-full gap-5 text-center pb-10">
-                <div className="space-y-1">
-                  <p className="text-slate-700 font-semibold text-base">Hi! I'm your Intelligent SEO Coach.</p>
-                  <p className="text-slate-400 text-sm max-w-xs mx-auto">
-                    {profile?.business_name?.trim()
-                      ? `I know everything about ${profile.business_name.trim()}. Let me help you grow your SEO.`
-                      : "I'll help your business show up on Google — step by step, in plain English. No SEO knowledge needed."}
-                  </p>
-                </div>
-
-                {/* Business Context Summary */}
-                {businessData && (
-                  <div className="w-full max-w-sm p-4 bg-emerald-50 border border-emerald-100 rounded-lg">
-                    <p className="text-xs font-medium text-emerald-800 mb-2">📊 I know about your business:</p>
-                    <div className="text-xs text-emerald-700 space-y-1 text-left">
-                      <p>📍 {businessData.profile?.business_name || 'Your business'} in {businessData.profile?.location || 'your area'}</p>
-                      <p>🎯 {businessData.posts?.length || 0} blog posts published</p>
-                      <p>📈 SEO Score: {businessData.summary?.last_audit?.score || 'N/A'}/100</p>
-                      <p>📝 {performanceData?.contentVelocity || 0} posts this month</p>
-                      {performanceData?.keywordGaps?.length > 0 && (
-                        <p>⚠️ {performanceData.keywordGaps.length} areas to improve</p>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Intelligent Suggestions */}
-                <div className="flex flex-col gap-3 w-full max-w-sm">
-                  {performanceData?.improvementOpportunities?.slice(0, 2).map((opportunity: string, i: number) => (
-                    <button
-                      key={i}
-                      onClick={() => send(`How can I ${opportunity.toLowerCase()}?`)}
-                      className="text-sm text-left px-4 py-2.5 rounded-xl bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition-colors border border-emerald-200"
-                    >
-                      🎯 {opportunity}
-                    </button>
-                  ))}
-                  
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium text-slate-500 text-left">💡 Or ask me anything:</p>
-                    {QUICK_PROMPTS.map(p => (
-                      <button
-                        key={p}
-                        onClick={() => send(p)}
-                        className="text-sm text-left px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-800 transition-colors w-full"
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[80%] space-y-2 ${m.role === "user" ? "items-end" : "items-start"} flex flex-col`}>
-                  {/* Tool steps badge */}
-                  {m.tool_steps && m.tool_steps.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {Array.from(new Set(m.tool_steps.map(s => s.tool))).map(tool => (
-                        <span key={tool} className="text-[10px] bg-green-50 border border-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">
-                          ⚙ {tool.replace(/_/g, " ")}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {/* Bubble */}
-                  <div
-                    className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
-                      m.role === "user"
-                        ? "bg-emerald-600 text-white rounded-tr-sm"
-                        : "bg-slate-100 text-slate-800 rounded-tl-sm"
-                    }`}
-                  >
-                    {m.content}
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {loading && (
-              <div className="flex justify-start">
-                <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 flex gap-1.5 items-center">
-                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                </div>
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
-
-          {/* Input bar */}
-          <div className="px-4 py-3 border-t border-slate-100">
-            <div className="flex gap-2 items-end">
-              <textarea
-                rows={1}
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-                }}
-                placeholder="Ask the SEO agent anything… e.g. 'Audit mysite.com and write a blog post about our top service'"
-                className="flex-1 resize-none border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 max-h-28"
-                style={{ minHeight: "42px" }}
-              />
-              <button
-                onClick={() => send()}
-                disabled={loading || !input.trim()}
-                className="px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 disabled:opacity-40 shrink-0"
-              >
-                Send
-              </button>
-            </div>
-            <p className="text-[10px] text-slate-300 mt-1.5 px-1">Enter to send · Shift+Enter for new line</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function SeoPage() {
-  const [tab, setTab] = useState<Tab>("agent");
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const tab = useMemo(() => normalizeSeoTabParam(searchParams.get("tab")), [searchParams]);
   const [showQuickStart, setShowQuickStart] = useState(true);
   const [summary, setSummary] = useState<SeoSummary | null>(null);
   const [seoProfile, setSeoProfile] = useState<SeoBusinessContext | null>(null);
   // Cross-tab state: keywords pushed to calendar, calendar item to write
   const [pushedKeywords, setPushedKeywords] = useState<SeoKeyword[] | undefined>(undefined);
   const [calendarWritePayload, setCalendarWritePayload] = useState<CalendarWritePayload | undefined>(undefined);
+
+  const changeTab = useCallback(
+    (next: Tab) => {
+      void Promise.resolve(router.replace(`${pathname}?tab=${next}`, { scroll: false })).catch(() => {});
+    },
+    [pathname, router]
+  );
 
   useEffect(() => {
     seoApi.businessContext().then(setSeoProfile).catch(() => {});
@@ -2380,106 +2195,152 @@ export default function SeoPage() {
 
   function handleWritePost(payload: CalendarWritePayload) {
     setCalendarWritePayload(payload);
-    setTab("blog");
+    changeTab("blog");
   }
 
-  const tabs: { id: Tab; label: string; desc: string }[] = [
-    { id: "agent", label: "🤖 Coach", desc: "Ask anything" },
-    { id: "keywords", label: "🔍 Keywords", desc: "What to rank for" },
-    { id: "blog", label: "✍️ Blog", desc: "Write posts" },
-    { id: "calendar", label: "📅 Calendar", desc: "Content plan" },
-    { id: "audit", label: "🔧 Audit", desc: "Check a site" },
-    { id: "overview", label: "📊 Stats", desc: "Your progress" },
-  ];
-
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6 pb-14">
-      <header className="rounded-2xl border border-emerald-100/90 bg-gradient-to-br from-emerald-50/80 via-white to-slate-50 p-6 sm:p-7 shadow-sm">
-        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">SEO & Blog</h1>
-        <p className="text-slate-600 text-sm sm:text-[15px] leading-relaxed mt-2 max-w-2xl">
-          Get found on Google — no SEO knowledge needed. Everything uses your business info from Settings automatically.
-        </p>
-        <div className="mt-6">
-          <BusinessSnapshotBar profile={seoProfile} activeTab={tab} onJump={setTab} />
-        </div>
-      </header>
-
-      {showQuickStart && summary && (summary.total_posts ?? 0) === 0 && (summary.total_audits ?? 0) === 0 && (
-        <div className="rounded-xl border-2 border-emerald-200 bg-gradient-to-r from-emerald-50 to-green-50 p-5 shadow-sm relative">
-          <button
-            onClick={() => setShowQuickStart(false)}
-            className="absolute top-3 right-3 text-slate-400 hover:text-slate-600 text-lg"
-          >×</button>
-          <p className="text-sm font-bold text-emerald-900 mb-3">🚀 Your SEO Journey — Follow these steps</p>
-          <div className="space-y-2.5">
-            <div className="flex gap-3 items-start">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">1</span>
-              <div>
-                <p className="text-sm font-semibold text-slate-800">Add your website to Settings</p>
-                <p className="text-xs text-slate-600">Settings → Business info → Website URL. We'll extract keywords from your actual site.</p>
-              </div>
+    <div className="min-h-[calc(100vh-3rem)] bg-[#f4f6f9]">
+      <div
+        className={cn(
+          "mx-auto px-3 pb-10 pt-3 sm:px-5 sm:pb-12 sm:pt-4",
+          tab === "hub" ? "max-w-7xl" : "max-w-6xl"
+        )}
+      >
+        {/* Top band — executive header + business (compact) */}
+        <section className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+          <div className="border-b border-slate-100 bg-gradient-to-br from-white via-slate-50/50 to-emerald-50/20 px-4 py-4 sm:px-6 sm:py-5">
+            <div className="flex flex-col gap-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Marketing</p>
+              <h1 className="text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">Website &amp; SEO</h1>
+              <p className="max-w-2xl text-xs leading-relaxed text-slate-500 sm:text-[13px]">
+                Search, content, and publishing in one workspace. Data from Settings is applied automatically.
+              </p>
             </div>
-            <div className="flex gap-3 items-start">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">2</span>
-              <div>
-                <p className="text-sm font-semibold text-slate-800">Get keyword ideas</p>
-                <p className="text-xs text-slate-600">Keywords tab → one tap to see what people search for (with real search volumes).</p>
-              </div>
-            </div>
-            <div className="flex gap-3 items-start">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">3</span>
-              <div>
-                <p className="text-sm font-semibold text-slate-800">Create content calendar</p>
-                <p className="text-xs text-slate-600">Calendar tab → distribute your keywords across the month automatically.</p>
-              </div>
-            </div>
-            <div className="flex gap-3 items-start">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">4</span>
-              <div>
-                <p className="text-sm font-semibold text-slate-800">Write & publish posts</p>
-                <p className="text-xs text-slate-600">Blog tab → generate articles → publish to WordPress/Shopify.</p>
-              </div>
-            </div>
-            <div className="flex gap-3 items-start">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center">5</span>
-              <div>
-                <p className="text-sm font-semibold text-slate-800">Audit & track progress</p>
-                <p className="text-xs text-slate-600">Audit tab → check your site's SEO health. Stats tab → see your progress.</p>
-              </div>
+            <div className="mt-4">
+              <BusinessSnapshotBar profile={seoProfile} />
             </div>
           </div>
-        </div>
-      )}
+        </section>
 
-      <nav className="flex gap-1 bg-slate-100/90 p-1 rounded-xl overflow-x-auto">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all shrink-0 flex flex-col items-center gap-0.5 min-w-[80px] ${
-              tab === t.id
-                ? "bg-white text-emerald-900 shadow-sm ring-1 ring-emerald-100/80"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            <span>{t.label}</span>
-            <span className="text-[10px] opacity-70">{t.desc}</span>
-          </button>
-        ))}
-      </nav>
+        {showQuickStart && summary && (summary.total_posts ?? 0) === 0 && (summary.total_audits ?? 0) === 0 && (
+          <div className="relative mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3.5 shadow-sm sm:px-5">
+            <button
+              type="button"
+              onClick={() => setShowQuickStart(false)}
+              className="absolute right-3 top-3 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Getting started</p>
+            <p className="mb-3 text-xs text-slate-600">
+              Follow this path once — each step opens the right tab. You can return anytime from the strip below.
+            </p>
+            <div className="grid gap-2 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4 sm:gap-3">
+              <div className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2">
+                <span className="font-semibold text-slate-800">1.</span> Confirm business in{" "}
+                <Link href="/dashboard/settings" className="font-medium text-emerald-700 underline-offset-2 hover:underline">
+                  Settings
+                </Link>
+                .
+              </div>
+              <button
+                type="button"
+                onClick={() => { changeTab("keywords"); setShowQuickStart(false); }}
+                className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2 text-left transition-colors hover:border-emerald-200 hover:bg-emerald-50/50"
+              >
+                <span className="font-semibold text-slate-800">2.</span> Run <span className="font-medium text-emerald-800">Keywords</span> — ideas save for the month.
+              </button>
+              <button
+                type="button"
+                onClick={() => { changeTab("calendar"); setShowQuickStart(false); }}
+                className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2 text-left transition-colors hover:border-emerald-200 hover:bg-emerald-50/50"
+              >
+                <span className="font-semibold text-slate-800">3.</span> Open <span className="font-medium text-emerald-800">Calendar</span> to plan posts (tap Continue from Keywords when you have a list).
+              </button>
+              <button
+                type="button"
+                onClick={() => { changeTab("blog"); setShowQuickStart(false); }}
+                className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2 text-left transition-colors hover:border-emerald-200 hover:bg-emerald-50/50"
+              >
+                <span className="font-semibold text-slate-800">4.</span> <span className="font-medium text-emerald-800">Write posts</span> or enable Autoblog when you are ready.
+              </button>
+            </div>
+          </div>
+        )}
 
-      {tab === "agent" && <AgentChatTab profile={seoProfile} />}
-      {tab === "overview" && <OverviewTab summary={summary} onJump={setTab} profile={seoProfile} />}
-      {tab === "audit" && <AuditTab />}
-      {tab === "keywords" && <KeywordsTab profile={seoProfile} onJump={setTab} onPushToCalendar={handlePushToCalendar} />}
-      {tab === "blog" && <BlogTab profile={seoProfile} prefillTopic={calendarWritePayload} />}
-      {tab === "calendar" && <CalendarTab profile={seoProfile} onJump={setTab} prefillKeywords={pushedKeywords} onWritePost={handleWritePost} />}
-      {tab === "roi" && <ROITracking />}
-      {tab === "scheduler" && <AutoScheduler />}
-      {tab === "analytics" && <AnalyticsIntegration />}
-      {tab === "local" && <LocalSEO />}
-      {tab === "social" && <SocialIntegration />}
+        {/* Bottom pack — sticky tabs + content (single card) */}
+        <section className="mt-3 overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_4px_24px_rgba(15,23,42,0.06)]">
+          <div className="sticky top-0 z-20 border-b border-slate-100 bg-white/90 backdrop-blur-md supports-[backdrop-filter]:bg-white/80">
+            <nav
+              className="flex gap-0 overflow-x-auto px-1 py-0 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              aria-label="Website and SEO sections"
+            >
+              {SEO_TAB_DEFS.map(({ id, label, short, desc, Icon }) => {
+                const active = tab === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => changeTab(id)}
+                    title={desc}
+                    className={cn(
+                      "group relative flex min-w-0 flex-shrink-0 items-center gap-2 border-b-2 px-2.5 py-2.5 text-left transition-colors sm:px-3 sm:py-3",
+                      active
+                        ? "border-emerald-600 text-slate-900"
+                        : "border-transparent text-slate-500 hover:border-slate-200 hover:text-slate-800"
+                    )}
+                  >
+                    <Icon
+                      className={cn(
+                        "h-3.5 w-3.5 flex-shrink-0 sm:h-4 sm:w-4",
+                        active ? "text-emerald-700" : "text-slate-400 group-hover:text-slate-600"
+                      )}
+                      aria-hidden
+                    />
+                    <span className="flex min-w-0 flex-col gap-0">
+                      <span className="text-[11px] font-semibold leading-tight sm:text-xs">
+                        <span className="sm:hidden">{short}</span>
+                        <span className="hidden sm:inline">{label}</span>
+                      </span>
+                      <span className="hidden text-[10px] leading-tight text-slate-400 sm:block">{desc}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+
+          <div className="bg-slate-50/40 px-3 py-4 sm:px-5 sm:py-6">
+            <div
+              key={tab}
+              className="motion-safe:animate-[seo-tab-content_0.22s_ease-out] motion-reduce:animate-none"
+            >
+              {tab === "hub" && <SeoHubWorkspace onOpenTab={changeTab} />}
+              {tab === "overview" && <OverviewTab summary={summary} onJump={changeTab} profile={seoProfile} />}
+              {tab === "audit" && <AuditTab />}
+              {tab === "keywords" && (
+                <KeywordsTab profile={seoProfile} onJump={changeTab} onPushToCalendar={handlePushToCalendar} />
+              )}
+              {tab === "blog" && <BlogTab profile={seoProfile} prefillTopic={calendarWritePayload} />}
+              {tab === "calendar" && (
+                <CalendarTab
+                  profile={seoProfile}
+                  onJump={changeTab}
+                  prefillKeywords={pushedKeywords}
+                  onWritePost={handleWritePost}
+                />
+              )}
+              {tab === "autoblog" && <AutoblogPanel embedded />}
+              {tab === "roi" && <ROITracking />}
+              {tab === "scheduler" && <AutoScheduler />}
+              {tab === "analytics" && <AnalyticsIntegration />}
+              {tab === "local" && <LocalSEO />}
+              {tab === "social" && <SocialIntegration />}
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { seoApi } from "@/lib/api";
 
 interface LocalListing {
   platform: "google-business" | "yelp" | "apple-maps" | "bing-places";
@@ -35,6 +36,7 @@ export default function LocalSEO() {
   const [competitors, setCompetitors] = useState<CompetitorListing[]>([]);
   const [localScore, setLocalScore] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState("");
   const [showAddListing, setShowAddListing] = useState(false);
   const [newListing, setNewListing] = useState({
     platform: "google-business" as const,
@@ -45,138 +47,55 @@ export default function LocalSEO() {
   });
 
   useEffect(() => {
-    const fetchLocalSEOData = async () => {
+    let cancelled = false;
+    (async () => {
+      setLoadErr("");
       try {
-        const [listingsRes, keywordsRes, competitorsRes, scoreRes] = await Promise.all([
-          fetch('/api/seo/local/listings'),
-          fetch('/api/seo/local/keywords'),
-          fetch('/api/seo/local/competitors'),
-          fetch('/api/seo/local/score')
+        const [listingsData, keywordsData, competitorsData, scoreData] = await Promise.all([
+          seoApi.getLocalListings(),
+          seoApi.getLocalKeywords(),
+          seoApi.getLocalCompetitors(),
+          seoApi.getLocalScore(),
         ]);
-
-        if (listingsRes.ok) {
-          const listingsData = await listingsRes.json();
-          setListings(listingsData.listings || []);
-        }
-
-        if (keywordsRes.ok) {
-          const keywordsData = await keywordsRes.json();
-          setLocalKeywords(keywordsData.keywords || []);
-        }
-
-        if (competitorsRes.ok) {
-          const competitorsData = await competitorsRes.json();
-          setCompetitors(competitorsData.competitors || []);
-        }
-
-        if (scoreRes.ok) {
-          const scoreData = await scoreRes.json();
-          setLocalScore(scoreData);
-        }
+        if (cancelled) return;
+        setListings((listingsData.listings || []) as unknown as LocalListing[]);
+        setLocalKeywords((keywordsData.keywords || []) as unknown as LocalKeyword[]);
+        setCompetitors((competitorsData.competitors || []) as unknown as CompetitorListing[]);
+        setLocalScore(scoreData);
       } catch (error) {
-        console.error('Error fetching local SEO data:', error);
-        // Fallback to mock data if API fails
-        setListings([
-          {
-            platform: "google-business",
-            name: "ABC Plumbing Services",
-            address: "123 Main St, City, State 12345",
-            phone: "(555) 123-4567",
-            website: "https://abcplumbing.com",
-            rating: 4.8,
-            reviews: 127,
-            status: "verified",
-            lastUpdated: "2024-01-15"
-          }
-        ]);
-        setLocalKeywords([
-          {
-            keyword: "plumber near me",
-            location: "City, State",
-            position: 3,
-            searchVolume: 2400,
-            difficulty: "high",
-            trend: "up"
-          }
-        ]);
-        setCompetitors([
-          {
-            name: "XYZ Plumbing",
-            address: "456 Oak Ave, City, State 12345",
-            rating: 4.5,
-            reviews: 203,
-            categories: ["Plumbing", "Emergency Services"]
-          }
-        ]);
-        setLocalScore({
-          overall: 78,
-          grade: "Good",
-          breakdown: {
-            business_listings: 85,
-            reviews_ratings: 72,
-            local_rankings: 68,
-            citations: 90
-          },
-          recommendations: [
-            "Add your business to Apple Maps to increase visibility",
-            "Encourage more customer reviews to improve ratings",
-            "Target 'emergency plumber City' keyword - currently ranking #2"
-          ]
-        });
+        console.error("Error fetching local SEO data:", error);
+        if (!cancelled) {
+          setLoadErr("Could not load Local SEO data. Sign in and ensure the CRM backend is running (same API as Keywords).");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
+    })();
+    return () => {
+      cancelled = true;
     };
-
-    fetchLocalSEOData();
   }, []);
 
   const handleAddListing = async () => {
     try {
-      const response = await fetch('/api/seo/local/listings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(newListing),
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        setListings(prev => [...prev, result.listing]);
-        setShowAddListing(false);
-        setNewListing({
-          platform: "google-business",
-          name: "",
-          address: "",
-          phone: "",
-          website: ""
-        });
-      } else {
-        console.error('Failed to add listing');
-        // Fallback to local state update
-        const listing: LocalListing = {
-          ...newListing,
-          status: "pending",
-          lastUpdated: new Date().toISOString()
-        };
-        setListings(prev => [...prev, listing]);
-        setShowAddListing(false);
-        setNewListing({
-          platform: "google-business",
-          name: "",
-          address: "",
-          phone: "",
-          website: ""
-        });
-      }
-    } catch (error) {
-      console.error('Error adding listing:', error);
-      // Fallback to local state update
+      const result = await seoApi.addLocalListing(newListing);
+      const stored = result.listing as Record<string, unknown>;
       const listing: LocalListing = {
-        ...newListing,
-        status: "pending",
-        lastUpdated: new Date().toISOString()
+        platform: stored.platform === "yelp" || stored.platform === "apple-maps" || stored.platform === "bing-places"
+          ? stored.platform
+          : "google-business",
+        name: String(stored.name ?? newListing.name),
+        address: String(stored.address ?? newListing.address),
+        phone: String(stored.phone ?? newListing.phone),
+        website: String(stored.website ?? newListing.website),
+        status:
+          stored.status === "verified" || stored.status === "not-listed" ? stored.status : "pending",
+        lastUpdated:
+          typeof stored.updated_at === "string"
+            ? stored.updated_at
+            : typeof stored.created_at === "string"
+              ? stored.created_at
+              : new Date().toISOString(),
       };
       setListings(prev => [...prev, listing]);
       setShowAddListing(false);
@@ -185,7 +104,23 @@ export default function LocalSEO() {
         name: "",
         address: "",
         phone: "",
-        website: ""
+        website: "",
+      });
+    } catch (error) {
+      console.error("Error adding listing:", error);
+      const listing: LocalListing = {
+        ...newListing,
+        status: "pending",
+        lastUpdated: new Date().toISOString(),
+      };
+      setListings(prev => [...prev, listing]);
+      setShowAddListing(false);
+      setNewListing({
+        platform: "google-business",
+        name: "",
+        address: "",
+        phone: "",
+        website: "",
       });
     }
   };
@@ -265,6 +200,12 @@ export default function LocalSEO() {
           Add Listing
         </button>
       </div>
+
+      {loadErr && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {loadErr}
+        </div>
+      )}
 
       {/* Local Listings */}
       <div className="bg-white rounded-xl border border-slate-200 p-6">

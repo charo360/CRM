@@ -290,6 +290,17 @@ TAGS: [5 comma-separated tags]"""
                 "status": "draft", "platform": "internal",
                 "created_at": datetime.utcnow(), "updated_at": datetime.utcnow(),
             })
+            # Also link draft to the first keyword in the tracker (if it exists)
+            if keywords:
+                primary_kw = keywords.split(",")[0].strip()
+                await db.keyword_tracker.update_one(
+                    {"user_id": user_id, "keyword": primary_kw},
+                    {"$push": {"posts": {
+                        "title": title,
+                        "url": f"(draft:{post_id})",
+                        "published_at": datetime.utcnow().isoformat(),
+                    }}},
+                )
     except Exception:
         pass
 
@@ -963,6 +974,66 @@ async def get_competitor_keywords(competitor_domain: str, location_code: int = 2
         return f"Competitor keyword lookup failed: {e}"
 
 
+@tool
+async def add_keywords_to_tracker(
+    keywords_csv: str,
+    config: RunnableConfig,
+) -> str:
+    """
+    Save a list of keywords to the user's Keyword & Blog Tracker.
+    This makes them appear in the SEO Hub tracker table with search volumes.
+    ALWAYS call this after researching keywords so the user can see and track them.
+
+    Args:
+        keywords_csv: Pipe-separated list in the format:
+            keyword|search_volume|difficulty|intent|content_idea
+            One keyword per line. search_volume is an integer (0 if unknown).
+            difficulty: low/medium/high. intent: informational/transactional/local.
+    """
+    try:
+        db = config["configurable"].get("db")
+        user_id = config["configurable"].get("user_id")
+        if not db or not user_id:
+            return "Cannot save keywords — no database connection."
+
+        lines = [l.strip() for l in keywords_csv.strip().splitlines() if l.strip() and "|" in l]
+        if not lines:
+            return "No keywords to save. Provide keywords in format: keyword|volume|difficulty|intent|content_idea"
+
+        saved = 0
+        for line in lines:
+            parts = [p.strip() for p in line.split("|")]
+            keyword = parts[0] if parts else ""
+            if not keyword:
+                continue
+            try:
+                vol = int(parts[1]) if len(parts) > 1 and parts[1].replace(",", "").isdigit() else 0
+            except Exception:
+                vol = 0
+            difficulty = parts[2] if len(parts) > 2 else ""
+            intent = parts[3] if len(parts) > 3 else ""
+            content_idea = parts[4] if len(parts) > 4 else ""
+
+            await db.keyword_tracker.update_one(
+                {"user_id": user_id, "keyword": keyword},
+                {"$set": {
+                    "user_id": user_id,
+                    "keyword": keyword,
+                    "search_volume": vol,
+                    "difficulty": difficulty,
+                    "intent": intent,
+                    "content_idea": content_idea,
+                    "updated_at": datetime.utcnow(),
+                }, "$setOnInsert": {"created_at": datetime.utcnow(), "posts": []}},
+                upsert=True,
+            )
+            saved += 1
+
+        return f"Saved {saved} keywords to your Keyword & Blog Tracker. They will now appear in your SEO Hub with search volumes and a 'Publish to Blog' button for each one."
+    except Exception as e:
+        return f"Error saving keywords to tracker: {e}"
+
+
 # ── Tool registry exported to graph ──────────────────────────────────────────
 
 SEO_TOOLS = [
@@ -979,4 +1050,5 @@ SEO_TOOLS = [
     list_saved_posts,
     publish_post_to_platform,
     get_seo_summary,
+    add_keywords_to_tracker,
 ]

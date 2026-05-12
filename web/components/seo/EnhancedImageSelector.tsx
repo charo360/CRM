@@ -26,7 +26,9 @@ export function EnhancedImageSelector({
   const [shopifyConnected, setShopifyConnected] = useState<boolean | null>(null);
 
   useEffect(() => {
-    isShopifyConnected().then(setShopifyConnected);
+    void isShopifyConnected()
+      .then(setShopifyConnected)
+      .catch(() => setShopifyConnected(false));
   }, []);
 
   const sourceLabel: Record<ImageSourceTab, string> = {

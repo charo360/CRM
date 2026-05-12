@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════
+# WordPress Multisite Configuration (Zilo Autoblogging)
+# ═══════════════════════════════════════════════════════════════
+# Add these variables to your .env file AFTER setting up WordPress
+
+# WordPress Multisite Base URL (no trailing slash)
+# WordPress Multisite Base URL (no trailing slash) — YOUR network root URL
+WP_BASE_URL=https://your-multisite-domain.com
+
+# Optional: subdirectory multisite (sites at {WP_BASE_URL}/site-slug/) instead of subdomains.
+# Leave unset/false for standard subdomain multisite (*.your-multisite-domain.com).
+# WP_MULTISITE_SUBDIRECTORY=false
+
+# Optional: if subsite host parent differs from WP_BASE_URL’s host (rare).
+# Example: REST on https://wp.example.com but public subsites use https://slug.example.com
+# WP_SUBDOMAIN_PARENT_HOST=example.com
+
+# Server path WordPress lives at (wp-cli `--path`). Match your VPS install.
+WP_CLI_PATH=/var/www/html/zilo
+
+# WordPress Network Admin Username
+WP_ADMIN_USER=ziloadmin
+
+# WordPress Application Password (create in WP Admin → Users → Profile → Application Passwords)
+# Format: xxxx xxxx xxxx xxxx xxxx xxxx (spaces included)
+WP_ADMIN_APP_PASSWORD=
+
+# JWT Secret (must match JWT_AUTH_SECRET_KEY in wp-config.php)
+# Generate a random 64-character string
+WP_JWT_SECRET=
+
+# ═══════════════════════════════════════════════════════════════
+# INSTRUCTIONS:
+# ═══════════════════════════════════════════════════════════════
+# 1. Complete Hostinger VPS setup first (see STEP 3 below)
+# 2. Install WordPress Multisite (see STEP 4 below)
+# 3. Create Application Password in WordPress Admin
+# 4. Copy these variables to your .env file
+# 5. Restart your backend server
+# ═══════════════════════════════════════════════════════════════
