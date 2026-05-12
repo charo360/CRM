@@ -80,6 +80,20 @@ def wp_subsite_public_url(wp_slug: str) -> str:
     return f"https://{slug}.{host}".rstrip("/")
 
 
+def _wp_internal_subsite_url(wp_slug: str) -> str:
+    """
+    The URL WordPress actually registers the subsite under (slug.{WP_BASE_URL host}).
+    Used for WP-CLI --url= flag. May differ from the public URL when
+    WP_SUBDOMAIN_PARENT_HOST overrides the parent domain.
+    """
+    slug = (wp_slug or "").strip().strip("/")
+    if _multisite_subdirectory():
+        return f"{_base_url()}/{slug}".rstrip("/")
+    parsed = urlparse(_base_url())
+    base_host = (parsed.netloc or "blogs.zilo.pro").lower().lstrip("www.").lstrip(".")
+    return f"https://{slug}.{base_host}".rstrip("/")
+
+
 def _generate_password(length: int = 20) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
@@ -128,8 +142,10 @@ class ZiloBlogService:
                 )
 
         # 2. Create subsite via WP-CLI on the server
-        site_url = wp_subsite_public_url(slug)
+        site_url = wp_subsite_public_url(slug)      # public URL (slug.zilo.pro)
+        internal_url = _wp_internal_subsite_url(slug)  # WP-internal URL (slug.blogs.zilo.pro)
         cli_path = _wp_cli_path()
+        blog_id: int | None = None
         try:
             import subprocess
             result = subprocess.run(
@@ -140,20 +156,47 @@ class ZiloBlogService:
                     f"--slug={slug}",
                     f"--title={business_name}",
                     f"--email={client_email}",
+                    "--porcelain",
                 ],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
-            if result.returncode != 0:
+            if result.returncode == 0:
+                try:
+                    blog_id = int(result.stdout.strip())
+                    logger.info(f"[blog] wp site created blog_id={blog_id} at {internal_url}")
+                except ValueError:
+                    pass
+            else:
                 logger.warning(f"[blog] wp site create stderr: {result.stderr[:300]}")
         except Exception as e:
             logger.warning(f"[blog] wp site create failed (may be non-VPS env): {e}")
 
+        # 2b. Domain mapping: point slug.zilo.pro → the WordPress subsite
+        if blog_id and site_url != internal_url:
+            try:
+                import subprocess
+                public_domain = site_url.replace("https://", "").replace("http://", "")
+                subprocess.run(
+                    ["wp", "--allow-root", f"--path={cli_path}", "db", "query",
+                     f"UPDATE wp_blogs SET domain='{public_domain}' WHERE blog_id={blog_id};"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                subprocess.run(
+                    ["wp", "--allow-root", f"--path={cli_path}", "db", "query",
+                     f"UPDATE wp_{blog_id}_options SET option_value='{site_url}' "
+                     f"WHERE option_name='siteurl' OR option_name='home';"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                logger.info(f"[blog] Domain mapped blog_id={blog_id} → {site_url}")
+            except Exception as exc:
+                logger.warning(f"[blog] domain mapping failed: {exc}")
+
         # 3. Apply industry-specific theme
         await self._apply_industry_theme(slug, industry)
 
-        # 4. Activate plugins (WooCommerce shop + WPForms)
+        # 4. Activate plugins (WooCommerce shop + WPForms) — use public URL (now mapped)
         await self._activate_site_plugins(slug, site_url)
 
         # 5. AI-seed products (industry-specific via Claude → WooCommerce REST)
