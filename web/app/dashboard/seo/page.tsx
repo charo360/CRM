@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -2162,7 +2162,7 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-export default function SeoPage() {
+function SeoPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
@@ -2342,5 +2342,13 @@ export default function SeoPage() {
         </section>
       </div>
     </div>
+  );
+}
+
+export default function SeoPage() {
+  return (
+    <Suspense fallback={null}>
+      <SeoPageInner />
+    </Suspense>
   );
 }
