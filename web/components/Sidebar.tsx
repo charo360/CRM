@@ -49,6 +49,7 @@ import {
   Zap,
   FileInput,
   Globe,
+  Globe2,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -124,7 +125,7 @@ export default function Sidebar() {
     { href: "/dashboard/x-ads", label: "X Ads", icon: Hash },
     { href: "/dashboard/google-business", label: "Google Business", icon: MapPinned },
     { href: "/dashboard/social-inbox", label: "Social Inbox", icon: Inbox },
-    { href: "/dashboard/seo", label: "SEO & Blog", icon: Search },
+    { href: "/dashboard/seo", label: "Website & SEO", icon: Search },
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const businessNavFiltered = [
@@ -145,6 +146,7 @@ export default function Sidebar() {
     { href: "/dashboard/forms", label: "Forms", icon: FileInput },
     { href: "/dashboard/growth", label: "Growth Suite", icon: Zap },
     { href: "/dashboard/client-portal", label: "Client Portal", icon: Users },
+    { href: "/dashboard/client-sites", label: "Client Sites", icon: Globe2 },
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const NAV_GROUPS = [

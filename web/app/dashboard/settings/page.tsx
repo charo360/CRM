@@ -6,6 +6,7 @@ import {
   businessKnowledgeApi,
   authApi,
   seoApi,
+  blogApi,
   BusinessSettings,
   BusinessKnowledge,
 } from "@/lib/api";
@@ -203,6 +204,16 @@ export default function SettingsPage() {
   async function handleSave() {
     setSaving(true);
     try {
+      // ── Auto-provision autoblog from business settings (idempotent) ────────
+      const businessName = userSettings.business_name?.trim();
+      const location = String(bk.business_location ?? "").trim() || userSettings.country || "";
+      const industry = userSettings.business_type || "services";
+      const email = (getUser()?.email as string | undefined) || "";
+      if (businessName && location && email) {
+        blogApi.provision({ business_name: businessName, client_email: email, industry, location })
+          .catch(() => { /* non-fatal — blog provisioning is best-effort */ });
+      }
+
       await settingsApi.update({
         business_name: userSettings.business_name,
         owner_name: userSettings.owner_name,

@@ -86,6 +86,26 @@ Optional:
 - `DB_NAME` - Database name (default: whatsapp_crm)
 - `PORT` - Server port (default: 8000)
 
+## Autoblogging (WordPress Multisite) Variables
+
+Add these to your `.env` when the Hostinger VPS + WordPress Multisite is set up:
+
+```dotenv
+# WordPress Multisite (Hostinger VPS)
+WP_BASE_URL=https://zilo.pro
+WP_ADMIN_USER=ziloadmin
+WP_ADMIN_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
+WP_JWT_SECRET=your-very-long-random-secret-key-here-change-this
+```
+
+- `WP_BASE_URL` — Root URL of your WordPress Multisite install (no trailing slash)
+- `WP_ADMIN_USER` — WordPress network admin username
+- `WP_ADMIN_APP_PASSWORD` — Application password created under Users → Profile → Application Passwords
+- `WP_JWT_SECRET` — Must match `JWT_AUTH_SECRET_KEY` defined in `wp-config.php`
+
+The autoblogging scheduler publishes one post per active client daily at **9 AM EAT**.
+Weekly post limits per plan: `free=2`, `starter=5`, `growth=7`, `premium=7`.
+
 ## Quick Start
 
 ```bash

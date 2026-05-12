@@ -1237,11 +1237,11 @@ Write the full article now:"""
                     "calendar_keywords": kws,
                 }
                 await db.seo_blog_posts.insert_one(doc)
-                    # Analytics: record draft generation
-                    try:
-                        await _record_event("draft_generated", {"post_id": doc["_id"], "title": doc.get("title"), "week": week, "day": day}, user)
-                    except Exception:
-                        logger.exception("Failed to record draft_generated event")
+                # Analytics: record draft generation
+                try:
+                    await _record_event("draft_generated", {"post_id": doc["_id"], "title": doc.get("title"), "week": week, "day": day}, user)
+                except Exception:
+                    logger.exception("Failed to record draft_generated event")
                 results.append({
                     "post_id": doc["_id"],
                     "title": doc["title"],

@@ -2,8 +2,6 @@
 Action Mode — Autonomous AI business agent.
 Runs background agents: Funding Hunter, Lead Gen, Social Scout, Admin Autopilot.
 """
-from __future__ import annotations
-
 import logging
 import uuid
 import os

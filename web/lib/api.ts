@@ -2079,6 +2079,19 @@ export const seoApi = {
     kw_months: string[];
   }>("/seo/seo-memory"),
 
+  /** Local SEO (mock/contextual data — same handlers as CRM backend `/seo/local/*`). */
+  getLocalListings: () => api.get<{ listings: Record<string, unknown>[] }>("/seo/local/listings"),
+  getLocalKeywords: () => api.get<{ keywords: Record<string, unknown>[] }>("/seo/local/keywords"),
+  getLocalCompetitors: () => api.get<{ competitors: Record<string, unknown>[] }>("/seo/local/competitors"),
+  getLocalScore: () => api.get<Record<string, unknown>>("/seo/local/score"),
+  addLocalListing: (body: {
+    platform: string;
+    name: string;
+    address: string;
+    phone: string;
+    website: string;
+  }) => api.post<{ success: boolean; listing: Record<string, unknown> }>("/seo/local/listings", body),
+
   /** Scrape a website (homepage + sub-pages) and use LLM to write rich content for all Settings fields. */
   scrapeWebsite: (url: string) =>
     api.post<{
@@ -2262,6 +2275,70 @@ export interface SeoAgentConversation {
 export interface SeoAgentConversationDetail extends SeoAgentConversation {
   messages: { role: "user" | "assistant"; content: string; tool_steps?: SeoAgentToolStep[]; ts: string }[];
 }
+
+// ── Zilo Autoblogging ─────────────────────────────────────────────────────────
+
+export interface BlogStatus {
+  connected: boolean;
+  /** Mongo/autoblog `client_id` — always the authenticated user id. Use for deactivate/activate/publish-now/posts. */
+  client_id?: string;
+  blog_url?: string;
+  wp_slug?: string;
+  industry?: string;
+  location?: string;
+  plan?: string;
+  posts_count?: number;
+  last_posted_at?: string;
+  active?: boolean;
+}
+
+export interface AutoblogPost {
+  title: string;
+  post_url: string;
+  published_at: string;
+  keywords?: string[];
+}
+
+export interface KeywordTrackerRow {
+  keyword: string;
+  search_volume: number;
+  difficulty: string;
+  intent: string;
+  content_idea: string;
+  posts: { title: string; url: string; published_at: string }[];
+  created_at: string;
+  updated_at: string;
+}
+
+export const blogApi = {
+  getMyBlog: () => api.get<BlogStatus & { connected: boolean }>("/blog/my"),
+  getStatus: (clientId: string) => api.get<BlogStatus>(`/blog/status/${clientId}`),
+  create: (body: { client_id: string; business_name: string; client_email: string; industry: string; location: string }) =>
+    api.post<{ status: string; blog_url: string; wp_slug: string }>("/blog/create", body),
+  /** Idempotent — call after settings save or onboarding. Auto-uses user._id as client_id. */
+  provision: (body: { business_name: string; client_email: string; industry: string; location: string }) =>
+    api.post<{ status: string; connected: boolean; blog_url?: string; wp_slug?: string }>("/blog/provision", body),
+  publishNow: (client_id: string) =>
+    api.post<{ status: string; topic: string; post_url: string; post_id: number }>("/blog/publish-now", { client_id }),
+  getPosts: (clientId: string) =>
+    api.get<{ posts: AutoblogPost[] }>(`/blog/posts/${clientId}`),
+  deactivate: (clientId: string) =>
+    request<{ status: string }>(`/blog/deactivate/${clientId}`, { method: "PATCH" }),
+  activate: (clientId: string) =>
+    request<{ status: string }>(`/blog/activate/${clientId}`, { method: "PATCH" }),
+  /** Publish a pre-written SEO post directly to the user's WordPress subsite. */
+  publishFromSeo: (body: { title: string; content: string; keywords?: string[]; excerpt?: string }) =>
+    api.post<{ status: string; post_url: string; post_id: number; blog_url: string }>("/blog/publish-from-seo", body),
+  /** Keyword tracker — save a keyword to the tracker table. */
+  saveKeywordToTracker: (body: { keyword: string; search_volume?: number; difficulty?: string; intent?: string; content_idea?: string }) =>
+    api.post<{ ok: boolean }>("/blog/keyword-tracker/save", body),
+  /** Link a published post to a tracked keyword. */
+  linkPostToKeyword: (params: { keyword: string; post_title: string; post_url: string }) =>
+    api.post<{ ok: boolean }>(`/blog/keyword-tracker/link-post?keyword=${encodeURIComponent(params.keyword)}&post_title=${encodeURIComponent(params.post_title)}&post_url=${encodeURIComponent(params.post_url)}`, {}),
+  /** Get all tracked keywords with their linked blog posts. */
+  getKeywordTracker: () =>
+    api.get<{ keywords: KeywordTrackerRow[] }>("/blog/keyword-tracker"),
+};
 
 export const seoAgentApi = {
   chat: (message: string, conversation_id?: string, history?: { role: string; content: string }[]) =>
