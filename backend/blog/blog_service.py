@@ -418,8 +418,9 @@ class ZiloBlogService:
             except Exception as exc:
                 logger.warning(f"[blog] page create {page['slug']} failed: {exc}")
 
-        # 6. Set blog page (posts page) to /blog slug
+        # 6. Set front page to /shop and blog page to /blog
         try:
+            # Create Blog page if it doesn't exist
             r = _wp(
                 "post", "create",
                 "--post_type=page",
@@ -429,12 +430,23 @@ class ZiloBlogService:
                 "--post_content=",
                 "--porcelain",
             )
-            if r.returncode == 0:
-                blog_page_id = r.stdout.strip()
+            blog_page_id = r.stdout.strip() if r.returncode == 0 else None
+            
+            # Find Shop page ID (created by WooCommerce install_pages)
+            r_shop = _wp("post", "list", "--post_type=page", "--name=shop", "--format=ids")
+            shop_page_id = r_shop.stdout.strip() if r_shop.returncode == 0 else None
+
+            if shop_page_id:
+                _wp("option", "update", "show_on_front", "page")
+                _wp("option", "update", "page_on_front", shop_page_id)
+                logger.info(f"[blog] Set Shop (id={shop_page_id}) as front page for {slug}")
+            
+            if blog_page_id:
                 _wp("option", "update", "page_for_posts", blog_page_id)
-                logger.info(f"[blog] Created /blog page (id={blog_page_id}) for {slug}")
+                logger.info(f"[blog] Set Blog (id={blog_page_id}) as posts page for {slug}")
+                
         except Exception as exc:
-            logger.warning(f"[blog] /blog page create failed: {exc}")
+            logger.warning(f"[blog] front/blog page configuration failed: {exc}")
 
     async def _apply_industry_theme(self, slug: str, industry: str):
         """
