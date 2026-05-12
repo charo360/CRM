@@ -180,7 +180,7 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
     if (!cid) return;
     setError("");
     try {
-      if (blog.active) {
+      if (blog?.active) {
         await blogApi.deactivate(cid);
         setSuccess("Blog paused.");
       } else {
