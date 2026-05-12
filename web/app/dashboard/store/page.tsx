@@ -6,7 +6,7 @@ import {
   PackagePlus, RefreshCw, ShoppingBag, ShoppingCart, Sparkles,
   Store, Trash2, TrendingUp, X, AlertCircle, Plus, Wand2,
   CreditCard, Globe, ChevronDown, ChevronUp, ImageIcon, Palette,
-  Phone, Mail, MapPin, Save, Instagram, Facebook, Twitter,
+  Phone, Mail, MapPin, Save, Share2, Camera, MessageCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -225,10 +225,10 @@ function WebsiteEditor({ slug, storeUrl }: { slug: string; storeUrl: string }) {
           <Globe className="h-4 w-4 text-brand" /> Social Media
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Facebook URL" id="facebook" placeholder="https://facebook.com/mybiz" icon={Facebook} />
-          <Field label="Instagram URL" id="instagram" placeholder="https://instagram.com/mybiz" icon={Instagram} />
+          <Field label="Facebook URL" id="facebook" placeholder="https://facebook.com/mybiz" icon={Share2} />
+          <Field label="Instagram URL" id="instagram" placeholder="https://instagram.com/mybiz" icon={Camera} />
           <Field label="TikTok URL" id="tiktok" placeholder="https://tiktok.com/@mybiz" />
-          <Field label="Twitter / X URL" id="twitter" placeholder="https://x.com/mybiz" icon={Twitter} />
+          <Field label="Twitter / X URL" id="twitter" placeholder="https://x.com/mybiz" icon={MessageCircle} />
         </div>
       </div>
 
