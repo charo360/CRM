@@ -66,7 +66,7 @@ def markdown_to_wp_html(content: str) -> str:
         if re.match(r"^\d+\.\s+", line):
             items = []
             while i < len(lines) and re.match(r"^\d+\.\s+", lines[i]):
-                items.append(f"<li>{_inline_md(re.sub(r'^\\d+\\.\\s+', '', lines[i]))}</li>")
+                items.append(f"<li>{_inline_md(re.sub(r'^\d+\.\s+', '', lines[i]))}</li>")
                 i += 1
             html_parts.append("<ol>" + "".join(items) + "</ol>")
             continue
