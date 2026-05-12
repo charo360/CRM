@@ -5,7 +5,8 @@ import {
   ArrowRight, ArrowUpRight, Check, ExternalLink, Loader2, Package,
   PackagePlus, RefreshCw, ShoppingBag, ShoppingCart, Sparkles,
   Store, Trash2, TrendingUp, X, AlertCircle, Plus, Wand2,
-  CreditCard, Globe, ChevronDown, ChevronUp,
+  CreditCard, Globe, ChevronDown, ChevronUp, ImageIcon, Palette,
+  Phone, Mail, MapPin, Save, Instagram, Facebook, Twitter,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -50,7 +51,30 @@ type WCOrder = {
   line_items: { name: string; quantity: number; total: string }[];
 };
 
-type Tab = "products" | "orders" | "settings";
+type Tab = "products" | "orders" | "website" | "settings";
+
+type SiteSettings = {
+  title: string;
+  tagline: string;
+  logo_url: string;
+  accent_color: string;
+  button_color: string;
+  phone: string;
+  email: string;
+  whatsapp: string;
+  address: string;
+  facebook: string;
+  instagram: string;
+  tiktok: string;
+  twitter: string;
+};
+
+const SETTINGS_DEFAULTS: SiteSettings = {
+  title: "", tagline: "", logo_url: "",
+  accent_color: "#009B3A", button_color: "#009B3A",
+  phone: "", email: "", whatsapp: "", address: "",
+  facebook: "", instagram: "", tiktok: "", twitter: "",
+};
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -66,6 +90,176 @@ const ORDER_STATUS_COLORS: Record<string, string> = {
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+// ── Website Editor ────────────────────────────────────────────────────────────
+
+function WebsiteEditor({ slug, storeUrl }: { slug: string; storeUrl: string }) {
+  const [form, setForm] = useState<SiteSettings>(SETTINGS_DEFAULTS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<SiteSettings>(`/blog/clients/${slug}/site-settings`)
+      .then(d => setForm(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [slug]);
+
+  function set(key: keyof SiteSettings, val: string) {
+    setForm(prev => ({ ...prev, [key]: val }));
+  }
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.patch(`/blog/clients/${slug}/site-settings`, form as unknown as Record<string, unknown>);
+      toast.success("Website updated — changes go live in ~30s");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-16">
+      <Loader2 className="h-6 w-6 animate-spin text-brand" />
+    </div>
+  );
+
+  const Field = ({ label, id, type = "text", placeholder, icon: Icon }: {
+    label: string; id: keyof SiteSettings; type?: string; placeholder?: string; icon?: React.FC<{ className?: string }>;
+  }) => (
+    <div>
+      <label className="mb-1 block text-xs font-medium text-slate-600">{label}</label>
+      <div className="relative">
+        {Icon && <Icon className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />}
+        <input
+          type={type}
+          value={form[id]}
+          onChange={e => set(id, e.target.value)}
+          placeholder={placeholder}
+          className={cn(
+            "w-full rounded-lg border border-slate-200 bg-white py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand/30",
+            Icon ? "pl-8 pr-3" : "px-3",
+          )}
+        />
+      </div>
+    </div>
+  );
+
+  return (
+    <form onSubmit={save} className="space-y-4">
+
+      {/* Identity */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+          <Store className="h-4 w-4 text-brand" /> Site Identity
+        </h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Business name" id="title" placeholder="Jane's Bakery" />
+          <Field label="Tagline" id="tagline" placeholder="Fresh baked daily" />
+        </div>
+        <Field label="Logo URL" id="logo_url" placeholder="https://cdn.example.com/logo.png" icon={ImageIcon} />
+        <p className="text-[11px] text-slate-400">
+          Paste a public image URL. Upload via{" "}
+          <a href={`${storeUrl}/wp-admin/media-new.php`} target="_blank" rel="noopener noreferrer" className="underline">WordPress Media Library</a>
+          , then copy the URL here.
+        </p>
+      </div>
+
+      {/* Colours */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+          <Palette className="h-4 w-4 text-brand" /> Brand Colours
+        </h2>
+        <div className="grid grid-cols-2 gap-4">
+          {([
+            { label: "Accent / link colour", id: "accent_color" as const },
+            { label: "Button colour",        id: "button_color" as const },
+          ] as { label: string; id: keyof SiteSettings }[]).map(({ label, id }) => (
+            <div key={id}>
+              <label className="mb-1 block text-xs font-medium text-slate-600">{label}</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={form[id] as string}
+                  onChange={e => set(id, e.target.value)}
+                  className="h-9 w-12 cursor-pointer rounded-md border border-slate-200 p-0.5"
+                />
+                <input
+                  type="text"
+                  value={form[id] as string}
+                  onChange={e => set(id, e.target.value)}
+                  placeholder="#009B3A"
+                  className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand/30"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div
+          className="mt-1 h-10 w-full rounded-lg"
+          style={{ background: `linear-gradient(135deg, ${form.accent_color} 0%, ${form.button_color} 100%)` }}
+        />
+      </div>
+
+      {/* Contact */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+          <Phone className="h-4 w-4 text-brand" /> Contact Info
+        </h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Phone" id="phone" placeholder="+254 712 345 678" icon={Phone} />
+          <Field label="Email" id="email" type="email" placeholder="hello@mybiz.com" icon={Mail} />
+          <Field label="WhatsApp number" id="whatsapp" placeholder="+254712345678" icon={Phone} />
+          <Field label="Address" id="address" placeholder="123 Main St, Nairobi" icon={MapPin} />
+        </div>
+      </div>
+
+      {/* Social */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+          <Globe className="h-4 w-4 text-brand" /> Social Media
+        </h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Facebook URL" id="facebook" placeholder="https://facebook.com/mybiz" icon={Facebook} />
+          <Field label="Instagram URL" id="instagram" placeholder="https://instagram.com/mybiz" icon={Instagram} />
+          <Field label="TikTok URL" id="tiktok" placeholder="https://tiktok.com/@mybiz" />
+          <Field label="Twitter / X URL" id="twitter" placeholder="https://x.com/mybiz" icon={Twitter} />
+        </div>
+      </div>
+
+      {/* Advanced */}
+      <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+        <p className="text-xs text-slate-500">
+          Need more control?{" "}
+          <a
+            href={`${storeUrl}/wp-admin/customize.php`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-brand underline"
+          >
+            Open WordPress Customizer
+          </a>{" "}
+          for full page-level editing.
+        </p>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          type="submit"
+          disabled={saving}
+          className="inline-flex items-center gap-2 rounded-xl bg-brand-dark px-6 py-2.5 text-sm font-semibold text-white hover:bg-brand disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </form>
+  );
 }
 
 // ── Setup Wizard ───────────────────────────────────────────────────────────────
@@ -524,7 +718,7 @@ function StorePageInner() {
 
           {/* Tabs */}
           <div className="flex gap-0 border-b border-slate-100">
-            {(["products", "orders", "settings"] as Tab[]).map((t) => (
+            {(["products", "orders", "website", "settings"] as Tab[]).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -640,6 +834,11 @@ function StorePageInner() {
               </div>
             )}
           </div>
+        )}
+
+        {/* Website Tab */}
+        {tab === "website" && site && (
+          <WebsiteEditor slug={site.wp_slug} storeUrl={storeUrl} />
         )}
 
         {/* Settings Tab */}

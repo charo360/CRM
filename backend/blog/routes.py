@@ -665,6 +665,141 @@ def make_blog_router(db, get_current_user):
         except Exception as exc:
             raise HTTPException(500, str(exc))
 
+    # ── Get site customisation settings ────────────────────────────────────────
+
+    @router.get("/clients/{wp_slug}/site-settings")
+    async def get_site_settings(wp_slug: str, user=Depends(get_current_user)):
+        """Return stored site customisation settings (MongoDB + live WP title/tagline)."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        stored = blog.get("site_settings", {})
+        result = {
+            "title":        stored.get("title", blog.get("business_name", "")),
+            "tagline":      stored.get("tagline", ""),
+            "logo_url":     stored.get("logo_url", ""),
+            "accent_color": stored.get("accent_color", "#009B3A"),
+            "button_color": stored.get("button_color", "#009B3A"),
+            "phone":        stored.get("phone", ""),
+            "email":        stored.get("email", ""),
+            "whatsapp":     stored.get("whatsapp", ""),
+            "address":      stored.get("address", ""),
+            "facebook":     stored.get("facebook", ""),
+            "instagram":    stored.get("instagram", ""),
+            "tiktok":       stored.get("tiktok", ""),
+            "twitter":      stored.get("twitter", ""),
+        }
+        if site_base:
+            wp_user = os.getenv("WP_ADMIN_USER", "")
+            wp_pwd  = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+            auth_h  = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    r = await client.get(
+                        f"{site_base}/wp-json/wp/v2/settings",
+                        headers={"Authorization": f"Basic {auth_h}"},
+                    )
+                    if r.status_code == 200:
+                        wp = r.json()
+                        result["title"]   = wp.get("title",       result["title"])
+                        result["tagline"] = wp.get("description", result["tagline"])
+            except Exception:
+                pass
+        return result
+
+    # ── Update site customisation settings ─────────────────────────────────────
+
+    @router.patch("/clients/{wp_slug}/site-settings")
+    async def update_site_settings(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """Push site customisation to WordPress and persist to MongoDB."""
+        import subprocess as _sp, json as _json
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        wp_user  = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd   = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_h   = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        wp_hdrs  = {"Authorization": f"Basic {auth_h}", "Content-Type": "application/json"}
+        cli_path = os.getenv("WP_CLI_PATH", "/var/www/html/zilo")
+        errors: list = []
+
+        def _wpcli(*args, timeout=15):
+            return _sp.run(
+                ["wp", "--allow-root", f"--path={cli_path}", f"--url={site_base}", *args],
+                capture_output=True, text=True, timeout=timeout,
+            )
+
+        # 1. Title + tagline via WP REST API
+        wp_payload: dict = {}
+        if body.get("title"):
+            wp_payload["title"] = body["title"]
+        if "tagline" in body:
+            wp_payload["description"] = body["tagline"]
+        if wp_payload:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    r = await client.post(
+                        f"{site_base}/wp-json/wp/v2/settings",
+                        headers=wp_hdrs, json=wp_payload,
+                    )
+                    if r.status_code not in (200, 201):
+                        errors.append(f"WP settings {r.status_code}")
+            except Exception as exc:
+                errors.append(f"WP settings: {exc}")
+
+        # 2. Accent/button colours → Astra settings option
+        accent = body.get("accent_color", "")
+        button = body.get("button_color", accent)
+        if accent:
+            try:
+                raw = _wpcli("option", "get", "astra-settings", "--format=json")
+                try:
+                    astra = _json.loads(raw.stdout.strip()) if raw.returncode == 0 else {}
+                except Exception:
+                    astra = {}
+                astra.update({
+                    "link-color": accent, "theme-color": button,
+                    "button-bg-color": button, "button-bg-h-color": accent,
+                })
+                _wpcli("option", "update", "astra-settings", _json.dumps(astra))
+            except Exception as exc:
+                errors.append(f"Astra colors: {exc}")
+
+        # 3. Social links → Astra settings option
+        social_map = {"facebook": "facebook-link", "instagram": "instagram-link",
+                      "twitter": "twitter-link", "tiktok": "tiktok-link"}
+        social_updates = {v: body[k] for k, v in social_map.items() if k in body and body[k]}
+        if social_updates:
+            try:
+                raw = _wpcli("option", "get", "astra-settings", "--format=json")
+                try:
+                    astra = _json.loads(raw.stdout.strip()) if raw.returncode == 0 else {}
+                except Exception:
+                    astra = {}
+                astra.update(social_updates)
+                _wpcli("option", "update", "astra-settings", _json.dumps(astra))
+            except Exception as exc:
+                errors.append(f"Social links: {exc}")
+
+        # 4. Persist everything to MongoDB
+        allowed = {"title", "tagline", "logo_url", "accent_color", "button_color",
+                   "phone", "email", "whatsapp", "address",
+                   "facebook", "instagram", "tiktok", "twitter"}
+        to_save = {k: v for k, v in body.items() if k in allowed}
+        if to_save:
+            await db.blogs.update_one(
+                {"client_id": user_id, "wp_slug": wp_slug},
+                {"$set": {f"site_settings.{k}": v for k, v in to_save.items()}},
+            )
+        return {"status": "ok", "errors": errors}
+
     # ── Sync stats for a client site ───────────────────────────────────────────
 
     @router.post("/clients/{wp_slug}/sync")
