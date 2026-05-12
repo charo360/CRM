@@ -604,6 +604,67 @@ def make_blog_router(db, get_current_user):
             logger.error("[blog] reseed_forms error: %s", exc)
             raise HTTPException(500, str(exc))
 
+    # ── Create a WooCommerce product ───────────────────────────────────────────
+
+    @router.post("/clients/{wp_slug}/products")
+    async def create_client_product(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """Create a WooCommerce product on a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wc_key = os.getenv("WC_CONSUMER_KEY", "")
+        wc_secret = os.getenv("WC_CONSUMER_SECRET", "")
+        if not wc_key:
+            raise HTTPException(400, "WooCommerce API keys not configured")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"{site_base}/wp-json/wc/v3/products",
+                    auth=(wc_key, wc_secret),
+                    json=body,
+                )
+                if r.status_code in (200, 201):
+                    return {"status": "created", "product": r.json()}
+                raise HTTPException(r.status_code, r.text[:300])
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, str(exc))
+
+    # ── Delete a WooCommerce product ───────────────────────────────────────────
+
+    @router.delete("/clients/{wp_slug}/products/{product_id}")
+    async def delete_client_product(wp_slug: str, product_id: int, user=Depends(get_current_user)):
+        """Delete (trash) a WooCommerce product from a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wc_key = os.getenv("WC_CONSUMER_KEY", "")
+        wc_secret = os.getenv("WC_CONSUMER_SECRET", "")
+        if not wc_key:
+            raise HTTPException(400, "WooCommerce API keys not configured")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.delete(
+                    f"{site_base}/wp-json/wc/v3/products/{product_id}?force=true",
+                    auth=(wc_key, wc_secret),
+                )
+                if r.status_code in (200, 204):
+                    return {"status": "deleted"}
+                raise HTTPException(r.status_code, r.text[:300])
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(500, str(exc))
+
     # ── Sync stats for a client site ───────────────────────────────────────────
 
     @router.post("/clients/{wp_slug}/sync")

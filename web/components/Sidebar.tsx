@@ -147,6 +147,7 @@ export default function Sidebar() {
     { href: "/dashboard/growth", label: "Growth Suite", icon: Zap },
     { href: "/dashboard/client-portal", label: "Client Portal", icon: Users },
     { href: "/dashboard/client-sites", label: "Client Sites", icon: Globe2 },
+    { href: "/dashboard/store", label: "My Store", icon: ShoppingCart },
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const NAV_GROUPS = [

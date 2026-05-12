@@ -43,6 +43,7 @@ export const SIDEBAR_FEATURE_DEFAULTS: Record<string, boolean> = {
   nav_seo: false,
   nav_growth: false,
   nav_client_portal: false,
+  nav_store: false,
 };
 
 /** Map route href → settings key */
@@ -88,6 +89,7 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
   "/dashboard/seo": "nav_seo",
   "/dashboard/growth": "nav_growth",
   "/dashboard/client-portal": "nav_client_portal",
+  "/dashboard/store": "nav_store",
 };
 
 export function mergeSidebarFeatures(raw: unknown): Record<string, boolean> {
@@ -194,6 +196,7 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
     { key: "nav_documents", label: "Documents", description: "AI-generated PDFs, Word docs, and presentations from Zilo Chat" },
     { key: "nav_growth", label: "Growth Suite", description: "Daily digest, autopilot follow-ups, deal room, competitor intel, voice input" },
     { key: "nav_client_portal", label: "Client Portal", description: "Share a portal link with clients to view their invoices, proposals & orders" },
+    { key: "nav_store", label: "My Store", description: "Manage your WooCommerce store — products, orders, and payments" },
     ],
   },
   {
