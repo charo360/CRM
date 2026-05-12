@@ -437,47 +437,118 @@ class ZiloBlogService:
             logger.warning(f"[blog] /blog page create failed: {exc}")
 
     async def _apply_industry_theme(self, slug: str, industry: str):
-        """Sets the correct Zilo child theme based on business industry."""
-        theme_map = {
-            "salon": "zilo-salon",
-            "beauty": "zilo-salon",
-            "hair": "zilo-salon",
-            "restaurant": "zilo-restaurant",
-            "food": "zilo-restaurant",
-            "hotel": "zilo-restaurant",
-            "catering": "zilo-restaurant",
-            "retail": "zilo-retail",
-            "hardware": "zilo-retail",
-            "shop": "zilo-retail",
-            "supermarket": "zilo-retail",
-            "services": "zilo-services",
-            "plumber": "zilo-services",
-            "electrician": "zilo-services",
-            "mechanic": "zilo-services",
-            "startup": "zilo-startup",
-            "tech": "zilo-startup",
-            "saas": "zilo-startup",
-            "app": "zilo-startup",
-            "software": "zilo-startup",
-            "agency": "zilo-startup",
-            "consulting": "zilo-startup",
-            "fintech": "zilo-startup",
-        }
-        theme = theme_map.get(industry.lower(), "zilo-default")
+        """
+        Installs Astra (free, WooCommerce-optimised) network-wide if not present,
+        activates it for the new subsite, then applies industry-specific accent colours
+        via Astra's customizer options so every client site looks distinct.
+        """
+        import subprocess, json as _json
 
-        try:
-            import subprocess
-            subsite = wp_subsite_public_url(slug)
-            subprocess.run(
-                [
-                    "wp", "--allow-root",
-                    f"--path={_wp_cli_path()}",
-                    f"--url={subsite}",
-                    "theme", "activate", theme,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
+        cli_path = _wp_cli_path()
+        subsite = wp_subsite_public_url(slug)
+
+        def _wp(*args, timeout=30):
+            return subprocess.run(
+                ["wp", "--allow-root", f"--path={cli_path}", *args],
+                capture_output=True, text=True, timeout=timeout,
             )
-        except Exception as e:
-            logger.warning(f"[blog] theme activate failed (may be non-VPS env): {e}")
+
+        def _wp_site(*args, timeout=30):
+            return subprocess.run(
+                ["wp", "--allow-root", f"--path={cli_path}", f"--url={subsite}", *args],
+                capture_output=True, text=True, timeout=timeout,
+            )
+
+        # Industry → Astra accent colour + button colour
+        INDUSTRY_COLORS = {
+            "salon":       {"link": "#c2185b", "button": "#e91e8c", "heading": "#37474f"},
+            "beauty":      {"link": "#c2185b", "button": "#e91e8c", "heading": "#37474f"},
+            "hair":        {"link": "#c2185b", "button": "#e91e8c", "heading": "#37474f"},
+            "spa":         {"link": "#8e24aa", "button": "#ab47bc", "heading": "#37474f"},
+            "restaurant":  {"link": "#bf360c", "button": "#e64a19", "heading": "#3e2723"},
+            "food":        {"link": "#bf360c", "button": "#e64a19", "heading": "#3e2723"},
+            "hotel":       {"link": "#bf360c", "button": "#e64a19", "heading": "#3e2723"},
+            "catering":    {"link": "#bf360c", "button": "#e64a19", "heading": "#3e2723"},
+            "bakery":      {"link": "#6d4c41", "button": "#8d6e63", "heading": "#3e2723"},
+            "retail":      {"link": "#1565c0", "button": "#1976d2", "heading": "#1a237e"},
+            "hardware":    {"link": "#1565c0", "button": "#1976d2", "heading": "#1a237e"},
+            "supermarket": {"link": "#2e7d32", "button": "#388e3c", "heading": "#1b5e20"},
+            "fashion":     {"link": "#4a148c", "button": "#7b1fa2", "heading": "#1a237e"},
+            "services":    {"link": "#00695c", "button": "#00897b", "heading": "#004d40"},
+            "plumber":     {"link": "#01579b", "button": "#0288d1", "heading": "#01579b"},
+            "electrician": {"link": "#f57f17", "button": "#f9a825", "heading": "#e65100"},
+            "mechanic":    {"link": "#37474f", "button": "#546e7a", "heading": "#263238"},
+            "startup":     {"link": "#283593", "button": "#3949ab", "heading": "#1a237e"},
+            "tech":        {"link": "#283593", "button": "#3949ab", "heading": "#1a237e"},
+            "saas":        {"link": "#283593", "button": "#3949ab", "heading": "#1a237e"},
+            "agency":      {"link": "#283593", "button": "#3949ab", "heading": "#1a237e"},
+            "consulting":  {"link": "#283593", "button": "#3949ab", "heading": "#1a237e"},
+            "fitness":     {"link": "#c62828", "button": "#e53935", "heading": "#b71c1c"},
+            "gym":         {"link": "#c62828", "button": "#e53935", "heading": "#b71c1c"},
+        }
+        colors = INDUSTRY_COLORS.get(
+            industry.lower(),
+            {"link": "#009B3A", "button": "#00c44e", "heading": "#071a10"},  # Zilo brand default
+        )
+
+        # 1. Install Astra network-wide (skip if already installed)
+        try:
+            check = _wp("theme", "is-installed", "astra")
+            if check.returncode != 0:
+                r = _wp("theme", "install", "astra", "--activate-network", timeout=120)
+                if r.returncode == 0:
+                    logger.info("[blog] Astra theme installed network-wide")
+                else:
+                    logger.warning(f"[blog] Astra install: {r.stderr[:200]}")
+            else:
+                logger.info("[blog] Astra already installed")
+        except Exception as exc:
+            logger.warning(f"[blog] Astra install check failed: {exc}")
+
+        # 2. Activate Astra for this subsite
+        try:
+            r = _wp_site("theme", "activate", "astra")
+            if r.returncode != 0:
+                logger.warning(f"[blog] Astra activate for {slug}: {r.stderr[:150]}")
+            else:
+                logger.info(f"[blog] Astra activated for {slug}")
+        except Exception as exc:
+            logger.warning(f"[blog] theme activate failed: {exc}")
+
+        # 3. Apply industry accent colours via Astra customizer options
+        astra_settings = {
+            "astra-color-global-palette": _json.dumps({
+                "palette": [
+                    {"slug": "palette-1", "color": colors["button"]},
+                    {"slug": "palette-2", "color": colors["link"]},
+                    {"slug": "palette-3", "color": colors["heading"]},
+                    {"slug": "palette-4", "color": "#f4f6f9"},
+                    {"slug": "palette-5", "color": "#ffffff"},
+                    {"slug": "palette-6", "color": "#3a3a3a"},
+                    {"slug": "palette-7", "color": "#747474"},
+                    {"slug": "palette-8", "color": "#e8e8e8"},
+                    {"slug": "palette-9", "color": "#f2f2f2"},
+                ]
+            }),
+            "astra-settings": _json.dumps({
+                "link-color": colors["link"],
+                "theme-color": colors["button"],
+                "heading-base-color": colors["heading"],
+                "button-bg-color": colors["button"],
+                "button-bg-h-color": colors["link"],
+                "button-color": "#ffffff",
+                "button-h-color": "#ffffff",
+                "site-layout-outside-bg-obj": {"desktop": colors["button"]},
+                "header-bg-color": "#ffffff",
+                "footer-bg-color": "#071a10",
+                "footer-color": "#cccccc",
+                "footer-link-color": "#ffffff",
+            }),
+        }
+        for option_name, option_value in astra_settings.items():
+            try:
+                _wp_site("option", "update", option_name, option_value)
+            except Exception as exc:
+                logger.warning(f"[blog] Astra option {option_name} failed: {exc}")
+
+        logger.info(f"[blog] Astra theme + {industry} colours applied for {slug}")
