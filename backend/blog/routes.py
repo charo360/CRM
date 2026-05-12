@@ -922,6 +922,7 @@ def make_blog_router(db, get_current_user):
             "instagram":    stored.get("instagram", ""),
             "tiktok":       stored.get("tiktok", ""),
             "twitter":      stored.get("twitter", ""),
+            "front_page":   stored.get("front_page", "shop"),
         }
         if site_base:
             wp_user = os.getenv("WP_ADMIN_USER", "")
@@ -997,14 +998,43 @@ def make_blog_router(db, get_current_user):
                 except Exception:
                     astra = {}
                 astra.update({
-                    "link-color": accent, "theme-color": button,
-                    "button-bg-color": button, "button-bg-h-color": accent,
+                    "link-color": accent,
+                    "theme-color": button,
+                    "heading-base-color": accent,
+                    "button-bg-color": button,
+                    "button-bg-h-color": accent,
                 })
                 _wpcli("option", "update", "astra-settings", _json.dumps(astra))
             except Exception as exc:
                 errors.append(f"Astra colors: {exc}")
 
-        # 3. Social links → Astra settings option
+        # 3. Front page / Blog page layout
+        front_pref = body.get("front_page")
+        if front_pref in ("shop", "blog"):
+            try:
+                # Find IDs
+                r_shop = _wpcli("post", "list", "--post_type=page", "--name=shop", "--format=ids")
+                r_blog = _wpcli("post", "list", "--post_type=page", "--name=blog", "--format=ids")
+                
+                shop_id = r_shop.stdout.strip() if r_shop.returncode == 0 else None
+                blog_id = r_blog.stdout.strip() if r_blog.returncode == 0 else None
+
+                if front_pref == "shop" and shop_id:
+                    _wpcli("option", "update", "show_on_front", "page")
+                    _wpcli("option", "update", "page_on_front", shop_id)
+                    if blog_id:
+                        _wpcli("option", "update", "page_for_posts", blog_id)
+                elif front_pref == "blog":
+                    _wpcli("option", "update", "show_on_front", "posts")
+                    # Optionally clear these to avoid confusion
+                    # _wpcli("option", "update", "page_on_front", "0")
+                    # _wpcli("option", "update", "page_for_posts", "0")
+                
+                logger.info(f"[blog] Updated front_page preference to {front_pref} for {wp_slug}")
+            except Exception as exc:
+                errors.append(f"Front page setting: {exc}")
+
+        # 4. Social links → Astra settings option
         social_map = {"facebook": "facebook-link", "instagram": "instagram-link",
                       "twitter": "twitter-link", "tiktok": "tiktok-link"}
         social_updates = {v: body[k] for k, v in social_map.items() if k in body and body[k]}
@@ -1020,8 +1050,8 @@ def make_blog_router(db, get_current_user):
             except Exception as exc:
                 errors.append(f"Social links: {exc}")
 
-        # 4. Persist everything to MongoDB
-        allowed = {"title", "tagline", "logo_url", "accent_color", "button_color",
+        # 5. Persist everything to MongoDB
+        allowed = {"title", "tagline", "logo_url", "accent_color", "button_color", "front_page",
                    "phone", "email", "whatsapp", "address",
                    "facebook", "instagram", "tiktok", "twitter"}
         to_save = {k: v for k, v in body.items() if k in allowed}

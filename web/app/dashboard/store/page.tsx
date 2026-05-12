@@ -59,6 +59,7 @@ type SiteSettings = {
   logo_url: string;
   accent_color: string;
   button_color: string;
+  front_page: "shop" | "blog";
   phone: string;
   email: string;
   whatsapp: string;
@@ -72,6 +73,7 @@ type SiteSettings = {
 const SETTINGS_DEFAULTS: SiteSettings = {
   title: "", tagline: "", logo_url: "",
   accent_color: "#009B3A", button_color: "#009B3A",
+  front_page: "shop",
   phone: "", email: "", whatsapp: "", address: "",
   facebook: "", instagram: "", tiktok: "", twitter: "",
 };
@@ -170,40 +172,78 @@ function WebsiteEditor({ slug, storeUrl }: { slug: string; storeUrl: string }) {
         </p>
       </div>
 
-      {/* Colours */}
+      {/* Appearance */}
       <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-          <Palette className="h-4 w-4 text-brand" /> Brand Colours
+          <Palette className="h-4 w-4 text-brand" /> Appearance & Layout
         </h2>
-        <div className="grid grid-cols-2 gap-4">
-          {([
-            { label: "Accent / link colour", id: "accent_color" as const },
-            { label: "Button colour",        id: "button_color" as const },
-          ] as { label: string; id: keyof SiteSettings }[]).map(({ label, id }) => (
-            <div key={id}>
-              <label className="mb-1 block text-xs font-medium text-slate-600">{label}</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={form[id] as string}
-                  onChange={e => set(id, e.target.value)}
-                  className="h-9 w-12 cursor-pointer rounded-md border border-slate-200 p-0.5"
-                />
-                <input
-                  type="text"
-                  value={form[id] as string}
-                  onChange={e => set(id, e.target.value)}
-                  placeholder="#009B3A"
-                  className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand/30"
-                />
-              </div>
+        
+        <div className="space-y-4">
+          <div>
+            <label className="mb-2 block text-xs font-medium text-slate-600 uppercase tracking-wider">Homepage Layout</label>
+            <div className="flex p-1 bg-slate-100 rounded-xl w-fit">
+              <button
+                type="button"
+                onClick={() => set("front_page", "shop")}
+                className={cn(
+                  "px-5 py-2 text-xs font-semibold rounded-lg transition-all",
+                  form.front_page === "shop" 
+                    ? "bg-white text-brand shadow-sm" 
+                    : "text-slate-500 hover:text-slate-700"
+                )}
+              >
+                Shop (Storefront)
+              </button>
+              <button
+                type="button"
+                onClick={() => set("front_page", "blog")}
+                className={cn(
+                  "px-5 py-2 text-xs font-semibold rounded-lg transition-all",
+                  form.front_page === "blog" 
+                    ? "bg-white text-brand shadow-sm" 
+                    : "text-slate-500 hover:text-slate-700"
+                )}
+              >
+                Blog (News Feed)
+              </button>
             </div>
-          ))}
+            <p className="mt-2 text-[10px] text-slate-500 max-w-sm">
+              {form.front_page === "shop" 
+                ? "Your products will be shown on the main homepage. Blog posts will be moved to /blog."
+                : "Your blog posts will be shown on the main homepage. Shop will be moved to /shop."}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {([
+              { label: "Accent / link colour", id: "accent_color" as const },
+              { label: "Button colour",        id: "button_color" as const },
+            ] as { label: string; id: keyof SiteSettings }[]).map(({ label, id }) => (
+              <div key={id}>
+                <label className="mb-1 block text-xs font-medium text-slate-600">{label}</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={form[id] as string}
+                    onChange={e => set(id, e.target.value)}
+                    className="h-9 w-12 cursor-pointer rounded-md border border-slate-200 p-0.5"
+                  />
+                  <input
+                    type="text"
+                    value={form[id] as string}
+                    onChange={e => set(id, e.target.value)}
+                    placeholder="#009B3A"
+                    className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand/30"
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div
+            className="mt-1 h-10 w-full rounded-lg"
+            style={{ background: `linear-gradient(135deg, ${form.accent_color} 0%, ${form.button_color} 100%)` }}
+          />
         </div>
-        <div
-          className="mt-1 h-10 w-full rounded-lg"
-          style={{ background: `linear-gradient(135deg, ${form.accent_color} 0%, ${form.button_color} 100%)` }}
-        />
       </div>
 
       {/* Contact */}
