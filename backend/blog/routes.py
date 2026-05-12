@@ -29,69 +29,221 @@ def _inline_md(text: str) -> str:
     return text
 
 
-def markdown_to_wp_html(content: str) -> str:
+def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) -> str:
     """
-    Convert markdown blog content to clean HTML for WordPress.
-    Strips the leading # H1 (WP renders the post title itself).
-    Pure Python — no external packages.
+    Convert markdown to beautifully styled WordPress HTML.
+    Hero banner, card lists, accent headings, lead paragraph, closing CTA.
+    All inline CSS — works with any WordPress theme.
     """
-    # Strip ALL leading H1 lines (title may repeat)
-    content = re.sub(r"^#+\s+[^\n]*\n?", "", content, count=1).lstrip()
+    if keywords is None:
+        keywords = []
 
+    # Strip leading H1 (WP renders post title itself)
+    content = re.sub(r"^#+\s+[^\n]*\n?", "", content, count=1).lstrip()
     lines = content.split("\n")
-    html_parts: list[str] = []
+
+    # ── Colour palette ────────────────────────────────────────────────────────
+    BLU   = "#2563eb"
+    BLUDK = "#1e40af"
+    BLULT = "#dbeafe"
+    SLATE = "#0f172a"
+    TEXT  = "#374151"
+    MUTED = "#64748b"
+    BDR   = "#e2e8f0"
+    BG    = "#f8fafc"
+    WHT   = "#ffffff"
+
+    # ── Hero banner ───────────────────────────────────────────────────────────
+    wc        = len(content.split())
+    read_min  = max(1, round(wc / 200))
+    kw_chips  = "".join(
+        '<span style="display:inline-block;background:rgba(255,255,255,0.18);'
+        'color:#fff;font-size:11px;font-weight:600;padding:3px 12px;'
+        'border-radius:20px;margin:3px 4px 3px 0;">' + kw + '</span>'
+        for kw in (keywords or [])[:6]
+    )
+    hero = (
+        '<div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 55%,'
+        + BLU + ' 100%);border-radius:16px;padding:36px 30px 28px;'
+        'margin-bottom:32px;position:relative;overflow:hidden;">'
+        '<div style="position:absolute;top:-50px;right:-50px;width:240px;height:240px;'
+        'background:rgba(255,255,255,0.04);border-radius:50%;"></div>'
+        '<div style="position:absolute;bottom:-60px;left:-20px;width:180px;height:180px;'
+        'background:rgba(255,255,255,0.03);border-radius:50%;"></div>'
+        '<div style="position:relative;z-index:1;">'
+        '<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);'
+        'text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">'
+        '&#10022; Zilo AI &nbsp;&#183;&nbsp; Quality Article</div>'
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">'
+        '<span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);'
+        'font-size:12px;font-weight:500;padding:4px 14px;border-radius:20px;">'
+        '&#9200; ' + str(read_min) + ' min read</span>'
+        '<span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);'
+        'font-size:12px;font-weight:500;padding:4px 14px;border-radius:20px;">'
+        '&#128221; ' + str(wc) + ' words</span>'
+        '</div>'
+        + ('<div>' + kw_chips + '</div>' if kw_chips else '')
+        + '</div></div>'
+    )
+
+    # ── Build HTML ────────────────────────────────────────────────────────────
+    parts = [hero]
     i = 0
+    first_para = True
 
     while i < len(lines):
-        line = lines[i]
+        ln = lines[i]
+        s  = ln.strip()
 
-        # Headings
-        h_match = re.match(r"^(#{2,6})\s+(.*)", line)
-        if h_match:
-            level = len(h_match.group(1))
-            html_parts.append(f"<h{level}>{_inline_md(h_match.group(2))}</h{level}>")
+        if not s:
             i += 1
             continue
 
+        # H2
+        if s.startswith("## "):
+            t = _inline_md(s[3:])
+            parts.append(
+                '<h2 style="font-size:21px;font-weight:800;color:' + SLATE + ';'
+                'border-left:4px solid ' + BLU + ';padding-left:14px;'
+                'margin:44px 0 14px;line-height:1.3;'
+                'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">' + t + '</h2>'
+            )
+            i += 1; continue
+
+        # H3
+        if s.startswith("### "):
+            t = _inline_md(s[4:])
+            parts.append(
+                '<h3 style="font-size:17px;font-weight:700;color:' + SLATE + ';'
+                'margin:28px 0 10px;'
+                'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">' + t + '</h3>'
+            )
+            i += 1; continue
+
+        # H4
+        if s.startswith("#### "):
+            t = _inline_md(s[5:])
+            parts.append(
+                '<h4 style="font-size:12px;font-weight:700;color:' + MUTED + ';'
+                'text-transform:uppercase;letter-spacing:1.5px;margin:20px 0 8px;'
+                'font-family:-apple-system,sans-serif;">' + t + '</h4>'
+            )
+            i += 1; continue
+
         # Unordered list
-        if re.match(r"^[\*\-]\s+", line):
+        if re.match(r"^[*\-]\s+", s):
             items = []
-            while i < len(lines) and re.match(r"^[\*\-]\s+", lines[i]):
-                items.append(f"<li>{_inline_md(lines[i][2:])}</li>")
+            while i < len(lines) and re.match(r"^[*\-]\s+", lines[i].strip()):
+                c = _inline_md(lines[i].strip()[2:])
+                items.append(
+                    '<li style="padding:9px 14px 9px 38px;position:relative;color:' + TEXT + ';'
+                    'font-size:15px;line-height:1.6;border-bottom:1px solid ' + BDR + ';">'
+                    '<span style="position:absolute;left:12px;top:10px;color:' + BLU + ';'
+                    'font-size:20px;font-weight:900;line-height:1;">&#8250;</span>' + c + '</li>'
+                )
                 i += 1
-            html_parts.append("<ul>" + "".join(items) + "</ul>")
+            parts.append(
+                '<ul style="list-style:none;padding:0;margin:20px 0;'
+                'border:1px solid ' + BDR + ';border-radius:12px;'
+                'overflow:hidden;background:' + WHT + ';'
+                'box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
+                + "".join(items) + '</ul>'
+            )
             continue
 
         # Ordered list
-        if re.match(r"^\d+\.\s+", line):
+        if re.match(r"^\d+\.\s+", s):
             items = []
-            while i < len(lines) and re.match(r"^\d+\.\s+", lines[i]):
-                stripped = re.sub(r"^\d+\.\s+", "", lines[i])
-                items.append("<li>" + _inline_md(stripped) + "</li>")
+            num = 1
+            while i < len(lines) and re.match(r"^\d+\.\s+", lines[i].strip()):
+                item_raw = re.sub(r"^\d+\.\s+", "", lines[i].strip())
+                c = _inline_md(item_raw)
+                items.append(
+                    '<li style="padding:11px 16px 11px 54px;position:relative;color:' + TEXT + ';'
+                    'font-size:15px;line-height:1.6;border-bottom:1px solid ' + BDR + ';'
+                    'background:' + WHT + ';">'
+                    '<span style="position:absolute;left:12px;top:11px;background:' + BLU + ';'
+                    'color:#fff;width:24px;height:24px;border-radius:50%;'
+                    'display:inline-flex;align-items:center;justify-content:center;'
+                    'font-size:11px;font-weight:800;">' + str(num) + '</span>' + c + '</li>'
+                )
+                num += 1
                 i += 1
-            html_parts.append("<ol>" + "".join(items) + "</ol>")
+            parts.append(
+                '<ol style="list-style:none;padding:0;margin:20px 0;'
+                'border:1px solid ' + BDR + ';border-radius:12px;'
+                'overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
+                + "".join(items) + '</ol>'
+            )
             continue
 
         # Blockquote
-        if line.startswith("> "):
-            html_parts.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
-            i += 1
-            continue
+        if s.startswith("> "):
+            t = _inline_md(s[2:])
+            parts.append(
+                '<blockquote style="border-left:4px solid ' + BLU + ';'
+                'background:' + BLULT + ';padding:18px 22px;'
+                'border-radius:0 12px 12px 0;margin:28px 0;'
+                'font-style:italic;color:' + BLUDK + ';font-size:15px;line-height:1.7;">'
+                + t + '</blockquote>'
+            )
+            i += 1; continue
 
-        # Blank line
-        if line.strip() == "":
-            i += 1
-            continue
+        # Horizontal rule
+        if s in ("---", "***", "___"):
+            parts.append('<hr style="border:none;border-top:2px solid ' + BDR + ';margin:36px 0;">')
+            i += 1; continue
 
         # Paragraph — collect consecutive plain lines
         para_lines = []
-        while i < len(lines) and lines[i].strip() != "" and not re.match(r"^#{1,6}\s+", lines[i]) and not re.match(r"^[\*\-]\s+", lines[i]) and not re.match(r"^\d+\.\s+", lines[i]):
+        while (
+            i < len(lines)
+            and lines[i].strip()
+            and not re.match(r"^#{1,6}\s+", lines[i].strip())
+            and not re.match(r"^[*\-]\s+", lines[i].strip())
+            and not re.match(r"^\d+\.\s+", lines[i].strip())
+            and not lines[i].strip().startswith("> ")
+            and lines[i].strip() not in ("---", "***", "___")
+        ):
             para_lines.append(_inline_md(lines[i]))
             i += 1
         if para_lines:
-            html_parts.append("<p>" + "<br/>\n".join(para_lines) + "</p>")
+            t = "<br>\n".join(para_lines)
+            if first_para:
+                first_para = False
+                parts.append(
+                    '<p style="font-size:17px;line-height:1.9;color:' + TEXT + ';'
+                    'padding:18px 22px;background:' + BG + ';'
+                    'border-left:4px solid ' + BLU + ';'
+                    'border-radius:0 10px 10px 0;margin:0 0 28px;">' + t + '</p>'
+                )
+            else:
+                parts.append(
+                    '<p style="font-size:16px;line-height:1.8;color:' + TEXT + ';'
+                    'margin:0 0 18px;">' + t + '</p>'
+                )
 
-    return "\n".join(html_parts)
+    # ── Closing CTA strip ─────────────────────────────────────────────────────
+    parts.append(
+        '<div style="background:linear-gradient(135deg,' + BLU + ' 0%,' + BLUDK + ' 100%);'
+        'border-radius:14px;padding:28px 24px;margin-top:44px;text-align:center;">'
+        '<p style="color:rgba(255,255,255,0.75);font-size:12px;margin:0 0 6px;'
+        'text-transform:uppercase;letter-spacing:1.5px;font-weight:600;">'
+        'Ready to get started?</p>'
+        '<p style="color:#fff;font-size:20px;font-weight:800;margin:0 0 18px;line-height:1.4;">'
+        "Let&#39;s build something great together</p>"
+        '<span style="display:inline-block;background:#fff;color:' + BLU + ';'
+        'font-size:13px;font-weight:700;padding:11px 28px;border-radius:30px;'
+        'text-transform:uppercase;letter-spacing:1px;">Get in Touch &#8594;</span>'
+        '</div>'
+    )
+
+    wrapper = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,'
+        "'Segoe UI',Georgia,serif;color:#1e293b;line-height:1.8;max-width:100%;"
+        'box-sizing:border-box;">'
+    )
+    return wrapper + "\n".join(parts) + "</div>"
 
 
 def _canonical_blog_url(blog: dict) -> str | None:
@@ -373,7 +525,7 @@ def make_blog_router(db, get_current_user):
 
         blog_url_out = await _blog_url_for_response(db, blog)
         # Convert markdown → HTML and strip leading H1 (WP renders the title itself)
-        html_content = markdown_to_wp_html(req.content)
+        html_content = markdown_to_wp_html(req.content, title=req.title, keywords=req.keywords)
         excerpt = req.excerpt or (req.content[:155].replace("<", "").replace(">", "").strip() + "…")
         try:
             result = await blog_service.publish_post(
