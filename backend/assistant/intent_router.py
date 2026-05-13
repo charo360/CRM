@@ -503,6 +503,21 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "add to shop", "shop menu", "catalog", "product catalog",
         "shop setup", "shop link", "shop page", "my menu",
     ],
+    "seo": [
+        "seo", "search engine optimization", "keyword research", "keywords for",
+        "rank on google", "google ranking", "search ranking", "organic traffic",
+        "meta description", "meta tags", "title tag", "h1 tag",
+        "on-page seo", "technical seo", "local seo", "seo audit",
+        "content strategy", "blog strategy", "content calendar", "topic ideas",
+        "google business profile", "google my business", "local search",
+        "backlinks", "link building", "guest posting", "domain authority",
+        "page speed", "core web vitals", "schema markup", "structured data",
+        "sitemap", "robots.txt", "canonical tags", "404 errors",
+        "search console", "google search console", "search traffic",
+        "optimize for search", "seo optimization", "improve seo",
+        "product seo", "e-commerce seo", "category seo",
+        "blog post seo", "content optimization", "seo content",
+    ],
 
     # ── Spreadsheet / Workspace integrations ──────────────────────────────────
     "google_sheets": [

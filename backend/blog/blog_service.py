@@ -243,33 +243,49 @@ class ZiloBlogService:
     ) -> dict:
         """
         Publishes a single blog post to a client's WordPress subsite.
+        Automatically generates a Gemini featured image and attaches it.
         """
         subsite_url = wp_subsite_public_url(wp_slug)
-        headers = _wp_headers()
+
+        # Look up blog record for industry/business context used for image generation
+        blog = await self.db.blogs.find_one({"wp_slug": wp_slug})
+        client_id = blog.get("client_id") if blog else None
+
+        # Generate and upload featured image via Gemini (non-blocking — post publishes even if this fails)
+        featured_media_id = await self._generate_and_upload_featured_image(
+            subsite_url=subsite_url,
+            title=title,
+            business_name=blog.get("business_name", "") if blog else "",
+            industry=blog.get("industry", "business") if blog else "business",
+            location=blog.get("location", "") if blog else "",
+            wp_slug=wp_slug,
+        )
+
+        kw_list = keywords if isinstance(keywords, list) else []
+        focus_kw = (kw_list[0] if kw_list and isinstance(kw_list[0], str) else "") or ""
+
+        post_payload: dict = {
+            "title": title,
+            "content": content,
+            "excerpt": excerpt,
+            "status": "publish",
+            "meta": {
+                "_yoast_wpseo_focuskw": focus_kw,
+                "_yoast_wpseo_metadesc": excerpt,
+            },
+        }
+        if featured_media_id:
+            post_payload["featured_media"] = featured_media_id
 
         async with httpx.AsyncClient(timeout=30) as client:
-            kw_list = keywords if isinstance(keywords, list) else []
-            focus_kw = (kw_list[0] if kw_list and isinstance(kw_list[0], str) else "") or ""
             post_res = await client.post(
                 f"{subsite_url}/wp-json/wp/v2/posts",
-                headers=headers,
-                json={
-                    "title": title,
-                    "content": content,
-                    "excerpt": excerpt,
-                    "status": "publish",
-                    # WordPress expects tag *IDs* here, not keyword strings — omit to avoid 4xx/500 from REST.
-                    "meta": {
-                        "_yoast_wpseo_focuskw": focus_kw,
-                        "_yoast_wpseo_metadesc": excerpt,
-                    },
-                },
+                headers=_wp_headers(),
+                json=post_payload,
             )
 
         if post_res.status_code == 201:
             post = post_res.json()
-            blog = await self.db.blogs.find_one({"wp_slug": wp_slug})
-            client_id = blog.get("client_id") if blog else None
 
             # Update blog stats
             await self.db.blogs.update_one(
@@ -289,16 +305,158 @@ class ZiloBlogService:
                         "post_id": post.get("id"),
                         "post_url": post.get("link"),
                         "title": title,
+                        "featured_image": bool(featured_media_id),
                         "published_at": datetime.utcnow(),
                     }
                 )
 
-            logger.info(f"[blog] Published '{title}' → {post.get('link')}")
+            logger.info(
+                "[blog] Published '%s' → %s (featured_image=%s)",
+                title, post.get("link"), "yes" if featured_media_id else "no",
+            )
             return {"post_url": post.get("link"), "post_id": post.get("id")}
         else:
             raise RuntimeError(
                 f"WP publish failed ({post_res.status_code}): {post_res.text[:400]}"
             )
+
+    async def _generate_and_upload_featured_image(
+        self,
+        subsite_url: str,
+        title: str,
+        business_name: str,
+        industry: str,
+        location: str,
+        wp_slug: str,
+    ) -> "int | None":
+        """
+        Generates a featured image with Gemini via nano_banana_service and uploads it
+        to the WordPress media library. Returns the WP media ID or None on failure.
+        """
+        try:
+            from nano_banana_service import generate_creative_image
+
+            image_prompt = (
+                f"A professional, editorial-quality blog featured image for a {industry} business "
+                f"called '{business_name}' based in {location}.\n\n"
+                f"Post topic: {title}\n\n"
+                f"Style requirements:\n"
+                f"- Photorealistic, magazine-quality photography — NOT illustration, NOT AI art style\n"
+                f"- Relevant to {industry}: show the environment, products, or people naturally\n"
+                f"- Warm, vibrant, high-contrast lighting — the kind that stops scrolling\n"
+                f"- Wide landscape composition suitable for a blog header\n"
+                f"- NO text, NO words, NO watermarks anywhere in the image\n"
+                f"- Premium editorial feel — like a photo from a top magazine spread\n"
+                f"- Mood: confident, professional, locally authentic to {location}"
+            )
+
+            result = await generate_creative_image(
+                prompt=image_prompt,
+                format="landscape",
+                quality="fast",
+            )
+
+            if result.get("error") or not result.get("image_url"):
+                logger.warning("[blog] Gemini image generation failed: %s", result.get("error"))
+                return None
+
+            return await self._upload_image_to_wp_media(subsite_url, result["image_url"], wp_slug)
+
+        except Exception as exc:
+            logger.warning("[blog] Featured image pipeline failed (publishing without): %s", exc)
+            return None
+
+    async def _upload_image_to_wp_media(
+        self,
+        subsite_url: str,
+        image_url: str,
+        wp_slug: str,
+    ) -> "int | None":
+        """
+        Downloads an image from its URL and uploads it to the WordPress media library.
+        Returns the WordPress media attachment ID or None on failure.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=40) as client:
+                img_resp = await client.get(image_url)
+                img_resp.raise_for_status()
+
+                media_resp = await client.post(
+                    f"{subsite_url}/wp-json/wp/v2/media",
+                    headers={
+                        "Authorization": f"Basic {_get_wp_auth()}",
+                        "Content-Disposition": f'attachment; filename="featured-{wp_slug}.png"',
+                        "Content-Type": "image/png",
+                    },
+                    content=img_resp.content,
+                )
+
+            if media_resp.status_code == 201:
+                media_id = media_resp.json().get("id")
+                logger.info("[blog] Featured image uploaded to WP media id=%s", media_id)
+                return media_id
+
+            logger.warning("[blog] WP media upload failed (%s): %s", media_resp.status_code, media_resp.text[:200])
+            return None
+
+        except Exception as exc:
+            logger.warning("[blog] WP media upload error: %s", exc)
+            return None
+
+    async def create_order(
+        self,
+        wp_slug: str,
+        customer_info: dict,
+        items: List[dict],
+        notes: str = "",
+    ) -> dict:
+        """
+        Creates an order in WooCommerce via REST API.
+        customer_info: {first_name, last_name, email, phone, address_1, city}
+        items: [{product_id, quantity}] - product_id is the WC numeric ID
+        """
+        subsite_url = wp_subsite_public_url(wp_slug)
+        wc_key = os.getenv("WC_CONSUMER_KEY", "")
+        wc_secret = os.getenv("WC_CONSUMER_SECRET", "")
+        
+        if not wc_key or not wc_secret:
+            raise RuntimeError("WooCommerce API keys not configured")
+
+        line_items = []
+        for it in items:
+            pid = str(it.get("product_id", ""))
+            if pid.startswith("wc_"):
+                pid = pid.replace("wc_", "")
+            try:
+                line_items.append({
+                    "product_id": int(pid),
+                    "quantity": int(it.get("quantity", 1))
+                })
+            except ValueError:
+                continue
+
+        payload = {
+            "payment_method": "bacs",
+            "payment_method_title": "Direct Bank Transfer",
+            "set_paid": False,
+            "billing": customer_info,
+            "shipping": customer_info,
+            "line_items": line_items,
+            "customer_note": notes,
+            "status": "pending"
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{subsite_url}/wp-json/wc/v3/orders",
+                auth=(wc_key, wc_secret),
+                json=payload,
+            )
+            
+        if resp.status_code in (200, 201):
+            return resp.json()
+        else:
+            raise RuntimeError(f"WC order creation failed ({resp.status_code}): {resp.text[:400]}")
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 

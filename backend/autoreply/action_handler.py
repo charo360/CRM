@@ -82,7 +82,7 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
 
     # Support both single-item (legacy) and multi-item (items array)
     raw_items = action.get("items") or []
-
+    
     if not raw_items:
         # Single item shorthand
         product_name = (action.get("product_name") or "").strip()
@@ -97,10 +97,14 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
     # Build normalised items list
     items = []
     total = 0.0
+    is_wc_order = False
+    wc_line_items = []
+    
     for it in raw_items:
         name = (it.get("product_name") or "").strip()
         if not name:
             continue
+        pid = str(it.get("product_id", ""))
         qty = max(1, int(it.get("quantity") or 1))
         unit_price = float(it.get("unit_price") or 0)
         variant    = (it.get("variant") or "").strip()
@@ -114,7 +118,7 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
 
         item_entry: dict = {
             "product_name": name,
-            "product_id":   it.get("product_id", ""),
+            "product_id":   pid,
             "quantity":     qty,
             "unit_price":   effective_price,
             "price":        line_total,
@@ -124,6 +128,11 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
         if modifiers:
             item_entry["modifiers"] = modifiers
         items.append(item_entry)
+        
+        # Track for WC push
+        if pid.startswith("wc_"):
+            is_wc_order = True
+            wc_line_items.append({"product_id": pid, "quantity": qty})
 
     if not items:
         logger.warning("[ActionHandler] create_order skipped — no valid items")
@@ -148,7 +157,45 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
         "notes":            action.get("notes", ""),
         "created_at":     datetime.utcnow(),
         "created_by":     "customer",
+        "is_wc_synced":   False,
     }
+    
+    # Optional: Push to WooCommerce if all items are WC products
+    if is_wc_order:
+        try:
+            from blog.blog_service import ZiloBlogService
+            blog_svc = ZiloBlogService(db)
+            blog = await db.blogs.find_one({"client_id": user_id})
+            customer = await db.customers.find_one({"_id": customer_id})
+            
+            if blog and blog.get("wp_slug"):
+                # Prepare billing info from customer record
+                c_name = (customer.get("name") or "WhatsApp Customer").split(" ", 1)
+                first = c_name[0]
+                last = c_name[1] if len(c_name) > 1 else ""
+                
+                billing = {
+                    "first_name": first,
+                    "last_name": last,
+                    "email": customer.get("email") or f"{customer.get('phone_number')}@whatsapp.zilo.pro",
+                    "phone": customer.get("phone_number") or "",
+                    "address_1": action.get("delivery_address") or customer.get("address") or "",
+                }
+                
+                wc_result = await blog_svc.create_order(
+                    wp_slug=blog["wp_slug"],
+                    customer_info=billing,
+                    items=wc_line_items,
+                    notes=action.get("notes", "")
+                )
+                if wc_result:
+                    order_doc["is_wc_synced"] = True
+                    order_doc["wc_order_id"] = wc_result.get("id")
+                    order_doc["wc_order_url"] = wc_result.get("order_key") # or similar
+                    logger.info(f"[ActionHandler] Pushed order {order_number} to WC: ID={wc_result.get('id')}")
+        except Exception as wc_err:
+            logger.warning(f"[ActionHandler] Failed to push order to WC: {wc_err}")
+
     result = await db.orders.insert_one(order_doc)
     logger.info(f"[ActionHandler] Order created: {order_number} id={result.inserted_id} items={len(items)} total={currency}{total}")
     return order_number

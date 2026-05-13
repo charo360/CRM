@@ -97,8 +97,8 @@ async def process_message(
     model_pref = (user.get("settings") or {}).get("ai_model", "standard") or "standard"
 
     try:
-        # 1. Load context
-        ctx = await load_context(db, user_id, customer_id, user)
+        # 1. Load context (with message-aware WC search)
+        ctx = await load_context(db, user_id, customer_id, user, message=message)
 
         # 2. Build system prompt
         system_prompt = build_system_prompt(
