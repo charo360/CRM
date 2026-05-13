@@ -7,7 +7,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, Clock, Settings,
   Store, ClipboardList, BookOpen, Copy, Check, X,
   ChevronRight, FileInput, MessageSquare, Mail, User,
-  Calendar, CornerDownRight, Send, Trash2, EyeOff, FileText,
+  Calendar, CornerDownRight, Send, Trash2, EyeOff, FileText, Phone, Save,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -63,6 +63,7 @@ interface ClientSite {
   created_at: string;
   last_posted_at: string | null;
   last_synced?: string;
+  whatsapp_number?: string;
 }
 
 interface ListResponse {
@@ -414,6 +415,76 @@ interface SiteCardProps {
   onOpenEngagement: (tab: "comments" | "contacts" | "posts") => void;
 }
 
+function WhatsAppEditor({ wpSlug, initial }: { wpSlug: string; initial: string }) {
+  const [value, setValue] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setSaving(true); setSaved(false); setErr("");
+    try {
+      const res = await api.patch<{ whatsapp_number: string; wp_updated: boolean }>(
+        `/blog/clients/${wpSlug}/whatsapp`,
+        { whatsapp_number: value },
+      );
+      setValue(res.whatsapp_number);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-1.5 pt-1 border-t border-slate-200">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider pt-2 flex items-center gap-1.5">
+        <Phone size={11} /> WhatsApp Number
+      </p>
+      <p className="text-[10px] text-slate-400">
+        This number powers the &ldquo;Chat on WhatsApp&rdquo; button on the contact page.
+      </p>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs">+</span>
+          <input
+            type="tel"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); setSaved(false); }}
+            placeholder="254712345678"
+            className="w-full pl-5 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-200"
+          />
+        </div>
+        <button
+          onClick={save}
+          disabled={saving || !value.trim()}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors font-medium shrink-0"
+        >
+          {saving ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {saved && (
+        <p className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+          <Check size={10} /> Saved — contact page updated live
+        </p>
+      )}
+      {err && <p className="text-[10px] text-rose-500">{err}</p>}
+      {value && (
+        <a
+          href={`https://wa.me/${value.replace(/\D/g, "")}`}
+          target="_blank" rel="noopener noreferrer"
+          className="text-[10px] text-emerald-600 hover:underline flex items-center gap-1"
+        >
+          <ExternalLink size={9} /> Test link: wa.me/{value.replace(/\D/g, "")}
+        </a>
+      )}
+    </div>
+  );
+}
+
 function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages,
   engagementOpen, engagementTab, engagementLoading, comments, formEntries, wpPosts, pendingCount,
   onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onOpenEngagement }: SiteCardProps) {
@@ -625,6 +696,8 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
               </button>
             </div>
           </div>
+
+          <WhatsAppEditor wpSlug={site.wp_slug} initial={site.whatsapp_number ?? ""} />
 
           <div className="text-xs text-slate-400 flex flex-wrap gap-3">
             <span>Email: <span className="text-slate-600">{site.client_email}</span></span>

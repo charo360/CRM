@@ -1185,7 +1185,85 @@ def make_blog_router(db, get_current_user):
                 else:
                     logger.warning("[blog] recreate-pages %s/%s → %s", wp_slug, page["slug"], r.status_code)
 
-        return {"created": created, "skipped": skipped}
+        return {"created": created, "updated": updated}
+
+    # ── Save / update WhatsApp number for a client site ───────────────────────
+
+    @router.patch("/clients/{wp_slug}/whatsapp")
+    async def set_whatsapp_number(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """
+        Saves the client's WhatsApp number to MongoDB and immediately patches
+        the live WordPress contact page so the 'Chat on WhatsApp' button
+        uses the correct wa.me URL.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        number_raw = (body.get("whatsapp_number") or "").strip()
+        # Normalise: keep only digits and leading +
+        import re as _re
+        number = _re.sub(r"[^\d+]", "", number_raw)
+        if number.startswith("0"):
+            number = "254" + number[1:]  # Kenya default
+
+        # Persist to DB
+        await db.blogs.update_one(
+            {"client_id": user_id, "wp_slug": wp_slug},
+            {"$set": {"whatsapp_number": number}},
+        )
+
+        # Patch the live contact page on WordPress
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            return {"status": "saved", "wp_updated": False, "whatsapp_number": number}
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd  = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        wa_url = f"https://wa.me/{number}?text=Hi%2C+I+found+you+on+Zilo"
+        business = blog.get("business_name", "")
+        if business:
+            from urllib.parse import quote
+            wa_url = f"https://wa.me/{number}?text={quote(f'Hi, I found {business} on Zilo')}"
+
+        contact_content = (
+            "<!-- wp:paragraph -->"
+            "<p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p>"
+            "<!-- /wp:paragraph -->"
+            f"<!-- wp:buttons {{\"layout\":{{\"type\":\"flex\",\"justifyContent\":\"center\"}}}} -->"
+            "<div class=\"wp-block-buttons\">"
+            "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+            "<div class=\"wp-block-button\">"
+            f"<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+            f"href=\"{wa_url}\" target=\"_blank\" rel=\"noreferrer noopener\">"
+            "\U0001f4ac Chat on WhatsApp</a></div>"
+            "<!-- /wp:button --></div>"
+            "<!-- /wp:buttons -->"
+            "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+            "<!-- wp:shortcode -->[wpforms id=\"\" title=\"false\"]<!-- /wp:shortcode -->"
+        )
+
+        wp_updated = False
+        async with httpx.AsyncClient(timeout=15) as client:
+            chk = await client.get(
+                f"{site_base}/wp-json/wp/v2/pages?slug=contact&status=any",
+                headers=headers,
+            )
+            pages_found = chk.json() if chk.status_code == 200 else []
+            if pages_found:
+                page_id = pages_found[0]["id"]
+                r = await client.post(
+                    f"{site_base}/wp-json/wp/v2/pages/{page_id}",
+                    headers=headers,
+                    json={"content": contact_content, "status": "publish"},
+                )
+                wp_updated = r.status_code in (200, 201)
+
+        return {"status": "saved", "wp_updated": wp_updated, "whatsapp_number": number}
 
     # ── Re-seed AI products for a client site ─────────────────────────────────
 
