@@ -125,6 +125,7 @@ class ZiloBlogService:
         headers = _wp_headers()
 
         # 1. Create a WordPress user for the business (via WP-CLI for multisite compatibility)
+        wp_user_id = None
         try:
             import subprocess
             user_password = _generate_password()
@@ -144,8 +145,8 @@ class ZiloBlogService:
                 timeout=15,
             )
             if result.returncode == 0:
-                user_id = result.stdout.strip()
-                logger.info(f"[blog] WordPress user created: {slug} (ID: {user_id})")
+                wp_user_id = result.stdout.strip()
+                logger.info(f"[blog] WordPress user created: {slug} (ID: {wp_user_id})")
             else:
                 # User might already exist - that's okay
                 logger.info(f"[blog] WP user create: {result.stderr[:200]}")
@@ -227,7 +228,7 @@ class ZiloBlogService:
             "location": location,
             "blog_url": site_url,
             "wp_slug": slug,
-            "wp_user_id": wp_user.get("id"),
+            "wp_user_id": wp_user_id,
             "active": True,
             "plan": "free",
             "posts_count": 0,
