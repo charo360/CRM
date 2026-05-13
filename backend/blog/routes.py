@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from blog.blog_service import ZiloBlogService, wp_subsite_public_url
-from blog.topic_generator import generate_topic_from_chats
+from blog.topic_generator import research_seo_topic
 from blog.post_generator import generate_blog_post
 from blog.blog_scheduler import publish_daily_posts
 
@@ -477,14 +477,16 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(status_code=404, detail="Blog not found")
 
         try:
-            topic = await generate_topic_from_chats(db, req.client_id)
+            seo = await research_seo_topic(db, req.client_id)
             posts_count = blog.get("posts_count", 0)
             post = await generate_blog_post(
                 business_name=blog["business_name"],
                 industry=blog["industry"],
                 location=blog["location"],
-                topic=topic,
+                topic=seo["topic"],
                 posts_count=posts_count,
+                focus_keyword=seo.get("focus_keyword", ""),
+                seo_keywords=seo.get("keywords", []),
             )
             result = await blog_service.publish_post(
                 wp_slug=blog["wp_slug"],

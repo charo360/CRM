@@ -3,6 +3,7 @@ Zilo Autoblogging — Post Generator.
 Generates full SEO-optimised blog posts via Claude using WordPress Gutenberg block format.
 Every post includes callout boxes, pull quotes, two-column layouts, WooCommerce product
 embeds, and a WhatsApp CTA — making each post look premium and visually rich.
+Keywords are sourced from DataForSEO real search data, not guessed.
 """
 import os
 import json
@@ -99,6 +100,20 @@ def _get_claude() -> Anthropic:
     return _client
 
 
+def _format_keyword_brief(focus_keyword: str, seo_keywords: list) -> str:
+    """Build the keyword section of the prompt from real DataForSEO data."""
+    if not focus_keyword and not seo_keywords:
+        return ""
+    lines = []
+    if focus_keyword:
+        lines.append(f"PRIMARY KEYWORD (use in title, first paragraph, at least 2 H2s, meta): {focus_keyword}")
+    secondary = [k for k in (seo_keywords or []) if k != focus_keyword][:5]
+    if secondary:
+        lines.append(f"SECONDARY KEYWORDS (weave in naturally, don't force): {', '.join(secondary)}")
+    lines.append("These are real keywords people search on Google — use them where they fit naturally.")
+    return "\n".join(lines)
+
+
 async def generate_blog_post(
     business_name: str,
     industry: str,
@@ -106,33 +121,62 @@ async def generate_blog_post(
     topic: str,
     posts_count: int = 0,
     template: Optional[dict] = None,
+    focus_keyword: str = "",
+    seo_keywords: Optional[list] = None,
 ) -> dict:
     """
     Generates a premium SEO-optimised blog post using Claude.
     Output uses WordPress Gutenberg block format with callout boxes, pull quotes,
     two-column layouts, WooCommerce product embeds, and a WhatsApp CTA.
+
+    focus_keyword and seo_keywords should come from DataForSEO research — not guessed.
     """
     tpl = template or pick_template(posts_count)
-    logger.info(f"[post_gen] Using template: {tpl['name']} (post #{posts_count + 1})")
+    logger.info("[post_gen] Using template: %s (post #%d)", tpl["name"], posts_count + 1)
+
+    kw_brief = _format_keyword_brief(focus_keyword, seo_keywords or [])
 
     response = _get_claude().messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=3000,
+        max_tokens=3500,
         messages=[
             {
                 "role": "user",
-                "content": f"""You are a world-class blog writer for small businesses. Write a premium blog post in WordPress Gutenberg block format.
+                "content": f"""You are a skilled local content writer. Your job is to write a blog post that sounds like it was written by a real person who has worked in this industry for years — not by AI.
 
 Business: {business_name}
 Industry: {industry}
 Location: {location}
 Topic: {topic}
+{kw_brief}
 
 Article style: {tpl['name']}
 Structure: {tpl['structure']}
 Writing guidance: {tpl['hint']}
 
-GUTENBERG BLOCK FORMAT — use exactly these patterns:
+━━━ WRITING RULES — READ CAREFULLY ━━━
+
+HUMAN VOICE — the most important rule:
+- Write like a local expert who has seen it all. Use "I've seen customers...", "In my experience...", "A lot of people in {location} make this mistake..."
+- Short sentences. Punchy. Then sometimes a longer one that explains the detail. Mix them up.
+- Use specific local detail: name actual neighbourhoods, markets, local price ranges, seasons, cultural references. Don't be vague.
+- Contractions: use them. "don't", "it's", "you'll", "we've". Formal writing sounds robotic.
+- One or two imperfect, conversational sentences are fine — that's what humans write.
+
+BANNED PHRASES — never use these:
+"dive into", "delve into", "game-changer", "game changer", "leverage", "seamlessly", "navigate",
+"unlock", "unlock potential", "revolutionize", "transformative", "landscape", "in today's world",
+"in today's fast-paced", "it's important to note", "it goes without saying", "at the end of the day",
+"comprehensive guide", "ultimate guide", "cutting-edge", "state-of-the-art", "harness the power"
+
+STRUCTURE & SEO:
+- 750-950 words of readable content
+- Use the location naturally (e.g. "in {location}", "across {location}")
+- The primary keyword must appear in: the title, the first paragraph, at least one H2, and the excerpt
+- Mention "{business_name}" and "Powered by Zilo" once each, naturally
+- No keyword stuffing — if a keyword doesn't fit, skip it
+
+━━━ GUTENBERG BLOCK FORMAT ━━━
 
 Standard paragraph:
 <!-- wp:paragraph -->
@@ -192,21 +236,17 @@ WHATSAPP CTA BUTTON (use as the final element — green WhatsApp button):
 <!-- /wp:button --></div>
 <!-- /wp:buttons -->
 
-CONTENT RULES:
-- Total 750-950 words of readable content
-- Include the location naturally throughout (e.g. "in {location}", "across {location}")
-- Friendly, expert tone — helpful, not salesy
-- Real specific advice, not generic filler
-- Mention "Powered by Zilo" naturally in the second-to-last paragraph
-- The article must feel written by a real local expert
+━━━ OUTPUT FORMAT ━━━
 
 Return ONLY valid JSON — no markdown fences, no explanation:
 {{
-  "title": "SEO title with location keyword — max 65 chars",
+  "title": "SEO title that includes the primary keyword — max 65 chars",
   "content": "<!-- wp:paragraph -->...[complete Gutenberg block content]...",
-  "excerpt": "Meta description for Google — max 155 chars, includes {location}",
-  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"]
-}}""",
+  "excerpt": "Meta description for Google — max 155 chars, includes primary keyword and {location}",
+  "keywords": ["focus_keyword", "keyword2", "keyword3", "keyword4", "keyword5"]
+}}
+
+The keywords array must use the provided SEO keywords (not made-up ones). If no keywords were provided, suggest real phrases people would actually search.""",
             }
         ],
     )
@@ -217,9 +257,20 @@ Return ONLY valid JSON — no markdown fences, no explanation:
     try:
         post = json.loads(raw)
     except json.JSONDecodeError as e:
-        logger.error(f"[post_gen] JSON parse failed: {e}\nRaw: {raw[:500]}")
+        logger.error("[post_gen] JSON parse failed: %s\nRaw: %s", e, raw[:500])
         raise RuntimeError(f"Claude returned invalid JSON: {e}")
 
+    # Always use real DataForSEO keywords — override anything Claude guessed
+    if seo_keywords:
+        post["keywords"] = seo_keywords[:5]
+    if focus_keyword:
+        existing = [k for k in (post.get("keywords") or []) if k != focus_keyword]
+        post["keywords"] = [focus_keyword] + existing[:4]
+
     post["template_used"] = tpl["id"]
-    logger.info(f"[post_gen] Generated '{post.get('title', '—')}' [{tpl['name']}]")
+    post["focus_keyword"] = focus_keyword or (post.get("keywords") or [""])[0]
+    logger.info(
+        "[post_gen] Generated '%s' [%s] focus='%s'",
+        post.get("title", "—"), tpl["name"], post.get("focus_keyword"),
+    )
     return post

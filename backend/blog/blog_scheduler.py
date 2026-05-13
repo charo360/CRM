@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from blog.blog_service import ZiloBlogService
-from blog.topic_generator import generate_topic_from_chats
+from blog.topic_generator import research_seo_topic
 from blog.post_generator import generate_blog_post
 
 logger = logging.getLogger(__name__)
@@ -59,14 +59,16 @@ async def publish_daily_posts(db) -> None:
                 )
                 continue
 
-            topic = await generate_topic_from_chats(db, client_id)
+            seo = await research_seo_topic(db, client_id)
             posts_count = blog.get("posts_count", 0)
             post = await generate_blog_post(
                 business_name=business_name,
                 industry=blog.get("industry", "services"),
                 location=blog.get("location", "Nairobi"),
-                topic=topic,
+                topic=seo["topic"],
                 posts_count=posts_count,
+                focus_keyword=seo.get("focus_keyword", ""),
+                seo_keywords=seo.get("keywords", []),
             )
             result = await blog_service.publish_post(
                 wp_slug=blog["wp_slug"],
