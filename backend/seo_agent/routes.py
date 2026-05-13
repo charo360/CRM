@@ -4,7 +4,7 @@ import logging, uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, ConfigDict
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
@@ -56,7 +56,7 @@ def make_seo_agent_router(db, user_dep):
     # ── POST /seo-agent/chat ──────────────────────────────────────────────────
 
     @router.post("/chat", response_model=SEOChatResponse)
-    async def chat(payload: SEOChatRequest, user=user_dep):
+    async def chat(payload: SEOChatRequest, user=Depends(user_dep)):
         graph = get_seo_graph() if get_seo_graph else None
         if graph is None:
             raise HTTPException(503, "SEO agent is not available — check that OPENAI_API_KEY or ANTHROPIC_API_KEY is set.")
@@ -139,7 +139,7 @@ def make_seo_agent_router(db, user_dep):
     # ── GET /seo-agent/conversations ──────────────────────────────────────────
 
     @router.get("/conversations")
-    async def list_conversations(user=user_dep):
+    async def list_conversations(user=Depends(user_dep)):
         tid = _tid(user)
         docs = await db.seo_agent_conversations.find(
             {"user_id": tid},
@@ -150,7 +150,7 @@ def make_seo_agent_router(db, user_dep):
     # ── GET /seo-agent/conversations/{conv_id} ────────────────────────────────
 
     @router.get("/conversations/{conv_id}")
-    async def get_conversation(conv_id: str, user=user_dep):
+    async def get_conversation(conv_id: str, user=Depends(user_dep)):
         tid = _tid(user)
         doc = await db.seo_agent_conversations.find_one({"_id": conv_id, "user_id": tid})
         if not doc:
@@ -160,7 +160,7 @@ def make_seo_agent_router(db, user_dep):
     # ── DELETE /seo-agent/conversations/{conv_id} ─────────────────────────────
 
     @router.delete("/conversations/{conv_id}")
-    async def delete_conversation(conv_id: str, user=user_dep):
+    async def delete_conversation(conv_id: str, user=Depends(user_dep)):
         tid = _tid(user)
         result = await db.seo_agent_conversations.delete_one({"_id": conv_id, "user_id": tid})
         if result.deleted_count == 0:
@@ -170,7 +170,7 @@ def make_seo_agent_router(db, user_dep):
     # ── GET /seo-agent/status ─────────────────────────────────────────────────
 
     @router.get("/status")
-    async def status(_user=user_dep):
+    async def status(_user=Depends(user_dep)):
         g = get_seo_graph() if get_seo_graph else None
         from .tools import SEO_TOOLS
         return {

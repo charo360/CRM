@@ -289,7 +289,7 @@ class ZiloBlogService:
         if featured_media_id:
             post_payload["featured_media"] = featured_media_id
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             post_res = await client.post(
                 f"{subsite_url}/wp-json/wp/v2/posts",
                 headers=_wp_headers(),
