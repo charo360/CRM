@@ -828,6 +828,54 @@ def make_blog_router(db, get_current_user):
             logger.warning("[blog] Comments fetch failed for %s: %s", wp_slug, exc)
             return {"comments": [], "reason": str(exc)}
 
+    # ── Reply to a WordPress comment from the CRM ──────────────────────────────
+
+    @router.post("/clients/{wp_slug}/comments/{comment_id}/reply")
+    async def reply_to_comment(wp_slug: str, comment_id: int, body: dict, user=Depends(get_current_user)):
+        """Post a reply to a visitor comment on behalf of the site owner."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        reply_text = (body.get("content") or "").strip()
+        if not reply_text:
+            raise HTTPException(400, "Reply content is required")
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        # First fetch the parent comment to get its post_id
+        async with httpx.AsyncClient(timeout=15) as client:
+            parent = await client.get(
+                f"{site_base}/wp-json/wp/v2/comments/{comment_id}",
+                headers=headers,
+            )
+            if parent.status_code != 200:
+                raise HTTPException(404, "Parent comment not found")
+            post_id = parent.json().get("post", 0)
+
+            r = await client.post(
+                f"{site_base}/wp-json/wp/v2/comments",
+                headers=headers,
+                json={
+                    "post": post_id,
+                    "parent": comment_id,
+                    "content": reply_text,
+                    "author_name": blog.get("business_name", "Site Owner"),
+                    "status": "approved",
+                },
+            )
+            if r.status_code in (200, 201):
+                return {"status": "replied", "comment_id": r.json().get("id")}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
     # ── Recreate standard pages for an existing client site ───────────────────
 
     @router.post("/clients/{wp_slug}/recreate-pages")

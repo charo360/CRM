@@ -7,7 +7,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, Clock, Settings,
   Store, ClipboardList, BookOpen, Copy, Check, X,
   ChevronRight, FileInput, MessageSquare, Mail, User,
-  Calendar, ChevronDown,
+  Calendar, CornerDownRight, Send,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -492,19 +492,7 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
               {comments.length === 0 ? (
                 <p className="text-xs text-slate-400 text-center py-6">No comments yet</p>
               ) : comments.map((c) => (
-                <div key={c.id} className="bg-white rounded-lg border border-slate-200 p-3 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-                      <User size={11} className="text-slate-400" /> {c.author || "Anonymous"}
-                    </span>
-                    <span className="flex items-center gap-1 text-[10px] text-slate-400">
-                      <Calendar size={10} /> {new Date(c.date).toLocaleDateString()}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-600 leading-relaxed"
-                    dangerouslySetInnerHTML={{ __html: c.content.replace(/<[^>]*>/g, "") }} />
-                  {c.email && <p className="text-[10px] text-slate-400">{c.email}</p>}
-                </div>
+                <CommentCard key={c.id} comment={c} wpSlug={site.wp_slug} />
               ))}
             </div>
           ) : (
@@ -619,5 +607,83 @@ function QuickLink({ href, icon, label, sub }: { href: string; icon: React.React
       </div>
       <ExternalLink size={11} className="text-slate-300 group-hover:text-slate-500 shrink-0" />
     </a>
+  );
+}
+
+function CommentCard({ comment, wpSlug }: { comment: Comment; wpSlug: string }) {
+  const [showReply, setShowReply] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function sendReply() {
+    if (!replyText.trim()) return;
+    setSending(true);
+    setErr("");
+    try {
+      await api.post(`/blog/clients/${wpSlug}/comments/${comment.id}/reply`, { content: replyText });
+      setSent(true);
+      setReplyText("");
+      setShowReply(false);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to send reply");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+          <User size={11} className="text-slate-400" /> {comment.author || "Anonymous"}
+        </span>
+        <span className="flex items-center gap-1 text-[10px] text-slate-400">
+          <Calendar size={10} /> {new Date(comment.date).toLocaleDateString()}
+        </span>
+      </div>
+      <p className="text-xs text-slate-600 leading-relaxed">
+        {comment.content.replace(/<[^>]*>/g, "")}
+      </p>
+      {comment.email && <p className="text-[10px] text-slate-400">{comment.email}</p>}
+
+      {sent && (
+        <p className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+          <Check size={10} /> Reply posted
+        </p>
+      )}
+
+      {!sent && (
+        <>
+          <button
+            onClick={() => setShowReply((v) => !v)}
+            className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 font-medium transition-colors"
+          >
+            <CornerDownRight size={10} /> {showReply ? "Cancel" : "Reply"}
+          </button>
+          {showReply && (
+            <div className="space-y-1.5 pt-1">
+              <textarea
+                rows={2}
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                placeholder="Write your reply…"
+                className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+              {err && <p className="text-[10px] text-rose-500">{err}</p>}
+              <button
+                onClick={sendReply}
+                disabled={sending || !replyText.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
+              >
+                {sending ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
+                {sending ? "Sending…" : "Send Reply"}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
