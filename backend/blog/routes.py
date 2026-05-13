@@ -232,9 +232,10 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
         'Ready to get started?</p>'
         '<p style="color:#fff;font-size:20px;font-weight:800;margin:0 0 18px;line-height:1.4;">'
         "Let&#39;s build something great together</p>"
-        '<span style="display:inline-block;background:#fff;color:' + BLU + ';'
+        '<a href="/contact" style="display:inline-block;background:#fff;color:' + BLU + ';'
         'font-size:13px;font-weight:700;padding:11px 28px;border-radius:30px;'
-        'text-transform:uppercase;letter-spacing:1px;">Get in Touch &#8594;</span>'
+        'text-transform:uppercase;letter-spacing:1px;text-decoration:none;">'
+        'Get in Touch &#8594;</a>'
         '</div>'
     )
 
@@ -777,6 +778,55 @@ def make_blog_router(db, get_current_user):
         except Exception as exc:
             logger.warning("[blog] WPForms entries fetch failed for %s: %s", wp_slug, exc)
             return {"entries": [], "reason": str(exc)}
+
+    # ── WordPress comments for a client subsite ────────────────────────────────
+
+    @router.get("/clients/{wp_slug}/comments")
+    async def get_client_comments(wp_slug: str, user=Depends(get_current_user)):
+        """Fetch recent WordPress comments from a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            return {"comments": [], "reason": "Site URL unavailable"}
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        if not wp_user:
+            return {"comments": [], "reason": "WordPress credentials not configured"}
+
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f"{site_base}/wp-json/wp/v2/comments?per_page=20&orderby=date&order=desc",
+                    headers=headers,
+                )
+                if r.status_code == 200:
+                    raw = r.json()
+                    comments = [
+                        {
+                            "id": c.get("id"),
+                            "post_id": c.get("post"),
+                            "author": c.get("author_name"),
+                            "email": c.get("author_email"),
+                            "content": c.get("content", {}).get("rendered", ""),
+                            "date": c.get("date"),
+                            "status": c.get("status"),
+                            "post_url": c.get("link", ""),
+                        }
+                        for c in raw
+                    ]
+                    return {"comments": comments}
+                return {"comments": [], "reason": f"WP API {r.status_code}"}
+        except Exception as exc:
+            logger.warning("[blog] Comments fetch failed for %s: %s", wp_slug, exc)
+            return {"comments": [], "reason": str(exc)}
 
     # ── Re-seed AI products for a client site ─────────────────────────────────
 

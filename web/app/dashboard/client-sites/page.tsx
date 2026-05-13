@@ -6,7 +6,8 @@ import {
   Globe, Plus, RefreshCw, ExternalLink, ShoppingCart,
   Loader2, AlertCircle, CheckCircle2, Clock, Settings,
   Store, ClipboardList, BookOpen, Copy, Check, X,
-  ChevronRight, FileInput, ToggleLeft, ToggleRight,
+  ChevronRight, FileInput, MessageSquare, Mail, User,
+  Calendar, ChevronDown,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -15,6 +16,23 @@ interface SiteFeatures {
   shop: boolean;
   forms: boolean;
   blog: boolean;
+}
+
+interface Comment {
+  id: number;
+  author: string;
+  email: string;
+  content: string;
+  date: string;
+  status: string;
+  post_url: string;
+}
+
+interface FormEntry {
+  id?: number | string;
+  fields?: Record<string, string>;
+  date?: string;
+  [key: string]: unknown;
 }
 
 interface ClientSite {
@@ -88,7 +106,12 @@ export default function ClientSitesPage() {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [reseeding, setReseeding] = useState<string | null>(null); // "slug:products" | "slug:forms"
+  const [reseeding, setReseeding] = useState<string | null>(null);
+  const [engagementSlug, setEngagementSlug] = useState<string | null>(null);
+  const [engagementTab, setEngagementTab] = useState<"comments" | "contacts">("comments");
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [formEntries, setFormEntries] = useState<FormEntry[]>([]);
+  const [engagementLoading, setEngagementLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -157,6 +180,28 @@ export default function ClientSitesPage() {
       await api.post(`/blog/clients/${slug}/reseed-${type}`, {});
     } catch { /* ignore — non-fatal */ }
     finally { setReseeding(null); }
+  }
+
+  async function openEngagement(slug: string, tab: "comments" | "contacts") {
+    if (engagementSlug === slug && engagementTab === tab) {
+      setEngagementSlug(null);
+      return;
+    }
+    setEngagementSlug(slug);
+    setEngagementTab(tab);
+    setEngagementLoading(true);
+    setComments([]);
+    setFormEntries([]);
+    try {
+      if (tab === "comments") {
+        const data = await api.get<{ comments: Comment[] }>(`/blog/clients/${slug}/comments`);
+        setComments(data.comments || []);
+      } else {
+        const data = await api.get<{ entries: FormEntry[] }>(`/blog/clients/${slug}/form-entries`);
+        setFormEntries(data.entries || []);
+      }
+    } catch { /* non-fatal */ }
+    finally { setEngagementLoading(false); }
   }
 
   return (
@@ -292,11 +337,17 @@ export default function ClientSitesPage() {
               expanded={expanded === site.wp_slug}
               reseedingProducts={reseeding === `${site.wp_slug}:products`}
               reseedingForms={reseeding === `${site.wp_slug}:forms`}
+              engagementOpen={engagementSlug === site.wp_slug}
+              engagementTab={engagementTab}
+              engagementLoading={engagementLoading && engagementSlug === site.wp_slug}
+              comments={engagementSlug === site.wp_slug ? comments : []}
+              formEntries={engagementSlug === site.wp_slug ? formEntries : []}
               onSync={() => syncSite(site.wp_slug)}
               onCopy={() => site.blog_url && copyUrl(site.blog_url, site.wp_slug)}
               onToggleExpand={() => setExpanded((e) => (e === site.wp_slug ? null : site.wp_slug))}
               onReseedProducts={() => reseedSite(site.wp_slug, "products")}
               onReseedForms={() => reseedSite(site.wp_slug, "forms")}
+              onOpenEngagement={(tab) => openEngagement(site.wp_slug, tab)}
             />
           ))}
         </div>
@@ -314,14 +365,22 @@ interface SiteCardProps {
   expanded: boolean;
   reseedingProducts: boolean;
   reseedingForms: boolean;
+  engagementOpen: boolean;
+  engagementTab: "comments" | "contacts";
+  engagementLoading: boolean;
+  comments: Comment[];
+  formEntries: FormEntry[];
   onSync: () => void;
   onCopy: () => void;
   onToggleExpand: () => void;
   onReseedProducts: () => void;
   onReseedForms: () => void;
+  onOpenEngagement: (tab: "comments" | "contacts") => void;
 }
 
-function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms }: SiteCardProps) {
+function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms,
+  engagementOpen, engagementTab, engagementLoading, comments, formEntries,
+  onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onOpenEngagement }: SiteCardProps) {
   const enabledFeatures = Object.entries(site.features || { shop: true, forms: true, blog: true }).filter(([, v]) => v);
   const siteUrl = site.blog_url || "";
 
@@ -384,12 +443,87 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors disabled:opacity-50">
           <RefreshCw size={12} className={syncing ? "animate-spin" : ""} /> Sync
         </button>
+        <button onClick={() => onOpenEngagement("comments")}
+          className={`flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
+            engagementOpen && engagementTab === "comments"
+              ? "border-blue-300 bg-blue-50 text-blue-700"
+              : "border-slate-200 hover:bg-slate-50 text-slate-600"
+          }`}>
+          <MessageSquare size={12} /> Comments
+        </button>
+        <button onClick={() => onOpenEngagement("contacts")}
+          className={`flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
+            engagementOpen && engagementTab === "contacts"
+              ? "border-purple-300 bg-purple-50 text-purple-700"
+              : "border-slate-200 hover:bg-slate-50 text-slate-600"
+          }`}>
+          <Mail size={12} /> Contacts
+        </button>
         <button onClick={onToggleExpand}
           className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors ml-auto">
           <Settings size={12} />
           <ChevronRight size={11} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
         </button>
       </div>
+
+      {/* Engagement panel */}
+      {engagementOpen && (
+        <div className="border-t border-slate-100 bg-slate-50 rounded-b-xl">
+          {engagementLoading ? (
+            <div className="flex items-center justify-center py-10 gap-2 text-slate-400 text-sm">
+              <Loader2 size={16} className="animate-spin" /> Loading…
+            </div>
+          ) : engagementTab === "comments" ? (
+            <div className="px-4 py-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Comments</p>
+              {comments.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-6">No comments yet</p>
+              ) : comments.map((c) => (
+                <div key={c.id} className="bg-white rounded-lg border border-slate-200 p-3 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                      <User size={11} className="text-slate-400" /> {c.author || "Anonymous"}
+                    </span>
+                    <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                      <Calendar size={10} /> {new Date(c.date).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: c.content.replace(/<[^>]*>/g, "") }} />
+                  {c.email && <p className="text-[10px] text-slate-400">{c.email}</p>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="px-4 py-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Get in Touch Submissions</p>
+              {formEntries.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-6">No submissions yet</p>
+              ) : formEntries.map((entry, i) => (
+                <div key={entry.id ?? i} className="bg-white rounded-lg border border-slate-200 p-3 space-y-1">
+                  {entry.date && (
+                    <span className="flex items-center gap-1 text-[10px] text-slate-400 mb-1">
+                      <Calendar size={10} /> {new Date(entry.date).toLocaleDateString()}
+                    </span>
+                  )}
+                  {entry.fields ? (
+                    Object.entries(entry.fields).map(([k, v]) => (
+                      <div key={k} className="flex gap-2 text-xs">
+                        <span className="text-slate-400 min-w-[80px] shrink-0">{k}:</span>
+                        <span className="text-slate-700">{String(v)}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <pre className="text-[10px] text-slate-500 whitespace-pre-wrap break-all">
+                      {JSON.stringify(entry, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Expanded quick-links */}
       {expanded && (

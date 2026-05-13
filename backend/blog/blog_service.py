@@ -321,6 +321,8 @@ class ZiloBlogService:
             "content": content,
             "excerpt": excerpt,
             "status": "publish",
+            "comment_status": "closed",
+            "ping_status": "closed",
             "meta": {
                 "_yoast_wpseo_focuskw": focus_kw,
                 "_yoast_wpseo_metadesc": excerpt,
