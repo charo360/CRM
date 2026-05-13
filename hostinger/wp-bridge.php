@@ -55,15 +55,13 @@ if ($wp_url) {
 }
 $cmd_parts = array_merge($cmd_parts, $args);
 
-// Escape all parts and execute
+// Escape all parts and execute (use shell_exec — exec() may be disabled)
 $escaped = implode(' ', array_map('escapeshellarg', $cmd_parts));
-$output_lines = [];
-$return_code = 0;
-exec($escaped . ' 2>&1', $output_lines, $return_code);
-$output = implode("\n", $output_lines);
+$output = shell_exec($escaped . ' 2>&1');
+$return_code = ($output !== null && $output !== '') ? 0 : 1;
 
 echo json_encode([
     'returncode' => $return_code,
-    'stdout' => $return_code === 0 ? $output : '',
-    'stderr' => $return_code !== 0 ? $output : '',
+    'stdout' => $return_code === 0 ? trim($output ?? '') : '',
+    'stderr' => $return_code !== 0 ? trim($output ?? '') : '',
 ]);
