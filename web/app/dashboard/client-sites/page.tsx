@@ -107,6 +107,7 @@ export default function ClientSitesPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [reseeding, setReseeding] = useState<string | null>(null);
+  const [recreating, setRecreating] = useState<string | null>(null);
   const [engagementSlug, setEngagementSlug] = useState<string | null>(null);
   const [engagementTab, setEngagementTab] = useState<"comments" | "contacts">("comments");
   const [comments, setComments] = useState<Comment[]>([]);
@@ -171,6 +172,14 @@ export default function ClientSitesPage() {
       setCopied(slug);
       setTimeout(() => setCopied(null), 2000);
     });
+  }
+
+  async function recreatePages(slug: string) {
+    setRecreating(slug);
+    try {
+      await api.post(`/blog/clients/${slug}/recreate-pages`, {});
+    } catch { /* non-fatal */ }
+    finally { setRecreating(null); }
   }
 
   async function reseedSite(slug: string, type: "products" | "forms") {
@@ -337,6 +346,7 @@ export default function ClientSitesPage() {
               expanded={expanded === site.wp_slug}
               reseedingProducts={reseeding === `${site.wp_slug}:products`}
               reseedingForms={reseeding === `${site.wp_slug}:forms`}
+              recreatingPages={recreating === site.wp_slug}
               engagementOpen={engagementSlug === site.wp_slug}
               engagementTab={engagementTab}
               engagementLoading={engagementLoading && engagementSlug === site.wp_slug}
@@ -347,6 +357,7 @@ export default function ClientSitesPage() {
               onToggleExpand={() => setExpanded((e) => (e === site.wp_slug ? null : site.wp_slug))}
               onReseedProducts={() => reseedSite(site.wp_slug, "products")}
               onReseedForms={() => reseedSite(site.wp_slug, "forms")}
+              onRecreatePages={() => recreatePages(site.wp_slug)}
               onOpenEngagement={(tab) => openEngagement(site.wp_slug, tab)}
             />
           ))}
@@ -365,6 +376,7 @@ interface SiteCardProps {
   expanded: boolean;
   reseedingProducts: boolean;
   reseedingForms: boolean;
+  recreatingPages: boolean;
   engagementOpen: boolean;
   engagementTab: "comments" | "contacts";
   engagementLoading: boolean;
@@ -375,12 +387,13 @@ interface SiteCardProps {
   onToggleExpand: () => void;
   onReseedProducts: () => void;
   onReseedForms: () => void;
+  onRecreatePages: () => void;
   onOpenEngagement: (tab: "comments" | "contacts") => void;
 }
 
-function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms,
+function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages,
   engagementOpen, engagementTab, engagementLoading, comments, formEntries,
-  onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onOpenEngagement }: SiteCardProps) {
+  onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onOpenEngagement }: SiteCardProps) {
   const enabledFeatures = Object.entries(site.features || { shop: true, forms: true, blog: true }).filter(([, v]) => v);
   const siteUrl = site.blog_url || "";
 
@@ -562,6 +575,15 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
               >
                 {reseedingForms ? <Loader2 size={11} className="animate-spin" /> : <FileInput size={11} />}
                 {reseedingForms ? "Generating…" : "AI Reseed Forms"}
+              </button>
+              <button
+                onClick={onRecreatePages}
+                disabled={recreatingPages}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 disabled:opacity-50 transition-colors font-medium"
+                title="Creates missing Contact, Forms and Survey pages on this site"
+              >
+                {recreatingPages ? <Loader2 size={11} className="animate-spin" /> : <Globe size={11} />}
+                {recreatingPages ? "Creating…" : "Recreate Pages"}
               </button>
             </div>
           </div>

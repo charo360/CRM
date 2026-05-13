@@ -828,6 +828,96 @@ def make_blog_router(db, get_current_user):
             logger.warning("[blog] Comments fetch failed for %s: %s", wp_slug, exc)
             return {"comments": [], "reason": str(exc)}
 
+    # ── Recreate standard pages for an existing client site ───────────────────
+
+    @router.post("/clients/{wp_slug}/recreate-pages")
+    async def recreate_pages(wp_slug: str, user=Depends(get_current_user)):
+        """
+        Creates or updates the standard Zilo pages (contact, forms, survey) for an existing site.
+        Safe to run on any site — skips pages that already exist.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        if not wp_user:
+            raise HTTPException(500, "WordPress credentials not configured")
+
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        pages = [
+            {
+                "slug": "contact",
+                "title": "Contact Us",
+                "content": (
+                    "<!-- wp:paragraph -->"
+                    "<p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p>"
+                    "<!-- /wp:paragraph -->"
+                    "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
+                    "<div class=\"wp-block-buttons\">"
+                    "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+                    "<div class=\"wp-block-button\">"
+                    "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+                    "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
+                    "\U0001f4ac Chat on WhatsApp</a></div>"
+                    "<!-- /wp:button --></div>"
+                    "<!-- /wp:buttons -->"
+                ),
+            },
+            {
+                "slug": "forms",
+                "title": "Order Forms",
+                "content": (
+                    "<!-- wp:paragraph -->"
+                    "<p>Fill in the form below to place an order or make an inquiry.</p>"
+                    "<!-- /wp:paragraph -->"
+                    "\n[wpforms id=\"\" title=\"false\"]"
+                ),
+            },
+            {
+                "slug": "survey",
+                "title": "Customer Survey",
+                "content": (
+                    "<!-- wp:paragraph -->"
+                    "<p>We value your feedback! Take 2 minutes to help us serve you better.</p>"
+                    "<!-- /wp:paragraph -->"
+                    "\n[wpforms id=\"\" title=\"false\"]"
+                ),
+            },
+        ]
+
+        created, skipped = [], []
+        async with httpx.AsyncClient(timeout=20) as client:
+            for page in pages:
+                # Check if page already exists
+                chk = await client.get(
+                    f"{site_base}/wp-json/wp/v2/pages?slug={page['slug']}&status=publish",
+                    headers=headers,
+                )
+                if chk.status_code == 200 and chk.json():
+                    skipped.append(page["slug"])
+                    continue
+                r = await client.post(
+                    f"{site_base}/wp-json/wp/v2/pages",
+                    headers=headers,
+                    json={"title": page["title"], "slug": page["slug"],
+                          "status": "publish", "content": page["content"]},
+                )
+                if r.status_code in (200, 201):
+                    created.append(page["slug"])
+                else:
+                    logger.warning("[blog] recreate-pages %s/%s → %s", wp_slug, page["slug"], r.status_code)
+
+        return {"created": created, "skipped": skipped}
+
     # ── Re-seed AI products for a client site ─────────────────────────────────
 
     @router.post("/clients/{wp_slug}/reseed-products")
