@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View,
     Text,
@@ -74,12 +74,14 @@ export default function TeamManagementModal({
     };
 
     const handleInvite = async () => {
-        if (!inviteName.trim() || !invitePhone.trim()) {
-            Alert.alert('Error', 'Please enter name and phone number');
+        const phone = invitePhone.trim();
+
+        if (!inviteName.trim()) {
+            Alert.alert('Error', 'Please enter a name');
             return;
         }
 
-        if (invitePhone.trim().length < 8) {
+        if (phone && phone.length < 8) {
             Alert.alert('Error', 'Please enter a valid phone number with country code (e.g. +254712345678)');
             return;
         }
@@ -90,7 +92,7 @@ export default function TeamManagementModal({
         try {
             await teamAPI.inviteMember({
                 name: inviteName.trim(),
-                phone_number: invitePhone.trim(),
+                ...(phone ? { phone_number: phone } : {}),
                 role: inviteRole,
             });
             
@@ -104,7 +106,9 @@ export default function TeamManagementModal({
             } else {
                 Alert.alert(
                     'Team Member Added!',
-                    `${inviteName.trim()} has been added. They can now log in to the CRM app using their phone number (${invitePhone.trim()}) — no extra steps needed!`,
+                    phone
+                        ? `${inviteName.trim()} has been added. They can now log in to the CRM app using their phone number (${phone}) — no extra steps needed!`
+                        : `${inviteName.trim()} has been added. You can add a phone number later if they need mobile app login.`,
                     [{ text: 'Got it', style: 'default' }]
                 );
             }
@@ -224,7 +228,7 @@ export default function TeamManagementModal({
                             </View>
 
                             <View style={styles.formGroup}>
-                                <Text style={styles.label}>Phone Number *</Text>
+                                <Text style={styles.label}>Phone Number</Text>
                                 <TextInput
                                     style={styles.input}
                                     value={invitePhone}
@@ -235,7 +239,7 @@ export default function TeamManagementModal({
                                     autoCapitalize="none"
                                 />
                                 <Text style={{ fontSize: 12, color: '#8899AA', marginTop: 4 }}>
-                                    They'll log in with this number — no password needed
+                                    Optional. Add it only if they need mobile app login.
                                 </Text>
                             </View>
 
@@ -353,6 +357,18 @@ export default function TeamManagementModal({
 
                                         {member.role !== 'owner' && isManager && (
                                             <View style={styles.memberActions}>
+                                            <TouchableOpacity
+    style={styles.actionButton}
+    onPress={() => {
+        Alert.alert(
+            member.name,
+            `Email: ${member.email}\nPhone: ${member.phone_number || 'N/A'}\nRole: ${member.role}\nStatus: ${member.status}`
+        );
+    }}
+>
+    <Ionicons name="eye-outline" size={18} color="#4A90D9" />
+    <Text style={styles.actionButtonText}>View</Text>
+</TouchableOpacity>
                                                 {isOwner && (
                                                     <TouchableOpacity
                                                         style={styles.actionButton}

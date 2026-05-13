@@ -16,6 +16,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { apiClient, messageHelpers } from '../context/api';
+import LoyaltyCard from './components/LoyaltyCard';
+import CustomerFeedbackModal from './components/CustomerFeedbackModal';
 import { useBusiness } from '../context/BusinessContext';
 
 const TAGS = ['New', 'VIP', 'Returning', 'Wholesale'];
@@ -47,7 +49,8 @@ export default function CustomerProfileScreen() {
   const [showTagInput, setShowTagInput] = useState(false);
   const [newTagText, setNewTagText] = useState('');
   const scrollRef = useRef<ScrollView>(null);
-  const [activeTab, setActiveTab] = useState<'info' | 'timeline'>('info');
+  const [activeTab, setActiveTab] = useState<'info' | 'timeline' | 'loyalty' | 'feedback'>('info');
+  const [feedbackVisible, setFeedbackVisible] = useState(false);
   const [timeline, setTimeline] = useState<any[]>([]);
   const [loadingTimeline, setLoadingTimeline] = useState(false);
 
@@ -100,6 +103,10 @@ export default function CustomerProfileScreen() {
     if (activeTab === 'timeline' && timeline.length === 0) {
       fetchTimeline();
     }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'feedback') setFeedbackVisible(true);
   }, [activeTab]);
 
   const toggleTag = (tag: string) => {
@@ -234,9 +241,23 @@ export default function CustomerProfileScreen() {
             <Ionicons name="time" size={18} color={activeTab === 'timeline' ? '#00A884' : '#8696A0'} />
             <Text style={[styles.tabText, activeTab === 'timeline' && styles.tabTextActive]}>Timeline</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'loyalty' && styles.tabActive]}
+            onPress={() => setActiveTab('loyalty')}
+          >
+            <Ionicons name="trophy" size={18} color={activeTab === 'loyalty' ? '#00A884' : '#8696A0'} />
+            <Text style={[styles.tabText, activeTab === 'loyalty' && styles.tabTextActive]}>Loyalty</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'feedback' && styles.tabActive]}
+            onPress={() => setActiveTab('feedback')}
+          >
+            <Ionicons name="chatbubbles" size={18} color={activeTab === 'feedback' ? '#00A884' : '#8696A0'} />
+            <Text style={[styles.tabText, activeTab === 'feedback' && styles.tabTextActive]}>Feedback</Text>
+          </TouchableOpacity>
         </View>
 
-        {activeTab === 'info' ? (
+        {activeTab === 'info' && (
           <>
             {/* Name */}
         <View style={styles.fieldGroup}>
@@ -313,7 +334,9 @@ export default function CustomerProfileScreen() {
           <Text style={styles.deleteText}>Delete Customer</Text>
         </TouchableOpacity>
           </>
-        ) : (
+        )}
+
+        {activeTab === 'timeline' && (
           <>
             {/* Timeline Tab */}
             {loadingTimeline ? (
@@ -354,6 +377,27 @@ export default function CustomerProfileScreen() {
             )}
           </>
         )}
+
+        {activeTab === 'loyalty' && (
+          <>
+            <LoyaltyCard customerId={customerId} />
+          </>
+        )}
+
+        {activeTab === 'feedback' && (
+          <>
+            <View style={{ paddingHorizontal: 20, paddingTop: 16 }}>
+              <Text style={{ color: '#E9EDEF', fontSize: 16, fontWeight: '700', marginBottom: 8 }}>Customer Feedback</Text>
+              <Text style={{ color: '#8696A0', marginBottom: 12 }}>Send a survey link to the customer or view their past responses.</Text>
+              <TouchableOpacity style={[styles.actionButton, { marginTop: 4 }]} onPress={() => setFeedbackVisible(true)}>
+                <Ionicons name="send" size={18} color="#00A884" />
+                <Text style={[styles.actionButtonText, { marginLeft: 8 }]}>Open Feedback</Text>
+              </TouchableOpacity>
+            </View>
+            <CustomerFeedbackModal customerId={customerId} visible={feedbackVisible} onClose={() => setFeedbackVisible(false)} />
+          </>
+        )}
+
       </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -565,6 +609,8 @@ const styles = StyleSheet.create({
     color: '#00A884',
     fontWeight: '600',
   },
+  actionButton: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  actionButtonText: { color: '#00A884', fontWeight: '600', marginLeft: 6 },
   // Timeline
   timelineItem: {
     flexDirection: 'row',

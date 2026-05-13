@@ -177,6 +177,74 @@ export const messagesAPI = {
   }
 };
 
+// ============ WhatsApp API Methods ============
+
+export const whatsappAPI = {
+  /**
+   * Send a WhatsApp text message to a customer
+   */
+  sendMessage: async (toNumber: string, message: string, customerName?: string) => {
+    const response = await apiClient.post('/messages/send', null, {
+      params: {
+        to_number: toNumber,
+        message,
+        ...(customerName ? { customer_name: customerName } : {}),
+      },
+    });
+    return response.data;
+  },
+
+  /**
+   * Upload and send an image/document through WhatsApp
+   */
+  sendMedia: async (
+    toNumber: string,
+    uri: string,
+    fileName: string,
+    mimeType: string,
+    caption: string = '',
+    customerName?: string
+  ) => {
+    const formData = new FormData();
+    formData.append('file', {
+      uri,
+      type: mimeType,
+      name: fileName,
+    } as any);
+    formData.append('to_number', toNumber);
+    formData.append('caption', caption);
+    if (customerName) formData.append('customer_name', customerName);
+
+    const response = await apiClient.post('/messages/send-media', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+};
+
+// ============ Message Helper Methods ============
+
+export const messageHelpers = {
+  markRead: async (customerId: string) => {
+    const response = await apiClient.post(`/customers/${customerId}/messages/read`);
+    return response.data;
+  },
+
+  search: async (customerId: string, query: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/messages/search`, {
+      params: { q: query },
+    });
+    return response.data;
+  },
+
+  getTimeline: async (customerId: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/timeline`);
+    return response.data;
+  },
+};
+
 // ============ Products API Methods ============
 
 export const productsAPI = {
@@ -252,5 +320,199 @@ export const productsAPI = {
       params: { customer_id: customerId }
     });
     return response.data;
+  },
+
+  /**
+   * Send a group of products to a customer as a catalog
+   */
+  sendCatalog: async (customerId: string, productIds: string[]) => {
+    const response = await apiClient.post('/products/send-catalog', {
+      customer_id: customerId,
+      product_ids: productIds,
+    });
+    return response.data;
   }
+};
+
+// ============ Bookings API Methods ============
+
+export const bookingsAPI = {
+  getBookings: async (params?: { customer_id?: string; status?: string }) => {
+    const response = await apiClient.get('/bookings', { params });
+    return response.data;
+  },
+
+  createBooking: async (booking: Record<string, any>) => {
+    const response = await apiClient.post('/bookings', booking);
+    return response.data;
+  },
+
+  updateBooking: async (bookingId: string, updates: Record<string, any>) => {
+    const response = await apiClient.put(`/bookings/${bookingId}`, updates);
+    return response.data;
+  },
+
+  deleteBooking: async (bookingId: string) => {
+    const response = await apiClient.delete(`/bookings/${bookingId}`);
+    return response.data;
+  },
+
+  sendReminder: async (bookingId: string) => {
+    const response = await apiClient.post(`/bookings/${bookingId}/reminder`);
+    return response.data;
+  },
+};
+
+// ============ Workflows API Methods ============
+
+export const workflowsAPI = {
+  list: async () => {
+    const response = await apiClient.get('/workflows');
+    return response.data;
+  },
+
+  create: async (workflow: Record<string, any>) => {
+    const response = await apiClient.post('/workflows', workflow);
+    return response.data;
+  },
+
+  toggle: async (workflowId: string) => {
+    const response = await apiClient.post(`/workflows/${workflowId}/toggle`);
+    return response.data;
+  },
+
+  delete: async (workflowId: string) => {
+    const response = await apiClient.delete(`/workflows/${workflowId}`);
+    return response.data;
+  },
+
+  buildFromDescription: async (description: string) => {
+    const response = await apiClient.post('/workflows/build/from-description', { description });
+    return response.data;
+  },
+};
+
+// ============ Team API Methods ============
+
+export const teamAPI = {
+  getMembers: async () => {
+    const response = await apiClient.get('/team/members');
+    return response.data;
+  },
+
+  inviteMember: async (member: {
+    name: string;
+    phone_number?: string;
+    role: string;
+    email?: string;
+  }) => {
+    const response = await apiClient.post('/team/invite', member);
+    return response.data;
+  },
+
+  updateMember: async (memberId: string, updates: Record<string, any>) => {
+    const response = await apiClient.put(`/team/members/${memberId}`, updates);
+    return response.data;
+  },
+
+  removeMember: async (memberId: string) => {
+    const response = await apiClient.delete(`/team/members/${memberId}`);
+    return response.data;
+  },
+
+  assignConversation: async (assignment: {
+    customer_id: string;
+    assigned_to: string | null;
+    assigned_by: string;
+    notes?: string;
+  }) => {
+    const response = await apiClient.post('/conversations/assign', assignment);
+    return response.data;
+  },
+};
+
+// ============ Suppliers API Methods ============
+
+export const suppliersAPI = {
+  getSuppliers: async () => {
+    const response = await apiClient.get('/suppliers');
+    return response.data;
+  },
+
+  getInsights: async () => {
+    const response = await apiClient.get('/suppliers/insights');
+    return response.data;
+  },
+
+  tagSupplier: async (customerId: string) => {
+    const response = await apiClient.post(`/suppliers/${customerId}/tag`);
+    return response.data;
+  },
+
+  updateSupplier: async (customerId: string, updates: Record<string, any>) => {
+    const response = await apiClient.put(`/suppliers/${customerId}`, updates);
+    return response.data;
+  },
+
+  removeSupplier: async (customerId: string) => {
+    const response = await apiClient.delete(`/suppliers/${customerId}`);
+    return response.data;
+  },
+};
+
+// ============ Feedback API Methods ============
+
+export const feedbackAPI = {
+  listSurveys: async () => {
+    const response = await apiClient.get('/feedback/surveys');
+    return response.data;
+  },
+
+  submitResponse: async (payload: {
+    survey_id: string;
+    customer_id?: string;
+    answers: Record<string, any>;
+  }) => {
+    const response = await apiClient.post('/feedback/responses', payload);
+    return response.data;
+  },
+
+  getResponse: async (responseId: string) => {
+    const response = await apiClient.get(`/feedback/responses/${responseId}`);
+    return response.data;
+  },
+
+  getCustomerResponses: async (customerId: string) => {
+    const response = await apiClient.get(`/feedback/customer/${customerId}`);
+    return response.data;
+  },
+
+  sendSurveyLink: async (surveyId: string, customerId: string) => {
+    const response = await apiClient.post(`/feedback/surveys/${surveyId}/send`, {
+      customer_id: customerId,
+    });
+    return response.data;
+  },
+};
+
+// ============ Loyalty API Methods ============
+
+export const loyaltyAPI = {
+  getPoints: async (customerId: string) => {
+    const response = await apiClient.get(`/loyalty/${customerId}`);
+    return response.data;
+  },
+
+  addPoints: async (customerId: string, amount: number, reason?: string) => {
+    const response = await apiClient.post(`/loyalty/${customerId}/add`, {
+      amount,
+      reason,
+    });
+    return response.data;
+  },
+
+  getHistory: async (customerId: string) => {
+    const response = await apiClient.get(`/loyalty/${customerId}/history`);
+    return response.data;
+  },
 };
