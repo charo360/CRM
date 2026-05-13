@@ -125,12 +125,17 @@ export default function ClientSitesPage() {
   const [formEntries, setFormEntries] = useState<FormEntry[]>([]);
   const [wpPosts, setWpPosts] = useState<WpPost[]>([]);
   const [engagementLoading, setEngagementLoading] = useState(false);
+  const [pendingCounts, setPendingCounts] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.get<ListResponse>("/blog/clients");
       setSites(data.sites);
+      // Fetch pending comment counts in background — non-fatal
+      api.get<{ counts: Record<string, number> }>("/blog/clients/pending-counts")
+        .then((r) => setPendingCounts(r.counts || {}))
+        .catch(() => {});
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load client sites");
     } finally {
@@ -367,6 +372,7 @@ export default function ClientSitesPage() {
               comments={engagementSlug === site.wp_slug ? comments : []}
               formEntries={engagementSlug === site.wp_slug ? formEntries : []}
               wpPosts={engagementSlug === site.wp_slug ? wpPosts : []}
+              pendingCount={pendingCounts[site.wp_slug] ?? 0}
               onSync={() => syncSite(site.wp_slug)}
               onCopy={() => site.blog_url && copyUrl(site.blog_url, site.wp_slug)}
               onToggleExpand={() => setExpanded((e) => (e === site.wp_slug ? null : site.wp_slug))}
@@ -398,6 +404,7 @@ interface SiteCardProps {
   comments: Comment[];
   formEntries: FormEntry[];
   wpPosts: WpPost[];
+  pendingCount: number;
   onSync: () => void;
   onCopy: () => void;
   onToggleExpand: () => void;
@@ -408,7 +415,7 @@ interface SiteCardProps {
 }
 
 function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages,
-  engagementOpen, engagementTab, engagementLoading, comments, formEntries, wpPosts,
+  engagementOpen, engagementTab, engagementLoading, comments, formEntries, wpPosts, pendingCount,
   onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onOpenEngagement }: SiteCardProps) {
   const enabledFeatures = Object.entries(site.features || { shop: true, forms: true, blog: true }).filter(([, v]) => v);
   const siteUrl = site.blog_url || "";
@@ -473,12 +480,17 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           <RefreshCw size={12} className={syncing ? "animate-spin" : ""} /> Sync
         </button>
         <button onClick={() => onOpenEngagement("comments")}
-          className={`flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
+          className={`relative flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
             engagementOpen && engagementTab === "comments"
               ? "border-blue-300 bg-blue-50 text-blue-700"
               : "border-slate-200 hover:bg-slate-50 text-slate-600"
           }`}>
           <MessageSquare size={12} /> Comments
+          {pendingCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 flex items-center justify-center bg-rose-500 text-white text-[9px] font-bold rounded-full px-1 leading-none">
+              {pendingCount > 99 ? "99+" : pendingCount}
+            </span>
+          )}
         </button>
         <button onClick={() => onOpenEngagement("contacts")}
           className={`flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
@@ -527,12 +539,28 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
                     </span>
                   )}
                   {entry.fields ? (
-                    Object.entries(entry.fields).map(([k, v]) => (
-                      <div key={k} className="flex gap-2 text-xs">
-                        <span className="text-slate-400 min-w-[80px] shrink-0">{k}:</span>
-                        <span className="text-slate-700">{String(v)}</span>
-                      </div>
-                    ))
+                    Object.entries(entry.fields).map(([k, v]) => {
+                      const key = k.toLowerCase();
+                      const isPhone = key.includes("phone") || key.includes("whatsapp") || key.includes("mobile") || key.includes("number");
+                      const phone = isPhone ? String(v).replace(/[^\d+]/g, "") : "";
+                      return (
+                        <div key={k} className="flex gap-2 text-xs items-center">
+                          <span className="text-slate-400 min-w-[80px] shrink-0">{k}:</span>
+                          {isPhone && phone ? (
+                            <a
+                              href={`https://wa.me/${phone.replace(/^0/, "254")}`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="text-emerald-600 hover:text-emerald-800 font-medium hover:underline flex items-center gap-1"
+                            >
+                              {String(v)}
+                              <ExternalLink size={9} className="opacity-60" />
+                            </a>
+                          ) : (
+                            <span className="text-slate-700">{String(v)}</span>
+                          )}
+                        </div>
+                      );
+                    })
                   ) : (
                     <pre className="text-[10px] text-slate-500 whitespace-pre-wrap break-all">
                       {JSON.stringify(entry, null, 2)}
@@ -551,6 +579,9 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Quick Links</p>
           <div className="grid grid-cols-1 gap-2">
             <QuickLink href={`${siteUrl}/wp-admin`} icon={<Settings size={13} />} label="WP Admin" sub="Client's WordPress dashboard" />
+            {siteUrl && (
+              <QuickLink href={`${siteUrl}/contact`} icon={<Mail size={13} />} label="Contact Page" sub="Public contact page on the site" />
+            )}
             {site.features?.shop && (
               <QuickLink href={`${siteUrl}/wp-admin/admin.php?page=wc-admin`} icon={<ShoppingCart size={13} />} label="WooCommerce" sub="Orders, products, settings" />
             )}

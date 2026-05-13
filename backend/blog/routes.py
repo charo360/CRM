@@ -657,6 +657,45 @@ def make_blog_router(db, get_current_user):
             sites.append(doc)
         return {"sites": sites}
 
+    @router.get("/clients/pending-counts")
+    async def get_pending_comment_counts(user=Depends(get_current_user)):
+        """
+        Returns {counts: {wp_slug: N}} with the number of pending/hold
+        comments across all client sites for the current user.
+        One lightweight WP REST call per site (per_page=1 just to get total).
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        docs = await db.blogs.find({"client_id": user_id}, {"wp_slug": 1, "custom_domain": 1, "blog_subdomain": 1}).to_list(None)
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        counts: dict[str, int] = {}
+
+        async def _fetch_count(doc):
+            slug = doc.get("wp_slug", "")
+            site_base = await _blog_url_for_response(db, doc)
+            if not site_base:
+                counts[slug] = 0
+                return
+            try:
+                async with httpx.AsyncClient(timeout=8) as client:
+                    r = await client.get(
+                        f"{site_base}/wp-json/wp/v2/comments?status=hold&per_page=1",
+                        headers=headers,
+                    )
+                    if r.status_code == 200:
+                        total = int(r.headers.get("X-WP-Total", "0"))
+                        counts[slug] = total
+                    else:
+                        counts[slug] = 0
+            except Exception:
+                counts[slug] = 0
+
+        import asyncio
+        await asyncio.gather(*[_fetch_count(doc) for doc in docs])
+        return {"counts": counts}
+
     @router.patch("/clients/{wp_slug}/features")
     async def patch_site_features(
         wp_slug: str,
