@@ -878,6 +878,121 @@ def make_blog_router(db, get_current_user):
                 return {"status": "approved"}
             raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
 
+    # ── Delete a WordPress comment from the CRM ───────────────────────────────
+
+    @router.delete("/clients/{wp_slug}/comments/{comment_id}")
+    async def delete_comment(wp_slug: str, comment_id: int, user=Depends(get_current_user)):
+        """Permanently delete a comment from a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.delete(
+                f"{site_base}/wp-json/wp/v2/comments/{comment_id}?force=true",
+                headers=headers,
+            )
+            if r.status_code in (200, 201):
+                return {"status": "deleted"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
+    # ── List posts for a client subsite ───────────────────────────────────────
+
+    @router.get("/clients/{wp_slug}/posts")
+    async def list_client_posts(wp_slug: str, user=Depends(get_current_user)):
+        """List all published and draft posts for a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            return {"posts": [], "reason": "Site URL unavailable"}
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(
+                    f"{site_base}/wp-json/wp/v2/posts?per_page=50&orderby=date&order=desc&status=publish,draft",
+                    headers=headers,
+                )
+                if r.status_code != 200:
+                    return {"posts": [], "reason": f"WP API {r.status_code}"}
+                posts = [
+                    {
+                        "id": p.get("id"),
+                        "title": p.get("title", {}).get("rendered", ""),
+                        "status": p.get("status"),
+                        "date": p.get("date"),
+                        "link": p.get("link", ""),
+                    }
+                    for p in r.json()
+                ]
+                return {"posts": posts}
+        except Exception as exc:
+            logger.warning("[blog] list posts failed for %s: %s", wp_slug, exc)
+            return {"posts": [], "reason": str(exc)}
+
+    # ── Delete a post from a client subsite ───────────────────────────────────
+
+    @router.delete("/clients/{wp_slug}/posts/{post_id}")
+    async def delete_client_post(wp_slug: str, post_id: int, user=Depends(get_current_user)):
+        """Permanently delete a post from a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.delete(
+                f"{site_base}/wp-json/wp/v2/posts/{post_id}?force=true",
+                headers=headers,
+            )
+            if r.status_code in (200, 201):
+                return {"status": "deleted"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
+    # ── Unpublish (draft) a post from a client subsite ────────────────────────
+
+    @router.post("/clients/{wp_slug}/posts/{post_id}/unpublish")
+    async def unpublish_client_post(wp_slug: str, post_id: int, user=Depends(get_current_user)):
+        """Set a published post back to draft so it's hidden from the public."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{site_base}/wp-json/wp/v2/posts/{post_id}",
+                headers=headers,
+                json={"status": "draft"},
+            )
+            if r.status_code in (200, 201):
+                return {"status": "draft"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
     # ── Reply to a WordPress comment from the CRM ──────────────────────────────
 
     @router.post("/clients/{wp_slug}/comments/{comment_id}/reply")

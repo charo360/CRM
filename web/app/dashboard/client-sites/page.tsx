@@ -7,7 +7,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, Clock, Settings,
   Store, ClipboardList, BookOpen, Copy, Check, X,
   ChevronRight, FileInput, MessageSquare, Mail, User,
-  Calendar, CornerDownRight, Send,
+  Calendar, CornerDownRight, Send, Trash2, EyeOff, FileText,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -29,6 +29,14 @@ interface Comment {
   date: string;
   status: string;
   parent: number;
+}
+
+interface WpPost {
+  id: number;
+  title: string;
+  status: string;
+  date: string;
+  link: string;
 }
 
 interface FormEntry {
@@ -112,9 +120,10 @@ export default function ClientSitesPage() {
   const [reseeding, setReseeding] = useState<string | null>(null);
   const [recreating, setRecreating] = useState<string | null>(null);
   const [engagementSlug, setEngagementSlug] = useState<string | null>(null);
-  const [engagementTab, setEngagementTab] = useState<"comments" | "contacts">("comments");
+  const [engagementTab, setEngagementTab] = useState<"comments" | "contacts" | "posts">("comments");
   const [comments, setComments] = useState<Comment[]>([]);
   const [formEntries, setFormEntries] = useState<FormEntry[]>([]);
+  const [wpPosts, setWpPosts] = useState<WpPost[]>([]);
   const [engagementLoading, setEngagementLoading] = useState(false);
 
   const load = useCallback(async () => {
@@ -194,7 +203,7 @@ export default function ClientSitesPage() {
     finally { setReseeding(null); }
   }
 
-  async function openEngagement(slug: string, tab: "comments" | "contacts") {
+  async function openEngagement(slug: string, tab: "comments" | "contacts" | "posts") {
     if (engagementSlug === slug && engagementTab === tab) {
       setEngagementSlug(null);
       return;
@@ -202,12 +211,14 @@ export default function ClientSitesPage() {
     setEngagementSlug(slug);
     setEngagementTab(tab);
     setEngagementLoading(true);
-    setComments([]);
-    setFormEntries([]);
+    setComments([]); setFormEntries([]); setWpPosts([]);
     try {
       if (tab === "comments") {
         const data = await api.get<{ comments: Comment[] }>(`/blog/clients/${slug}/comments`);
         setComments(data.comments || []);
+      } else if (tab === "posts") {
+        const data = await api.get<{ posts: WpPost[] }>(`/blog/clients/${slug}/posts`);
+        setWpPosts(data.posts || []);
       } else {
         const data = await api.get<{ entries: FormEntry[] }>(`/blog/clients/${slug}/form-entries`);
         setFormEntries(data.entries || []);
@@ -355,6 +366,7 @@ export default function ClientSitesPage() {
               engagementLoading={engagementLoading && engagementSlug === site.wp_slug}
               comments={engagementSlug === site.wp_slug ? comments : []}
               formEntries={engagementSlug === site.wp_slug ? formEntries : []}
+              wpPosts={engagementSlug === site.wp_slug ? wpPosts : []}
               onSync={() => syncSite(site.wp_slug)}
               onCopy={() => site.blog_url && copyUrl(site.blog_url, site.wp_slug)}
               onToggleExpand={() => setExpanded((e) => (e === site.wp_slug ? null : site.wp_slug))}
@@ -381,21 +393,22 @@ interface SiteCardProps {
   reseedingForms: boolean;
   recreatingPages: boolean;
   engagementOpen: boolean;
-  engagementTab: "comments" | "contacts";
+  engagementTab: "comments" | "contacts" | "posts";
   engagementLoading: boolean;
   comments: Comment[];
   formEntries: FormEntry[];
+  wpPosts: WpPost[];
   onSync: () => void;
   onCopy: () => void;
   onToggleExpand: () => void;
   onReseedProducts: () => void;
   onReseedForms: () => void;
   onRecreatePages: () => void;
-  onOpenEngagement: (tab: "comments" | "contacts") => void;
+  onOpenEngagement: (tab: "comments" | "contacts" | "posts") => void;
 }
 
 function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages,
-  engagementOpen, engagementTab, engagementLoading, comments, formEntries,
+  engagementOpen, engagementTab, engagementLoading, comments, formEntries, wpPosts,
   onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onOpenEngagement }: SiteCardProps) {
   const enabledFeatures = Object.entries(site.features || { shop: true, forms: true, blog: true }).filter(([, v]) => v);
   const siteUrl = site.blog_url || "";
@@ -475,6 +488,14 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           }`}>
           <Mail size={12} /> Contacts
         </button>
+        <button onClick={() => onOpenEngagement("posts")}
+          className={`flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
+            engagementOpen && engagementTab === "posts"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+              : "border-slate-200 hover:bg-slate-50 text-slate-600"
+          }`}>
+          <FileText size={12} /> Posts
+        </button>
         <button onClick={onToggleExpand}
           className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors ml-auto">
           <Settings size={12} />
@@ -491,6 +512,8 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
             </div>
           ) : engagementTab === "comments" ? (
             <CommentsPanel comments={comments} wpSlug={site.wp_slug} />
+          ) : engagementTab === "posts" ? (
+            <PostsPanel posts={wpPosts} wpSlug={site.wp_slug} />
           ) : (
             <div className="px-4 py-3 space-y-2">
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Get in Touch Submissions</p>
@@ -606,6 +629,115 @@ function QuickLink({ href, icon, label, sub }: { href: string; icon: React.React
   );
 }
 
+function PostsPanel({ posts, wpSlug }: { posts: WpPost[]; wpSlug: string }) {
+  const [items, setItems] = useState(posts);
+  useEffect(() => { setItems(posts); }, [posts]);
+
+  if (items.length === 0) {
+    return (
+      <div className="px-4 py-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Posts</p>
+        <p className="text-xs text-slate-400 text-center py-6">No posts yet</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Posts</p>
+      {items.map((post) => (
+        <PostRow key={post.id} post={post} wpSlug={wpSlug}
+          onRemove={(id) => setItems((prev) => prev.filter((p) => p.id !== id))}
+          onDraft={(id) => setItems((prev) => prev.map((p) => p.id === id ? { ...p, status: "draft" } : p))}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PostRow({ post, wpSlug, onRemove, onDraft }: {
+  post: WpPost;
+  wpSlug: string;
+  onRemove: (id: number) => void;
+  onDraft: (id: number) => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [unpublishing, setUnpublishing] = useState(false);
+  const [err, setErr] = useState("");
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  async function deletePost() {
+    setDeleting(true); setErr("");
+    try {
+      await api.delete(`/blog/clients/${wpSlug}/posts/${post.id}`);
+      onRemove(post.id);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Failed to delete"); }
+    finally { setDeleting(false); setConfirmDel(false); }
+  }
+
+  async function unpublishPost() {
+    setUnpublishing(true); setErr("");
+    try {
+      await api.post(`/blog/clients/${wpSlug}/posts/${post.id}/unpublish`, {});
+      onDraft(post.id);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Failed to unpublish"); }
+    finally { setUnpublishing(false); }
+  }
+
+  const isDraft = post.status === "draft";
+
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-slate-700 truncate"
+            dangerouslySetInnerHTML={{ __html: post.title || "Untitled" }} />
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className={`text-[9px] font-semibold rounded-full px-1.5 py-0.5 uppercase tracking-wide ${
+              isDraft ? "bg-slate-100 text-slate-500" : "bg-emerald-100 text-emerald-700"
+            }`}>{isDraft ? "Draft" : "Published"}</span>
+            <span className="text-[10px] text-slate-400 flex items-center gap-1">
+              <Calendar size={9} /> {new Date(post.date).toLocaleDateString()}
+            </span>
+          </div>
+        </div>
+        {post.link && !isDraft && (
+          <a href={post.link} target="_blank" rel="noopener noreferrer"
+            className="text-[10px] text-blue-500 hover:underline shrink-0 flex items-center gap-0.5 mt-0.5">
+            <ExternalLink size={9} /> View
+          </a>
+        )}
+      </div>
+      {err && <p className="text-[10px] text-rose-500">{err}</p>}
+      <div className="flex items-center gap-3 pt-0.5">
+        {!isDraft && (
+          <button onClick={unpublishPost} disabled={unpublishing}
+            className="flex items-center gap-1 text-[10px] text-amber-600 hover:text-amber-800 font-medium transition-colors disabled:opacity-50">
+            {unpublishing ? <Loader2 size={10} className="animate-spin" /> : <EyeOff size={10} />}
+            {unpublishing ? "Unpublishing…" : "Unpublish"}
+          </button>
+        )}
+        {!confirmDel ? (
+          <button onClick={() => setConfirmDel(true)}
+            className="flex items-center gap-1 text-[10px] text-rose-500 hover:text-rose-700 font-medium transition-colors">
+            <Trash2 size={10} /> Delete
+          </button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500">Permanently delete?</span>
+            <button onClick={deletePost} disabled={deleting}
+              className="text-[10px] font-semibold text-white bg-rose-500 hover:bg-rose-600 rounded px-1.5 py-0.5 disabled:opacity-50">
+              {deleting ? "Deleting…" : "Yes, delete"}
+            </button>
+            <button onClick={() => setConfirmDel(false)}
+              className="text-[10px] text-slate-400 hover:text-slate-600">Cancel</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CommentsPanel({ comments, wpSlug }: { comments: Comment[]; wpSlug: string }) {
   if (comments.length === 0) {
     return (
@@ -671,7 +803,9 @@ function CommentsPanel({ comments, wpSlug }: { comments: Comment[]; wpSlug: stri
   );
 }
 
-function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; wpSlug: string; isReply?: boolean }) {
+function CommentCard({ comment, wpSlug, isReply = false, onDeleted }: {
+  comment: Comment; wpSlug: string; isReply?: boolean; onDeleted?: (id: number) => void;
+}) {
   const [showReply, setShowReply] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
@@ -679,6 +813,9 @@ function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; w
   const [err, setErr] = useState("");
   const [approving, setApproving] = useState(false);
   const [approved, setApproved] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleted, setDeleted] = useState(false);
 
   async function sendReply() {
     if (!replyText.trim()) return;
@@ -707,6 +844,21 @@ function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; w
       setApproving(false);
     }
   }
+
+  async function deleteComment() {
+    setDeleting(true); setErr("");
+    try {
+      await api.delete(`/blog/clients/${wpSlug}/comments/${comment.id}`);
+      setDeleted(true);
+      onDeleted?.(comment.id);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to delete");
+    } finally {
+      setDeleting(false); setConfirmDel(false);
+    }
+  }
+
+  if (deleted) return null;
 
   const isPending = !approved && (comment.status === "hold" || comment.status === "pending");
 
@@ -748,7 +900,7 @@ function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; w
 
       {!sent && !isReply && (
         <>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {isPending && (
               <button
                 onClick={approveComment}
@@ -765,6 +917,21 @@ function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; w
             >
               <CornerDownRight size={10} /> {showReply ? "Cancel" : "Reply"}
             </button>
+            {!confirmDel ? (
+              <button onClick={() => setConfirmDel(true)}
+                className="flex items-center gap-1 text-[10px] text-rose-500 hover:text-rose-700 font-medium transition-colors ml-auto">
+                <Trash2 size={10} /> Delete
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="text-[10px] text-slate-500">Delete this comment?</span>
+                <button onClick={deleteComment} disabled={deleting}
+                  className="text-[10px] font-semibold text-white bg-rose-500 hover:bg-rose-600 rounded px-1.5 py-0.5 disabled:opacity-50">
+                  {deleting ? "Deleting…" : "Yes"}
+                </button>
+                <button onClick={() => setConfirmDel(false)} className="text-[10px] text-slate-400 hover:text-slate-600">No</button>
+              </div>
+            )}
           </div>
           {showReply && (
             <div className="space-y-1.5 pt-1">
