@@ -665,6 +665,29 @@ class ZiloBlogService:
         except Exception as exc:
             logger.warning(f"[blog] front/blog page configuration failed: {exc}")
 
+        # 7. Add custom CSS so article body matches the title/image container width
+        custom_css = (
+            ".single-post .entry-content,"
+            ".single-post .entry-header,"
+            ".single-post .post-thumbnail {"
+            "max-width:740px;margin-left:auto;margin-right:auto;"
+            "padding-left:20px;padding-right:20px;box-sizing:border-box;}"
+            ".single-post .entry-content>*{max-width:100%;}"
+            ".single-post .alignfull,.single-post .alignwide{max-width:100%!important;width:100%!important;}"
+        )
+        try:
+            await _wp(
+                "post", "create",
+                "--post_type=custom_css",
+                "--post_name=wp-custom-css",
+                "--post_title=Zilo Custom CSS",
+                f"--post_content={custom_css}",
+                "--post_status=publish",
+            )
+            logger.info(f"[blog] Custom content-width CSS added for {slug}")
+        except Exception as exc:
+            logger.warning(f"[blog] Custom CSS add failed: {exc}")
+
     async def _apply_industry_theme(self, slug: str, industry: str):
         """
         Installs Astra (free, WooCommerce-optimised) network-wide if not present,
