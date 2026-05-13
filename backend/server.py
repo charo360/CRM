@@ -13534,12 +13534,19 @@ except Exception as _e:
     logging.error(f"[seo] failed to mount routes: {_e}")
 
 # ── SEO LangGraph Agent ───────────────────────────────────────────────────────
+_seo_agent_mount_error: str = ""
 try:
     from seo_agent.routes import make_seo_agent_router as _mk_seo_agent_router
-    api_router.include_router(_mk_seo_agent_router(db, Depends(get_current_user)))
+    api_router.include_router(_mk_seo_agent_router(db, get_current_user))
     logging.info("[seo-agent] routes mounted at /api/seo-agent/*")
 except Exception as _e:
-    logging.error(f"[seo-agent] failed to mount routes: {_e}")
+    import traceback as _tb
+    _seo_agent_mount_error = f"{_e}\n{_tb.format_exc()}"
+    logging.error(f"[seo-agent] failed to mount routes: {_seo_agent_mount_error}")
+
+@api_router.get("/seo-agent/debug")
+async def seo_agent_debug():
+    return {"mounted": not bool(_seo_agent_mount_error), "error": _seo_agent_mount_error or None}
 
 # ── Zilo Autoblogging ─────────────────────────────────────────────────────────
 _blog_mount_error: str = ""
