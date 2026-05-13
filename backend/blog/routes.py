@@ -1080,6 +1080,35 @@ def make_blog_router(db, get_current_user):
                 return {"status": "replied", "comment_id": r.json().get("id")}
             raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
 
+    # ── Helper: find a real WPForms form ID on a subsite ─────────────────────
+
+    async def _find_wpforms_id(site_base: str, auth_headers: dict) -> str:
+        """
+        Returns the ID of the best WPForms form to embed on the contact page.
+        Priority: form whose title contains 'contact', else the first available form.
+        Returns "" if no forms are found.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"{site_base}/wp-json/wp/v2/wpforms?per_page=20&orderby=date&order=asc",
+                    headers=auth_headers,
+                )
+                if r.status_code == 200:
+                    forms = r.json()
+                    if not forms:
+                        return ""
+                    # Prefer a form whose title mentions 'contact'
+                    for f in forms:
+                        title = (f.get("title", {}).get("rendered") or "").lower()
+                        if "contact" in title:
+                            return str(f["id"])
+                    # Fall back to the first form
+                    return str(forms[0]["id"])
+        except Exception as exc:
+            logger.debug("[blog] _find_wpforms_id failed: %s", exc)
+        return ""
+
     # ── Recreate standard pages for an existing client site ───────────────────
 
     @router.post("/clients/{wp_slug}/recreate-pages")
@@ -1105,30 +1134,43 @@ def make_blog_router(db, get_current_user):
         auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
         headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
 
+        # Look up a real WPForms form ID for this site
+        form_id = await _find_wpforms_id(site_base, headers)
+        wa_number = blog.get("whatsapp_number", "")
+        wa_url = (
+            f"https://wa.me/{wa_number}?text=Hi%2C+I+found+you+on+Zilo"
+            if wa_number
+            else "https://wa.me/?text=Hi%2C+I+found+you+on+Zilo"
+        )
+        contact_intro = (
+            "We\u2019d love to hear from you. Reach us instantly on WhatsApp"
+            + (" or fill in the form below." if form_id else ".")
+        )
+        contact_content = (
+            "<!-- wp:paragraph -->"
+            f"<p>{contact_intro}</p>"
+            "<!-- /wp:paragraph -->"
+            f"<!-- wp:buttons {{\"layout\":{{\"type\":\"flex\",\"justifyContent\":\"center\"}}}} -->"
+            "<div class=\"wp-block-buttons\">"
+            "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+            "<div class=\"wp-block-button\">"
+            f"<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+            f"href=\"{wa_url}\" target=\"_blank\" rel=\"noreferrer noopener\">"
+            "\U0001f4ac Chat on WhatsApp</a></div>"
+            "<!-- /wp:button --></div>"
+            "<!-- /wp:buttons -->"
+            + (
+                "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                f"<!-- wp:shortcode -->[wpforms id=\"{form_id}\" title=\"false\"]<!-- /wp:shortcode -->"
+                if form_id else ""
+            )
+        )
+
         pages = [
             {
                 "slug": "contact",
                 "title": "Contact Us",
-                "content": (
-                    "<!-- wp:paragraph -->"
-                    "<p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p>"
-                    "<!-- /wp:paragraph -->"
-                    "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
-                    "<div class=\"wp-block-buttons\">"
-                    "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
-                    "<div class=\"wp-block-button\">"
-                    "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
-                    "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
-                    "\U0001f4ac Chat on WhatsApp</a></div>"
-                    "<!-- /wp:button --></div>"
-                    "<!-- /wp:buttons -->"
-                    "<!-- wp:paragraph -->"
-                    "<p></p>"
-                    "<!-- /wp:paragraph -->"
-                    "<!-- wp:shortcode -->"
-                    "[wpforms id=\"\" title=\"false\"]"
-                    "<!-- /wp:shortcode -->"
-                ),
+                "content": contact_content,
             },
             {
                 "slug": "forms",
@@ -1224,15 +1266,22 @@ def make_blog_router(db, get_current_user):
         auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
         headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
 
-        wa_url = f"https://wa.me/{number}?text=Hi%2C+I+found+you+on+Zilo"
+        from urllib.parse import quote
         business = blog.get("business_name", "")
-        if business:
-            from urllib.parse import quote
-            wa_url = f"https://wa.me/{number}?text={quote(f'Hi, I found {business} on Zilo')}"
+        wa_url = (
+            f"https://wa.me/{number}?text={quote(f'Hi, I found {business} on Zilo')}"
+            if business
+            else f"https://wa.me/{number}?text=Hi%2C+I+found+you+on+Zilo"
+        )
 
+        form_id = await _find_wpforms_id(site_base, headers)
+        contact_intro = (
+            "We\u2019d love to hear from you. Reach us instantly on WhatsApp"
+            + (" or fill in the form below." if form_id else ".")
+        )
         contact_content = (
             "<!-- wp:paragraph -->"
-            "<p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p>"
+            f"<p>{contact_intro}</p>"
             "<!-- /wp:paragraph -->"
             f"<!-- wp:buttons {{\"layout\":{{\"type\":\"flex\",\"justifyContent\":\"center\"}}}} -->"
             "<div class=\"wp-block-buttons\">"
@@ -1243,8 +1292,11 @@ def make_blog_router(db, get_current_user):
             "\U0001f4ac Chat on WhatsApp</a></div>"
             "<!-- /wp:button --></div>"
             "<!-- /wp:buttons -->"
-            "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
-            "<!-- wp:shortcode -->[wpforms id=\"\" title=\"false\"]<!-- /wp:shortcode -->"
+            + (
+                "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                f"<!-- wp:shortcode -->[wpforms id=\"{form_id}\" title=\"false\"]<!-- /wp:shortcode -->"
+                if form_id else ""
+            )
         )
 
         wp_updated = False
