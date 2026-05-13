@@ -2,6 +2,7 @@
 Zilo Autoblogging — WordPress Multisite service.
 Handles subsite creation and post publishing via WP REST API.
 """
+import asyncio
 import httpx
 import base64
 import os
@@ -9,6 +10,7 @@ import secrets
 import string
 import logging
 from datetime import datetime
+from types import SimpleNamespace
 from urllib.parse import urlparse
 from slugify import slugify
 from typing import List
@@ -45,6 +47,67 @@ def _base_url() -> str:
 def _wp_cli_path() -> str:
     """Filesystem path passed to `wp --path=...` (your multisite WP root on the server)."""
     return os.getenv("WP_CLI_PATH", "/var/www/html/zilo").rstrip("/")
+
+
+def _wp_bridge_url() -> str:
+    """Base URL of the PHP WP bridge on the WordPress server (e.g. https://wp.zilo.pro)."""
+    return os.getenv("WP_BRIDGE_URL", "").rstrip("/")
+
+
+def _wp_bridge_secret() -> str:
+    return os.getenv("WP_BRIDGE_SECRET", "")
+
+
+async def _wp_cli(*args, url: str = None) -> SimpleNamespace:
+    """
+    Run a WP-CLI command.
+    - If WP_BRIDGE_URL is set: calls the PHP bridge on Hostinger via HTTP (Render-safe).
+    - Otherwise: falls back to local subprocess (same-server / local dev).
+    Returns a SimpleNamespace with .returncode, .stdout, .stderr
+    """
+    bridge_url = _wp_bridge_url()
+    if bridge_url:
+        secret = _wp_bridge_secret()
+        payload: dict = {"args": list(args)}
+        if url:
+            payload["url"] = url
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    f"{bridge_url}/wp-bridge.php",
+                    json=payload,
+                    headers={"X-Bridge-Key": secret},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                return SimpleNamespace(
+                    returncode=data.get("returncode", 1),
+                    stdout=data.get("stdout", ""),
+                    stderr=data.get("stderr", ""),
+                )
+            else:
+                logger.warning(f"[wp-bridge] HTTP {resp.status_code}: {resp.text[:200]}")
+                return SimpleNamespace(returncode=1, stdout="", stderr=f"Bridge HTTP {resp.status_code}")
+        except Exception as exc:
+            logger.warning(f"[wp-bridge] request failed: {exc}")
+            return SimpleNamespace(returncode=1, stdout="", stderr=str(exc))
+    else:
+        import subprocess
+        cmd = ["wp", "--allow-root", f"--path={_wp_cli_path()}"]
+        if url:
+            cmd.append(f"--url={url}")
+        cmd.extend(args)
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=True, timeout=90
+            )
+            return SimpleNamespace(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        except Exception as exc:
+            return SimpleNamespace(returncode=1, stdout="", stderr=str(exc))
 
 
 def _multisite_subdirectory() -> bool:
@@ -124,82 +187,59 @@ class ZiloBlogService:
         base = _base_url()
         headers = _wp_headers()
 
-        # 1. Create a WordPress user for the business (via WP-CLI for multisite compatibility)
+        # 1. Create a WordPress user for the business (via WP-CLI bridge)
         wp_user_id = None
         try:
-            import subprocess
             user_password = _generate_password()
-            result = subprocess.run(
-                [
-                    "wp", "--allow-root",
-                    f"--path={cli_path}",
-                    "user", "create",
-                    slug,  # username
-                    client_email,  # email
-                    f"--user_pass={user_password}",
-                    "--role=author",
-                    "--porcelain",  # returns user ID on success
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
+            result = await _wp_cli(
+                "user", "create", slug, client_email,
+                f"--user_pass={user_password}",
+                "--role=author",
+                "--porcelain",
             )
             if result.returncode == 0:
                 wp_user_id = result.stdout.strip()
                 logger.info(f"[blog] WordPress user created: {slug} (ID: {wp_user_id})")
             else:
-                # User might already exist - that's okay
                 logger.info(f"[blog] WP user create: {result.stderr[:200]}")
         except Exception as e:
-            logger.warning(f"[blog] WP user creation via CLI failed (may already exist): {e}")
+            logger.warning(f"[blog] WP user creation failed (may already exist): {e}")
 
-        # 2. Create subsite via WP-CLI on the server
+        # 2. Create subsite via WP-CLI
         site_url = wp_subsite_public_url(slug)      # public URL (slug.zilo.pro)
-        internal_url = _wp_internal_subsite_url(slug)  # WP-internal URL (slug.blogs.zilo.pro)
-        cli_path = _wp_cli_path()
+        internal_url = _wp_internal_subsite_url(slug)
         blog_id: int | None = None
         try:
-            import subprocess
-            result = subprocess.run(
-                [
-                    "wp", "--allow-root",
-                    f"--path={cli_path}",
-                    "site", "create",
-                    f"--slug={slug}",
-                    f"--title={business_name}",
-                    f"--email={client_email}",
-                    "--porcelain",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
+            result = await _wp_cli(
+                "site", "create",
+                f"--slug={slug}",
+                f"--title={business_name}",
+                f"--email={client_email}",
+                "--porcelain",
             )
             if result.returncode == 0:
                 try:
                     blog_id = int(result.stdout.strip())
-                    logger.info(f"[blog] wp site created blog_id={blog_id} at {internal_url}")
+                    logger.info(f"[blog] wp site created blog_id={blog_id} at {site_url}")
                 except ValueError:
                     pass
             else:
                 logger.warning(f"[blog] wp site create stderr: {result.stderr[:300]}")
         except Exception as e:
-            logger.warning(f"[blog] wp site create failed (may be non-VPS env): {e}")
+            logger.warning(f"[blog] wp site create failed: {e}")
 
         # 2b. Domain mapping: point slug.zilo.pro → the WordPress subsite
         if blog_id and site_url != internal_url:
             try:
-                import subprocess
                 public_domain = site_url.replace("https://", "").replace("http://", "")
-                subprocess.run(
-                    ["wp", "--allow-root", f"--path={cli_path}", "db", "query",
-                     f"UPDATE wp_blogs SET domain='{public_domain}' WHERE blog_id={blog_id};"],
-                    capture_output=True, text=True, timeout=15,
+                await _wp_cli(
+                    "db", "query",
+                    f"UPDATE wp_blogs SET domain='{public_domain}' WHERE blog_id={blog_id};",
                 )
-                subprocess.run(
-                    ["wp", "--allow-root", f"--path={cli_path}", "db", "query",
-                     f"UPDATE wp_{blog_id}_options SET option_value='{site_url}' "
-                     f"WHERE option_name='siteurl' OR option_name='home';"],
-                    capture_output=True, text=True, timeout=15,
+                await _wp_cli(
+                    "db", "query",
+                    f"UPDATE wp_{blog_id}_options SET option_value='{site_url}' "
+                    f"WHERE option_name='siteurl' OR option_name='home';",
                 )
                 logger.info(f"[blog] Domain mapped blog_id={blog_id} → {site_url}")
             except Exception as exc:
@@ -488,21 +528,17 @@ class ZiloBlogService:
     async def _activate_site_plugins(self, slug: str, site_url: str):
         """
         Activates WooCommerce + WPForms and runs WooCommerce initial setup
-        (shop/cart/checkout pages, sample product, permalink flush) via WP-CLI.
+        (shop/cart/checkout pages, sample product, permalink flush) via WP-CLI bridge.
         """
-        import subprocess
         cli_path = _wp_cli_path()
 
-        def _wp(*args, timeout=30):
-            return subprocess.run(
-                ["wp", "--allow-root", f"--path={cli_path}", f"--url={site_url}", *args],
-                capture_output=True, text=True, timeout=timeout,
-            )
+        async def _wp(*args):
+            return await _wp_cli(*args, url=site_url)
 
         # 1. Activate plugins
         for plugin in ["woocommerce", "wpforms-lite"]:
             try:
-                r = _wp("plugin", "activate", plugin)
+                r = await _wp("plugin", "activate", plugin)
                 if r.returncode != 0:
                     logger.warning(f"[blog] activate {plugin}: {r.stderr[:150]}")
                 else:
@@ -512,7 +548,7 @@ class ZiloBlogService:
 
         # 2. WooCommerce: create core pages (shop, cart, checkout, my-account)
         try:
-            r = _wp("wc", "tool", "run", "install_pages", "--user=1")
+            r = await _wp("wc", "tool", "run", "install_pages", "--user=1")
             if r.returncode != 0:
                 logger.warning(f"[blog] wc install_pages: {r.stderr[:150]}")
         except Exception as exc:
@@ -521,11 +557,11 @@ class ZiloBlogService:
         # 3. Import WooCommerce sample products (built-in XML demo data)
         try:
             sample_xml = f"{cli_path}/wp-content/plugins/woocommerce/sample-data/sample_products.xml"
-            r = _wp(
+            r = await _wp_cli(
                 "import", sample_xml,
                 "--authors=skip",
                 "--quiet",
-                timeout=60,
+                url=site_url,
             )
             if r.returncode != 0:
                 logger.warning(f"[blog] wc sample import: {r.stderr[:150]}")
@@ -536,8 +572,8 @@ class ZiloBlogService:
 
         # 4. Set permalink structure to /%postname%/ (required for WC REST API)
         try:
-            _wp("rewrite", "structure", "/%postname%/", "--hard")
-            _wp("rewrite", "flush", "--hard")
+            await _wp("rewrite", "structure", "/%postname%/", "--hard")
+            await _wp("rewrite", "flush", "--hard")
         except Exception as exc:
             logger.warning(f"[blog] rewrite flush failed: {exc}")
 
@@ -585,7 +621,7 @@ class ZiloBlogService:
         ]
         for page in pages:
             try:
-                r = _wp(
+                r = await _wp(
                     "post", "create",
                     "--post_type=page",
                     "--post_status=publish",
@@ -603,8 +639,7 @@ class ZiloBlogService:
 
         # 6. Set front page to /shop and blog page to /blog
         try:
-            # Create Blog page if it doesn't exist
-            r = _wp(
+            r = await _wp(
                 "post", "create",
                 "--post_type=page",
                 "--post_status=publish",
@@ -614,20 +649,19 @@ class ZiloBlogService:
                 "--porcelain",
             )
             blog_page_id = r.stdout.strip() if r.returncode == 0 else None
-            
-            # Find Shop page ID (created by WooCommerce install_pages)
-            r_shop = _wp("post", "list", "--post_type=page", "--name=shop", "--format=ids")
+
+            r_shop = await _wp("post", "list", "--post_type=page", "--name=shop", "--format=ids")
             shop_page_id = r_shop.stdout.strip() if r_shop.returncode == 0 else None
 
             if shop_page_id:
-                _wp("option", "update", "show_on_front", "page")
-                _wp("option", "update", "page_on_front", shop_page_id)
+                await _wp("option", "update", "show_on_front", "page")
+                await _wp("option", "update", "page_on_front", shop_page_id)
                 logger.info(f"[blog] Set Shop (id={shop_page_id}) as front page for {slug}")
-            
+
             if blog_page_id:
-                _wp("option", "update", "page_for_posts", blog_page_id)
+                await _wp("option", "update", "page_for_posts", blog_page_id)
                 logger.info(f"[blog] Set Blog (id={blog_page_id}) as posts page for {slug}")
-                
+
         except Exception as exc:
             logger.warning(f"[blog] front/blog page configuration failed: {exc}")
 
@@ -637,22 +671,15 @@ class ZiloBlogService:
         activates it for the new subsite, then applies industry-specific accent colours
         via Astra's customizer options so every client site looks distinct.
         """
-        import subprocess, json as _json
+        import json as _json
 
-        cli_path = _wp_cli_path()
         subsite = wp_subsite_public_url(slug)
 
-        def _wp(*args, timeout=30):
-            return subprocess.run(
-                ["wp", "--allow-root", f"--path={cli_path}", *args],
-                capture_output=True, text=True, timeout=timeout,
-            )
+        async def _wp(*args):
+            return await _wp_cli(*args)
 
-        def _wp_site(*args, timeout=30):
-            return subprocess.run(
-                ["wp", "--allow-root", f"--path={cli_path}", f"--url={subsite}", *args],
-                capture_output=True, text=True, timeout=timeout,
-            )
+        async def _wp_site(*args):
+            return await _wp_cli(*args, url=subsite)
 
         # Industry → Astra accent colour + button colour
         INDUSTRY_COLORS = {
@@ -688,9 +715,9 @@ class ZiloBlogService:
 
         # 1. Install Astra network-wide (skip if already installed)
         try:
-            check = _wp("theme", "is-installed", "astra")
+            check = await _wp("theme", "is-installed", "astra")
             if check.returncode != 0:
-                r = _wp("theme", "install", "astra", "--activate-network", timeout=120)
+                r = await _wp("theme", "install", "astra", "--activate-network")
                 if r.returncode == 0:
                     logger.info("[blog] Astra theme installed network-wide")
                 else:
@@ -702,7 +729,7 @@ class ZiloBlogService:
 
         # 2. Activate Astra for this subsite
         try:
-            r = _wp_site("theme", "activate", "astra")
+            r = await _wp_site("theme", "activate", "astra")
             if r.returncode != 0:
                 logger.warning(f"[blog] Astra activate for {slug}: {r.stderr[:150]}")
             else:
@@ -742,7 +769,7 @@ class ZiloBlogService:
         }
         for option_name, option_value in astra_settings.items():
             try:
-                _wp_site("option", "update", option_name, option_value)
+                await _wp_site("option", "update", option_name, option_value)
             except Exception as exc:
                 logger.warning(f"[blog] Astra option {option_name} failed: {exc}")
 
