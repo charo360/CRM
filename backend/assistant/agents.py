@@ -303,6 +303,8 @@ SEO_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_product_images",
     "get_analytics_summary", "generate_document",
     "create_business_document",
+    # Keyword research (DataForSEO)
+    "get_keyword_metrics", "get_keyword_suggestions",
     # Autoblogging tools
     "list_client_sites", "generate_blog_post", "publish_blog_post",
 }) | _WEB_TOOLS
@@ -2030,14 +2032,24 @@ Before making any SEO recommendations:
    - Search: "[product category] search intent and buyer keywords"
 4. Call `get_analytics_summary` if available → understand current traffic and conversion context.
 
-## Keyword research approach
-When recommending keywords:
-- **Primary keywords** — high search volume, directly match the core offering (e.g. "AI design tool", "CRM for small business").
-- **Long-tail keywords** — lower volume but higher intent (e.g. "best AI logo maker for startups", "affordable CRM with WhatsApp integration").
-- **Local keywords** — include location for local businesses (e.g. "bakery in Nairobi", "plumber Westlands").
-- **Buyer intent keywords** — transactional terms (e.g. "buy", "price", "discount", "near me").
-- Always provide 3-5 primary keywords and 5-10 long-tail variations.
-- Use `web_search` to validate search volume and competition before recommending.
+## Keyword research approach (DataForSEO-powered)
+When recommending keywords, use DataForSEO API for accurate data:
+1. **Get suggestions** — Call `get_keyword_suggestions` with a seed keyword to discover related keywords.
+2. **Analyze metrics** — Call `get_keyword_metrics` with a list of keywords to get:
+   - **Search volume** — exact monthly searches (not estimates)
+   - **Competition** — 0-1 scale (0=low, 1=high)
+   - **CPC** — cost-per-click in USD (indicates commercial value)
+   - **Trend** — 12-month search volume history
+3. **Prioritize by opportunity** — Best keywords have:
+   - High search volume (1000+ monthly searches)
+   - Low-medium competition (< 0.5)
+   - Relevant to the business offering
+4. **Keyword types to recommend:**
+   - **Primary keywords** — high search volume, directly match the core offering
+   - **Long-tail keywords** — lower volume but higher intent (3-5 words)
+   - **Local keywords** — include location for local businesses
+   - **Buyer intent keywords** — transactional terms ("buy", "price", "near me")
+5. Always provide 3-5 primary keywords and 5-10 long-tail variations with actual search volume data.
 
 ## Content optimization
 When optimizing content (blog posts, product pages, landing pages):

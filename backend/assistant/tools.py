@@ -11480,6 +11480,103 @@ async def switch_to_agent(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, A
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# KEYWORD RESEARCH TOOLS (SEO Agent - DataForSEO)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_keyword_metrics",
+    description=(
+        "Get accurate search volume, competition, and CPC data for keywords using DataForSEO API. "
+        "Returns real Google Ads data including monthly search volume, competition level (0-1), and cost-per-click."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keywords"],
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of keywords to analyze (max 100 recommended)",
+            },
+            "location": {
+                "type": "string",
+                "description": "Country/location for search data (e.g. 'Kenya', 'USA', 'UK'). Defaults to Kenya.",
+            },
+        },
+    },
+)
+async def get_keyword_metrics(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from dataforseo_service import get_keyword_data, get_location_code
+    
+    keywords = args.get("keywords", [])
+    if not keywords:
+        return {"error": "No keywords provided"}
+    
+    location = args.get("location", "Kenya")
+    location_code = get_location_code(location)
+    
+    try:
+        result = await get_keyword_data(
+            keywords=keywords,
+            location_code=location_code,
+            language_code="en",
+        )
+        return result
+    except Exception as e:
+        logger.error("[get_keyword_metrics] Error: %s", str(e))
+        return {"error": str(e)}
+
+
+@tool(
+    name="get_keyword_suggestions",
+    description=(
+        "Get keyword suggestions and related keywords for a seed keyword using DataForSEO. "
+        "Returns up to 100 related keywords with search volume, competition, and CPC data."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["seed_keyword"],
+        "properties": {
+            "seed_keyword": {
+                "type": "string",
+                "description": "Base keyword to get suggestions for (e.g. 'bakery', 'CRM software')",
+            },
+            "location": {
+                "type": "string",
+                "description": "Country/location for search data (e.g. 'Kenya', 'USA', 'UK')",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max number of suggestions to return (default 100, max 1000)",
+            },
+        },
+    },
+)
+async def get_keyword_suggestions(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from dataforseo_service import get_keyword_suggestions as get_suggestions, get_location_code
+    
+    seed_keyword = args.get("seed_keyword", "")
+    if not seed_keyword:
+        return {"error": "No seed keyword provided"}
+    
+    location = args.get("location", "Kenya")
+    location_code = get_location_code(location)
+    limit = args.get("limit", 100)
+    
+    try:
+        result = await get_suggestions(
+            seed_keyword=seed_keyword,
+            location_code=location_code,
+            language_code="en",
+            limit=limit,
+        )
+        return result
+    except Exception as e:
+        logger.error("[get_keyword_suggestions] Error: %s", str(e))
+        return {"error": str(e)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # AUTOBLOGGING TOOLS (SEO Agent)
 # ═════════════════════════════════════════════════════════════════════════════
 
