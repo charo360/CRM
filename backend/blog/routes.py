@@ -1202,11 +1202,11 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(404, "Site not found")
 
         number_raw = (body.get("whatsapp_number") or "").strip()
-        # Normalise: keep only digits and leading +
+        # Keep only digits and a leading + (supports any country code)
         import re as _re
         number = _re.sub(r"[^\d+]", "", number_raw)
-        if number.startswith("0"):
-            number = "254" + number[1:]  # Kenya default
+        # Strip leading + for wa.me URL (wa.me expects digits only)
+        number = number.lstrip("+")
 
         # Persist to DB
         await db.blogs.update_one(

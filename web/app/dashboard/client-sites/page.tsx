@@ -619,7 +619,7 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
                           <span className="text-slate-400 min-w-[80px] shrink-0">{k}:</span>
                           {isPhone && phone ? (
                             <a
-                              href={`https://wa.me/${phone.replace(/^0/, "254")}`}
+                              href={`https://wa.me/${phone.replace(/^\+/, "")}`}
                               target="_blank" rel="noopener noreferrer"
                               className="text-emerald-600 hover:text-emerald-800 font-medium hover:underline flex items-center gap-1"
                             >
