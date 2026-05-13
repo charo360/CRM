@@ -8,6 +8,14 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Dedicated file logger so errors are captured even in uvicorn worker subprocesses
+_file_handler = logging.FileHandler(
+    os.path.join(os.path.dirname(__file__), "nano_banana_errors.log"), encoding="utf-8"
+)
+_file_handler.setLevel(logging.WARNING)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logger.addHandler(_file_handler)
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Env: OPENROUTER_KEY (primary), OPENROUTER_API_KEY (common alias), OPENROUTER_KEY_2, ...
@@ -37,9 +45,9 @@ def _load_openrouter_keys() -> list[str]:
 
 _MAX_RETRIES_PER_KEY = 2  # attempts per key before moving to the next
 
-# Model IDs on OpenRouter
-NANO_BANANA_2   = "google/gemini-3.1-flash-image-preview"   # fastest, best quality/speed
-NANO_BANANA_PRO = "google/gemini-3-pro-image-preview"        # highest quality, slower
+# Model IDs on OpenRouter — image generation (modalities: ["image","text"])
+NANO_BANANA_2   = "google/gemini-3.1-flash-image-preview"   # Nano Banana 2 — fast
+NANO_BANANA_PRO = "google/gemini-3-pro-image-preview"        # Nano Banana Pro — highest quality
 
 # Aspect ratio → OpenRouter image_config value
 _ASPECT_MAP: Dict[str, str] = {
@@ -82,6 +90,7 @@ async def edit_product_image(
 
     try:
         prod_b64, prod_mime = await _fetch_as_b64(product_image_url)
+        logger.info("[nano_banana] edit: product image fetched, b64_len=%d mime=%s", len(prod_b64), prod_mime)
     except Exception as e:
         logger.warning("[nano_banana] Could not fetch product image for editing: %s", e)
         return {"error": f"Could not fetch product image: {e}"}
@@ -146,6 +155,10 @@ async def edit_product_image(
         "image_config": {"aspect_ratio": aspect_ratio},
     }
 
+    import json as _json
+    _payload_size = len(_json.dumps(payload, default=str))
+    logger.info("[nano_banana:edit] payload_size=%d bytes model=%s aspect=%s", _payload_size, model, aspect_ratio)
+
     base_headers = {
         "Content-Type": "application/json",
         "HTTP-Referer": os.getenv("FRONTEND_URL", "https://zilo.pro"),
@@ -174,11 +187,12 @@ async def edit_product_image(
                 logger.info("[nano_banana] edit_product_image ok key=...%s attempt=%d", key[-6:], attempt + 1)
                 return {"success": True, "image_url": public_url, "source": "gemini_edit"}
             except httpx.HTTPStatusError as e:
-                last_error = f"HTTP {e.response.status_code}"
-                logger.warning("[nano_banana] edit key=...%s attempt=%d HTTP error: %s", key[-6:], attempt + 1, last_error)
+                body = e.response.text[:800]
+                last_error = f"HTTP {e.response.status_code}: {body}"
+                logger.warning("[nano_banana:edit] key=...%s attempt=%d HTTP error: %s", key[-6:], attempt + 1, last_error)
             except Exception as e:
                 last_error = str(e)
-                logger.warning("[nano_banana] edit key=...%s attempt=%d error: %s", key[-6:], attempt + 1, last_error)
+                logger.warning("[nano_banana:edit] key=...%s attempt=%d error: %s", key[-6:], attempt + 1, last_error)
 
     logger.error("[nano_banana] edit_product_image exhausted all keys. last=%s", last_error)
     return {"error": f"Edit generation failed after trying all API keys. Last error: {last_error}"}
@@ -263,9 +277,9 @@ async def generate_creative_image(
                 ]
         except Exception as e:
             logger.warning("[nano_banana] Logo fetch failed, falling back to text-only: %s", e)
-            message_content = prompt + color_note if color_note else prompt
+            message_content = [{"type": "text", "text": prompt + color_note}]
     else:
-        message_content = prompt + color_note if color_note else prompt
+        message_content = [{"type": "text", "text": prompt + color_note}]
 
     payload = {
         "model": model,
@@ -310,11 +324,12 @@ async def generate_creative_image(
                 return {"success": True, "image_url": public_url}
 
             except httpx.HTTPStatusError as e:
-                last_error = f"HTTP {e.response.status_code}"
-                logger.warning("[nano_banana] key=...%s attempt=%d HTTP error: %s", key[-6:], attempt + 1, last_error)
+                body = e.response.text[:800]
+                last_error = f"HTTP {e.response.status_code}: {body}"
+                logger.warning("[nano_banana:generate] key=...%s attempt=%d HTTP error: %s", key[-6:], attempt + 1, last_error)
             except Exception as e:
                 last_error = str(e)
-                logger.warning("[nano_banana] key=...%s attempt=%d error: %s", key[-6:], attempt + 1, last_error)
+                logger.warning("[nano_banana:generate] key=...%s attempt=%d error: %s", key[-6:], attempt + 1, last_error)
 
     logger.error("[nano_banana] generate_creative_image exhausted all keys. last=%s", last_error)
     return {"error": f"Design generation failed after trying all API keys. Last error: {last_error}"}

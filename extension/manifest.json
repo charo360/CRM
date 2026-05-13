@@ -1,0 +1,153 @@
+{
+  "manifest_version": 3,
+  "name": "Zilo — Social Monitor",
+  "version": "1.0.0",
+  "description": "Monitors Facebook groups, LinkedIn and Reddit for keyword matches. Sends them to your Zilo CRM queue with AI-drafted replies — ready to post in one click.",
+
+  "permissions": [
+    "storage",
+    "notifications",
+    "alarms",
+    "tabs",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://web.facebook.com/*",
+    "https://www.instagram.com/*",
+    "https://www.linkedin.com/*",
+    "https://www.reddit.com/*",
+    "https://web.whatsapp.com/*",
+    "https://web.telegram.org/*",
+    "https://www.tiktok.com/*",
+    "https://business.google.com/*",
+    "https://*.jiji.com.gh/*",
+    "https://*.jiji.ng/*",
+    "https://*.jiji.co.ke/*",
+    "https://*.jiji.co.tz/*",
+    "https://*.jiji.co.ug/*",
+    "https://*.jiji.co.zm/*",
+    "https://*.olx.com.ng/*",
+    "https://*.olx.co.za/*",
+    "https://*.olx.co.ke/*",
+    "https://*.olx.com.gh/*",
+    "https://*.olx.co.tz/*",
+    "<all_urls>"
+  ],
+
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:3000/*",
+        "http://localhost:3001/*",
+        "https://*.zilocrm.com/*",
+        "https://*.zilo.app/*"
+      ],
+      "js": ["content/dashboard.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://web.facebook.com/*"
+      ],
+      "js": ["content/facebook.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://www.linkedin.com/feed/*",
+        "https://www.linkedin.com/groups/*",
+        "https://www.linkedin.com/in/*"
+      ],
+      "js": ["content/linkedin.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://www.instagram.com/*"
+      ],
+      "js": ["content/instagram.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://www.reddit.com/r/*"
+      ],
+      "js": ["content/reddit.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://web.whatsapp.com/*"
+      ],
+      "js": ["content/whatsapp.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://web.telegram.org/*"
+      ],
+      "js": ["content/telegram.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://www.tiktok.com/*"
+      ],
+      "js": ["content/tiktok.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://business.google.com/*"
+      ],
+      "js": ["content/google-business.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://*.jiji.com.gh/*",
+        "https://*.jiji.ng/*",
+        "https://*.jiji.co.ke/*",
+        "https://*.jiji.co.tz/*",
+        "https://*.jiji.co.ug/*",
+        "https://*.jiji.co.zm/*"
+      ],
+      "js": ["content/jiji.js"],
+      "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://*.olx.com.ng/*",
+        "https://*.olx.co.za/*",
+        "https://*.olx.co.ke/*",
+        "https://*.olx.com.gh/*",
+        "https://*.olx.co.tz/*"
+      ],
+      "js": ["content/olx.js"],
+      "run_at": "document_end"
+    }
+  ],
+
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Zilo Social Monitor",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

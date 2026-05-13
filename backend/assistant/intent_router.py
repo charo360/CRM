@@ -503,6 +503,21 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "add to shop", "shop menu", "catalog", "product catalog",
         "shop setup", "shop link", "shop page", "my menu",
     ],
+    "seo": [
+        "seo", "search engine optimization", "keyword research", "keywords for",
+        "rank on google", "google ranking", "search ranking", "organic traffic",
+        "meta description", "meta tags", "title tag", "h1 tag",
+        "on-page seo", "technical seo", "local seo", "seo audit",
+        "content strategy", "blog strategy", "content calendar", "topic ideas",
+        "google business profile", "google my business", "local search",
+        "backlinks", "link building", "guest posting", "domain authority",
+        "page speed", "core web vitals", "schema markup", "structured data",
+        "sitemap", "robots.txt", "canonical tags", "404 errors",
+        "search console", "google search console", "search traffic",
+        "optimize for search", "seo optimization", "improve seo",
+        "product seo", "e-commerce seo", "category seo",
+        "blog post seo", "content optimization", "seo content",
+    ],
 
     # ── Spreadsheet / Workspace integrations ──────────────────────────────────
     "google_sheets": [
@@ -707,9 +722,9 @@ async def _llm_route_choice(
         )
 
         context_lines: List[str] = []
-        for m in history[-4:]:
+        for m in history[-8:]:
             role = m.get("role", "user")
-            content = str(m.get("content", ""))[:120]
+            content = str(m.get("content", ""))[:200]
             context_lines.append(f"{role}: {content}")
         recent = "\n".join(context_lines) if context_lines else "(new conversation)"
 
@@ -850,6 +865,18 @@ async def route_to_agent(
             )
             return "creative"
         logger.info("[IntentRouter] leaving creative (explicit exit: %r)", message[:60])
+
+    # ── 0b. Sticky social_scheduler — keep Samuel mid-flow ───────────────────
+    # Scheduling is multi-turn (design → approve → time → confirm).
+    # Short replies like "Instagram", "tomorrow", "10am", "yes" must not re-route.
+    _SCHEDULER_EXIT_PHRASES = (
+        "whatsapp", "broadcast", "analytics", "how are my posts doing",
+        "facebook ad", "google ad", "invoice", "payment",
+    )
+    if prev_agent_resolved == "social_scheduler" and "social_scheduler" in agent_registry:
+        if not any(p in msg_lower for p in _SCHEDULER_EXIT_PHRASES):
+            logger.info("[IntentRouter] sticky → social_scheduler (mid-scheduling flow)")
+            return "social_scheduler"
 
     # ── 1. LLM route — PRIMARY decision maker ────────────────────────────────
     # Runs before any keyword checks. LLM understands meaning, not just words.

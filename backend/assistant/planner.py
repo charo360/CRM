@@ -51,23 +51,33 @@ _FALLBACK = lambda msg: {  # noqa: E731
 
 
 def _is_complex(message: str) -> bool:
-    """Return True if the message looks multi-step or multi-intent and benefits from planning."""
+    """Return True if the message looks genuinely multi-step or multi-intent.
+
+    Rules (all require minimum length):
+    1. Explicit connector words → always multi-intent ("create a post and schedule it")
+    2. Inherently complex topic → always multi-step ("pitch deck", "campaign", "report")
+    3. Action verb + connector word together → chained intent ("generate a report then send it")
+
+    Action verbs ALONE no longer trigger planning — "create a social post" is a
+    single-intent request that the agent handles fine without a plan hint.
+    """
     if len(message) < _MIN_COMPLEX_LEN:
         return False
     msg_lower = message.lower()
 
-    # Explicit connector words always signal multiple steps
-    if any(t in msg_lower for t in _COMPLEXITY_TRIGGERS):
+    # Explicit connector words always signal chained steps
+    has_connector = any(t in msg_lower for t in _COMPLEXITY_TRIGGERS)
+    if has_connector:
         return True
 
-    # Inherently multi-step topics — always need a plan regardless of connector words
-    # e.g. "Create a pitch deck for investors using our latest revenue data"
+    # Inherently multi-step topics regardless of connector words
     if any(topic in msg_lower for topic in _COMPLEX_TOPICS):
         return True
 
-    # Action verb + sufficient length — "Generate a sales report for this month"
-    # Only trigger on longer messages to avoid simple single-step commands
-    if len(message) > 80 and any(verb in msg_lower for verb in _COMPLEX_ACTION_VERBS):
+    # Action verb only qualifies when paired with a second action verb —
+    # meaning the user wants two distinct things done in sequence.
+    verb_count = sum(1 for verb in _COMPLEX_ACTION_VERBS if verb in msg_lower)
+    if verb_count >= 2:
         return True
 
     return False

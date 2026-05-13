@@ -16,8 +16,8 @@ import {
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
-import { settingsApi } from "@/lib/api";
-import { patchStoredUserSettings } from "@/lib/auth";
+import { settingsApi, blogApi } from "@/lib/api";
+import { patchStoredUserSettings, getUser } from "@/lib/auth";
 import { useBusiness } from "@/contexts/BusinessContext";
 import { cn } from "@/lib/utils";
 import { ZiloLogo } from "@/components/ZiloLogo";
@@ -78,12 +78,27 @@ export function OnboardingWizard() {
     if (match) setIndustry(match.id);
   }, [businessType, visible, loading]);
 
+  async function _provisionBlogFromSettings() {
+    try {
+      const s = await settingsApi.get();
+      const bk = await import("@/lib/api").then(m => m.businessKnowledgeApi.get());
+      const businessName = (s.business_name ?? "").trim();
+      const location = String((bk as Record<string,unknown>).business_location ?? "").trim() || s.country || "";
+      const industry = s.business_type || "services";
+      const email = (getUser()?.email as string | undefined) || "";
+      if (businessName && location && email) {
+        await blogApi.provision({ business_name: businessName, client_email: email, industry, location });
+      }
+    } catch { /* non-fatal */ }
+  }
+
   async function completeOnboarding() {
     setSaving(true);
     try {
       await settingsApi.update({ onboarding_v1_completed: true });
       patchStoredUserSettings({ onboarding_v1_completed: true });
       refreshSettings();
+      _provisionBlogFromSettings();
       setVisible(false);
       toast.success("You're all set — welcome to Zilo.");
     } catch (e) {
@@ -99,6 +114,7 @@ export function OnboardingWizard() {
       await settingsApi.update({ onboarding_v1_completed: true });
       patchStoredUserSettings({ onboarding_v1_completed: true });
       refreshSettings();
+      _provisionBlogFromSettings();
       setVisible(false);
       router.push(href);
       toast.success("Setup saved — you're in.");
@@ -306,8 +322,8 @@ export function OnboardingWizard() {
             <div className="space-y-4">
               <h2 className="text-xl font-bold text-slate-900">Tell us about you or your business</h2>
               <p className="text-sm text-slate-600">
-                Tap an option, chat with Zilo, or paste your website. If we can&apos;t read a site, Zilo may ask you a few
-                questions — or you can fill everything in Settings whenever you like.
+                Tap an option, chat with Zilo, or paste your website. This will make the AI customised for you.
+                If we can&apos;t read a site, Zilo may ask a few questions — or fill everything in Settings whenever you like.
               </p>
               <OnboardingAiPanel
                 industryId={industry}
@@ -357,21 +373,21 @@ export function OnboardingWizard() {
                       title: "Business",
                       desc: "Sales, orders, invoices, finance, analytics — full ops.",
                       icon: Briefcase,
-                      color: "border-[#009B3A]/35 bg-emerald-50/90 hover:bg-emerald-50",
+                      color: "border-slate-200 bg-white hover:bg-slate-50",
                     },
                     {
                       id: "personal" as const,
                       title: "Personal / creator",
                       desc: "Social inbox, broadcast, scheduler — content & DMs.",
                       icon: User,
-                      color: "border-[#009B3A]/35 bg-emerald-50/90 hover:bg-emerald-50",
+                      color: "border-slate-200 bg-white hover:bg-slate-50",
                     },
                     {
                       id: "full" as const,
                       title: "Turn everything on",
                       desc: "All optional modules visible — power user.",
                       icon: Sparkles,
-                      color: "border-amber-200 bg-amber-50/80 hover:bg-amber-50",
+                      color: "border-slate-200 bg-white hover:bg-amber-50",
                     },
                   ] as const
                 ).map((opt) => (

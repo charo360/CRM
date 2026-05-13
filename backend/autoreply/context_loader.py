@@ -60,13 +60,13 @@ def _supports_bookings(business_type: str) -> bool:
     return bt in _BOOKING_TYPES or bt in _BOTH_TYPES
 
 
-async def load_context(db, user_id, customer_id, user: dict) -> dict:
+async def load_context(db, user_id, customer_id, user: dict, message: str = "") -> dict:
     """
     Returns:
         {
             "messages": [...],          # last 10, oldest first
             "mini_state": {...},        # 5-field state
-            "products": [...],          # sanitized catalog
+            "products": [...],          # sanitized catalog (priority on relevance to current message)
             "services": [...],          # sanitized services
             "business_config": {...},   # all business settings
         }
@@ -77,8 +77,19 @@ async def load_context(db, user_id, customer_id, user: dict) -> dict:
     bk_type = (user.get("business_knowledge") or {}).get("business_type", "")
     business_type = (settings.get("business_type") or user.get("business_type") or bk_type or "retail").lower()
 
-    # Always load products — all businesses add their catalog via ProductCatalogModal → db.products
+    # Load local products
     products = await _load_products(db, user_id)
+
+    # Additionally load live products from WooCommerce if connected
+    # We pass the user message to prioritize relevant products
+    wc_products = await _load_wc_products(db, user_id, message)
+    if wc_products:
+        # Merge, preferring WC products if IDs or names clash, but keeping total count reasonable
+        seen_names = {p["name"].lower() for p in wc_products}
+        for p in products:
+            if p["name"].lower() not in seen_names:
+                wc_products.append(p)
+        products = wc_products[:50]  # Cap at 50 for context window
 
     # Additionally load from services collection for booking businesses
     # (secondary catalog; most items will be in db.products)
@@ -203,6 +214,70 @@ async def _load_products(db, user_id) -> List[Dict]:
             "modifier_groups": modifier_groups,
         })
     return products
+
+
+async def _load_wc_products(db, user_id, search_query: str = "") -> List[Dict]:
+    """Fetch live products from connected WooCommerce store if keys are present."""
+    import httpx, os, base64
+    from blog.routes import _blog_url_for_response
+
+    blog = await db.blogs.find_one({"client_id": user_id})
+    if not blog:
+        return []
+
+    site_base = await _blog_url_for_response(db, blog)
+    if not site_base:
+        return []
+
+    wc_key = os.getenv("WC_CONSUMER_KEY", "")
+    wc_secret = os.getenv("WC_CONSUMER_SECRET", "")
+    if not wc_key or not wc_secret:
+        return []
+
+    try:
+        # Detect if we should search specifically
+        url = f"{site_base}/wp-json/wc/v3/products?per_page=30&status=publish"
+        
+        # Simple extraction of possible product keywords from message
+        if search_query:
+            # Clean message: remove common stopwords/short words
+            words = [w for w in search_query.lower().split() if len(w) > 3]
+            if words:
+                search_term = " ".join(words[:3]) # Use first few significant words
+                url += f"&search={search_term}"
+
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(url, auth=(wc_key, wc_secret))
+            if r.status_code != 200:
+                # If search failed or returned nothing, fallback to general products
+                if "search=" in url:
+                    r = await client.get(f"{site_base}/wp-json/wc/v3/products?per_page=30&status=publish", auth=(wc_key, wc_secret))
+                
+                if r.status_code != 200:
+                    return []
+            
+            raw = r.json()
+            products = []
+            for p in raw:
+                # Handle images
+                imgs = [img.get("src") for img in p.get("images", []) if img.get("src")]
+                
+                products.append({
+                    "id":              f"wc_{p['id']}", # Prefix to distinguish from local DB
+                    "name":            _sanitize(p.get("name", "")),
+                    "price":           float(p.get("price") or 0),
+                    "category":        _sanitize(p.get("categories", [{}])[0].get("name", "") if p.get("categories") else ""),
+                    "description":     _sanitize(p.get("short_description") or p.get("description", "")),
+                    "in_stock":        p.get("stock_status") == "instock",
+                    "image_url":       imgs[0] if imgs else "",
+                    "images":          imgs[:3],
+                    "is_live_wc":      True,
+                    "permalink":       p.get("permalink", ""),
+                })
+            return products
+    except Exception as e:
+        logger.warning(f"[ContextLoader] WC fetch failed for {user_id}: {e}")
+        return []
 
 
 async def _load_services(db, user_id) -> List[Dict]:

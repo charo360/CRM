@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 :root {
   --background: #ffffff;
@@ -33,6 +34,47 @@ body {
   0%   { transform: translateX(-100%); }
   50%  { transform: translateX(100%); }
   100% { transform: translateX(300%); }
+}
+
+/* Action Mode — live “mission control” HUD */
+@keyframes action-hud-sweep {
+  0%   { transform: translateX(-100%); opacity: 0.4; }
+  50%  { opacity: 0.9; }
+  100% { transform: translateX(100%); opacity: 0.4; }
+}
+
+@keyframes action-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes action-pulse-core {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50%      { transform: scale(1.08); opacity: 1; }
+}
+
+@keyframes action-shimmer-bar {
+  0%   { background-position: 200% 50%; }
+  100% { background-position: -200% 50%; }
+}
+
+@keyframes action-fade-slide {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes seo-tab-content {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 ::selection {

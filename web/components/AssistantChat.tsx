@@ -573,14 +573,14 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           <div>
             <div className="text-sm font-semibold text-slate-900">Zilo Chat</div>
             <div className="text-[10px] text-slate-400">
-              {compact ? "Ask me anything" : "Named specialists for each area — Zilo picks who fits best"}
+              {compact ? "Ask me anything" : "Namedff specialists for each area — Zilo picks who fits best"}
             </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-nowrap items-center gap-2">
           {/* Which named specialist is active (router picks; user always sees a person + specialty). */}
           <span
-            className={`inline-flex max-w-[14rem] items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
+            className={`inline-flex max-w-56 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
             title={
               activeAgent === "general"
                 ? "Zilo is your main guide. A named specialist will join when your question needs one."
@@ -629,7 +629,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               persistAssistantModelId(v);
             }}
             disabled={!models.length}
-            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none disabled:opacity-50"
+            className="max-w-35 truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none disabled:opacity-50"
           >
             {models.map((m) => (
               <option key={m.id} value={m.id}>
@@ -643,7 +643,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
 
       {shareOpen ? (
         <div
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-200 flex items-center justify-center bg-black/40 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Share chat"
@@ -891,7 +891,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       )}
 
       {/* Composer — centered Claude/ChatGPT-style pill */}
-      <div className="border-t border-slate-100 bg-gradient-to-b from-white to-slate-50/40">
+      <div className="border-t border-slate-100 bg-linear-to-b from-white to-slate-50/40">
         <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3">
           {/* Attachment chips */}
           {documents.length > 0 && (
@@ -1281,20 +1281,24 @@ function extractInlineOptionList(content: string):
   // Informational lists (facts, summaries, confirmations) stay as plain markdown.
   const isFactItem = (label: string, display?: string) => {
     const plain = label.replace(/\*\*/g, "").trim();
-    // "Key: value" or "Key — value" patterns (e.g. "Duration: 2 weeks", "Budget: KES 500")
-    if (/^[A-Za-z][^:]{0,35}:\s+\S/.test(plain)) return true;
+    // Strip leading emoji / non-ASCII characters so "🎨 Visual: …" still matches "Key: value"
+    const plainNoEmoji = plain.replace(/^[\p{Emoji}\p{S}\s]+/u, "").trim();
+    // "Key: value" pattern (e.g. "Visual: Deep green", "Status: Published")
+    if (/^[A-Za-z][^:]{0,40}:\s+\S/.test(plainNoEmoji)) return true;
     // "Key — value" patterns (e.g. "Duration — 2 weeks") — but NOT "A — Title" (single-letter option labels)
-    { const m = /^([A-Za-z][^—]{0,35})—\s+\S/.exec(plain); if (m && m[1].trim().length > 1) return true; }
+    { const m = /^([A-Za-z][^—]{0,35})—\s+\S/.exec(plainNoEmoji); if (m && m[1].trim().length > 1) return true; }
     // Starts with a quote (e.g. Message Preview: "Hello...")
-    if (/^["'"']/.test(plain)) return true;
+    if (/^["'"']/.test(plainNoEmoji)) return true;
     // Very long labels (>55 chars) are descriptions, not action chips
     if (plain.length > 55) return true;
     // Contains currency/numbers suggesting it's a data point
     if (/\b(KES|USD|EUR|GBP|\$|€|£)\s*[\d,]+/.test(plain)) return true;
+    // Contains status words like "Published ✅", "Live", "Scheduled" — summary facts
+    if (/\b(published|live now|scheduled|posted|sent|delivered|approved|confirmed)\b/i.test(plain)) return true;
     // Short labels like "A.", "B.", "1." come from bold-letter patterns in concept pitches.
     // Check the full display text — if it's long or contains "key: value" patterns it's a description.
     if (plain.length <= 3 && display) {
-      const plainDisplay = display.replace(/\*\*/g, "").trim();
+      const plainDisplay = display.replace(/\*\*/g, "").replace(/^[\p{Emoji}\p{S}\s]+/u, "").trim();
       if (plainDisplay.length > 55) return true;
       if (/^[A-Za-z0-9][^:]{0,35}:\s+\S/.test(plainDisplay)) return true;
     }
@@ -1304,11 +1308,11 @@ function extractInlineOptionList(content: string):
   // If more than half are facts, don't promote to chips
   if (factCount > parsed.length / 2) return null;
 
-  // If the message reads as a confirmation/summary (saved, created, updated, etc.)
+  // If the message reads as a confirmation/summary (saved, created, updated, published, etc.)
   // never show chips — it's a report, not a choice prompt
   const lowerContent = content.toLowerCase();
   const isConfirmation =
-    /\b(successfully saved|has been saved|successfully created|has been created|successfully updated|campaign saved|draft saved|order saved|has been scheduled)\b/.test(lowerContent);
+    /\b(successfully saved|has been saved|successfully created|has been created|successfully updated|campaign saved|draft saved|order saved|has been scheduled|is live now|is now live|has been published|was published|went out|what went out)\b/.test(lowerContent);
   if (isConfirmation) return null;
 
   let beforeEnd = bestStart;
@@ -1604,6 +1608,40 @@ function MessageBubble({
                               </span>
                               <span className="min-w-0 flex-1 break-words font-medium">{opt.display}</span>
                             </button>
+                          );
+                        }
+                        // Escape hatch — render as text input so user can describe freely
+                        const isEscapeOpt = /something else|describe it|i['']ll describe|i['']ll explain|none of these/i.test(opt.label);
+                        if (isEscapeOpt) {
+                          return (
+                            <div key={`${i}-${opt.label}`} className="flex gap-2">
+                              <input
+                                type="text"
+                                value={describeText}
+                                onChange={(e) => setDescribeText(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && describeText.trim()) {
+                                    onSuggestionSend(describeText.trim());
+                                    setDescribeText("");
+                                  }
+                                }}
+                                placeholder="Describe what you want…"
+                                className="flex-1 rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-[13px] text-slate-700 placeholder:text-slate-400 shadow-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
+                              />
+                              <button
+                                type="button"
+                                disabled={!describeText.trim()}
+                                onClick={() => {
+                                  if (describeText.trim()) {
+                                    onSuggestionSend(describeText.trim());
+                                    setDescribeText("");
+                                  }
+                                }}
+                                className="rounded-xl bg-brand px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-40"
+                              >
+                                Send
+                              </button>
+                            </div>
                           );
                         }
                         return (
@@ -2147,14 +2185,11 @@ function TemplateGalleryPreview({
         {/* Thumbnail strip — first 3 */}
         <div className="grid grid-cols-3 gap-px bg-slate-200">
           {themes.slice(0, 3).map((t) => (
-            <div key={t.id} className="relative aspect-video bg-gray-100 overflow-hidden group cursor-pointer" onClick={() => setOpen(true)}>
-              <iframe
-                src={t.preview_url}
-                title={t.name}
-                className="w-[200%] h-[200%] scale-50 pointer-events-none origin-top-left"
-                sandbox="allow-same-origin allow-scripts"
-                loading="lazy"
-              />
+            <div key={t.id} className="relative aspect-video overflow-hidden group cursor-pointer" style={{ background: `hsl(${(t.id.charCodeAt(0) * 37) % 360}, 45%, 88%)` }} onClick={() => setOpen(true)}>
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 p-2">
+                <svg className="w-5 h-5 opacity-35" style={{ color: `hsl(${(t.id.charCodeAt(0) * 37) % 360}, 55%, 35%)` }} fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3h16.5M3.75 9h16.5M3.75 15h10.5M3.75 21h7.5" /></svg>
+                <p className="text-[8px] font-medium text-center line-clamp-2 opacity-50" style={{ color: `hsl(${(t.id.charCodeAt(0) * 37) % 360}, 55%, 25%)` }}>{t.name}</p>
+              </div>
               <div className="absolute inset-0 group-hover:bg-black/10 transition-colors" />
               <p className="absolute bottom-0 inset-x-0 bg-black/50 text-white text-[9px] px-1.5 py-1 truncate">{t.name}</p>
             </div>

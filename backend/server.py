@@ -84,6 +84,11 @@ def validate_startup_env():
     else:
         print("[INFO] COMPOSIO_API_KEY not set — Gmail/Calendar integrations will not work")
 
+    if os.environ.get('OPENROUTER_KEY') or os.environ.get('OPENROUTER_API_KEY'):
+        print("[OK] OpenRouter API Key DETECTED (Creative tools enabled)")
+    else:
+        print("[WARNING] OPENROUTER_KEY not set — Creative/design tools will not work")
+
 validate_startup_env()
 print("[DEBUG] Starting FastAPI imports...", flush=True)
 
@@ -435,15 +440,24 @@ app = FastAPI(title="WhatsApp CRM")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
-# Configure CORS — use ALLOWED_ORIGINS env var in production (comma-separated)
-_allowed_origins = os.environ.get('ALLOWED_ORIGINS', '*')
-_origins_list = [o.strip() for o in _allowed_origins.split(',')] if _allowed_origins != '*' else ["*"]
+# Configure CORS.
+# Priority: ALLOWED_ORIGINS env var (comma-separated) → FRONTEND_URL → wildcard fallback.
+# Credentials require explicit origins — never combine allow_credentials=True with ["*"].
+_allowed_origins_raw = os.environ.get('ALLOWED_ORIGINS', '').strip()
+_frontend_url_cors = os.environ.get('FRONTEND_URL', '').strip()
+if _allowed_origins_raw:
+    _origins_list = [o.strip() for o in _allowed_origins_raw.split(',') if o.strip()]
+elif _frontend_url_cors:
+    _origins_list = [_frontend_url_cors, "http://localhost:3000", "http://localhost:5173"]
+else:
+    _origins_list = ["*"]
+_use_credentials = "*" not in _origins_list
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins_list,
-    allow_credentials=_allowed_origins != '*',
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=_use_credentials,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Business-Id"],
 )
 
 @app.exception_handler(Exception)
@@ -1803,6 +1817,7 @@ class BusinessKnowledge(BaseModel):
     business_description: Optional[str] = None
     # General
     business_location: Optional[str] = None  # physical address / area
+    website_url: Optional[str] = None  # company website for SEO keyword extraction
     # Business type
     business_type: Optional[str] = None  # 'general', 'retail', 'creator', 'restaurant', 'service'
     # Restaurant-specific fields
@@ -7967,8 +7982,29 @@ async def evolution_webhook(request: Request):
 
         # Handle incoming AND outgoing messages
         if event == "messages.upsert":
+            # ── WhatsApp group keyword monitor ────────────────────────────────
+            # handle_incoming_message skips groups — intercept them here first.
+            group_parsed = await whatsapp_service.handle_group_message(instance_name, data)
+            if group_parsed:
+                try:
+                    from action_mode_routes import queue_social_match
+                    uid_gp = str(group_parsed["user"].get("_id", ""))
+                    if uid_gp:
+                        await queue_social_match(
+                            db,
+                            user_id    = uid_gp,
+                            text       = group_parsed["body"],
+                            author     = group_parsed["push_name"],
+                            group_name = group_parsed["group_name"],
+                            platform   = "whatsapp",
+                            url        = f"https://web.whatsapp.com/",
+                        )
+                except Exception as _gpe:
+                    logging.warning("[group_monitor] %s", _gpe)
+                return {"status": "ok"}
+
             parsed = await whatsapp_service.handle_incoming_message(instance_name, data)
-            
+
             if not parsed:
                 log_trace("Parsed is empty/None")
                 return {"status": "ok"}
@@ -9544,7 +9580,7 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     fields = [
         # Core fields
         'products_services', 'pricing_info', 'business_hours', 'delivery_info',
-        'faqs', 'special_offers', 'business_description', 'business_location', 'business_type',
+        'faqs', 'special_offers', 'business_description', 'business_location', 'business_type', 'website_url',
         # Restaurant
         'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
         'restaurant_table_range', 'restaurant_avg_wait', 'restaurant_min_delivery',
@@ -11130,64 +11166,83 @@ def _strip_html_to_text(html: str, max_chars: int = 14000) -> str:
 @api_router.post("/onboarding/analyze-website")
 async def onboarding_analyze_website(body: OnboardingWebsiteBody, user=Depends(get_current_user)):
     """
-    Fetch a public URL and use AI to summarize the business + suggest where to fill data in Zilo.
+    Fetch a public URL via Jina AI Reader (handles JS-rendered sites) then extract structured
+    business info with OpenAI. Returns name, summary, about draft, products, contact info.
     """
-    from ai_service import get_drafter
-
     raw = (body.url or "").strip()
     if not raw:
         raise HTTPException(400, "url is required")
     if not raw.startswith(("http://", "https://")):
         raw = "https://" + raw
 
+    # ── Step 1: Fetch via Jina AI Reader ──────────────────────────────────────
+    jina_url = f"https://r.jina.ai/{raw}"
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=22.0, follow_redirects=True) as client:
-            r = await client.get(
-                raw,
-                headers={"User-Agent": "ZiloOnboarding/1.0 (+https://zilo)"},
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as hc:
+            resp = await hc.get(
+                jina_url,
+                headers={"Accept": "text/plain", "X-Return-Format": "markdown"},
             )
-    except Exception as e:
-        raise HTTPException(502, f"Could not fetch URL: {e}")
+    except httpx.TimeoutException:
+        raise HTTPException(504, "The website took too long to respond. Try again or use a simpler URL.")
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Could not reach the website: {exc}")
 
-    if r.status_code >= 400:
-        raise HTTPException(502, f"Website returned HTTP {r.status_code}")
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Jina could not fetch that URL (HTTP {resp.status_code}). Check the URL and try again.")
 
-    if len(r.text) > 600_000:
-        raise HTTPException(400, "Page is too large to analyze — try your homepage.")
+    page_text = resp.text[:14000]  # cap to stay within token budget
+    if not page_text.strip():
+        raise HTTPException(422, "The page appears to be empty or blocked. Try a different URL.")
 
-    text = _strip_html_to_text(r.text)
-    if len(text) < 80:
-        raise HTTPException(422, "Not enough readable text on that page — try another URL or use chat instead.")
-
+    # ── Step 2: OpenAI structured extraction ─────────────────────────────────
     industry = (body.business_type or "general").strip() or "general"
-    drafter = get_drafter()
-    prompt = f"""You are helping a new Zilo user (industry: {industry}) onboard their business.
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not openai_key:
+        raise HTTPException(503, "AI extraction not available — OPENAI_API_KEY not configured.")
+
+    extraction_prompt = f"""You are a business analyst helping onboard a new user (industry: {industry}).
 Read the website text and output ONLY valid JSON (no markdown fences) with this exact shape:
 {{
-  "summary": "2-3 sentences: what this business does and who it serves",
-  "business_about_draft": "A polished 'About' paragraph (max 120 words) for their profile",
-  "products_services_hint": "One short line on what they sell or offer",
+  "business_name": "Name of the business",
+  "summary": "2-3 sentences: what this business does, who it serves, and where it operates",
+  "business_about_draft": "A polished 'About' paragraph (4-6 sentences, max 150 words) suitable for a CRM profile. Include business name, what they sell/offer, target customers, location if known, and a differentiator.",
+  "services": [
+    {{
+      "name": "Service or product name",
+      "description": "1-2 sentence description of what it includes or who it is for",
+      "price": "Price or price range as a string e.g. '$25', 'From $100', 'Contact for pricing' — empty string if not found"
+    }}
+  ],
+  "location": "City/country if found, else empty string",
+  "contact_email": "Email address if found, else empty string",
+  "contact_phone": "Phone number if found, else empty string",
+  "website_url": "The canonical website URL (the URL passed in, cleaned up)",
   "where_to_fill": [
     {{"label": "string", "path": "/dashboard/settings", "tip": "why go there"}}
   ]
 }}
+For "services": extract up to 12 individual products or services. Each must have its own entry — do NOT combine them into one. If prices are not listed, use empty string for price.
 Use 3 to 6 items in where_to_fill. Paths MUST be one of:
-/dashboard/settings (business details & knowledge)
-/dashboard/features (turn modules on)
-/dashboard/integrations (connect tools)
-/dashboard/whatsapp
-/dashboard/shopify
-/dashboard/messages
-/dashboard/customers
+/dashboard/settings, /dashboard/features, /dashboard/integrations,
+/dashboard/whatsapp, /dashboard/shopify, /dashboard/messages, /dashboard/customers
+
 Website text:
-{text}
-"""
+{page_text}"""
+
     try:
-        raw_llm = await drafter._call_llm(prompt=prompt, model_pref="standard")
-    except Exception as e:
-        logging.exception("[onboarding.analyze-website] LLM failed")
-        raise HTTPException(500, f"AI analysis failed: {e}")
+        import openai as _openai_mod
+        _oa_client = _openai_mod.OpenAI(api_key=openai_key)
+        completion = _oa_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": extraction_prompt}],
+            temperature=0.2,
+            max_tokens=1800,
+        )
+        raw_llm = completion.choices[0].message.content or ""
+    except Exception as exc:
+        logging.exception("[onboarding/analyze-website] OpenAI call failed")
+        raise HTTPException(500, f"AI analysis failed: {exc}")
 
     cleaned = raw_llm.strip()
     if cleaned.startswith("```"):
@@ -11195,20 +11250,28 @@ Website text:
         cleaned = _re.sub(r"\s*```$", "", cleaned)
 
     try:
-        import json as _json
-        data = _json.loads(cleaned)
+        data = json.loads(cleaned)
     except Exception:
         raise HTTPException(500, "AI returned invalid JSON — try again.")
 
     if not isinstance(data, dict):
         raise HTTPException(500, "Unexpected AI response shape")
 
+    raw_services = data.get("services")
+    services = raw_services if isinstance(raw_services, list) else []
+
     return {
         "status": "success",
         "url": raw,
+        "business_name": data.get("business_name") or "",
         "summary": data.get("summary") or "",
         "business_about_draft": data.get("business_about_draft") or "",
-        "products_services_hint": data.get("products_services_hint") or "",
+        "products_services_hint": ", ".join(s.get("name", "") for s in services if s.get("name")) or "",
+        "services": services,
+        "location": data.get("location") or "",
+        "contact_email": data.get("contact_email") or "",
+        "contact_phone": data.get("contact_phone") or "",
+        "website_url": data.get("website_url") or raw,
         "where_to_fill": data.get("where_to_fill") if isinstance(data.get("where_to_fill"), list) else [],
     }
 
@@ -11470,6 +11533,42 @@ async def health_check():
     return {"status": "ok"}
 
 
+@api_router.get("/extension/download")
+async def download_extension():
+    """Serve the Zilo Chrome extension as a ZIP file for easy installation."""
+    import io
+    import os
+    import zipfile
+    from fastapi.responses import StreamingResponse
+
+    # Always resolve to absolute path regardless of how the server was invoked
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    crm_dir     = os.path.dirname(backend_dir)
+    ext_dir     = os.path.join(crm_dir, "extension")
+
+    if not os.path.isdir(ext_dir):
+        from fastapi.responses import JSONResponse
+        logging.error("[extension/download] extension folder not found at: %s", ext_dir)
+        return JSONResponse({"error": f"Extension folder not found at {ext_dir}"}, status_code=404)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(ext_dir):
+            for filename in sorted(files):
+                if filename.endswith(".pyc") or "__pycache__" in root:
+                    continue
+                full_path = os.path.join(root, filename)
+                arcname   = os.path.relpath(full_path, ext_dir)
+                zf.write(full_path, arcname)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=zilo-extension.zip"},
+    )
+
+
 @api_router.head("/health")
 async def health_check_head():
     """Render and some probes use HEAD; GET-only routes return 405."""
@@ -11579,6 +11678,32 @@ async def startup_tasks():
         await db.activity_logs.create_index([("business_id", 1), ("user_id", 1), ("timestamp", -1)])
         await db.activity_logs.create_index([("business_id", 1), ("entity_type", 1), ("entity_id", 1)])
 
+        # Assistant conversations — queried by user_id on every chat load
+        await db.assistant_conversations.create_index([("user_id", 1), ("updated_at", -1)])
+        await db.assistant_conversations.create_index([("user_id", 1), ("agent", 1)])
+
+        # Assistant audit log — compliance and debugging queries
+        await db.assistant_audit_log.create_index([("user_id", 1), ("created_at", -1)])
+        await db.assistant_audit_log.create_index([("actor_id", 1), ("created_at", -1)])
+
+        # Assistant agent events (telemetry) — auto-expire after 30 days, queried by conversation
+        await db.assistant_agent_events.create_index("ts", expireAfterSeconds=2592000)
+        await db.assistant_agent_events.create_index([("conversation_id", 1), ("ts", -1)])
+
+        # SEO collections
+        await db.seo_audits.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_blog_posts.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_blog_posts.create_index([("user_id", 1), ("status", 1)])
+        await db.seo_saved_keywords.create_index([("user_id", 1), ("month", -1)])
+        await db.seo_publish_creds.create_index("user_id")
+        await db.seo_memory.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_summary.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_agent_conversations.create_index([("user_id", 1), ("created_at", -1)])
+        await db.seo_serp_rankings.create_index([("user_id", 1), ("keyword", 1), ("domain", 1)])
+        await db.seo_serp_rankings.create_index([("user_id", 1), ("checked_at", -1)])
+        # TTL policy: auto-delete SERP rankings older than 1 year
+        await db.seo_serp_rankings.create_index("checked_at", expireAfterSeconds=31536000)
+
         logging.info("Database indexes ensured successfully")
     except Exception as e:
         logging.error(f"Failed to create indexes: {e}")
@@ -11670,6 +11795,15 @@ async def startup_tasks():
         logging.info("Digest scheduler started - notifications at 8 AM and 3 PM EAT")
     except Exception as e:
         logging.error(f"Failed to start digest scheduler: {e}")
+
+    # Start autoblogging scheduler (9 AM EAT daily)
+    try:
+        from blog.blog_scheduler import start_blog_scheduler
+        logging.info("Starting autoblog scheduler...")
+        start_blog_scheduler(db)
+        logging.info("Autoblog scheduler started - posts published daily at 9 AM EAT")
+    except Exception as e:
+        logging.error(f"Failed to start autoblog scheduler: {e}")
 
     # Start workflow deferred step runner
     try:
@@ -13028,9 +13162,13 @@ async def paystack_disconnect(user=Depends(get_current_user)):
 @api_router.get("/payhero/connection")
 async def payhero_get_connection(user=Depends(get_current_user)):
     user_id = user.get("business_id", user["_id"])
-    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1})
+    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_channel_id": 1})
     connected = bool(doc and doc.get("payhero_username"))
-    return {"connected": connected, "username": doc.get("payhero_username") if connected else None}
+    return {
+        "connected": connected,
+        "username": doc.get("payhero_username") if connected else None,
+        "channel_id": doc.get("payhero_channel_id") if connected else None,
+    }
 
 @api_router.post("/payhero/connect")
 async def payhero_connect(body: dict, user=Depends(get_current_user)):
@@ -13062,8 +13200,179 @@ async def payhero_connect(body: dict, user=Depends(get_current_user)):
 @api_router.delete("/payhero/connect")
 async def payhero_disconnect(user=Depends(get_current_user)):
     user_id = user.get("business_id", user["_id"])
-    await db.users.update_one({"_id": user_id}, {"$unset": {"payhero_username": "", "payhero_password": ""}})
+    await db.users.update_one({"_id": user_id}, {"$unset": {"payhero_username": "", "payhero_password": "", "payhero_channel_id": ""}})
     return {"status": "disconnected", "connected": False}
+
+
+@api_router.get("/payhero/channels")
+async def payhero_list_channels(user=Depends(get_current_user)):
+    """List PayHero channels (paybill / till numbers) for the connected account."""
+    user_id = user.get("business_id", user["_id"])
+    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_password": 1, "payhero_channel_id": 1})
+    if not doc or not doc.get("payhero_username"):
+        raise HTTPException(400, "PayHero not connected")
+    from payhero_service import list_channels as _ph_list_channels
+    try:
+        channels = await _ph_list_channels(doc["payhero_username"], doc["payhero_password"])
+    except Exception as e:
+        raise HTTPException(502, f"PayHero API error: {e}")
+    return {"channels": channels, "selected_channel_id": doc.get("payhero_channel_id")}
+
+
+@api_router.post("/payhero/channel")
+async def payhero_set_channel(body: dict, user=Depends(get_current_user)):
+    """Save which channel (paybill/till) to use for STK push and webhook matching."""
+    channel_id = body.get("channel_id")
+    if not channel_id:
+        raise HTTPException(400, "channel_id required")
+    user_id = user.get("business_id", user["_id"])
+    await db.users.update_one({"_id": user_id}, {"$set": {"payhero_channel_id": channel_id}})
+    return {"status": "ok", "channel_id": channel_id}
+
+
+@api_router.post("/payhero/stk-push")
+async def payhero_stk_push(body: dict, user=Depends(get_current_user)):
+    """Send an M-Pesa STK push (payment prompt) to a customer's phone."""
+    phone = (body.get("phone") or "").strip()
+    amount = body.get("amount")
+    external_reference = (body.get("external_reference") or body.get("order_number") or "").strip()
+    customer_name = (body.get("customer_name") or "").strip()
+
+    if not phone or not amount:
+        raise HTTPException(400, "phone and amount are required")
+
+    user_id = user.get("business_id", user["_id"])
+    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_password": 1, "payhero_channel_id": 1})
+    if not doc or not doc.get("payhero_username"):
+        raise HTTPException(400, "PayHero not connected")
+    if not doc.get("payhero_channel_id"):
+        raise HTTPException(400, "No PayHero channel selected — go to Integrations and pick a channel")
+
+    backend_url = os.environ.get("BACKEND_URL", "").rstrip("/")
+    callback_url = f"{backend_url}/api/webhooks/payhero"
+
+    from payhero_service import stk_push as _ph_stk_push
+    try:
+        result = await _ph_stk_push(
+            username=doc["payhero_username"],
+            password=doc["payhero_password"],
+            channel_id=int(doc["payhero_channel_id"]),
+            phone=phone,
+            amount=float(amount),
+            external_reference=external_reference,
+            callback_url=callback_url,
+            customer_name=customer_name,
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, f"PayHero rejected the request: {e.response.text[:200]}")
+    except Exception as e:
+        raise HTTPException(502, f"PayHero error: {e}")
+
+    return {"status": "sent", "payhero_response": result}
+
+
+@api_router.post("/webhooks/payhero")
+async def payhero_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Receive payment notifications from PayHero.
+    Configure in PayHero dashboard: Callback URL = https://your-domain/api/webhooks/payhero
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "ok"}  # always 200 to PayHero
+
+    from payhero_service import parse_webhook as _ph_parse, process_payment as _ph_process
+
+    parsed = _ph_parse(payload)
+    logging.info(f"[PayHero webhook] status={parsed['status']} phone={parsed['phone']} amount={parsed['amount']} ref={parsed['external_ref']}")
+
+    if not parsed["success"]:
+        return {"status": "ok", "note": "non-success event acknowledged"}
+
+    background_tasks.add_task(_payhero_process_and_notify, payload, parsed)
+    return {"status": "ok"}
+
+
+async def _payhero_process_and_notify(payload: dict, parsed: dict):
+    """Background: match payment → update order → send receipt + notifications."""
+    from payhero_service import process_payment as _ph_process
+    try:
+        ctx = await _ph_process(db, parsed)
+    except Exception as e:
+        logging.error(f"[PayHero] process_payment error: {e}")
+        return
+
+    if not ctx.get("handled"):
+        logging.warning(f"[PayHero] Payment not handled: {ctx.get('reason')}")
+        return
+
+    user_id = ctx["user_id"]
+    user = ctx["user"]
+    customer = ctx.get("customer")
+    customer_name = ctx["customer_name"]
+    phone = ctx["phone"]
+    amount = ctx["amount"]
+    order_number = ctx.get("order_number")
+    provider_ref = ctx.get("provider_ref", "")
+
+    # Build receipt text
+    receipt_lines = [f"✅ *Payment Received — KES {int(amount):,}*"]
+    if order_number:
+        receipt_lines.append(f"Order: *{order_number}*")
+    if provider_ref:
+        receipt_lines.append(f"M-Pesa Ref: *{provider_ref}*")
+    receipt_lines.append("Thank you! We'll process your order shortly. 🙏")
+    receipt_text = "\n".join(receipt_lines)
+
+    # Send WhatsApp receipt to customer
+    try:
+        from whatsapp_service import get_whatsapp_service
+        ws = get_whatsapp_service(db)
+        await ws.send_message(
+            user_id=str(user_id),
+            to_number=phone,
+            message=receipt_text,
+            customer_name=customer_name,
+            send_context="payment_receipt",
+        )
+        logging.info(f"[PayHero] Receipt sent to {phone}")
+    except Exception as e:
+        logging.error(f"[PayHero] WhatsApp receipt failed: {e}")
+
+    # Push notification to business owner
+    push_token = user.get("push_token")
+    if push_token:
+        try:
+            from notification_service import get_notification_service
+            ns = get_notification_service()
+            title = f"💰 KES {int(amount):,} received"
+            body = f"{customer_name}" + (f" — {order_number}" if order_number else "") + (f" (Ref: {provider_ref})" if provider_ref else "")
+            await ns.send_notification(push_token=push_token, title=title, body=body, data={"type": "payment_received"})
+        except Exception as e:
+            logging.error(f"[PayHero] Push notification failed: {e}")
+
+    # Fire workflow trigger
+    try:
+        from workflows.engine import fire_trigger
+        from workflows.models import WorkflowEvent
+        from whatsapp_service import get_whatsapp_service
+        ws = get_whatsapp_service(db)
+        event = WorkflowEvent(
+            trigger_type="payhero_payment_received",
+            user_id=user_id,
+            customer_id=ctx.get("customer_id"),
+            from_number=phone,
+            data={
+                "amount": amount,
+                "order_number": order_number,
+                "provider_ref": provider_ref,
+                "customer_name": customer_name,
+            },
+        )
+        await fire_trigger(db, event, ws)
+    except Exception as e:
+        logging.error(f"[PayHero] Workflow trigger failed: {e}")
 
 
 # ── AI Assistant routes ──
@@ -13251,12 +13560,34 @@ except Exception as _e:
     logging.error(f"[seo] failed to mount routes: {_e}")
 
 # ── SEO LangGraph Agent ───────────────────────────────────────────────────────
+_seo_agent_mount_error: str = ""
 try:
     from seo_agent.routes import make_seo_agent_router as _mk_seo_agent_router
-    api_router.include_router(_mk_seo_agent_router(db, Depends(get_current_user)))
+    api_router.include_router(_mk_seo_agent_router(db, get_current_user))
     logging.info("[seo-agent] routes mounted at /api/seo-agent/*")
 except Exception as _e:
-    logging.error(f"[seo-agent] failed to mount routes: {_e}")
+    import traceback as _tb
+    _seo_agent_mount_error = f"{_e}\n{_tb.format_exc()}"
+    logging.error(f"[seo-agent] failed to mount routes: {_seo_agent_mount_error}")
+
+@api_router.get("/seo-agent/debug")
+async def seo_agent_debug():
+    return {"mounted": not bool(_seo_agent_mount_error), "error": _seo_agent_mount_error or None}
+
+# ── Zilo Autoblogging ─────────────────────────────────────────────────────────
+_blog_mount_error: str = ""
+try:
+    from blog.routes import make_blog_router as _mk_blog_router
+    api_router.include_router(_mk_blog_router(db, get_current_user))
+    logging.info("[blog] routes mounted at /api/blog/*")
+except Exception as _e:
+    import traceback as _tb
+    _blog_mount_error = f"{_e}\n{_tb.format_exc()}"
+    logging.error(f"[blog] failed to mount routes: {_blog_mount_error}")
+
+@api_router.get("/blog/debug")
+async def blog_debug():
+    return {"mounted": not bool(_blog_mount_error), "error": _blog_mount_error or None}
 
 # NOTE: app.include_router(api_router) is deferred to end of file so all routes and
 # sub-routers are registered first (avoids missing routes with uvicorn --reload on Windows).
@@ -14311,6 +14642,77 @@ async def download_proxy(
         logging.warning("[download-proxy] fetch failed: %s", exc)
         raise HTTPException(status_code=502, detail="Failed to fetch file")
 
+
+# ── Action Mode routes ───────────────────────────────────────────────────────
+try:
+    from action_mode_routes import make_action_mode_router
+    _action_mode_router = make_action_mode_router(db, get_current_user)
+    api_router.include_router(_action_mode_router)
+    logging.info("[action-mode] routes mounted")
+except Exception as _ame:
+    logging.error("[action-mode] failed to mount: %s", _ame)
+
+# ── Forms routes ──────────────────────────────────────────────────────────────
+try:
+    from forms_routes import make_forms_router
+    _forms_router = make_forms_router(db, get_current_user)
+    api_router.include_router(_forms_router)
+    logging.info("[forms] routes mounted")
+except Exception as _fe:
+    logging.error("[forms] failed to mount: %s", _fe)
+
+
+# ── Growth Suite routes ───────────────────────────────────────────────────────
+try:
+    logging.info("[growth] attempting to import and mount")
+    from growth_routes import make_growth_router
+    logging.info("[growth] imported make_growth_router")
+    _growth_router = make_growth_router(db, get_current_user)
+    logging.info("[growth] created router")
+    api_router.include_router(_growth_router)
+    logging.info("[growth] included router")
+    # Wire legacy daily-pulse endpoints the frontend already calls
+    @api_router.get("/daily-pulse/preview")
+    async def _daily_pulse_preview_alias(request: Request, user=Depends(get_current_user)):
+        # Reuse the growth route implementation
+        uid = str(user["_id"])
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        orders_today = await db.orders.find({
+            "user_id": uid, "created_at": {"$gte": today_start}
+        }).to_list(200)
+        paid_today = [o for o in orders_today if o.get("payment_status") == "Paid"]
+        revenue = sum(o.get("total_amount", 0) for o in paid_today)
+        cold = await db.customers.count_documents({
+            "user_id": uid,
+            "$or": [
+                {"last_contacted": {"$lt": now - timedelta(days=30)}},
+                {"last_contacted": {"$exists": False}},
+            ],
+        })
+        pending_followups = await db.followups.count_documents({
+            "user_id": uid, "status": "pending",
+            "reminder_date": {"$lte": now},
+        })
+        biz = await db.users.find_one({"_id": uid})
+        biz_name = (biz or {}).get("business_name") or "your business"
+        parts = []
+        if paid_today:
+            parts.append(f"{len(paid_today)} sale{'s' if len(paid_today) != 1 else ''} today ({revenue:,.0f} revenue)")
+        if pending_followups:
+            parts.append(f"{pending_followups} follow-up{'s' if pending_followups != 1 else ''} due")
+        if cold:
+            parts.append(f"{cold} customer{'s' if cold != 1 else ''} need re-engagement")
+        if not parts:
+            parts.append("All caught up — no urgent items today")
+        message = f"📊 {biz_name}: " + " · ".join(parts) + "."
+        return {"message": message, "summary": message}
+    @api_router.post("/daily-pulse/send")
+    async def _daily_pulse_send_alias(request: Request):
+        return {"status": "ok", "message": "Pulse sent"}
+    logging.info("[growth] routes mounted")
+except Exception as _ge:
+    logging.error("[growth] failed to mount: %s", _ge)
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)

@@ -260,23 +260,30 @@ async def _call_anthropic(
     # Anthropic wants system separate + content blocks.
     system_text = ""
     a_messages: List[Dict[str, Any]] = []
-    for m in messages:
+    i = 0
+    while i < len(messages):
+        m = messages[i]
         role = m["role"]
         if role == "system":
             system_text = (system_text + "\n\n" + (m.get("content") or "")).strip()
+            i += 1
             continue
         if role == "tool":
-            # Tool result → user message with tool_result block
-            a_messages.append({
-                "role": "user",
-                "content": [{
+            # Batch ALL consecutive tool results into one user message —
+            # Anthropic forbids consecutive user messages.
+            tool_results: List[Dict[str, Any]] = []
+            while i < len(messages) and messages[i]["role"] == "tool":
+                tm = messages[i]
+                tool_results.append({
                     "type": "tool_result",
-                    "tool_use_id": m["tool_call_id"],
-                    "content": m.get("content") or "",
-                }],
-            })
+                    "tool_use_id": tm["tool_call_id"],
+                    "content": tm.get("content") or "",
+                })
+                i += 1
+            a_messages.append({"role": "user", "content": tool_results})
             continue
         if role == "assistant" and m.get("tool_calls"):
+            i += 1
             blocks: List[Dict[str, Any]] = []
             if m.get("content"):
                 blocks.append({"type": "text", "text": m["content"]})
@@ -306,6 +313,7 @@ async def _call_anthropic(
             a_messages.append({"role": "assistant", "content": blocks})
             continue
         a_messages.append({"role": role, "content": m.get("content") or ""})
+        i += 1
 
     # Attach documents/images natively to the FIRST user message (one-shot).
     # Only done on the fresh turn; subsequent tool-use loops don't re-attach.
@@ -346,7 +354,7 @@ async def _call_anthropic(
     payload: Dict[str, Any] = {
         "model": cfg["model"],
         "messages": a_messages,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "temperature": temperature,
     }
     if system_text:
@@ -522,18 +530,28 @@ async def _stream_anthropic(
 
     system_text = ""
     a_messages: List[Dict[str, Any]] = []
-    for m in messages:
+    j = 0
+    while j < len(messages):
+        m = messages[j]
         role = m["role"]
         if role == "system":
             system_text = (system_text + "\n\n" + (m.get("content") or "")).strip()
+            j += 1
             continue
         if role == "tool":
-            a_messages.append({
-                "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": m.get("content") or ""}],
-            })
+            tool_results: List[Dict[str, Any]] = []
+            while j < len(messages) and messages[j]["role"] == "tool":
+                tm = messages[j]
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tm["tool_call_id"],
+                    "content": tm.get("content") or "",
+                })
+                j += 1
+            a_messages.append({"role": "user", "content": tool_results})
             continue
         if role == "assistant" and m.get("tool_calls"):
+            j += 1
             blocks: List[Dict[str, Any]] = []
             if m.get("content"):
                 blocks.append({"type": "text", "text": m["content"]})
@@ -548,11 +566,12 @@ async def _stream_anthropic(
             a_messages.append({"role": "assistant", "content": blocks})
             continue
         a_messages.append({"role": role, "content": m.get("content") or ""})
+        j += 1
 
     payload: Dict[str, Any] = {
         "model": cfg["model"],
         "messages": a_messages,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "temperature": temperature,
         "stream": True,
     }

@@ -39,7 +39,11 @@ export const SIDEBAR_FEATURE_DEFAULTS: Record<string, boolean> = {
   nav_shopify: false,
   nav_design_templates: false,
   nav_documents: false,
+  nav_seo_hub: false,
   nav_seo: false,
+  nav_growth: false,
+  nav_client_portal: false,
+  nav_store: false,
 };
 
 /** Map route href → settings key */
@@ -81,7 +85,11 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
   "/dashboard/shopify": "nav_shopify",
   "/dashboard/design-templates": "nav_design_templates",
   "/dashboard/documents": "nav_documents",
+  "/dashboard/seo-hub": "nav_seo_hub",
   "/dashboard/seo": "nav_seo",
+  "/dashboard/growth": "nav_growth",
+  "/dashboard/client-portal": "nav_client_portal",
+  "/dashboard/store": "nav_store",
 };
 
 export function mergeSidebarFeatures(raw: unknown): Record<string, boolean> {
@@ -98,12 +106,19 @@ export function mergeSidebarFeatures(raw: unknown): Record<string, boolean> {
   if (out.nav_team && !("nav_collaboration" in r)) {
     out.nav_collaboration = true;
   }
+  // SEO Hub + SEO & Blog merged into one sidebar item — either flag turns on Website & SEO.
+  if (out.nav_seo_hub === true) {
+    out.nav_seo = true;
+  }
   return out;
 }
 
 export function isSidebarHrefEnabled(href: string, features: Record<string, boolean>): boolean {
   if (href === "/dashboard/team" || href === "/dashboard/collaboration") {
     return true;
+  }
+  if (href === "/dashboard/seo") {
+    return features.nav_seo === true || features.nav_seo_hub === true;
   }
   const key = HREF_TO_FEATURE_KEY[href];
   if (!key) return true;
@@ -149,7 +164,7 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_x_ads", label: "X Ads", description: "Promoted posts & campaigns on X (Twitter)" },
       { key: "nav_google_business", label: "Google Business Profile", description: "Maps & local presence via Integrations" },
       { key: "nav_social_inbox", label: "Social Inbox", description: "Unified DMs from all your connected social platforms" },
-      { key: "nav_seo", label: "SEO & Blog", description: "Site audit, AI keyword research, blog writer, and auto-publish" },
+      { key: "nav_seo", label: "Website & SEO", description: "Coach, keywords, content, autoblog site, and audits — one workspace" },
     ],
   },
   {
@@ -179,6 +194,9 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_shopify", label: "Shopify", description: "Orders, inventory, customers, abandoned carts & discounts" },
     { key: "nav_design_templates", label: "Design library", description: "Chat-generated graphics, PDFs, and decks plus optional manual template metadata" },
     { key: "nav_documents", label: "Documents", description: "AI-generated PDFs, Word docs, and presentations from Zilo Chat" },
+    { key: "nav_growth", label: "Growth Suite", description: "Daily digest, autopilot follow-ups, deal room, competitor intel, voice input" },
+    { key: "nav_client_portal", label: "Client Portal", description: "Share a portal link with clients to view their invoices, proposals & orders" },
+    { key: "nav_store", label: "My Store", description: "Manage your WooCommerce store — products, orders, and payments" },
     ],
   },
   {

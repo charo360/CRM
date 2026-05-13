@@ -130,7 +130,7 @@ export default function FeaturesPage() {
   }
 
   return (
-    <div className="p-6 max-w-xl mx-auto space-y-8 pb-16 text-slate-900">
+    <div className="p-6 w-full max--xl mx-auto space-y-8 pb-16 text-slate-900">
       <div>
         <div className="flex items-center gap-2 text-[#009B3A] mb-2">
           <Layers size={22} />

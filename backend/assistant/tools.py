@@ -326,19 +326,18 @@ async def get_product_images(ctx: ToolContext, args: Dict[str, Any]):
     public_imgs = [_to_public(u) for u in imgs]
     public_orig = _to_public(orig)
 
-    # Advance design flow: product is now locked → ask for platform next
+    # Store product info but DON'T advance flow yet — the user might just be browsing.
+    # Only advance to awaiting_platform when they explicitly choose to use this image.
     try:
-        from .design_state import load_design_state, update_design_state
+        from .design_state import update_design_state
         conv_id = ctx.user.get("_active_conversation_id")
         if conv_id:
-            ds = await load_design_state(ctx.db, conv_id, ctx.business_id)
-            if ds.get("flow_step") in ("awaiting_product", None):
-                await update_design_state(
-                    ctx.db, conv_id, ctx.business_id,
-                    product_id=product_id,
-                    product_name=product.get("name", "Unnamed Product"),
-                    flow_step="awaiting_platform",
-                )
+            await update_design_state(
+                ctx.db, conv_id, ctx.business_id,
+                product_id=product_id,
+                product_name=product.get("name", "Unnamed Product"),
+                # Do NOT set flow_step here — let the AI advance it when user confirms image usage
+            )
     except Exception:
         logger.exception("[get_product_images] design_state update skipped")
 
@@ -6077,7 +6076,10 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
         "Browse and search the 2Slides template library to show the user available presentation themes. "
         "Call this when the user wants to pick a template before generating a presentation. "
         "Returns a list of themes with names, descriptions, preview URLs, and IDs. "
-        "Present the results to the user so they can choose one, then pass the chosen theme_id to create_presentation."
+        "The UI will automatically display a visual template gallery picker below your message. "
+        "Just call this tool and say something brief like 'Here are X templates — click one to select it.' "
+        "Do NOT describe each template in detail — the visual gallery shows everything. "
+        "When the user picks one, they'll send you the template ID to use in create_presentation."
     ),
     parameters={
         "type": "object",
@@ -8822,6 +8824,100 @@ async def list_scheduled_posts(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="create_scheduled_post",
+    description=(
+        "Create and schedule a social media post directly in the Zilo scheduler. "
+        "Use this to save the finalised caption, image, channels, and scheduled time — "
+        "the post will appear on the Social Scheduler dashboard ready to publish. "
+        "Set status='scheduled' with a future scheduled_at to queue it, or status='draft' to save without a time."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short internal title for the post (not shown publicly), e.g. 'Zilo Starter promo — Instagram'.",
+            },
+            "body": {
+                "type": "string",
+                "description": "The full post caption including hashtags, exactly as it should appear.",
+            },
+            "channels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Platforms to publish on: instagram, facebook, linkedin, x, tiktok. E.g. ['instagram'].",
+            },
+            "scheduled_at": {
+                "type": "string",
+                "description": "ISO 8601 datetime string for when the post should go live, e.g. '2025-05-08T09:00:00Z'. Required when status is 'scheduled'.",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["draft", "scheduled"],
+                "description": "Use 'scheduled' to queue the post for publishing at scheduled_at, or 'draft' to save without a time.",
+            },
+            "image_url": {
+                "type": "string",
+                "description": "URL of the AI-generated or uploaded post image to attach.",
+            },
+        },
+        "required": ["title", "body", "channels"],
+    },
+)
+async def create_scheduled_post(ctx: ToolContext, args: Dict[str, Any]):
+    now = datetime.utcnow()
+    status = (args.get("status") or "draft").strip().lower()
+    if status not in ("draft", "scheduled"):
+        status = "draft"
+
+    sched_raw = (args.get("scheduled_at") or "").strip()
+    sched: datetime = now
+    if sched_raw:
+        try:
+            sched = datetime.fromisoformat(sched_raw.replace("Z", "+00:00"))
+        except Exception:
+            sched = now
+
+    channels = [c.strip().lower() for c in (args.get("channels") or ["instagram"]) if c.strip()]
+    if not channels:
+        channels = ["instagram"]
+
+    # Strip timezone info for MongoDB compatibility (store as naive UTC)
+    if hasattr(sched, "tzinfo") and sched.tzinfo is not None:
+        sched = sched.replace(tzinfo=None)
+
+    doc: Dict[str, Any] = {
+        "_id": str(uuid.uuid4()),
+        "user_id": ctx.business_id,
+        "title": (args.get("title") or "Untitled Post").strip(),
+        "body": (args.get("body") or "").strip(),
+        "channels": channels,
+        "scheduled_at": sched,
+        "status": status,
+        "image_url": args.get("image_url") or None,
+        "created_at": now,
+        "updated_at": now,
+        "source": "ai_assistant",
+    }
+    try:
+        await ctx.db.scheduled_posts.insert_one(doc)
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Database write failed: {exc}",
+            "message": "Could not save the post to the Zilo scheduler. Please try again.",
+        }
+    return {
+        "success": True,
+        "post_id": doc["_id"],
+        "status": status,
+        "channels": channels,
+        "scheduled_at": sched.isoformat(),
+        "message": f"✅ Post scheduled on {', '.join(channels)} for {sched.strftime('%d %b %Y %H:%M')} UTC.",
+    }
+
+
+@tool(
     name="get_social_post_analytics",
     description=(
         "Get a detailed engagement analytics summary across all published social posts. "
@@ -11381,3 +11477,250 @@ async def switch_to_agent(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, A
     reason = args.get("reason", "")
     logger.info("[switch_to_agent] handoff → %s | reason: %s", target, reason)
     return {"__handoff__": target, "reason": reason}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# KEYWORD RESEARCH TOOLS (SEO Agent - DataForSEO)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_keyword_metrics",
+    description=(
+        "Get accurate search volume, competition, and CPC data for keywords using DataForSEO API. "
+        "Returns real Google Ads data including monthly search volume, competition level (0-1), and cost-per-click."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keywords"],
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of keywords to analyze (max 100 recommended)",
+            },
+            "location": {
+                "type": "string",
+                "description": "Country/location for search data (e.g. 'Kenya', 'USA', 'UK'). Defaults to Kenya.",
+            },
+        },
+    },
+)
+async def get_keyword_metrics(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from dataforseo_service import get_keyword_data, get_location_code
+    
+    keywords = args.get("keywords", [])
+    if not keywords:
+        return {"error": "No keywords provided"}
+    
+    location = args.get("location", "Kenya")
+    location_code = get_location_code(location)
+    
+    try:
+        result = await get_keyword_data(
+            keywords=keywords,
+            location_code=location_code,
+            language_code="en",
+        )
+        return result
+    except Exception as e:
+        logger.error("[get_keyword_metrics] Error: %s", str(e))
+        return {"error": str(e)}
+
+
+@tool(
+    name="get_keyword_suggestions",
+    description=(
+        "Get keyword suggestions and related keywords for a seed keyword using DataForSEO. "
+        "Returns up to 100 related keywords with search volume, competition, and CPC data."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["seed_keyword"],
+        "properties": {
+            "seed_keyword": {
+                "type": "string",
+                "description": "Base keyword to get suggestions for (e.g. 'bakery', 'CRM software')",
+            },
+            "location": {
+                "type": "string",
+                "description": "Country/location for search data (e.g. 'Kenya', 'USA', 'UK')",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max number of suggestions to return (default 100, max 1000)",
+            },
+        },
+    },
+)
+async def get_keyword_suggestions(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from dataforseo_service import get_keyword_suggestions as get_suggestions, get_location_code
+    
+    seed_keyword = args.get("seed_keyword", "")
+    if not seed_keyword:
+        return {"error": "No seed keyword provided"}
+    
+    location = args.get("location", "Kenya")
+    location_code = get_location_code(location)
+    limit = args.get("limit", 100)
+    
+    try:
+        result = await get_suggestions(
+            seed_keyword=seed_keyword,
+            location_code=location_code,
+            language_code="en",
+            limit=limit,
+        )
+        return result
+    except Exception as e:
+        logger.error("[get_keyword_suggestions] Error: %s", str(e))
+        return {"error": str(e)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTOBLOGGING TOOLS (SEO Agent)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="list_client_sites",
+    description="List all WordPress sites (blogs/shops) for the current business. Returns site URLs, features enabled (blog, shop, forms), and post counts.",
+    parameters={"type": "object", "properties": {}},
+)
+async def list_client_sites(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    sites = await ctx.db.blogs.find({"client_id": ctx.user_id}).to_list(100)
+    return {
+        "count": len(sites),
+        "sites": [
+            {
+                "wp_slug": s.get("wp_slug"),
+                "business_name": s.get("business_name"),
+                "site_url": s.get("site_url"),
+                "industry": s.get("industry"),
+                "location": s.get("location"),
+                "posts_count": s.get("posts_count", 0),
+                "features": s.get("features", {}),
+                "created_at": s.get("created_at").isoformat() if s.get("created_at") else None,
+            }
+            for s in sites
+        ],
+    }
+
+
+@tool(
+    name="generate_blog_post",
+    description=(
+        "Generate an SEO-optimized blog post using AI. Returns title, content (HTML), excerpt, and keywords. "
+        "Does NOT publish — use publish_blog_post to publish to WordPress."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["topic"],
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "The blog post topic or title (e.g. 'How to improve local SEO for bakeries')",
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Target keywords to optimize for (e.g. ['local SEO', 'bakery marketing', 'Google My Business'])",
+            },
+            "industry": {
+                "type": "string",
+                "description": "Business industry for context (e.g. 'bakery', 'tech', 'retail')",
+            },
+            "location": {
+                "type": "string",
+                "description": "Business location for local SEO context (e.g. 'Nairobi', 'Westlands')",
+            },
+            "word_count": {
+                "type": "integer",
+                "description": "Target word count (default 1000, range 500-2500)",
+            },
+        },
+    },
+)
+async def generate_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from blog.content_generator import generate_seo_blog_post
+    
+    # Get business context
+    user = await ctx.db.users.find_one({"_id": ctx.user_id})
+    business_name = user.get("business_name", "")
+    
+    result = await generate_seo_blog_post(
+        topic=args["topic"],
+        keywords=args.get("keywords", []),
+        business_name=business_name,
+        industry=args.get("industry", ""),
+        location=args.get("location", ""),
+        word_count=args.get("word_count", 1000),
+    )
+    return result
+
+
+@tool(
+    name="publish_blog_post",
+    description=(
+        "Publish a blog post to a WordPress site. Automatically generates a featured image via Gemini. "
+        "Use list_client_sites first to get the wp_slug."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["wp_slug", "title", "content"],
+        "properties": {
+            "wp_slug": {
+                "type": "string",
+                "description": "WordPress site slug (from list_client_sites)",
+            },
+            "title": {
+                "type": "string",
+                "description": "Blog post title",
+            },
+            "content": {
+                "type": "string",
+                "description": "Blog post content (HTML or markdown)",
+            },
+            "excerpt": {
+                "type": "string",
+                "description": "Meta description / excerpt (150-160 chars recommended)",
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "SEO keywords (first one becomes Yoast focus keyword)",
+            },
+            "category": {
+                "type": "string",
+                "description": "Post category (default: 'Business')",
+            },
+        },
+    },
+    destructive=True,
+)
+async def publish_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from blog.blog_service import ZiloBlogService
+    from blog.routes import markdown_to_wp_html
+    
+    # Verify ownership
+    blog = await ctx.db.blogs.find_one({"wp_slug": args["wp_slug"], "client_id": ctx.user_id})
+    if not blog:
+        return {"error": "Site not found or you don't have permission to publish to it"}
+    
+    # Convert markdown to HTML if needed
+    content = args["content"]
+    if not content.startswith("<"):
+        content = markdown_to_wp_html(
+            content,
+            title=args["title"],
+            keywords=args.get("keywords", []),
+        )
+    
+    blog_service = ZiloBlogService(ctx.db)
+    result = await blog_service.publish_post(
+        wp_slug=args["wp_slug"],
+        title=args["title"],
+        content=content,
+        excerpt=args.get("excerpt", ""),
+        keywords=args.get("keywords", []),
+        category=args.get("category", "Business"),
+    )
+    return result

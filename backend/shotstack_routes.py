@@ -13,6 +13,48 @@ from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+
+class Asset(BaseModel):
+    type: str = Field(..., description="Asset type: image, video, title, audio, voice")
+    src: Optional[str] = Field(None, description="URL or file reference")
+    text: Optional[str] = Field(None, description="Text for title/voice assets")
+    style: Optional[Dict[str, Any]] = Field(None, description="Style options")
+    start: Optional[float] = Field(0, description="Start time in seconds")
+    length: Optional[float] = Field(None, description="Duration in seconds")
+    position: Optional[str] = Field("center", description="Position for overlays")
+    transition: Optional[Dict[str, Any]] = Field(None, description="Transition effects")
+
+
+class ShotstackTemplate(BaseModel):
+    id: Optional[str] = Field(None, description="Template ID (omit for new)")
+    name: str = Field(..., description="Template name")
+    description: Optional[str] = Field(None)
+    type: str = Field("image", description="Output type: image, voice, combined")
+    format: str = Field("png", description="Output format: jpg, png, mp3")
+    dimensions: Dict[str, int] = Field({"width": 1920, "height": 1080}, description="Output dimensions")
+    duration: Optional[float] = Field(None, description="Duration for voice assets")
+    assets: List[Asset] = Field(default_factory=list, description="Design assets")
+    voice: Optional[Dict[str, Any]] = Field(None, description="Voice synthesis settings")
+    background: Optional[str] = Field(None, description="Background color/image")
+    music: Optional[str] = Field(None, description="Background music URL")
+
+
+class RenderRequest(BaseModel):
+    template_id: Optional[str] = Field(None, description="Template ID to render")
+    template: Optional[ShotstackTemplate] = Field(None, description="Inline template")
+    modifications: Dict[str, Any] = Field(default_factory=dict, description="Field overrides")
+    output_format: Optional[str] = Field(None, description="Override output format")
+    webhook_url: Optional[str] = Field(None, description="Webhook for completion")
+
+
+class RenderResponse(BaseModel):
+    id: str
+    status: str
+    message: Optional[str] = None
+    render_url: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
 def make_shotstack_router(user_dep):
     router = APIRouter(prefix="/shotstack", tags=["shotstack"])
     
@@ -22,45 +64,6 @@ def make_shotstack_router(user_dep):
     
     if not SHOTSTACK_API_KEY:
         logging.warning("[shotstack] SHOTSTACK_API_KEY not set — endpoints will return mock responses")
-    
-    # ── Models ────────────────────────────────────────────────────────────────
-    
-    class Asset(BaseModel):
-        type: str = Field(..., description="Asset type: image, video, title, audio, voice")
-        src: Optional[str] = Field(None, description="URL or file reference")
-        text: Optional[str] = Field(None, description="Text for title/voice assets")
-        style: Optional[Dict[str, Any]] = Field(None, description="Style options")
-        start: Optional[float] = Field(0, description="Start time in seconds")
-        length: Optional[float] = Field(None, description="Duration in seconds")
-        position: Optional[str] = Field("center", description="Position for overlays")
-        transition: Optional[Dict[str, Any]] = Field(None, description="Transition effects")
-    
-    class ShotstackTemplate(BaseModel):
-        id: Optional[str] = Field(None, description="Template ID (omit for new)")
-        name: str = Field(..., description="Template name")
-        description: Optional[str] = Field(None)
-        type: str = Field("image", description="Output type: image, voice, combined")
-        format: str = Field("png", description="Output format: jpg, png, mp3")
-        dimensions: Dict[str, int] = Field({"width": 1920, "height": 1080}, description="Output dimensions")
-        duration: Optional[float] = Field(None, description="Duration for voice assets")
-        assets: List[Asset] = Field(default_factory=list, description="Design assets")
-        voice: Optional[Dict[str, Any]] = Field(None, description="Voice synthesis settings")
-        background: Optional[str] = Field(None, description="Background color/image")
-        music: Optional[str] = Field(None, description="Background music URL")
-        
-    class RenderRequest(BaseModel):
-        template_id: Optional[str] = Field(None, description="Template ID to render")
-        template: Optional[ShotstackTemplate] = Field(None, description="Inline template")
-        modifications: Dict[str, Any] = Field(default_factory=dict, description="Field overrides")
-        output_format: Optional[str] = Field(None, description="Override output format")
-        webhook_url: Optional[str] = Field(None, description="Webhook for completion")
-        
-    class RenderResponse(BaseModel):
-        id: str
-        status: str
-        message: Optional[str] = None
-        render_url: Optional[str] = None
-        expires_at: Optional[str] = None
     
     # ── Helpers ───────────────────────────────────────────────────────────────
     
