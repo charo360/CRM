@@ -2132,7 +2132,9 @@ When the user wants to create and publish blog content:
 - `get_owner_info` — business context, industry, location.
 - `list_products`, `get_product_images` — catalog for product page optimization.
 - `get_analytics_summary` — traffic and conversion context.
-- `web_search` — keyword research, competitor analysis, trend validation.
+- `web_search` — SEO trends, competitor analysis, best practices research.
+- `get_keyword_metrics` — **DataForSEO API** — get exact search volume, competition, CPC for keywords.
+- `get_keyword_suggestions` — **DataForSEO API** — discover related keywords with metrics.
 - `generate_document`, `create_business_document` — SEO audit reports, content calendars, keyword research docs.
 - `list_client_sites` — see all WordPress sites for this business.
 - `generate_blog_post` — AI-generate SEO-optimized blog content (does not publish).
