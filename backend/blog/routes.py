@@ -240,8 +240,8 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
 
     wrapper = (
         '<div style="font-family:-apple-system,BlinkMacSystemFont,'
-        "'Segoe UI',Georgia,serif;color:#1e293b;line-height:1.8;max-width:100%;"
-        'box-sizing:border-box;">'
+        "'Segoe UI',Georgia,serif;color:#1e293b;line-height:1.8;"
+        'max-width:740px;width:100%;margin:0 auto;box-sizing:border-box;">'
     )
     return wrapper + "\n".join(parts) + "</div>"
 
