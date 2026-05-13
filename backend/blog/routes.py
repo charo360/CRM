@@ -802,28 +802,49 @@ def make_blog_router(db, get_current_user):
         headers = {"Authorization": f"Basic {auth_header}"}
 
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=20) as client:
+                # Fetch all comments regardless of moderation status
                 r = await client.get(
-                    f"{site_base}/wp-json/wp/v2/comments?per_page=20&orderby=date&order=desc",
+                    f"{site_base}/wp-json/wp/v2/comments"
+                    "?per_page=50&orderby=date&order=desc&status=any",
                     headers=headers,
                 )
-                if r.status_code == 200:
-                    raw = r.json()
-                    comments = [
-                        {
-                            "id": c.get("id"),
-                            "post_id": c.get("post"),
-                            "author": c.get("author_name"),
-                            "email": c.get("author_email"),
-                            "content": c.get("content", {}).get("rendered", ""),
-                            "date": c.get("date"),
-                            "status": c.get("status"),
-                            "post_url": c.get("link", ""),
-                        }
-                        for c in raw
-                    ]
-                    return {"comments": comments}
-                return {"comments": [], "reason": f"WP API {r.status_code}"}
+                if r.status_code != 200:
+                    return {"comments": [], "reason": f"WP API {r.status_code}"}
+
+                raw = r.json()
+
+                # Resolve post titles for all unique post IDs in one batch
+                post_ids = list({c.get("post") for c in raw if c.get("post")})
+                post_titles: dict[int, str] = {}
+                post_links: dict[int, str] = {}
+                if post_ids:
+                    ids_param = ",".join(str(p) for p in post_ids)
+                    pr = await client.get(
+                        f"{site_base}/wp-json/wp/v2/posts?include={ids_param}&per_page=50",
+                        headers=headers,
+                    )
+                    if pr.status_code == 200:
+                        for p in pr.json():
+                            post_titles[p["id"]] = p.get("title", {}).get("rendered", f"Post {p['id']}")
+                            post_links[p["id"]] = p.get("link", "")
+
+                comments = [
+                    {
+                        "id": c.get("id"),
+                        "post_id": c.get("post"),
+                        "post_title": post_titles.get(c.get("post"), f"Post {c.get('post')}"),
+                        "post_link": post_links.get(c.get("post"), ""),
+                        "author": c.get("author_name"),
+                        "email": c.get("author_email"),
+                        "content": c.get("content", {}).get("rendered", ""),
+                        "date": c.get("date"),
+                        "status": c.get("status"),
+                        "parent": c.get("parent", 0),
+                    }
+                    for c in raw
+                ]
+                return {"comments": comments}
         except Exception as exc:
             logger.warning("[blog] Comments fetch failed for %s: %s", wp_slug, exc)
             return {"comments": [], "reason": str(exc)}

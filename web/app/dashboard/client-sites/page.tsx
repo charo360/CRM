@@ -20,12 +20,15 @@ interface SiteFeatures {
 
 interface Comment {
   id: number;
+  post_id: number;
+  post_title: string;
+  post_link: string;
   author: string;
   email: string;
   content: string;
   date: string;
   status: string;
-  post_url: string;
+  parent: number;
 }
 
 interface FormEntry {
@@ -487,14 +490,7 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
               <Loader2 size={16} className="animate-spin" /> Loading…
             </div>
           ) : engagementTab === "comments" ? (
-            <div className="px-4 py-3 space-y-2">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Comments</p>
-              {comments.length === 0 ? (
-                <p className="text-xs text-slate-400 text-center py-6">No comments yet</p>
-              ) : comments.map((c) => (
-                <CommentCard key={c.id} comment={c} wpSlug={site.wp_slug} />
-              ))}
-            </div>
+            <CommentsPanel comments={comments} wpSlug={site.wp_slug} />
           ) : (
             <div className="px-4 py-3 space-y-2">
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Get in Touch Submissions</p>
@@ -610,7 +606,72 @@ function QuickLink({ href, icon, label, sub }: { href: string; icon: React.React
   );
 }
 
-function CommentCard({ comment, wpSlug }: { comment: Comment; wpSlug: string }) {
+function CommentsPanel({ comments, wpSlug }: { comments: Comment[]; wpSlug: string }) {
+  if (comments.length === 0) {
+    return (
+      <div className="px-4 py-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Comments</p>
+        <p className="text-xs text-slate-400 text-center py-6">No comments yet</p>
+      </div>
+    );
+  }
+
+  // Group by post_id
+  const groups = new Map<number, { title: string; link: string; comments: Comment[] }>();
+  for (const c of comments) {
+    if (!groups.has(c.post_id)) {
+      groups.set(c.post_id, { title: c.post_title, link: c.post_link, comments: [] });
+    }
+    groups.get(c.post_id)!.comments.push(c);
+  }
+
+  const pending = comments.filter((c) => c.status === "hold" || c.status === "pending").length;
+
+  return (
+    <div className="px-4 py-3 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+          Blog Comments
+        </p>
+        {pending > 0 && (
+          <span className="text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200 rounded-full px-2 py-0.5">
+            {pending} awaiting moderation
+          </span>
+        )}
+      </div>
+      {Array.from(groups.entries()).map(([postId, group]) => (
+        <div key={postId} className="space-y-2">
+          {/* Post header */}
+          <div className="flex items-center gap-2">
+            <BookOpen size={11} className="text-slate-400 shrink-0" />
+            <span className="text-xs font-semibold text-slate-700 truncate flex-1"
+              dangerouslySetInnerHTML={{ __html: group.title }} />
+            {group.link && (
+              <a href={group.link} target="_blank" rel="noopener noreferrer"
+                className="text-[10px] text-blue-500 hover:underline shrink-0 flex items-center gap-0.5">
+                <ExternalLink size={9} /> View post
+              </a>
+            )}
+          </div>
+          {/* Comments under this post — only top-level (parent=0), replies indented */}
+          {group.comments.filter((c) => c.parent === 0).map((c) => (
+            <div key={c.id} className="space-y-1.5 pl-3 border-l-2 border-slate-200">
+              <CommentCard comment={c} wpSlug={wpSlug} />
+              {/* Replies to this comment */}
+              {group.comments.filter((r) => r.parent === c.id).map((reply) => (
+                <div key={reply.id} className="pl-3 border-l-2 border-blue-100">
+                  <CommentCard comment={reply} wpSlug={wpSlug} isReply />
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; wpSlug: string; isReply?: boolean }) {
   const [showReply, setShowReply] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
@@ -633,15 +694,24 @@ function CommentCard({ comment, wpSlug }: { comment: Comment; wpSlug: string }) 
     }
   }
 
+  const isPending = comment.status === "hold" || comment.status === "pending";
+
   return (
-    <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
-      <div className="flex items-center justify-between">
+    <div className={`bg-white rounded-lg border p-3 space-y-2 ${isPending ? "border-amber-200 bg-amber-50/40" : "border-slate-200"}`}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
           <User size={11} className="text-slate-400" /> {comment.author || "Anonymous"}
         </span>
-        <span className="flex items-center gap-1 text-[10px] text-slate-400">
-          <Calendar size={10} /> {new Date(comment.date).toLocaleDateString()}
-        </span>
+        <div className="flex items-center gap-2">
+          {isPending && (
+            <span className="text-[9px] font-semibold bg-amber-100 text-amber-700 border border-amber-200 rounded-full px-1.5 py-0.5 uppercase tracking-wide">
+              Pending
+            </span>
+          )}
+          <span className="flex items-center gap-1 text-[10px] text-slate-400">
+            <Calendar size={10} /> {new Date(comment.date).toLocaleDateString()}
+          </span>
+        </div>
       </div>
       <p className="text-xs text-slate-600 leading-relaxed">
         {comment.content.replace(/<[^>]*>/g, "")}
@@ -654,7 +724,7 @@ function CommentCard({ comment, wpSlug }: { comment: Comment; wpSlug: string }) 
         </p>
       )}
 
-      {!sent && (
+      {!sent && !isReply && (
         <>
           <button
             onClick={() => setShowReply((v) => !v)}
