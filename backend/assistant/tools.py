@@ -11477,3 +11477,153 @@ async def switch_to_agent(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, A
     reason = args.get("reason", "")
     logger.info("[switch_to_agent] handoff → %s | reason: %s", target, reason)
     return {"__handoff__": target, "reason": reason}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTOBLOGGING TOOLS (SEO Agent)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="list_client_sites",
+    description="List all WordPress sites (blogs/shops) for the current business. Returns site URLs, features enabled (blog, shop, forms), and post counts.",
+    parameters={"type": "object", "properties": {}},
+)
+async def list_client_sites(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    sites = await ctx.db.blogs.find({"client_id": ctx.user_id}).to_list(100)
+    return {
+        "count": len(sites),
+        "sites": [
+            {
+                "wp_slug": s.get("wp_slug"),
+                "business_name": s.get("business_name"),
+                "site_url": s.get("site_url"),
+                "industry": s.get("industry"),
+                "location": s.get("location"),
+                "posts_count": s.get("posts_count", 0),
+                "features": s.get("features", {}),
+                "created_at": s.get("created_at").isoformat() if s.get("created_at") else None,
+            }
+            for s in sites
+        ],
+    }
+
+
+@tool(
+    name="generate_blog_post",
+    description=(
+        "Generate an SEO-optimized blog post using AI. Returns title, content (HTML), excerpt, and keywords. "
+        "Does NOT publish — use publish_blog_post to publish to WordPress."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["topic"],
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "The blog post topic or title (e.g. 'How to improve local SEO for bakeries')",
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Target keywords to optimize for (e.g. ['local SEO', 'bakery marketing', 'Google My Business'])",
+            },
+            "industry": {
+                "type": "string",
+                "description": "Business industry for context (e.g. 'bakery', 'tech', 'retail')",
+            },
+            "location": {
+                "type": "string",
+                "description": "Business location for local SEO context (e.g. 'Nairobi', 'Westlands')",
+            },
+            "word_count": {
+                "type": "integer",
+                "description": "Target word count (default 1000, range 500-2500)",
+            },
+        },
+    },
+)
+async def generate_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from blog.content_generator import generate_seo_blog_post
+    
+    # Get business context
+    user = await ctx.db.users.find_one({"_id": ctx.user_id})
+    business_name = user.get("business_name", "")
+    
+    result = await generate_seo_blog_post(
+        topic=args["topic"],
+        keywords=args.get("keywords", []),
+        business_name=business_name,
+        industry=args.get("industry", ""),
+        location=args.get("location", ""),
+        word_count=args.get("word_count", 1000),
+    )
+    return result
+
+
+@tool(
+    name="publish_blog_post",
+    description=(
+        "Publish a blog post to a WordPress site. Automatically generates a featured image via Gemini. "
+        "Use list_client_sites first to get the wp_slug."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["wp_slug", "title", "content"],
+        "properties": {
+            "wp_slug": {
+                "type": "string",
+                "description": "WordPress site slug (from list_client_sites)",
+            },
+            "title": {
+                "type": "string",
+                "description": "Blog post title",
+            },
+            "content": {
+                "type": "string",
+                "description": "Blog post content (HTML or markdown)",
+            },
+            "excerpt": {
+                "type": "string",
+                "description": "Meta description / excerpt (150-160 chars recommended)",
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "SEO keywords (first one becomes Yoast focus keyword)",
+            },
+            "category": {
+                "type": "string",
+                "description": "Post category (default: 'Business')",
+            },
+        },
+    },
+    destructive=True,
+)
+async def publish_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from blog.blog_service import ZiloBlogService
+    from blog.routes import markdown_to_wp_html
+    
+    # Verify ownership
+    blog = await ctx.db.blogs.find_one({"wp_slug": args["wp_slug"], "client_id": ctx.user_id})
+    if not blog:
+        return {"error": "Site not found or you don't have permission to publish to it"}
+    
+    # Convert markdown to HTML if needed
+    content = args["content"]
+    if not content.startswith("<"):
+        content = markdown_to_wp_html(
+            content,
+            title=args["title"],
+            keywords=args.get("keywords", []),
+        )
+    
+    blog_service = ZiloBlogService(ctx.db)
+    result = await blog_service.publish_post(
+        wp_slug=args["wp_slug"],
+        title=args["title"],
+        content=content,
+        excerpt=args.get("excerpt", ""),
+        keywords=args.get("keywords", []),
+        category=args.get("category", "Business"),
+    )
+    return result

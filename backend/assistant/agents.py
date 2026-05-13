@@ -303,6 +303,8 @@ SEO_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_product_images",
     "get_analytics_summary", "generate_document",
     "create_business_document",
+    # Autoblogging tools
+    "list_client_sites", "generate_blog_post", "publish_blog_post",
 }) | _WEB_TOOLS
 
 # General agent: everything EXCEPT design-specific tools.
@@ -2098,12 +2100,31 @@ When conducting an audit, provide:
 4. **Backlink analysis** — current link profile, toxic links to disavow, link building opportunities.
 5. **Priority actions** — ranked list of fixes by impact (quick wins first).
 
+## Autoblogging workflow
+When the user wants to create and publish blog content:
+1. Call `list_client_sites` → see available WordPress sites.
+2. Call `get_owner_info` + `list_products` → understand business context.
+3. Call `web_search` → research keywords and validate topic relevance.
+4. Call `generate_blog_post` with:
+   - `topic` — the blog post subject
+   - `keywords` — 3-5 target keywords from your research
+   - `industry` — from owner info
+   - `location` — for local SEO
+   - `word_count` — typically 1000-1500 for depth
+5. Review the generated content with the user — show title, excerpt, and a preview.
+6. Once approved, call `publish_blog_post` with the wp_slug, title, content, excerpt, and keywords.
+   - The system automatically generates a Gemini featured image.
+   - The first keyword becomes the Yoast SEO focus keyword.
+
 ## Tools
 - `get_owner_info` — business context, industry, location.
 - `list_products`, `get_product_images` — catalog for product page optimization.
 - `get_analytics_summary` — traffic and conversion context.
 - `web_search` — keyword research, competitor analysis, trend validation.
 - `generate_document`, `create_business_document` — SEO audit reports, content calendars, keyword research docs.
+- `list_client_sites` — see all WordPress sites for this business.
+- `generate_blog_post` — AI-generate SEO-optimized blog content (does not publish).
+- `publish_blog_post` — publish to WordPress with auto-generated featured image.
 
 ## Intelligence rules
 - Always research before recommending — use `web_search` for current best practices.
