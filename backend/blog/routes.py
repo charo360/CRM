@@ -1122,6 +1122,12 @@ def make_blog_router(db, get_current_user):
                     "\U0001f4ac Chat on WhatsApp</a></div>"
                     "<!-- /wp:button --></div>"
                     "<!-- /wp:buttons -->"
+                    "<!-- wp:paragraph -->"
+                    "<p></p>"
+                    "<!-- /wp:paragraph -->"
+                    "<!-- wp:shortcode -->"
+                    "[wpforms id=\"\" title=\"false\"]"
+                    "<!-- /wp:shortcode -->"
                 ),
             },
             {
@@ -1146,16 +1152,27 @@ def make_blog_router(db, get_current_user):
             },
         ]
 
-        created, skipped = [], []
+        created, updated = [], []
         async with httpx.AsyncClient(timeout=20) as client:
             for page in pages:
-                # Check if page already exists
+                # Check if page already exists — update it if so
                 chk = await client.get(
-                    f"{site_base}/wp-json/wp/v2/pages?slug={page['slug']}&status=publish",
+                    f"{site_base}/wp-json/wp/v2/pages?slug={page['slug']}&status=any",
                     headers=headers,
                 )
-                if chk.status_code == 200 and chk.json():
-                    skipped.append(page["slug"])
+                existing = chk.json() if chk.status_code == 200 else []
+                if existing:
+                    page_id = existing[0]["id"]
+                    r = await client.post(
+                        f"{site_base}/wp-json/wp/v2/pages/{page_id}",
+                        headers=headers,
+                        json={"title": page["title"], "slug": page["slug"],
+                              "status": "publish", "content": page["content"]},
+                    )
+                    if r.status_code in (200, 201):
+                        updated.append(page["slug"])
+                    else:
+                        logger.warning("[blog] recreate-pages update %s/%s → %s", wp_slug, page["slug"], r.status_code)
                     continue
                 r = await client.post(
                     f"{site_base}/wp-json/wp/v2/pages",

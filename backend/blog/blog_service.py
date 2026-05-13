@@ -605,17 +605,23 @@ class ZiloBlogService:
                 "title": "Contact Us",
                 "content": (
                     "<!-- wp:paragraph -->"
-                    "<p>We&rsquo;d love to hear from you. Reach us instantly on WhatsApp:</p>"
+                    "<p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p>"
                     "<!-- /wp:paragraph -->"
                     "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
                     "<div class=\"wp-block-buttons\">"
-                    "<!-- wp:button {\"backgroundColor\":\"vivid-green-cyan\",\"textColor\":\"white\"} -->"
+                    "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
                     "<div class=\"wp-block-button\">"
-                    "<a class=\"wp-block-button__link has-white-color has-vivid-green-cyan-background-color has-text-color has-background\" "
+                    "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
                     "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
-                    "💬 Chat on WhatsApp</a></div>"
+                    "\U0001f4ac Chat on WhatsApp</a></div>"
                     "<!-- /wp:button --></div>"
                     "<!-- /wp:buttons -->"
+                    "<!-- wp:paragraph -->"
+                    "<p></p>"
+                    "<!-- /wp:paragraph -->"
+                    "<!-- wp:shortcode -->"
+                    "[wpforms id=\"\" title=\"false\"]"
+                    "<!-- /wp:shortcode -->"
                 ),
             },
         ]
