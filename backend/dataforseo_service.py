@@ -11,21 +11,12 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
-def _get_credentials() -> tuple[str, str]:
-    """Get DataForSEO API credentials from environment."""
-    login = os.getenv("DATAFORSEO_LOGIN", "")
-    password = os.getenv("DATAFORSEO_PASSWORD", "")
-    if not login or not password:
-        raise ValueError("DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD must be set")
-    return login, password
-
-
 def _get_auth_header() -> str:
-    """Generate Basic Auth header for DataForSEO API."""
-    login, password = _get_credentials()
-    credentials = f"{login}:{password}"
-    encoded = base64.b64encode(credentials.encode()).decode()
-    return f"Basic {encoded}"
+    """Get DataForSEO API auth header from environment (uses existing DATAFORSEO_TOKEN)."""
+    token = os.getenv("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        raise ValueError("DATAFORSEO_TOKEN must be set")
+    return f"Basic {token}"
 
 
 async def get_keyword_data(
