@@ -214,7 +214,7 @@ export default function ClientSitesPage() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -318,7 +318,7 @@ export default function ClientSitesPage() {
 
       {/* Site grid */}
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
           {[1, 2, 3].map((i) => <div key={i} className="bg-white rounded-xl border border-slate-200 p-5 animate-pulse h-52" />)}
         </div>
       ) : sites.length === 0 ? (
@@ -336,7 +336,7 @@ export default function ClientSitesPage() {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
           {sites.map((site) => (
             <SiteCard
               key={site.wp_slug}
