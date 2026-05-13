@@ -123,23 +123,33 @@ class ZiloBlogService:
         base = _base_url()
         headers = _wp_headers()
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            # 1. Create a WordPress user for the business
-            user_res = await client.post(
-                f"{base}/wp-json/wp/v2/users",
-                headers=headers,
-                json={
-                    "username": slug,
-                    "email": client_email,
-                    "password": _generate_password(),
-                    "roles": ["author"],
-                },
+        # 1. Create a WordPress user for the business (via WP-CLI for multisite compatibility)
+        try:
+            import subprocess
+            user_password = _generate_password()
+            result = subprocess.run(
+                [
+                    "wp", "--allow-root",
+                    f"--path={cli_path}",
+                    "user", "create",
+                    slug,  # username
+                    client_email,  # email
+                    f"--user_pass={user_password}",
+                    "--role=author",
+                    "--porcelain",  # returns user ID on success
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
-            wp_user = user_res.json() if user_res.status_code in (200, 201) else {}
-            if user_res.status_code not in (200, 201):
-                logger.warning(
-                    f"[blog] WP user creation returned {user_res.status_code}: {user_res.text[:300]}"
-                )
+            if result.returncode == 0:
+                user_id = result.stdout.strip()
+                logger.info(f"[blog] WordPress user created: {slug} (ID: {user_id})")
+            else:
+                # User might already exist - that's okay
+                logger.info(f"[blog] WP user create: {result.stderr[:200]}")
+        except Exception as e:
+            logger.warning(f"[blog] WP user creation via CLI failed (may already exist): {e}")
 
         # 2. Create subsite via WP-CLI on the server
         site_url = wp_subsite_public_url(slug)      # public URL (slug.zilo.pro)
