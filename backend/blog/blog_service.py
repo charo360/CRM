@@ -289,13 +289,22 @@ class ZiloBlogService:
         if featured_media_id:
             post_payload["featured_media"] = featured_media_id
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        post_url = f"{subsite_url}/wp-json/wp/v2/posts"
+        headers = _wp_headers()
+        
+        logger.info(f"[blog] Publishing to: {post_url}")
+        logger.debug(f"[blog] Auth header present: {bool(headers.get('Authorization'))}")
+        
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             post_res = await client.post(
-                f"{subsite_url}/wp-json/wp/v2/posts",
-                headers=_wp_headers(),
+                post_url,
+                headers=headers,
                 json=post_payload,
             )
 
+        logger.info(f"[blog] WordPress response: {post_res.status_code}")
+        content_type = post_res.headers.get("content-type", "")
+        
         if post_res.status_code == 201:
             post = post_res.json()
 
@@ -328,9 +337,13 @@ class ZiloBlogService:
             )
             return {"post_url": post.get("link"), "post_id": post.get("id")}
         else:
-            raise RuntimeError(
-                f"WP publish failed ({post_res.status_code}): {post_res.text[:400]}"
-            )
+            error_detail = f"WP publish failed ({post_res.status_code})"
+            if "text/html" in content_type:
+                error_detail += f" - Got HTML instead of JSON. URL: {post_url}. Check WP_ADMIN_USER and WP_ADMIN_APP_PASSWORD."
+            else:
+                error_detail += f": {post_res.text[:400]}"
+            logger.error(f"[blog] {error_detail}")
+            raise RuntimeError(error_detail)
 
     async def _generate_and_upload_featured_image(
         self,
