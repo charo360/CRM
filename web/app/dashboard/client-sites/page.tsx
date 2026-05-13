@@ -677,6 +677,8 @@ function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; w
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [err, setErr] = useState("");
+  const [approving, setApproving] = useState(false);
+  const [approved, setApproved] = useState(false);
 
   async function sendReply() {
     if (!replyText.trim()) return;
@@ -694,7 +696,19 @@ function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; w
     }
   }
 
-  const isPending = comment.status === "hold" || comment.status === "pending";
+  async function approveComment() {
+    setApproving(true);
+    try {
+      await api.post(`/blog/clients/${wpSlug}/comments/${comment.id}/approve`, {});
+      setApproved(true);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to approve");
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  const isPending = !approved && (comment.status === "hold" || comment.status === "pending");
 
   return (
     <div className={`bg-white rounded-lg border p-3 space-y-2 ${isPending ? "border-amber-200 bg-amber-50/40" : "border-slate-200"}`}>
@@ -724,14 +738,34 @@ function CommentCard({ comment, wpSlug, isReply = false }: { comment: Comment; w
         </p>
       )}
 
+      {err && !showReply && <p className="text-[10px] text-rose-500">{err}</p>}
+
+      {approved && (
+        <p className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+          <Check size={10} /> Approved — now visible on the blog
+        </p>
+      )}
+
       {!sent && !isReply && (
         <>
-          <button
-            onClick={() => setShowReply((v) => !v)}
-            className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 font-medium transition-colors"
-          >
-            <CornerDownRight size={10} /> {showReply ? "Cancel" : "Reply"}
-          </button>
+          <div className="flex items-center gap-3">
+            {isPending && (
+              <button
+                onClick={approveComment}
+                disabled={approving}
+                className="flex items-center gap-1 text-[10px] text-emerald-700 hover:text-emerald-900 font-medium transition-colors disabled:opacity-50"
+              >
+                {approving ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
+                {approving ? "Approving…" : "Approve"}
+              </button>
+            )}
+            <button
+              onClick={() => setShowReply((v) => !v)}
+              className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 font-medium transition-colors"
+            >
+              <CornerDownRight size={10} /> {showReply ? "Cancel" : "Reply"}
+            </button>
+          </div>
           {showReply && (
             <div className="space-y-1.5 pt-1">
               <textarea

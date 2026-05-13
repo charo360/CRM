@@ -849,6 +849,35 @@ def make_blog_router(db, get_current_user):
             logger.warning("[blog] Comments fetch failed for %s: %s", wp_slug, exc)
             return {"comments": [], "reason": str(exc)}
 
+    # ── Approve a pending WordPress comment from the CRM ──────────────────────
+
+    @router.post("/clients/{wp_slug}/comments/{comment_id}/approve")
+    async def approve_comment(wp_slug: str, comment_id: int, user=Depends(get_current_user)):
+        """Approve a pending comment so it becomes visible on the blog post."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{site_base}/wp-json/wp/v2/comments/{comment_id}",
+                headers=headers,
+                json={"status": "approved"},
+            )
+            if r.status_code in (200, 201):
+                return {"status": "approved"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
     # ── Reply to a WordPress comment from the CRM ──────────────────────────────
 
     @router.post("/clients/{wp_slug}/comments/{comment_id}/reply")
