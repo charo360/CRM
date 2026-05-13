@@ -665,6 +665,16 @@ class ZiloBlogService:
         except Exception as exc:
             logger.warning(f"[blog] front/blog page configuration failed: {exc}")
 
+        # 7. Remove the default "Sample Page" WordPress creates on every new site
+        try:
+            await _wp(
+                "eval",
+                '$p=get_page_by_path("sample-page");'
+                'if($p){wp_delete_post($p->ID,true);echo "deleted";}',
+            )
+            logger.info(f"[blog] Sample Page removed for {slug}")
+        except Exception as exc:
+            logger.warning(f"[blog] Sample Page removal failed: {exc}")
 
     async def _apply_industry_theme(self, slug: str, industry: str):
         """
