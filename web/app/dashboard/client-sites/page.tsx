@@ -120,6 +120,7 @@ export default function ClientSitesPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [reseeding, setReseeding] = useState<string | null>(null);
   const [recreating, setRecreating] = useState<string | null>(null);
+  const [activating, setActivating] = useState<string | null>(null);
   const [engagementSlug, setEngagementSlug] = useState<string | null>(null);
   const [engagementTab, setEngagementTab] = useState<"comments" | "contacts" | "posts">("comments");
   const [comments, setComments] = useState<Comment[]>([]);
@@ -198,6 +199,14 @@ export default function ClientSitesPage() {
       await api.post(`/blog/clients/${slug}/recreate-pages`, {});
     } catch { /* non-fatal */ }
     finally { setRecreating(null); }
+  }
+
+  async function activatePlugins(slug: string) {
+    setActivating(slug);
+    try {
+      await api.post(`/blog/clients/${slug}/activate-plugins`, {});
+    } catch { /* non-fatal */ }
+    finally { setActivating(null); }
   }
 
   async function reseedSite(slug: string, type: "products" | "forms") {
@@ -367,6 +376,7 @@ export default function ClientSitesPage() {
               reseedingProducts={reseeding === `${site.wp_slug}:products`}
               reseedingForms={reseeding === `${site.wp_slug}:forms`}
               recreatingPages={recreating === site.wp_slug}
+              activatingPlugins={activating === site.wp_slug}
               engagementOpen={engagementSlug === site.wp_slug}
               engagementTab={engagementTab}
               engagementLoading={engagementLoading && engagementSlug === site.wp_slug}
@@ -380,6 +390,7 @@ export default function ClientSitesPage() {
               onReseedProducts={() => reseedSite(site.wp_slug, "products")}
               onReseedForms={() => reseedSite(site.wp_slug, "forms")}
               onRecreatePages={() => recreatePages(site.wp_slug)}
+              onActivatePlugins={() => activatePlugins(site.wp_slug)}
               onOpenEngagement={(tab) => openEngagement(site.wp_slug, tab)}
             />
           ))}
@@ -399,6 +410,7 @@ interface SiteCardProps {
   reseedingProducts: boolean;
   reseedingForms: boolean;
   recreatingPages: boolean;
+  activatingPlugins: boolean;
   engagementOpen: boolean;
   engagementTab: "comments" | "contacts" | "posts";
   engagementLoading: boolean;
@@ -412,6 +424,7 @@ interface SiteCardProps {
   onReseedProducts: () => void;
   onReseedForms: () => void;
   onRecreatePages: () => void;
+  onActivatePlugins: () => void;
   onOpenEngagement: (tab: "comments" | "contacts" | "posts") => void;
 }
 
@@ -485,9 +498,9 @@ function WhatsAppEditor({ wpSlug, initial }: { wpSlug: string; initial: string }
   );
 }
 
-function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages,
+function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages, activatingPlugins,
   engagementOpen, engagementTab, engagementLoading, comments, formEntries, wpPosts, pendingCount,
-  onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onOpenEngagement }: SiteCardProps) {
+  onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onActivatePlugins, onOpenEngagement }: SiteCardProps) {
   const enabledFeatures = Object.entries(site.features || { shop: true, forms: true, blog: true }).filter(([, v]) => v);
   const siteUrl = site.blog_url || "";
 
@@ -693,6 +706,15 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
               >
                 {recreatingPages ? <Loader2 size={11} className="animate-spin" /> : <Globe size={11} />}
                 {recreatingPages ? "Creating…" : "Recreate Pages"}
+              </button>
+              <button
+                onClick={onActivatePlugins}
+                disabled={activatingPlugins}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-orange-50 text-orange-700 border border-orange-200 rounded-lg hover:bg-orange-100 disabled:opacity-50 transition-colors font-medium"
+                title="Activates WPForms + WooCommerce on this subsite — fixes forms showing as raw text"
+              >
+                {activatingPlugins ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
+                {activatingPlugins ? "Activating…" : "Activate Plugins"}
               </button>
             </div>
           </div>

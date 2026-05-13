@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from blog.blog_service import ZiloBlogService, wp_subsite_public_url
+from blog.blog_service import ZiloBlogService, wp_subsite_public_url, _wp_cli
 from blog.topic_generator import research_seo_topic
 from blog.post_generator import generate_blog_post
 from blog.blog_scheduler import publish_daily_posts
@@ -1228,6 +1228,34 @@ def make_blog_router(db, get_current_user):
                     logger.warning("[blog] recreate-pages %s/%s → %s", wp_slug, page["slug"], r.status_code)
 
         return {"created": created, "updated": updated}
+
+    # ── Activate plugins on an existing client subsite ────────────────────────
+
+    @router.post("/clients/{wp_slug}/activate-plugins")
+    async def activate_plugins(wp_slug: str, user=Depends(get_current_user)):
+        """
+        Activates wpforms-lite (and woocommerce) on a subsite via WP-CLI.
+        Fixes the raw [wpforms ...] shortcode showing as text.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        results = {}
+        for plugin in ["wpforms-lite", "woocommerce"]:
+            r = await _wp_cli("plugin", "activate", plugin, url=site_base)
+            results[plugin] = "ok" if r.returncode == 0 else r.stderr[:120]
+            if r.returncode != 0:
+                logger.warning("[blog] activate %s on %s: %s", plugin, wp_slug, r.stderr[:150])
+            else:
+                logger.info("[blog] activated %s on %s", plugin, wp_slug)
+
+        return {"status": "done", "results": results}
 
     # ── Save / update WhatsApp number for a client site ───────────────────────
 
