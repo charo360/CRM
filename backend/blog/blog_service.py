@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from urllib.parse import urlparse
 from slugify import slugify
+from typing import List
 
 logger = logging.getLogger(__name__)
 
