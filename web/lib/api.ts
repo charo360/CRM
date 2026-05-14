@@ -1984,6 +1984,7 @@ export const seoApi = {
       business_type: string;
       location: string;
       keyword_source: "dataforseo" | "ai";
+      excluded_count?: number;
     }>("/seo/keywords", {
       business_type: business_type ?? "",
       location: location ?? "",
@@ -2088,9 +2089,13 @@ export const seoApi = {
     platform: string;
     name: string;
     address: string;
-    phone: string;
-    website: string;
+    phone?: string;
+    website?: string;
   }) => api.post<{ success: boolean; listing: Record<string, unknown> }>("/seo/local/listings", body),
+  updateLocalListing: (id: string, body: Partial<{ platform: string; name: string; address: string; phone: string; website: string; status: string; rating: number; reviews: number }>) =>
+    api.patch<{ success: boolean; listing: Record<string, unknown> }>(`/seo/local/listings/${id}`, body),
+  deleteLocalListing: (id: string) =>
+    api.delete<{ ok: boolean }>(`/seo/local/listings/${id}`),
 
   // Analytics events log
   analyticsEvents: (limit = 50) =>
@@ -2284,6 +2289,38 @@ export interface SeoAgentConversationDetail extends SeoAgentConversation {
   messages: { role: "user" | "assistant"; content: string; tool_steps?: SeoAgentToolStep[]; ts: string }[];
 }
 
+export interface SeoBriefAction {
+  id: string;
+  priority: number;
+  type: "write_post" | "run_audit" | "research_keywords" | "check_rankings" | "fix_issue";
+  title: string;
+  reason: string;
+  effort: string;
+  keyword?: string | null;
+  url?: string | null;
+  agent_prompt: string;
+}
+
+export interface SeoBrief {
+  health_score: number;
+  health_grade: string;
+  status_summary: string;
+  wins: string[];
+  gaps: string[];
+  actions: SeoBriefAction[];
+  generated_at: string;
+  next_check: string;
+  data_snapshot: {
+    published_posts: number;
+    draft_posts: number;
+    keywords_tracked: number;
+    keywords_without_post: number;
+    audit_score: number | null;
+    days_since_audit: number | null;
+    rankings_tracked: number;
+  };
+}
+
 // ── Zilo Autoblogging ─────────────────────────────────────────────────────────
 
 export interface BlogStatus {
@@ -2363,4 +2400,13 @@ export const seoAgentApi = {
   deleteConversation: (id: string) => api.delete<{ ok: boolean }>(`/seo-agent/conversations/${id}`),
 
   status: () => api.get<{ available: boolean; tools: string[] }>("/seo-agent/status"),
+
+  brief: (refresh = false) =>
+    api.get<SeoBrief>(`/seo-agent/brief${refresh ? "?refresh=true" : ""}`),
+
+  executeAction: (agent_prompt: string, conversation_id?: string) =>
+    api.post<SeoAgentChatResponse>("/seo-agent/execute-action", {
+      agent_prompt,
+      conversation_id: conversation_id ?? null,
+    }),
 };
