@@ -42,6 +42,7 @@ import {
   Sparkles,
   TrendingUp,
   Wrench,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -477,6 +478,7 @@ function OverviewTab({ summary, onJump, profile }: { summary: SeoSummary | null;
 function AuditTab() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const [rerunningId, setRerunningId] = useState<string | null>(null);
   const [audit, setAudit] = useState<SeoAudit | null>(null);
   const [fixes, setFixes] = useState<{ field: string; issue: string; fix: string; example: string }[] | null>(null);
   const [fixLoading, setFixLoading] = useState(false);
@@ -487,17 +489,36 @@ function AuditTab() {
     seoApi.listAudits().then(setHistory).catch(() => {});
   }, []);
 
-  async function runAudit() {
-    if (!url.trim()) return;
+  async function runAudit(targetUrl?: string) {
+    const auditUrl = (targetUrl ?? url).trim();
+    if (!auditUrl) return;
+    if (!targetUrl) setUrl(auditUrl);
     setLoading(true); setErr(""); setAudit(null); setFixes(null);
     try {
-      const result = await seoApi.audit(url.trim());
+      const result = await seoApi.audit(auditUrl);
       setAudit(result);
-      setHistory(h => [result, ...h.slice(0, 49)]);
+      setHistory(h => [result, ...h.filter(a => a.url !== result.url).slice(0, 49)]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Audit failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function rerunAudit(historyAudit: SeoAudit) {
+    const auditUrl = historyAudit.url ?? "";
+    if (!auditUrl) return;
+    setUrl(auditUrl);
+    setRerunningId(historyAudit.id ?? null);
+    setErr(""); setAudit(null); setFixes(null);
+    try {
+      const result = await seoApi.audit(auditUrl);
+      setAudit(result);
+      setHistory(h => [result, ...h.filter(a => a.id !== historyAudit.id).slice(0, 49)]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Audit failed");
+    } finally {
+      setRerunningId(null);
     }
   }
 
@@ -610,11 +631,20 @@ function AuditTab() {
           <div className="space-y-2">
             {history.slice(0, 10).map((a) => (
               <div key={a.id} className="flex items-center justify-between gap-3 py-2 border-b border-slate-50 last:border-0">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="text-xs font-medium text-slate-700 truncate">{a.url}</p>
                   <p className="text-xs text-slate-400">{a.created_at ? new Date(a.created_at).toLocaleDateString() : ""}</p>
                 </div>
                 <ScoreBadge score={a.score ?? 0} grade={a.grade ?? ""} />
+                <button
+                  onClick={() => rerunAudit(a)}
+                  disabled={rerunningId === a.id || loading}
+                  title="Re-run audit"
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-50 transition-colors shrink-0"
+                >
+                  <RefreshCw size={10} className={rerunningId === a.id ? "animate-spin" : ""} />
+                  {rerunningId === a.id ? "Running…" : "Re-run"}
+                </button>
               </div>
             ))}
           </div>
