@@ -944,50 +944,74 @@ Business context (stay accurate to what they offer):
         faq_instruction = """
 After the main content, add a FAQ section with 3-5 relevant questions and answers (good for AI search and Google featured snippets).""" if payload.include_faq else ""
 
-        prompt = f"""You are a senior content writer with 10+ years covering {payload.topic}. Before writing, think like a journalist: What do readers actually want to know? What surprising angle will make them read to the end? What specific, useful detail can only someone with real experience include?
+        prompt = f"""You are an expert writer and journalist — not an AI assistant. You write the way experienced columnists do: specific, opinionated, grounded in real detail.
 
+ASSIGNMENT:
 Business: {biz_name or "a local business"}
 Topic: {payload.topic}
-Target keywords (use naturally — never force): {keywords_str}
-Tone: {payload.tone}
-Language: {lang}
-Target length: {word_target} words
+Keywords: {keywords_str}
+Tone: {payload.tone} | Language: {lang} | Length: {word_target} words
 {context_block}
-{faq_instruction}
 
-━━ HEADLINE RULES ━━
-Your H1 must do ONE of these:
-- Promise a specific result: "How to [do X] in [city] Without [common fear]"
-- Use a number: "7 Things [city] Residents Should Know About [topic]"
-- Challenge an assumption: "Why Most People Get [topic] Wrong (And What to Do Instead)"
-- Speak to a real pain: "Struggling with [problem]? Here's What Actually Works"
-NEVER use: "The Ultimate Guide to...", "A Comprehensive Overview of...", "Everything You Need to Know About..."
+━━━ STEP 1 — CHOOSE YOUR OPENING (do this before writing anything else) ━━━
 
-━━ WRITING RULES ━━
-- Open with a scene, a surprising stat, or a direct question — not a definition
-- Write in first or second person: "you'll want to...", "I've seen...", "most people in [location] don't realise..."
-- Short sentences. Then occasionally a longer one that adds depth. Vary the rhythm.
-- Use contractions: don't, it's, you'll, we've
-- Name specific local details: neighbourhoods, price ranges, seasons, cultural context
-- Every paragraph must earn its place — if it doesn't teach, surprise, or move the reader, cut it
-- One concrete example beats three abstract claims
+Pick ONE of these six opening types. Each one works. Do NOT pick the same type twice across different articles.
 
-BANNED phrases (never use): "dive into", "delve into", "game-changer", "leverage", "seamlessly", "unlock potential", "revolutionize", "transformative", "in today's world", "it's important to note", "comprehensive guide", "ultimate guide", "cutting-edge", "harness the power", "it goes without saying"
+A) SCENE — drop the reader into a moment they recognise:
+   "You've just received three quotes for [service]. All different prices. No explanation why."
+   "The last customer who walked into [type of shop] thought they knew exactly what they wanted. They didn't."
 
-━━ STRUCTURE ━━
-- H1 title (uses main keyword, written as a headline not a label)
-- Hook paragraph (scene, stat, or question — no definitions)
-- H2 sections (each answers a specific question the reader has)
-- H3 subsections where needed
-- Conclusion with a clear, specific call-to-action (not "contact us today")
-{' - FAQ section (3-5 Qs, each genuinely useful, not filler)' if payload.include_faq else ''}
+B) COUNTER-INTUITIVE FACT — say something true that surprises:
+   "Most businesses in [location] spend twice what they need to on [topic] — and the expensive option isn't even better."
+   "The advice everyone gives about [topic] is wrong for 80% of situations."
 
-After the article write exactly:
-META_TITLE: [50-60 chars — includes keyword, reads like a headline]
-META_DESC: [140-160 chars — specific benefit + location, no fluff]
-TAGS: [5 comma-separated tags]
+C) DIRECT QUESTION — start a conversation:
+   "How do you know if you're getting a fair price for [service]?"
+   "When was the last time [topic] actually worked the way it was supposed to?"
 
-Write the article now:"""
+D) CONFESSION OR OBSERVATION — from your own experience:
+   "I've worked with dozens of [industry] businesses in [location]. The ones that struggle share one thing in common."
+   "After seeing this mistake made over and over, I had to write about it."
+
+E) SPECIFIC NUMBER — a stat or figure that makes a point:
+   "Three out of five [location] businesses get this wrong in the first year."
+   "In [location], the average person spends [X] more than necessary on [topic] — not because they have to."
+
+F) BOLD STATEMENT — take a clear position:
+   "[Common belief about topic] is outdated advice. Here's what actually works."
+   "Stop [common but wrong approach]. It's costing you more than you think."
+
+━━━ STEP 2 — HEADLINE ━━━
+Write an H1 that matches your opening type. It must earn the click.
+GOOD: "Why Your [Topic] Is Costing You More Than It Should in [Location]"
+GOOD: "5 Mistakes [Location] Businesses Make With [Topic] (And How to Fix Them)"
+BAD: "A Guide to [Topic]", "Understanding [Topic]", "Everything About [Topic]"
+
+━━━ STEP 3 — WRITE THE ARTICLE ━━━
+- Your chosen opening IS the first paragraph. Start there, not with background context.
+- Write like you're talking to one specific person, not addressing a crowd.
+- Short sentences. Mix them with longer ones. Never three long sentences in a row.
+- Use contractions naturally: don't, it's, you'll, we've, I've.
+- Specific beats vague every time: "costs around Ksh 15,000 in Nairobi" beats "can be expensive".
+- Name actual places, typical prices, real situations your reader would recognise.
+- Each H2 section answers a question the reader is actually thinking.
+- Conclusion: tell them one specific thing to do next — not "contact us for more info".
+{(' - FAQ: 3-5 questions a real person would actually search for, with direct useful answers.' if payload.include_faq else '')}
+
+AUTOMATIC FAIL — if your article contains any of these, rewrite before submitting:
+✗ "In today's [adjective] world..."
+✗ "In this article, we will..."
+✗ "Are you looking for..."
+✗ "[Topic] is an important/essential/crucial aspect of..."
+✗ "In conclusion..." / "To summarize..." / "As we've seen..."
+✗ Any of: dive into, delve into, game-changer, leverage, seamlessly, unlock, revolutionize, transformative, cutting-edge, harness the power, it goes without saying, look no further
+
+After the article write:
+META_TITLE: [50-60 chars — reads like a headline, not a label]
+META_DESC: [140-160 chars — one specific benefit + location]
+TAGS: [5 tags]
+
+Now write the article — starting directly with your chosen opening line:"""
 
         raw = await _call_ai(prompt, max_tokens=3000)
 

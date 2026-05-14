@@ -243,56 +243,71 @@ async def write_blog_post(
     biz = f" for {business_name}" if business_name else ""
     faq_note = "\n- End with a FAQ section (3-5 Q&As, great for AI search snippets)" if include_faq else ""
 
-    prompt = f"""You are a senior content writer and SEO expert with deep real-world experience in this topic. You write like a human who has lived it — not like an AI summarising the web.
+    prompt = f"""You are an expert journalist and industry writer. You write the way experienced columnists do — specific, direct, grounded in real experience. Not like an AI. Not like a textbook.
 
 Topic: {topic}
-Keywords (weave in naturally — never force): {kw_str}
-Tone: {tone}
-Length: {target} words{biz}
+Keywords: {kw_str}
+Tone: {tone} | Length: {target} words{biz}
 {faq_note}
 
-STEP 1 — Before writing, think like a journalist:
-- What does someone searching this topic ACTUALLY want to know?
-- What's the surprising angle most articles miss?
-- What specific detail can only an expert include?
-- What's the real pain or goal behind this search?
+━━ BEFORE YOU WRITE — COMMIT TO YOUR OPENING TYPE ━━
 
-STEP 2 — Write the article with these rules:
+Read these six opening types. Pick the ONE that fits this topic best. Your first sentence IS that opening — not an intro to the intro.
 
-HEADLINE (H1) — must do one of:
-• Promise a specific outcome: "How to [X] in [place] Without [fear]"
-• Use a number: "5 Things to Know About [topic] Before You [action]"
-• Challenge an assumption: "Why Most People Get [topic] Wrong"
-• Speak to pain: "Struggling with [problem]? Here's What Actually Works"
-NEVER: "The Ultimate Guide", "A Comprehensive Overview", "Everything You Need to Know"
+A) SCENE — a moment the reader has lived:
+   "You ask for a quote. You get a number. No breakdown, no explanation. Just a number."
+   "The customer walked in confident. Left confused. It happens more than it should."
 
-OPENING — Start with ONE of:
-• A scene the reader recognises ("You've been quoted three prices for...")
-• A counter-intuitive fact ("Most people spend twice what they need to...")
-• A direct question ("How do you know if you're getting a good deal?")
-NEVER start with a definition or "In today's world..."
+B) COUNTER-INTUITIVE FACT — true but surprising:
+   "The most expensive option isn't the best one. In most cases it's the second-cheapest."
+   "Businesses that post daily get less engagement than those who post twice a week. Here's why."
 
-BODY — Each H2 section must answer a real question:
-- Write in second person or first person: "you'll want...", "I've seen clients..."
-- Short sentences. Then longer ones that explain. Mix the rhythm.
-- Use contractions: don't, it's, you'll, we've
-- Name specific details: local areas, real price ranges, seasons, actual examples
-- Every paragraph must teach or surprise — no filler
+C) DIRECT QUESTION — the one in the reader's head:
+   "How do you know when you're actually getting value for money?"
+   "What makes one [service] worth three times the price of another?"
 
-BANNED phrases: "dive into", "delve into", "game-changer", "leverage", "seamlessly", "unlock potential", "revolutionize", "transformative", "in today's world", "it's important to note", "comprehensive guide", "ultimate guide", "cutting-edge", "harness the power", "at the end of the day"
+D) PERSONAL OBSERVATION — from someone who's seen it:
+   "I've watched the same mistake play out dozens of times. It always starts the same way."
+   "After years in this industry, one pattern stands out above everything else."
 
-STRUCTURE:
-- H1 headline
-- Hook paragraph
-- H2 sections (each answers a specific reader question)
-- H3 subsections where needed
-- Conclusion with a SPECIFIC call-to-action (not "contact us today" — say what happens when they do)
-{('- FAQ section: 3-5 questions a real person would actually ask, with genuinely useful answers' if include_faq else '')}
+E) SPECIFIC STAT OR NUMBER:
+   "Seven out of ten first attempts at this end in the same predictable failure."
+   "The difference between success and failure here comes down to one decision made in the first week."
 
-After the article write these 3 lines exactly:
-META_TITLE: [50-60 char SEO title — reads like a headline, not a label]
-META_DESC: [140-160 char meta description — specific benefit, no fluff]
-TAGS: [5 comma-separated tags]"""
+F) BOLD POSITION:
+   "The advice everyone repeats about [topic] is wrong. Not partially — completely."
+   "Stop treating [topic] like a checklist. It's not."
+
+━━ HEADLINE ━━
+Match the energy of your opening. Make it earn the click.
+✓ "The [Topic] Mistake That's Costing You More Than You Think"
+✓ "5 Things Nobody Tells You About [Topic] Until It's Too Late"
+✓ "Why [Common Approach] Doesn't Work — And What Does"
+✗ "A Guide to [Topic]" / "Understanding [Topic]" / "All About [Topic]"
+
+━━ WRITE THE ARTICLE ━━
+- First sentence = your opening. No preamble.
+- Talk to one person. Not a crowd.
+- Short sentences. Then longer ones when you need to explain. Never three long sentences in a row.
+- Contractions throughout: don't, it's, you'll, we've, I've, they're.
+- Specific over vague: real price ranges, real place names, real scenarios.
+- Every paragraph teaches something or moves the story — cut anything that doesn't.
+- Each H2 answers a question the reader is thinking right now.
+- Conclusion: one specific next step. Not "reach out to learn more."
+{('- FAQ: 3-5 questions someone would genuinely type into Google, with direct answers.' if include_faq else '')}
+
+INSTANT FAIL — rewrite if any of these appear:
+✗ "In today's..." / "In this article..." / "Are you looking for..."
+✗ "[Topic] is an important/essential part of..."
+✗ "In conclusion" / "To summarize" / "As we've seen"
+✗ dive into · delve into · game-changer · leverage · seamlessly · unlock · revolutionize · transformative · cutting-edge · harness the power · it goes without saying · look no further · without further ado
+
+After the article:
+META_TITLE: [50-60 chars — headline energy, not a label]
+META_DESC: [140-160 chars — specific benefit, no fluff]
+TAGS: [5 tags]
+
+Start writing now — first line is your opening:"""
 
     raw = await _ai(prompt, max_tokens=3500)
 
