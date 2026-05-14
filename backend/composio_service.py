@@ -41,6 +41,9 @@ _APP_NAMES: Dict[str, str] = {
     "brevo":           "brevo",
     # Advertising
     "googleads":       "googleads",
+    # Analytics
+    "googleanalytics":       "googleanalytics",
+    "googlesearchconsole":   "googlesearchconsole",
 }
 
 TOOLKIT_GMAIL        = "gmail"
@@ -54,7 +57,9 @@ TOOLKIT_STRIPE       = "stripe"
 TOOLKIT_KLAVIYO      = "klaviyo"
 TOOLKIT_MAILCHIMP    = "mailchimp"
 TOOLKIT_BREVO        = "brevo"
-TOOLKIT_GOOGLEADS    = "googleads"
+TOOLKIT_GOOGLEADS           = "googleads"
+TOOLKIT_GOOGLEANALYTICS     = "googleanalytics"
+TOOLKIT_GOOGLESEARCHCONSOLE = "googlesearchconsole"
 
 ALL_TOOLKITS = list(_APP_NAMES.keys())
 

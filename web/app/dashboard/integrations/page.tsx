@@ -645,6 +645,9 @@ function IntegrationsPageInner() {
     brevo: null,
     // Advertising
     googleads: null,
+    // Analytics
+    googleanalytics: null,
+    googlesearchconsole: null,
   });
   const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
@@ -699,6 +702,8 @@ function IntegrationsPageInner() {
       shopify: false, stripe: false,
       klaviyo: false, mailchimp: false, brevo: false,
       googleads: false,
+      googleanalytics: false,
+      googlesearchconsole: false,
     };
     if (!token) { setComposioStatus(_allFalse); return; }
     try {
@@ -719,7 +724,9 @@ function IntegrationsPageInner() {
         klaviyo:        data.connected["klaviyo"]       ?? false,
         mailchimp:      data.connected["mailchimp"]     ?? false,
         brevo:          data.connected["brevo"]         ?? false,
-        googleads:      data.connected["googleads"]     ?? false,
+        googleads:          data.connected["googleads"]          ?? false,
+        googleanalytics:     data.connected["googleanalytics"]     ?? false,
+        googlesearchconsole: data.connected["googlesearchconsole"] ?? false,
       });
     } catch {
       setComposioStatus(_allFalse);
@@ -1230,9 +1237,9 @@ function IntegrationsPageInner() {
         </div>
       </section>
 
-      {/* ── Section 5b: Advertising ──────────────────────────────────────── */}
+      {/* ── Section 5b: Advertising & Analytics ─────────────────────────── */}
       <section>
-        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Advertising</h2>
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Advertising &amp; Analytics</h2>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <SmallTile
             title="Google Ads" subtitle="Campaigns, spend &amp; conversion tracking"
@@ -1252,6 +1259,48 @@ function IntegrationsPageInner() {
               connectClass="bg-[#4285F4] hover:bg-[#3367d6]"
               onConnect={() => void composioConnect("googleads")}
               onDisconnect={() => void composioDisconnect("googleads", "Google Ads")}
+            />
+          </SmallTile>
+
+          <SmallTile
+            title="Google Analytics 4" subtitle="Visitor counts, sessions &amp; top pages"
+            borderClass="border-[#E37400]/20 bg-[#E37400]/5"
+            icon={
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+                <rect x="2" y="14" width="4" height="8" rx="1" fill="#E37400"/>
+                <rect x="9" y="8" width="4" height="14" rx="1" fill="#E37400" opacity="0.7"/>
+                <rect x="16" y="2" width="4" height="20" rx="1" fill="#E37400" opacity="0.45"/>
+              </svg>
+            }
+          >
+            <ComposioTileControls
+              connected={composioStatus.googleanalytics}
+              busy={composioBusy === "googleanalytics"}
+              connectLabel="Connect GA4"
+              connectClass="bg-[#E37400] hover:bg-[#c46200]"
+              onConnect={() => void composioConnect("googleanalytics")}
+              onDisconnect={() => void composioDisconnect("googleanalytics", "Google Analytics 4")}
+            />
+          </SmallTile>
+
+          <SmallTile
+            title="Search Console" subtitle="Rankings, impressions &amp; click-through rates"
+            borderClass="border-[#0F9D58]/20 bg-[#0F9D58]/5"
+            icon={
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+                <circle cx="11" cy="11" r="7" stroke="#0F9D58" strokeWidth="2"/>
+                <path d="M16.5 16.5L21 21" stroke="#0F9D58" strokeWidth="2" strokeLinecap="round"/>
+                <path d="M8 11h6M11 8v6" stroke="#0F9D58" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            }
+          >
+            <ComposioTileControls
+              connected={composioStatus.googlesearchconsole}
+              busy={composioBusy === "googlesearchconsole"}
+              connectLabel="Connect Search Console"
+              connectClass="bg-[#0F9D58] hover:bg-[#0b7a44]"
+              onConnect={() => void composioConnect("googlesearchconsole")}
+              onDisconnect={() => void composioDisconnect("googlesearchconsole", "Search Console")}
             />
           </SmallTile>
         </div>
