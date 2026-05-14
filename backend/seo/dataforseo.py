@@ -74,6 +74,57 @@ async def dfs_post(endpoint: str, payload: list) -> dict[str, Any]:
     return resp.json()
 
 
+async def fetch_diverse_keywords(
+    seed_keyword: str,
+    location: str = "",
+    *,
+    location_code: int = 2404,
+    language_code: str = "en",
+    limit: int = 30,
+    exclude_phrases: set | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Fetch keywords using multiple seed strategies so results include long-tail variety.
+    Seeds used: main term · "how to X" · "best X in city" · "X for [use]" · "X near me".
+    Merges all results, deduplicates, removes already-seen phrases, sorts by volume.
+    """
+    seed_keyword = (seed_keyword or "").strip()
+    if not seed_keyword:
+        return []
+
+    exclude = {k.lower().strip() for k in (exclude_phrases or set())}
+    city = location.split(",")[0].strip() if location else ""
+
+    seeds = [seed_keyword]
+    if city:
+        seeds.append(f"best {seed_keyword} in {city}")
+        seeds.append(f"{seed_keyword} near me")
+    seeds.append(f"how to {seed_keyword}")
+    seeds.append(f"affordable {seed_keyword}")
+
+    seen: dict[str, dict] = {}
+    per_seed = max(15, limit // len(seeds) + 5)
+
+    for seed in seeds:
+        try:
+            batch = await fetch_keyword_ideas_live(
+                seed,
+                location_code=location_code,
+                language_code=language_code,
+                limit=per_seed,
+            )
+            for item in batch:
+                kw = (item.get("keyword") or "").lower().strip()
+                if kw and kw not in exclude and kw not in seen:
+                    seen[kw] = item
+        except Exception as e:
+            logger.warning("[dataforseo] diverse seed %r failed: %s", seed, e)
+
+    sorted_results = sorted(seen.values(), key=lambda x: x.get("search_volume") or 0, reverse=True)
+    logger.info("[dataforseo] diverse fetch: %d unique fresh keywords (excluded %d known)", len(sorted_results), len(exclude))
+    return sorted_results[:limit]
+
+
 async def fetch_keyword_ideas_live(
     seed_keyword: str,
     *,

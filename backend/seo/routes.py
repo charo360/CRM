@@ -747,15 +747,47 @@ Only return the JSON array, no other text."""
 
     @router.post("/keywords")
     async def generate_keywords(payload: KeywordRequest, user=user_dep):
+        import json as _json
         from . import dataforseo as dfs
 
         bt, loc, lang, snippet = _merge_seo_keyword_payload(payload, user)
         ctx = _seo_business_context(user)
+        tid = _tid(user)
         keywords: List[Any] = []
         keyword_source = "ai"
         website_content = ""
 
-        # If website URL is provided, scrape it to extract keywords from actual content
+        # ── Load all previously saved keywords so we never repeat them ──────
+        already_saved: set[str] = set()
+        try:
+            all_saved_docs = await db.seo_saved_keywords.find({"user_id": tid}).to_list(100)
+            for doc in all_saved_docs:
+                for k in (doc.get("keywords") or []):
+                    phrase = (k.get("keyword") if isinstance(k, dict) else str(k) or "").lower().strip()
+                    if phrase:
+                        already_saved.add(phrase)
+            logger.info("[seo] Excluding %d already-saved keyword phrases for user %s", len(already_saved), tid)
+        except Exception as e:
+            logger.warning("[seo] Could not load saved keywords for dedup: %s", e)
+
+        # ── Load published / draft blog post keywords to mark status ────────
+        published_kws: set[str] = set()
+        draft_kws: set[str] = set()
+        try:
+            posts = await db.seo_blog_posts.find(
+                {"user_id": tid}, {"keywords": 1, "status": 1}
+            ).to_list(200)
+            for p in posts:
+                for kw in (p.get("keywords") or []):
+                    kw_low = (kw or "").lower().strip()
+                    if p.get("status") == "published":
+                        published_kws.add(kw_low)
+                    else:
+                        draft_kws.add(kw_low)
+        except Exception as e:
+            logger.warning("[seo] Could not load blog post keywords: %s", e)
+
+        # ── Optional: scrape website for extra context ───────────────────────
         if ctx.get("website_url"):
             try:
                 import html as _html
@@ -790,6 +822,7 @@ Only return the JSON array, no other text."""
             except Exception as e:
                 logger.warning("[seo] Failed to scrape website %s: %s", ctx.get("website_url"), e)
 
+        # ── DataForSEO: multi-seed diverse long-tail fetch ───────────────────
         if dfs.dfs_enabled():
             try:
                 settings = user.get("settings") or {}
@@ -799,53 +832,83 @@ Only return the JSON array, no other text."""
                 )
                 dlang = dfs.language_code_from_settings(lang)
                 seed = _keyword_research_seed(bt, ctx["business_name"], snippet)
-                keywords = await dfs.fetch_keyword_ideas_live(
-                    seed, location_code=lc, language_code=dlang, limit=25
+                keywords = await dfs.fetch_diverse_keywords(
+                    seed,
+                    location=loc,
+                    location_code=lc,
+                    language_code=dlang,
+                    limit=30,
+                    exclude_phrases=already_saved,
                 )
                 if keywords:
                     keyword_source = "dataforseo"
-                    keywords = keywords[:20]
             except Exception as e:
                 logger.warning("[seo] DataForSEO keyword ideas skipped: %s", e)
 
+        # ── AI fallback: request fresh long-tail keywords, exclude known ones ─
         if not keywords:
             location_str = f" in {loc}" if loc else ""
+            city = loc.split(",")[0].strip() if loc else ""
+
+            exclude_block = ""
+            if already_saved:
+                sample = sorted(already_saved)[:40]
+                exclude_block = f"\n\nDO NOT include any of these already-researched keywords:\n" + "\n".join(f"- {k}" for k in sample)
+
             extra = ""
             if website_content:
-                extra = f"""
-
-Website content (extract real keywords from what's actually on their site):
-{website_content}"""
+                extra = f"\n\nWebsite content (extract keywords from what's actually on their site):\n{website_content}"
             elif snippet:
-                extra = f"""
+                extra = f"\n\nBusiness context:\n{snippet[:1200]}"
 
-Business context from the owner's profile (tailor keywords to what they actually offer; do not copy verbatim):
-{snippet[:1400]}"""
+            prompt = f"""You are an expert SEO keyword strategist. Generate 25 FRESH, UNTAPPED keyword ideas for a {bt} business{location_str}.
+{extra}{exclude_block}
 
-            prompt = f"""You are an SEO keyword research expert. Generate keyword ideas for a {bt} business{location_str}.
-{extra}
+Apply ALL of these keyword strategies — return a mix of each type:
 
-Return a JSON array of 20 keywords. Each item:
+1. LONG-TAIL (3-5 words, specific): e.g. "affordable wedding photographer {city}", "best {bt} for beginners"
+2. QUESTION-BASED: e.g. "how to choose a {bt}", "what is the best {bt} in {city}", "why use a {bt}"
+3. LOCAL/GEO: e.g. "{bt} {city}", "near me {bt}", "{bt} delivery {city}"
+4. BUYER-INTENT: e.g. "hire {bt}", "book {bt} online", "{bt} price {city}", "cheap {bt} {city}"
+5. COMPARISON: e.g. "best {bt} vs DIY", "{bt} options {city}", "top {bt} services"
+6. INFORMATIONAL: e.g. "tips for {bt}", "{bt} guide", "how {bt} works"
+
+Return a JSON array of 25 keywords. Each:
 {{
-  "keyword": "exact keyword phrase",
+  "keyword": "exact phrase (3-6 words preferred)",
   "intent": "informational|transactional|local|navigational",
   "difficulty": "low|medium|high",
   "priority": 1-5,
-  "content_idea": "one blog post or page idea for this keyword"
+  "content_idea": "specific blog post title idea for this keyword",
+  "strategy_type": "long-tail|question|local|buyer-intent|comparison|informational"
 }}
 
-Focus on: local keywords, buying intent keywords, long-tail phrases, question-based keywords.
-Language: {lang}
+Rules:
+- Every keyword must be different from the excluded list above
+- Prefer 3-5 word phrases over single words (long-tail = less competition, easier to rank)
+- Use {loc} and {city} naturally in local keywords
+- Priority 4-5 = high traffic + low competition (best targets)
+- Language: {lang}
+
 Only return the JSON array."""
 
-            raw = await _call_ai(prompt, max_tokens=2000)
+            raw = await _call_ai(prompt, max_tokens=2500)
             try:
-                import json
                 raw = raw.strip()
                 if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
-                keywords = json.loads(raw)
+                keywords = _json.loads(raw)
             except Exception:
                 keywords = []
+
+        # ── Tag each keyword with tracking status ────────────────────────────
+        for kw in keywords:
+            phrase = (kw.get("keyword") or "").lower().strip()
+            if phrase in published_kws:
+                kw["status"] = "published"
+            elif phrase in draft_kws:
+                kw["status"] = "draft"
+            else:
+                kw["status"] = "new"
 
         return {
             "keywords": keywords,
@@ -853,6 +916,7 @@ Only return the JSON array."""
             "location": loc,
             "keyword_source": keyword_source,
             "website_url": ctx.get("website_url", ""),
+            "excluded_count": len(already_saved),
         }
 
     # ── Blog Post Generation ────────────────────────────────────────────────
@@ -1579,162 +1643,125 @@ Only return the JSON array."""
 
     @router.get("/local/listings")
     async def get_local_listings(user=user_dep):
-        """Get business listings across platforms (Google, Yelp, etc.)"""
+        """Return saved business listings from the database."""
         tid = _tid(user)
-        # TODO: Integrate with Google Business Profile API, Yelp API, etc.
-        # For now, return mock data based on business context
-        ctx = _seo_business_context(user)
-        business_name = ctx.get("business_name", "Your Business")
-        website = ctx.get("website_url", "")
-        location = ctx.get("location", "Your City, State")
-
-        mock_listings = [
-            {
-                "platform": "google-business",
-                "name": business_name,
-                "address": f"123 Main St, {location}",
-                "phone": "(555) 123-4567",
-                "website": website or "https://yourwebsite.com",
-                "rating": 4.8,
-                "reviews": 127,
-                "status": "verified",
-                "lastUpdated": "2024-01-15"
-            },
-            {
-                "platform": "yelp",
-                "name": business_name,
-                "address": f"123 Main St, {location}",
-                "phone": "(555) 123-4567",
-                "website": website or "https://yourwebsite.com",
-                "rating": 4.6,
-                "reviews": 89,
-                "status": "verified",
-                "lastUpdated": "2024-01-10"
-            },
-            {
-                "platform": "apple-maps",
-                "name": business_name,
-                "address": f"123 Main St, {location}",
-                "phone": "(555) 123-4567",
-                "website": website or "https://yourwebsite.com",
-                "status": "not-listed"
-            }
-        ]
-        return {"listings": mock_listings}
+        docs = await db.local_seo_listings.find({"user_id": tid}).sort("created_at", -1).to_list(100)
+        return {"listings": [_ser(d) for d in docs]}
 
     @router.post("/local/listings")
     async def add_local_listing(payload: Dict[str, Any], user=user_dep):
-        """Add or update a business listing"""
+        """Persist a new business listing to the database."""
         tid = _tid(user)
-        # TODO: Actually integrate with platform APIs
-        # For now, just validate and return success
-        required = ["platform", "name", "address", "phone", "website"]
+        required = ["platform", "name", "address"]
         for field in required:
-            if field not in payload:
+            if not payload.get(field, "").strip():
                 raise HTTPException(400, f"Missing required field: {field}")
-
-        # Simulate adding to database
-        listing = {
+        doc = {
+            "_id": str(uuid.uuid4()),
             "user_id": tid,
             "platform": payload["platform"],
-            "name": payload["name"],
-            "address": payload["address"],
-            "phone": payload["phone"],
-            "website": payload["website"],
-            "status": "pending",
+            "name": payload["name"].strip(),
+            "address": payload["address"].strip(),
+            "phone": payload.get("phone", "").strip(),
+            "website": payload.get("website", "").strip(),
+            "status": payload.get("status", "pending"),
+            "rating": payload.get("rating"),
+            "reviews": payload.get("reviews"),
             "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "updated_at": datetime.utcnow(),
         }
+        await db.local_seo_listings.insert_one(doc)
+        return {"success": True, "listing": _ser(doc)}
 
-        # TODO: Save to database
-        # await db.local_listings.insert_one(listing)
+    @router.patch("/local/listings/{listing_id}")
+    async def update_local_listing(listing_id: str, payload: Dict[str, Any], user=user_dep):
+        """Update an existing listing."""
+        tid = _tid(user)
+        allowed = {"platform", "name", "address", "phone", "website", "status", "rating", "reviews"}
+        upd = {k: v for k, v in payload.items() if k in allowed}
+        upd["updated_at"] = datetime.utcnow()
+        result = await db.local_seo_listings.update_one(
+            {"_id": listing_id, "user_id": tid}, {"$set": upd}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(404, "Listing not found")
+        doc = await db.local_seo_listings.find_one({"_id": listing_id})
+        return {"success": True, "listing": _ser(doc)}
 
-        return {"success": True, "listing": listing}
+    @router.delete("/local/listings/{listing_id}")
+    async def delete_local_listing(listing_id: str, user=user_dep):
+        """Delete a business listing from the database."""
+        tid = _tid(user)
+        result = await db.local_seo_listings.delete_one({"_id": listing_id, "user_id": tid})
+        if result.deleted_count == 0:
+            raise HTTPException(404, "Listing not found")
+        return {"ok": True}
 
     @router.get("/local/keywords")
     async def get_local_keywords(user=user_dep):
-        """Get local keyword rankings"""
+        """Return suggested local keywords based on the user's business profile."""
         tid = _tid(user)
         ctx = _seo_business_context(user)
-        location = ctx.get("location", "Your City, State")
+        location = ctx.get("location", "Your City")
         business_type = ctx.get("business_type", "business")
-
-        # TODO: Integrate with local search APIs or DataForSEO local pack
-        mock_keywords = [
-            {
-                "keyword": f"{business_type} near me",
-                "location": location,
-                "position": 3,
-                "searchVolume": 2400,
-                "difficulty": "high",
-                "trend": "up"
-            },
-            {
-                "keyword": f"emergency {business_type} {location.split(',')[0]}",
-                "location": location,
-                "position": 2,
-                "searchVolume": 880,
-                "difficulty": "medium",
-                "trend": "stable"
-            },
-            {
-                "keyword": f"{business_type} services {location.split(',')[0]}",
-                "location": location,
-                "position": 5,
-                "searchVolume": 590,
-                "difficulty": "medium",
-                "trend": "up"
-            }
+        city = location.split(",")[0].strip()
+        keywords = [
+            {"keyword": f"{business_type} near me", "location": location, "difficulty": "high", "note": "suggested"},
+            {"keyword": f"{business_type} in {city}", "location": location, "difficulty": "medium", "note": "suggested"},
+            {"keyword": f"best {business_type} {city}", "location": location, "difficulty": "medium", "note": "suggested"},
+            {"keyword": f"affordable {business_type} {city}", "location": location, "difficulty": "low", "note": "suggested"},
+            {"keyword": f"{business_type} services {city}", "location": location, "difficulty": "medium", "note": "suggested"},
         ]
-        return {"keywords": mock_keywords}
+        return {"keywords": keywords, "source": "business_profile"}
 
     @router.get("/local/competitors")
     async def get_local_competitors(user=user_dep):
-        """Get local competitors"""
+        """Return placeholder competitor slots — connect Google Places for real data."""
         tid = _tid(user)
-        ctx = _seo_business_context(user)
-        location = ctx.get("location", "Your City, State")
-
-        # TODO: Use Google Places API or similar to find real competitors
-        mock_competitors = [
-            {
-                "name": f"XYZ {ctx.get('business_type', 'Services').title()}",
-                "address": f"456 Oak Ave, {location}",
-                "rating": 4.5,
-                "reviews": 203,
-                "categories": [ctx.get('business_type', 'Services').title(), "Emergency Services"]
-            },
-            {
-                "name": f"{location.split(',')[0]} {ctx.get('business_type', 'Services').title()} Co",
-                "address": f"789 Pine St, {location}",
-                "rating": 4.2,
-                "reviews": 156,
-                "categories": [ctx.get('business_type', 'Services').title(), "Professional Services"]
-            }
-        ]
-        return {"competitors": mock_competitors}
+        return {"competitors": [], "note": "Connect Google Places API for live competitor data."}
 
     @router.get("/local/score")
     async def get_local_seo_score(user=user_dep):
-        """Get local SEO score and breakdown"""
+        """Compute local SEO score from actual saved listings."""
         tid = _tid(user)
-        # TODO: Calculate real score based on listings, reviews, rankings
-        mock_score = {
-            "overall": 78,
-            "grade": "Good",
+        listing_count = await db.local_seo_listings.count_documents({"user_id": tid})
+        verified_count = await db.local_seo_listings.count_documents({"user_id": tid, "status": "verified"})
+        ctx = _seo_business_context(user)
+        country = ctx.get("location", "your area")
+
+        listings_score = min(100, listing_count * 25)
+        verified_score = min(100, verified_count * 34)
+        overall = round((listings_score + verified_score) / 2) if listing_count > 0 else 0
+
+        if overall >= 80:
+            grade = "Excellent"
+        elif overall >= 60:
+            grade = "Good"
+        elif overall >= 40:
+            grade = "Fair"
+        else:
+            grade = "Needs Work"
+
+        recommendations = []
+        if listing_count == 0:
+            recommendations.append("Add your first business listing (start with Google Business Profile).")
+        if listing_count < 3:
+            recommendations.append("List your business on Yelp, Apple Maps and Bing Places for wider coverage.")
+        if verified_count < listing_count:
+            recommendations.append("Verify your pending listings to boost your score.")
+        recommendations.append(f"Target local keyword opportunities in {country}.")
+
+        return {
+            "overall": overall,
+            "grade": grade,
+            "listing_count": listing_count,
+            "verified_count": verified_count,
             "breakdown": {
-                "business_listings": 85,
-                "reviews_ratings": 72,
-                "local_rankings": 68,
-                "citations": 90
+                "business_listings": listings_score,
+                "verified_listings": verified_score,
             },
-            "recommendations": [
-                "Add your business to Apple Maps to increase visibility",
-                "Encourage more customer reviews to improve ratings",
-                f"Target local keyword opportunities in {user.get('settings', {}).get('country', 'your area')}"
-            ]
+            "recommendations": recommendations,
         }
-        return mock_score
 
     # ── SERP Ranking History ───────────────────────────────────────────────
 

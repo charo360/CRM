@@ -667,7 +667,7 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
   const [savedKeywordSets, setSavedKeywordSets] = useState<{ month: string; count: number; business_type: string; location: string; saved_at: string }[]>([]);
   const [loadingSavedSets, setLoadingSavedSets] = useState(false);
   const [err, setErr] = useState("");
-  // Publish-to-autoblog state per keyword index
+  const [excludedCount, setExcludedCount] = useState(0);
   const [kwPublishing, setKwPublishing] = useState<Record<number, "idle" | "generating" | "publishing" | "done" | "error">>({});
   const [kwPublishUrl, setKwPublishUrl] = useState<Record<number, string>>({});
 
@@ -717,6 +717,7 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
       const list = res.keywords as SeoKeyword[];
       setKeywords(list);
       setKeywordSource(res.keyword_source);
+      setExcludedCount(res.excluded_count ?? 0);
       const { ok, month } = await saveForMonthQuiet(list);
       if (ok && month) {
         toast.success(`Saved for ${month}`, {
@@ -884,9 +885,14 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
           <div className="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 flex-wrap min-w-0">
               <p className="text-sm font-semibold text-slate-700">
-                {keywords.length} keyword ideas
-                <HelpTooltip text="These are phrases people search on Google. Use them in your blog posts and website." />
+                {keywords.length} fresh keyword ideas
+                <HelpTooltip text="These are phrases people search on Google. Already-researched keywords are automatically excluded so you always get new ideas." />
               </p>
+              {excludedCount > 0 && (
+                <span className="text-[10px] text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100">
+                  {excludedCount} already known — skipped
+                </span>
+              )}
               {keywordSource === "dataforseo" && (
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
                   Live data · DataForSEO
@@ -973,12 +979,27 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
             {keywords.map((kw, i) => (
               <div key={i} className="px-5 py-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-800">{kw.keyword}</p>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-slate-800">{kw.keyword}</p>
+                      {/* Tracking status badge */}
+                      {(kw as any).status === "published" && (
+                        <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-200">✓ Published</span>
+                      )}
+                      {(kw as any).status === "draft" && (
+                        <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">Draft exists</span>
+                      )}
+                      {/* Strategy type badge */}
+                      {(kw as any).strategy_type && (
+                        <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                          {String((kw as any).strategy_type).replace(/-/g, " ")}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-600 mt-0.5">💡 {kw.content_idea}</p>
                     {kw.search_volume != null && kw.search_volume > 0 && (
                       <p className="text-[11px] text-slate-500 mt-1">
-                        ~{kw.search_volume.toLocaleString()} people search this monthly
+                        ~{kw.search_volume.toLocaleString()} searches/mo
                       </p>
                     )}
                   </div>
@@ -997,7 +1018,7 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
                         disabled={kwPublishing[i] === "generating" || kwPublishing[i] === "publishing"}
                         className="text-[10px] px-2 py-1 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 whitespace-nowrap"
                       >
-                        {kwPublishing[i] === "generating" ? "Writing…" : kwPublishing[i] === "publishing" ? "Publishing…" : "→ Publish to My Blog"}
+                        {kwPublishing[i] === "generating" ? "Writing…" : kwPublishing[i] === "publishing" ? "Publishing…" : "→ Publish"}
                       </button>
                     )}
                   </div>
@@ -1009,6 +1030,11 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
                       <div key={p} className={`h-1.5 w-3 rounded-full ${p < (kw.priority ?? 0) ? "bg-green-500" : "bg-slate-200"}`} />
                     ))}
                   </div>
+                  {(kw as any).intent && (
+                    <span className={`ml-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${intentColor(String((kw as any).intent))}`}>
+                      {(kw as any).intent}
+                    </span>
+                  )}
                 </div>
               </div>
             ))}
