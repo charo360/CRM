@@ -643,6 +643,8 @@ function IntegrationsPageInner() {
     klaviyo: null,
     mailchimp: null,
     brevo: null,
+    // Advertising
+    googleads: null,
   });
   const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
@@ -696,6 +698,7 @@ function IntegrationsPageInner() {
       slack: false, googlesheets: false, notion: false,
       shopify: false, stripe: false,
       klaviyo: false, mailchimp: false, brevo: false,
+      googleads: false,
     };
     if (!token) { setComposioStatus(_allFalse); return; }
     try {
@@ -716,6 +719,7 @@ function IntegrationsPageInner() {
         klaviyo:        data.connected["klaviyo"]       ?? false,
         mailchimp:      data.connected["mailchimp"]     ?? false,
         brevo:          data.connected["brevo"]         ?? false,
+        googleads:      data.connected["googleads"]     ?? false,
       });
     } catch {
       setComposioStatus(_allFalse);
@@ -1223,6 +1227,33 @@ function IntegrationsPageInner() {
               />
             </SmallTile>
           </div>
+        </div>
+      </section>
+
+      {/* ── Section 5b: Advertising ──────────────────────────────────────── */}
+      <section>
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Advertising</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <SmallTile
+            title="Google Ads" subtitle="Campaigns, spend &amp; conversion tracking"
+            borderClass="border-[#4285F4]/20 bg-[#4285F4]/5"
+            icon={
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+                <path d="M2.428 13.74L8.37 3.37a3.428 3.428 0 0 1 5.937 3.43l-5.941 10.37a3.428 3.428 0 0 1-5.938-3.43z" fill="#FBBC04"/>
+                <path d="M15.632 3.37l-5.941 10.37a3.428 3.428 0 0 0 5.938 3.43L21.57 7.2a3.428 3.428 0 0 0-5.938-3.83z" fill="#4285F4"/>
+                <circle cx="4.143" cy="17.143" r="3.428" fill="#34A853"/>
+              </svg>
+            }
+          >
+            <ComposioTileControls
+              connected={composioStatus.googleads}
+              busy={composioBusy === "googleads"}
+              connectLabel="Connect Google Ads"
+              connectClass="bg-[#4285F4] hover:bg-[#3367d6]"
+              onConnect={() => void composioConnect("googleads")}
+              onDisconnect={() => void composioDisconnect("googleads", "Google Ads")}
+            />
+          </SmallTile>
         </div>
       </section>
 
