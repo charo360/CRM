@@ -8,7 +8,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -42,10 +43,7 @@ def make_forms_router(db, user_dep):
     # ── JS widget (served as JavaScript — used by blog pages) ─────────────────
 
     @router.get("/widget.js", include_in_schema=False)
-    async def form_widget_js(request):
-        import os
-        from fastapi import Request
-        from fastapi.responses import Response
+    async def form_widget_js(request: Request):
         base_url = str(request.base_url).rstrip("/")
         js = _build_widget_js(base_url)
         return Response(content=js, media_type="application/javascript",
