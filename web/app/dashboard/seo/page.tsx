@@ -549,7 +549,7 @@ function AuditTab() {
             onKeyDown={e => e.key === "Enter" && runAudit()}
           />
           <button
-            onClick={runAudit}
+            onClick={() => runAudit()}
             disabled={loading || !url.trim()}
             className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-50 shrink-0"
           >
