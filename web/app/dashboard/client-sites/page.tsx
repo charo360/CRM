@@ -64,6 +64,7 @@ interface ClientSite {
   last_posted_at: string | null;
   last_synced?: string;
   whatsapp_number?: string;
+  template_id?: string;
 }
 
 interface ListResponse {
@@ -807,6 +808,7 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
 
           <WhatsAppEditor wpSlug={site.wp_slug} initial={site.whatsapp_number ?? ""} />
           <NavEditor wpSlug={site.wp_slug} siteUrl={siteUrl} />
+          <TemplatePicker wpSlug={site.wp_slug} initialTemplateId={site.template_id ?? "minimal"} />
 
           <div className="text-xs text-slate-400 flex flex-wrap gap-3">
             <span>Email: <span className="text-slate-600">{site.client_email}</span></span>
@@ -815,6 +817,106 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Template Picker ───────────────────────────────────────────────────────────
+
+const TEMPLATE_VISUALS: Record<string, { rows: string[]; color: string }> = {
+  minimal:   { rows: ["▬▬▬▬▬▬▬", "▬▬▬▬▬▬▬▬▬▬", "▭▭▭▭▭▭", "▭▭▭▭▭▭", "▬▬"], color: "blue" },
+  bold:      { rows: ["▬▬▬▬▬▬▬▬▬▬", "▬▬▬▬▬▬▬▬▬▬▬▬", "▭▭▭▭", "▬▬"], color: "violet" },
+  portrait:  { rows: ["▮▮ ▬▬▬▬", "▮▮ ▭▭▭▭", "▮▮ ▭▭▭", "▮▮ ▬▬"], color: "rose" },
+  editorial: { rows: ["  ▬▬▬▬  ", "▬▬▬▬▬▬▬▬", "▭▭▭▭▭▭", "  ▬▬  "], color: "emerald" },
+};
+
+const COLOR_MAP: Record<string, string> = {
+  blue:    "border-blue-400 bg-blue-50 text-blue-700",
+  violet:  "border-violet-400 bg-violet-50 text-violet-700",
+  rose:    "border-rose-400 bg-rose-50 text-rose-700",
+  emerald: "border-emerald-400 bg-emerald-50 text-emerald-700",
+};
+
+function TemplatePicker({ wpSlug, initialTemplateId }: { wpSlug: string; initialTemplateId: string }) {
+  const [selected, setSelected] = useState(initialTemplateId || "minimal");
+  const [applying, setApplying] = useState<string | null>(null);
+  const [applied, setApplied] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+
+  const templates = [
+    { id: "minimal",   name: "Minimal",   desc: "Title → Image (3:2) → Full text" },
+    { id: "bold",      name: "Bold",      desc: "Large title → Wide image → Excerpt" },
+    { id: "portrait",  name: "Portrait",  desc: "Tall image → Title → Excerpt" },
+    { id: "editorial", name: "Editorial", desc: "Centered title → Square image" },
+    { id: "random",    name: "Random",    desc: "Pick a different style per post" },
+  ];
+
+  async function apply(id: string) {
+    setApplying(id); setErr("");
+    try {
+      await api.put(`/blog/clients/${wpSlug}/template`, { template_id: id });
+      setSelected(id === "random" ? id : id);
+      setApplied(id);
+      setTimeout(() => setApplied(null), 3000);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to apply");
+    } finally {
+      setApplying(null);
+    }
+  }
+
+  return (
+    <div className="space-y-2 pt-2 border-t border-slate-200">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+        <BookOpen size={11} /> Blog Layout Template
+      </p>
+      <p className="text-[10px] text-slate-400">Choose how blog post cards look on the site. Changes go live instantly.</p>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {templates.map((t) => {
+          const isRandom = t.id === "random";
+          const isActive = selected === t.id;
+          const isLoading = applying === t.id;
+          const v = TEMPLATE_VISUALS[t.id];
+          const colorCls = v ? COLOR_MAP[v.color] : "border-slate-300 bg-slate-50 text-slate-600";
+          const activeCls = isActive
+            ? `ring-2 ring-offset-1 ring-slate-500 ${colorCls} border`
+            : "border border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50";
+
+          return (
+            <button
+              key={t.id}
+              onClick={() => apply(t.id)}
+              disabled={!!applying}
+              className={`relative text-left rounded-xl p-3 transition-all disabled:opacity-60 ${activeCls}`}
+            >
+              {isLoading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/70 rounded-xl">
+                  <Loader2 size={16} className="animate-spin text-slate-500" />
+                </div>
+              )}
+              {applied === t.id && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/80 rounded-xl">
+                  <Check size={16} className="text-emerald-600" />
+                </div>
+              )}
+
+              {isRandom ? (
+                <div className="h-10 flex items-center justify-center text-lg mb-1">🎲</div>
+              ) : v ? (
+                <div className="h-10 flex flex-col justify-center gap-0.5 mb-1 font-mono text-[7px] leading-tight text-slate-400">
+                  {v.rows.map((r, i) => <span key={i}>{r}</span>)}
+                </div>
+              ) : null}
+
+              <p className="text-[11px] font-semibold text-slate-700 leading-tight">{t.name}</p>
+              <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">{t.desc}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      {err && <p className="text-[10px] text-rose-500">{err}</p>}
     </div>
   );
 }

@@ -85,6 +85,191 @@ def _get_wp_auth() -> str:
     return base64.b64encode(f"{user}:{password}".encode()).decode()
 
 
+def _make_blog_template(inner: str) -> str:
+    """Wraps per-template inner blocks in the shared query/pagination scaffold."""
+    return (
+        '<!-- wp:template-part {"slug":"header","theme":"twentytwentyfive"} /-->\n\n'
+        '<!-- wp:group {"tagName":"main","style":{"spacing":{"margin":{"top":"var:preset|spacing|60"}}},'
+        '"layout":{"type":"constrained"}} -->\n'
+        '<main class="wp-block-group" style="margin-top:var(--wp--preset--spacing--60)">\n'
+        '\t<!-- wp:query {"query":{"perPage":3,"pages":0,"offset":0,"postType":"post","order":"desc",'
+        '"orderBy":"date","author":"","search":"","exclude":[],"sticky":"","inherit":true,'
+        '"taxQuery":null,"parents":[]},"align":"full","layout":{"type":"default"}} -->\n'
+        '<div class="wp-block-query alignfull">\n'
+        '\t<!-- wp:post-template {"align":"full","layout":{"type":"default"}} -->\n'
+        '\t\t<!-- wp:group {"align":"full","style":{"spacing":{"padding":{"top":"var:preset|spacing|60",'
+        '"bottom":"var:preset|spacing|60"}}},"layout":{"type":"constrained"}} -->\n'
+        '\t\t<div class="wp-block-group alignfull" style="padding-top:var(--wp--preset--spacing--60);'
+        'padding-bottom:var(--wp--preset--spacing--60)">\n'
+        + inner +
+        '\t\t</div>\n'
+        '\t\t<!-- /wp:group -->\n'
+        '\t<!-- /wp:post-template -->\n'
+        '\t<!-- wp:group {"style":{"spacing":{"padding":{"top":"var:preset|spacing|60",'
+        '"bottom":"var:preset|spacing|60"}}},"layout":{"type":"constrained"}} -->\n'
+        '\t<div class="wp-block-group" style="padding-top:var(--wp--preset--spacing--60);'
+        'padding-bottom:var(--wp--preset--spacing--60)">\n'
+        '\t\t<!-- wp:query-no-results -->\n'
+        '\t\t<!-- wp:paragraph -->\n'
+        '\t\t<p>Sorry, but nothing was found. Please try a search with different keywords.</p>\n'
+        '\t\t<!-- /wp:paragraph -->\n'
+        '\t\t<!-- /wp:query-no-results -->\n'
+        '\t</div>\n'
+        '\t<!-- /wp:group -->\n'
+        '\t<!-- wp:group {"align":"wide","layout":{"type":"constrained"}} -->\n'
+        '\t<div class="wp-block-group alignwide">\n'
+        '\t\t<!-- wp:query-pagination {"paginationArrow":"arrow","align":"wide",'
+        '"layout":{"type":"flex","justifyContent":"space-between"}} -->\n'
+        '\t\t\t<!-- wp:query-pagination-previous /-->\n'
+        '\t\t\t<!-- wp:query-pagination-numbers /-->\n'
+        '\t\t\t<!-- wp:query-pagination-next /-->\n'
+        '\t\t<!-- /wp:query-pagination -->\n'
+        '\t</div>\n'
+        '\t<!-- /wp:group -->\n'
+        '</div>\n'
+        '<!-- /wp:query -->\n\n'
+        '</main>\n'
+        '<!-- /wp:group -->\n\n'
+        '<!-- wp:template-part {"slug":"footer","theme":"twentytwentyfive"} /-->'
+    )
+
+
+# ── Blog listing template variants ────────────────────────────────────────────
+
+BLOG_TEMPLATES: dict[str, dict] = {
+    "minimal": {
+        "id": "minimal",
+        "name": "Minimal",
+        "description": "Title → Landscape image → Full article → Date. Clean and professional.",
+        "content": _make_blog_template(
+            '\t\t\t<!-- wp:post-title {"isLink":true,"fontSize":"x-large"} /-->\n'
+            '\t\t\t<!-- wp:post-featured-image {"isLink":true,"aspectRatio":"3/2"} /-->\n'
+            '\t\t\t<!-- wp:post-content {"align":"full","fontSize":"medium","layout":{"type":"constrained"}} /-->\n'
+            '\t\t\t<!-- wp:post-date {"isLink":true,"style":{"spacing":{"margin":{"top":"var:preset|spacing|40"}}},'
+            '"fontSize":"small"} /-->\n'
+        ),
+    },
+    "bold": {
+        "id": "bold",
+        "name": "Bold",
+        "description": "Large bold title → Wide cinematic image → Excerpt → Date. High-impact magazine feel.",
+        "content": _make_blog_template(
+            '\t\t\t<!-- wp:post-title {"isLink":true,"fontSize":"xx-large","style":{"typography":{"fontWeight":"700"}}} /-->\n'
+            '\t\t\t<!-- wp:post-featured-image {"isLink":true,"aspectRatio":"16/9"} /-->\n'
+            '\t\t\t<!-- wp:post-excerpt {"moreText":"Continue reading →","showMoreOnNewLine":false} /-->\n'
+            '\t\t\t<!-- wp:post-date {"isLink":true,"fontSize":"small"} /-->\n'
+        ),
+    },
+    "portrait": {
+        "id": "portrait",
+        "name": "Portrait",
+        "description": "Tall portrait image → Title → Excerpt → Date. Great for fashion and lifestyle.",
+        "content": _make_blog_template(
+            '\t\t\t<!-- wp:post-featured-image {"isLink":true,"aspectRatio":"2/3"} /-->\n'
+            '\t\t\t<!-- wp:post-title {"isLink":true,"fontSize":"large"} /-->\n'
+            '\t\t\t<!-- wp:post-excerpt {"moreText":"Read more","showMoreOnNewLine":false} /-->\n'
+            '\t\t\t<!-- wp:post-date {"isLink":true,"fontSize":"small"} /-->\n'
+        ),
+    },
+    "editorial": {
+        "id": "editorial",
+        "name": "Editorial",
+        "description": "Centered title → Square image → Full article → Date. Classic editorial style.",
+        "content": _make_blog_template(
+            '\t\t\t<!-- wp:post-title {"isLink":true,"textAlign":"center","fontSize":"large"} /-->\n'
+            '\t\t\t<!-- wp:post-featured-image {"isLink":true,"aspectRatio":"1/1"} /-->\n'
+            '\t\t\t<!-- wp:post-content {"align":"full","fontSize":"medium","layout":{"type":"constrained"}} /-->\n'
+            '\t\t\t<!-- wp:post-date {"isLink":true,"textAlign":"center","fontSize":"small"} /-->\n'
+        ),
+    },
+}
+
+# Default (backward-compat alias)
+_BLOG_INDEX_TEMPLATE = BLOG_TEMPLATES["minimal"]["content"]
+
+
+async def fix_blog_templates(site_url: str, template_id: str = "minimal") -> dict:
+    """
+    Creates/overwrites the `index` and `home` template overrides on a WP subsite.
+    template_id: one of the keys in BLOG_TEMPLATES, or "random" to pick randomly.
+    Safe to call on existing or new sites.
+    """
+    import random as _random
+    if template_id == "random":
+        template_id = _random.choice(list(BLOG_TEMPLATES.keys()))
+    tpl_content = BLOG_TEMPLATES.get(template_id, BLOG_TEMPLATES["minimal"])["content"]
+    import http.client
+    import ssl
+    import json as _json
+    from urllib.parse import urlparse
+
+    auth_header = f"Basic {_get_wp_auth()}"
+    wp_headers_dict = {"Authorization": auth_header, "Content-Type": "application/json"}
+    results = {}
+
+    parsed = urlparse(site_url)
+    host = parsed.netloc or parsed.path
+    use_ssl = site_url.startswith("https")
+
+    def _http_post(path: str, body: dict) -> int:
+        body_bytes = _json.dumps(body).encode()
+        ctx = ssl.create_default_context() if use_ssl else None
+        conn_cls = http.client.HTTPSConnection if use_ssl else http.client.HTTPConnection
+        conn = conn_cls(host, context=ctx, timeout=20)
+        try:
+            conn.request("POST", path, body=body_bytes, headers={
+                "Authorization": auth_header,
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body_bytes)),
+            })
+            resp = conn.getresponse()
+            return resp.status
+        finally:
+            conn.close()
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        for tpl_slug in ("index", "home"):
+            # Check if an override already exists in the DB
+            list_r = await client.get(
+                f"{site_url}/wp-json/wp/v2/templates?per_page=50",
+                headers=wp_headers_dict,
+            )
+            has_existing = False
+            if list_r.status_code == 200:
+                for t in list_r.json():
+                    if t.get("slug") == tpl_slug and t.get("wp_id", 0):
+                        has_existing = True
+                        break
+
+            if has_existing:
+                # POST to string template ID — uses http.client to preserve `//` in path
+                path = f"/wp-json/wp/v2/templates/twentytwentyfive//{tpl_slug}"
+                status = await asyncio.to_thread(
+                    _http_post, path, {"content": tpl_content}
+                )
+            else:
+                r = await client.post(
+                    f"{site_url}/wp-json/wp/v2/templates",
+                    headers=wp_headers_dict,
+                    json={
+                        "slug": tpl_slug,
+                        "theme": "twentytwentyfive",
+                        "type": "wp_template",
+                        "content": tpl_content,
+                        "status": "publish",
+                    },
+                )
+                status = r.status_code
+            results[tpl_slug] = status
+
+    # Flush LiteSpeed / object cache so visitors see the updated template immediately
+    try:
+        await _wp_cli("cache", "flush", url=site_url)
+    except Exception:
+        pass
+    return results
+
+
 def _wp_headers() -> dict:
     return {
         "Authorization": f"Basic {_get_wp_auth()}",
@@ -420,6 +605,13 @@ class ZiloBlogService:
 
         # 3b. Create industry homepage (hero + features + CTA, Astra-styled)
         await self._create_industry_homepage(slug, site_url, business_name, industry)
+
+        # 3c. Fix blog listing templates: title first, image second, remove "Blog" H1
+        try:
+            tpl_result = await fix_blog_templates(site_url)
+            logger.info(f"[blog] Template fix: {tpl_result}")
+        except Exception as exc:
+            logger.warning(f"[blog] Template fix failed (non-fatal): {exc}")
 
         # 4. Activate plugins (WooCommerce shop + WPForms) — use public URL (now mapped)
         await self._activate_site_plugins(slug, site_url)

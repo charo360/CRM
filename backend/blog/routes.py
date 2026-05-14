@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from blog.blog_service import ZiloBlogService, wp_subsite_public_url, _wp_cli
+from blog.blog_service import ZiloBlogService, wp_subsite_public_url, _wp_cli, BLOG_TEMPLATES, fix_blog_templates
 from blog.topic_generator import research_seo_topic
 from blog.post_generator import generate_blog_post
 from blog.blog_scheduler import publish_daily_posts
@@ -600,6 +600,30 @@ def make_blog_router(db, get_current_user):
 
         return {"status": "done", "site_url": site_url, "slugs": slugs, "pages": results}
 
+    # ── Fix blog listing templates on all sites ────────────────────────────────
+
+    @router.post("/fix-all-templates")
+    async def fix_all_templates(user=Depends(get_current_user)):
+        """
+        Applies the corrected index/home template (title before image, no Blog H1)
+        to every WordPress subsite in the database.
+        Admin convenience endpoint — safe to call multiple times.
+        """
+        from blog.blog_service import fix_blog_templates, wp_subsite_public_url
+        blogs = await db.blogs.find({}, {"wp_slug": 1, "blog_url": 1}).to_list(None)
+        summary = {}
+        for b in blogs:
+            slug = b.get("wp_slug", "")
+            site_url = b.get("blog_url") or wp_subsite_public_url(slug)
+            if not site_url:
+                continue
+            try:
+                result = await fix_blog_templates(site_url)
+                summary[slug] = result
+            except Exception as exc:
+                summary[slug] = {"error": str(exc)}
+        return {"fixed": len(summary), "sites": summary}
+
     # ── Manually trigger a post for one client ─────────────────────────────────
 
     @router.post("/publish-now")
@@ -770,6 +794,43 @@ def make_blog_router(db, get_current_user):
 
         return {"keywords": entries}
 
+    # ── Blog listing template catalogue & picker ──────────────────────────────
+
+    @router.get("/templates")
+    async def list_blog_templates(_user=Depends(get_current_user)):
+        """Returns all available blog listing template options (no content, just metadata)."""
+        return [
+            {"id": t["id"], "name": t["name"], "description": t["description"]}
+            for t in BLOG_TEMPLATES.values()
+        ]
+
+    @router.put("/clients/{wp_slug}/template")
+    async def set_blog_template(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """
+        Applies a blog listing template to the site and persists the choice.
+        body: {"template_id": "minimal" | "bold" | "portrait" | "editorial" | "random"}
+        """
+        template_id = (body.get("template_id") or "minimal").strip()
+        if template_id not in BLOG_TEMPLATES and template_id != "random":
+            raise HTTPException(400, f"Unknown template_id: {template_id}. Choose from: {', '.join(BLOG_TEMPLATES)}, random")
+
+        blog = await db.blogs.find_one({"wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Blog not found")
+
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(400, "Site URL unavailable")
+
+        result = await fix_blog_templates(site_url, template_id)
+
+        # Resolve "random" to its actual picked value so we can store it
+        import random as _rng
+        stored_id = template_id if template_id != "random" else _rng.choice(list(BLOG_TEMPLATES.keys()))
+        await db.blogs.update_one({"wp_slug": wp_slug}, {"$set": {"template_id": stored_id}})
+
+        return {"applied": stored_id, "site": site_url, "result": result}
+
     # ── Client Sites dashboard ─────────────────────────────────────────────────
 
     @router.get("/clients")
@@ -790,6 +851,7 @@ def make_blog_router(db, get_current_user):
             blog_url = await _blog_url_for_response(db, doc)
             doc["blog_url"] = blog_url
             doc.setdefault("features", {"shop": True, "forms": True, "blog": True})
+            doc.setdefault("template_id", "minimal")
             sites.append(doc)
         return {"sites": sites}
 

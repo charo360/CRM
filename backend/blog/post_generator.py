@@ -260,6 +260,11 @@ The keywords array must use the provided SEO keywords (not made-up ones). If no 
         logger.error("[post_gen] JSON parse failed: %s\nRaw: %s", e, raw[:500])
         raise RuntimeError(f"Claude returned invalid JSON: {e}")
 
+    # Strip any markdown bold/italic markers the model accidentally left in the title
+    if "title" in post:
+        import re as _re
+        post["title"] = _re.sub(r"[*_`#]+", "", post["title"]).strip()
+
     # Always use real DataForSEO keywords — override anything Claude guessed
     if seo_keywords:
         post["keywords"] = seo_keywords[:5]
