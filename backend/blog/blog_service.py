@@ -518,6 +518,42 @@ def _build_homepage_content(business_name: str, industry: str) -> str:
     )
 
 
+def _build_blog_image_prompt(title: str, industry: str, business_name: str, location: str) -> str:
+    """
+    Build a photography-brief prompt that minimises AI artifacts.
+    We describe the shot as if briefing a real photographer — subject, environment,
+    light, angle — instead of asking for 'AI art style' or abstract aesthetics.
+    Explicit negative constraints eliminate floating geometry and surreal elements.
+    """
+    city = location.split(",")[0].strip() if location else location
+    return (
+        f"PHOTOGRAPHY BRIEF — blog featured image\n\n"
+        f"Business type: {industry}\n"
+        f"Location: {city or location}\n"
+        f"Blog post title: {title}\n\n"
+        f"Shoot specification:\n"
+        f"- Subject: a real, plausible scene directly related to {industry} — "
+        f"actual people working, real products being used, a genuine workspace or service environment\n"
+        f"- Setting: a real physical location in or around {city or location} — "
+        f"an actual shop interior, street scene, workshop, office, market, or outdoor setting\n"
+        f"- Lighting: natural daylight or realistic indoor lighting — soft shadows, "
+        f"true-to-life colours, no neon glow, no studio fantasy lighting\n"
+        f"- Camera: eye-level or slight elevated angle, shallow depth of field on the subject, "
+        f"16:9 landscape crop suitable for a blog header\n"
+        f"- Mood: warm, confident, professional — like a photo from a respected trade magazine\n\n"
+        f"STRICT RULES — any violation ruins the image:\n"
+        f"- NO floating geometric shapes, abstract overlays, or graphic design elements\n"
+        f"- NO surreal or impossible lighting (lens flares, rainbow halos, fantasy glow)\n"
+        f"- NO illustrated or cartoon style — pure photorealism only\n"
+        f"- NO text, words, numbers, watermarks, or logos anywhere in the frame\n"
+        f"- NO split screens, collages, or multiple frames in one image\n"
+        f"- NO digital art aesthetic, no 3D renders, no CGI look\n"
+        f"- NO people with distorted faces, extra fingers, or impossible anatomy\n"
+        f"- NO stock-photo clichés: no handshakes in suits, no thumbs-up, no pointing at whiteboards\n"
+        f"- Every element in the frame must be something that could physically exist in {city or location}"
+    )
+
+
 class ZiloBlogService:
     """Creates WordPress subsites and publishes posts on behalf of Zilo clients."""
 
@@ -830,24 +866,14 @@ class ZiloBlogService:
         try:
             from nano_banana_service import generate_creative_image
 
-            image_prompt = (
-                f"A professional, editorial-quality blog featured image for a {industry} business "
-                f"called '{business_name}' based in {location}.\n\n"
-                f"Post topic: {title}\n\n"
-                f"Style requirements:\n"
-                f"- Photorealistic, magazine-quality photography — NOT illustration, NOT AI art style\n"
-                f"- Relevant to {industry}: show the environment, products, or people naturally\n"
-                f"- Warm, vibrant, high-contrast lighting — the kind that stops scrolling\n"
-                f"- Wide landscape composition suitable for a blog header\n"
-                f"- NO text, NO words, NO watermarks anywhere in the image\n"
-                f"- Premium editorial feel — like a photo from a top magazine spread\n"
-                f"- Mood: confident, professional, locally authentic to {location}"
-            )
+            # Build a photography-brief style prompt — describe the shot, not the aesthetic
+            # This reduces AI artifacts and produces more realistic, grounded imagery
+            image_prompt = _build_blog_image_prompt(title, industry, business_name, location)
 
             result = await generate_creative_image(
                 prompt=image_prompt,
                 format="landscape",
-                quality="fast",
+                quality="pro",
             )
 
             if result.get("error") or not result.get("image_url"):
