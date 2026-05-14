@@ -464,6 +464,29 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(status_code=404, detail="Blog not found")
         return {"status": "activated"}
 
+    # ── Seed forms for an existing blog ──────────────────────────────────────
+
+    @router.post("/seed-forms")
+    async def seed_forms_for_my_blog(user=Depends(get_current_user)):
+        """
+        Seeds the 3 standard forms (contact, order, survey) for the current user's blog.
+        Safe to call multiple times — creates new forms each call (use to refresh/add forms).
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="No blog found for this account")
+
+        from forms_routes import seed_blog_forms
+        business_name = blog.get("business_name", "My Business")
+        industry = blog.get("industry", "services")
+        slugs = await seed_blog_forms(db, user_id, business_name, industry)
+        logger.info(f"[blog/seed-forms] Seeded forms for user={user_id}: {slugs}")
+        return {"status": "ok", "forms": slugs}
+
     # ── Manually trigger a post for one client ─────────────────────────────────
 
     @router.post("/publish-now")
