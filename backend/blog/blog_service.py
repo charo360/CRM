@@ -308,24 +308,25 @@ class ZiloBlogService:
         logger.info(f"[blog] AI products seeded: {prod_result}")
 
         # 6. Seed Zilo Forms (stored in MongoDB, rendered by JS widget)
-        from forms.routes import seed_zilo_forms
-        seeded_ids = await seed_zilo_forms(self.db, client_id, business_name, industry)
+        from forms_routes import seed_blog_forms
+        seeded_ids = await seed_blog_forms(self.db, client_id, business_name, industry)
         logger.info(f"[blog] Zilo Forms seeded: {seeded_ids}")
 
         # 6b. Embed Zilo Forms widget into Contact, Order Forms, and Survey pages
         try:
             api_base = os.getenv("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
 
-            def _zilo_form_block(form_id: str) -> str:
-                if not form_id:
+            def _zilo_form_block(slug: str) -> str:
+                if not slug:
                     return ""
-                uid = f"zf-{form_id[-8:]}"
+                uid = f"zf-{slug[-10:].replace('-', '')}"
+                src = f"{api_base}/api/forms/widget.js"
+                call = f"ZiloForm.render('{uid}','{slug}')"
                 return (
-                    f"<!-- wp:html -->"
-                    f"<div id="{uid}"></div>"
-                    f"<script src="{api_base}/api/forms/widget.js" "
-                    f"onload="ZiloForm.render('{uid}','{form_id}')"></script>"
-                    f"<!-- /wp:html -->"
+                    "<!-- wp:html -->"
+                    f'<div id="{uid}"></div>'
+                    f'<script src="{src}" onload="{call}"></script>'
+                    "<!-- /wp:html -->"
                 )
 
             auth_header = base64.b64encode(
