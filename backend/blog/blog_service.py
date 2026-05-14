@@ -215,6 +215,124 @@ def _generate_password(length: int = 20) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def _build_homepage_content(business_name: str, industry: str) -> str:
+    """
+    Returns Gutenberg block HTML for a polished Astra-styled homepage.
+    Hero + 3-column features + CTA band.
+    """
+    industry_l = industry.lower()
+
+    INDUSTRY_COPY = {
+        "salon":       ("Transform Your Look", "Expert styling & beauty treatments in a relaxing environment.", [("✂️ Expert Stylists", "Award-winning team with years of experience."), ("💅 Full Beauty Menu", "Hair, nails, facials & more under one roof."), ("📅 Easy Booking", "Reserve your spot instantly via WhatsApp.")], "Book Your Appointment", "/contact"),
+        "beauty":      ("Feel Your Best Every Day", "Premium beauty services tailored just for you.", [("💄 Beauty Experts", "Skilled professionals dedicated to your glow."), ("🌸 Premium Products", "Only the best brands used on your skin."), ("✨ Instant Results", "Walk out looking and feeling amazing.")], "Book a Session", "/contact"),
+        "hair":        ("Great Hair Starts Here", "Precision cuts, colour & treatments by top stylists.", [("✂️ Precision Cuts", "Tailored styles that suit your personality."), ("🎨 Expert Colouring", "Balayage, highlights & vivid colours."), ("💆 Scalp Treatments", "Nourish and restore your hair health.")], "Book Now", "/contact"),
+        "spa":         ("Relax. Restore. Renew.", "Indulge in world-class spa & wellness treatments.", [("🧖 Full Body Treatments", "Massages, wraps & detox therapies."), ("🌿 Natural Ingredients", "Pure botanical products for your skin."), ("☮️ Serene Atmosphere", "Escape the stress of everyday life.")], "Book a Treatment", "/contact"),
+        "restaurant":  ("Taste the Difference", "Fresh ingredients, bold flavours, unforgettable meals.", [("🍽️ Chef-Crafted Menu", "Seasonal dishes made from locally sourced produce."), ("🥂 Perfect Ambience", "Great food deserves a great setting."), ("🚀 Fast Delivery", "Hot meals delivered to your door.")], "Order Now", "/shop"),
+        "food":        ("Delicious Food, Delivered Fast", "From our kitchen to your table in minutes.", [("🍳 Fresh Daily", "Prepared fresh every morning with quality ingredients."), ("📦 Easy Ordering", "Order online or via WhatsApp — no fuss."), ("⭐ Top Rated", "Loved by hundreds of happy customers.")], "Order Online", "/shop"),
+        "bakery":      ("Baked With Love", "Artisan breads, cakes & pastries made fresh daily.", [("🥐 Fresh Every Morning", "Baked before sunrise so you get it at its best."), ("🎂 Custom Cakes", "Birthday, wedding & celebration cakes to order."), ("🌾 Quality Ingredients", "No preservatives — just real, wholesome ingredients.")], "Shop Our Bakes", "/shop"),
+        "hotel":       ("Your Home Away From Home", "Comfortable stays with exceptional service.", [("🛏️ Comfortable Rooms", "Well-appointed rooms for rest and relaxation."), ("🍳 Daily Breakfast", "Start your day with a hearty meal on us."), ("📍 Prime Location", "Close to everything you need.")], "Check Availability", "/contact"),
+        "catering":    ("Exceptional Catering for Every Event", "From corporate lunches to wedding receptions.", [("👨‍🍳 Professional Chefs", "Experienced catering team for any occasion."), ("🍱 Custom Menus", "Tailored to your dietary needs & preferences."), ("✅ Full Setup Included", "We handle everything — you enjoy the event.")], "Get a Quote", "/contact"),
+        "retail":      (f"Shop {business_name}", "Quality products at unbeatable prices.", [("🏷️ Great Prices", "Competitive pricing on all our products."), ("📦 Fast Fulfilment", "Order today, receive quickly."), ("🔄 Easy Returns", "Hassle-free returns & exchanges.")], "Shop Now", "/shop"),
+        "hardware":    ("Everything You Need to Build", "Tools, materials & supplies for every project.", [("🔨 Wide Selection", "Thousands of products always in stock."), ("👷 Expert Advice", "Our team helps you choose the right tool."), ("🚚 Bulk Delivery", "Large orders delivered to your site.")], "Browse Products", "/shop"),
+        "supermarket": ("Fresh, Fast & Affordable", "Your neighbourhood supermarket — now online.", [("🥦 Fresh Produce Daily", "Farm-fresh fruits and vegetables."), ("💳 Great Value", "Everyday low prices on all essentials."), ("🚗 Click & Collect", "Order online, pick up in minutes.")], "Shop Groceries", "/shop"),
+        "fashion":     ("Define Your Style", "Trendy fashion for every occasion.", [("👗 New Arrivals Weekly", "Stay ahead with the latest fashion drops."), ("📏 All Sizes", "Inclusive sizing for every body."), ("🔁 Free Returns", "Shop confidently with hassle-free returns.")], "Shop the Collection", "/shop"),
+        "fitness":     ("Stronger Every Day", "Achieve your fitness goals with expert guidance.", [("💪 Expert Coaching", "Personalised training plans that get results."), ("🏋️ Modern Equipment", "State-of-the-art gym facilities."), ("🥗 Nutrition Advice", "Fuel your body the right way.")], "Join Now", "/contact"),
+        "gym":         ("Push Your Limits", "Where results are made, every single day.", [("🏆 Results Guaranteed", "Proven programmes for real transformation."), ("👥 Group Classes", "Motivating classes for all fitness levels."), ("🕐 Open 7 Days", "Train on your schedule, not ours.")], "Start Today", "/contact"),
+        "services":    (f"Welcome to {business_name}", "Professional services you can count on.", [("✅ Reliable & Trusted", "Hundreds of satisfied clients across the region."), ("⚡ Fast Turnaround", "We respect your time and deliver on schedule."), ("💬 Always Reachable", "Reach us instantly via WhatsApp.")], "Get a Free Quote", "/contact"),
+        "plumber":     ("Fast, Reliable Plumbing", "24/7 emergency & scheduled plumbing services.", [("🔧 Emergency Response", "We arrive fast when you need us most."), ("🏠 All Job Sizes", "From a dripping tap to full installations."), ("💯 Guaranteed Work", "All work backed by our satisfaction guarantee.")], "Call Us Now", "/contact"),
+        "electrician": ("Safe, Certified Electrical Work", "Licensed electricians for homes & businesses.", [("⚡ Fully Licensed", "All work meets national safety standards."), ("🏗️ Installations & Repairs", "New wiring, fuse boards, lighting & more."), ("📞 Same-Day Service", "Emergency callouts available 7 days a week.")], "Get a Quote", "/contact"),
+        "mechanic":    ("Expert Auto Repairs", "Keeping your vehicle safe on the road.", [("🔧 Full Diagnostics", "State-of-the-art diagnostic equipment."), ("🚗 All Makes & Models", "We service petrol, diesel & hybrid vehicles."), ("✅ Honest Pricing", "No hidden fees — ever.")], "Book a Service", "/contact"),
+        "tech":        (f"Innovative Solutions by {business_name}", "Technology that drives your business forward.", [("💡 Custom Development", "Software built specifically for your needs."), ("☁️ Cloud Solutions", "Scalable, secure infrastructure."), ("🛡️ Ongoing Support", "We're with you long after launch.")], "Start a Project", "/contact"),
+        "agency":      (f"Grow Faster with {business_name}", "Digital marketing & design that delivers results.", [("📈 Proven Results", "Data-driven strategies that grow your brand."), ("🎨 Creative Design", "Stunning visuals that stop the scroll."), ("📣 Full-Service", "SEO, social, ads & more in one place.")], "Get Started", "/contact"),
+        "consulting":  (f"{business_name} — Expert Consulting", "Strategic advice that transforms businesses.", [("🎯 Strategic Focus", "Clarity and direction for complex challenges."), ("🤝 Trusted Partner", "Long-term relationships built on results."), ("📊 Data-Driven", "Every recommendation backed by research.")], "Book a Consultation", "/contact"),
+    }
+
+    copy = INDUSTRY_COPY.get(industry_l, (
+        f"Welcome to {business_name}",
+        "Quality products and services you can trust.",
+        [("⭐ Quality First", "We never compromise on quality."), ("🚀 Fast & Reliable", "Efficient service with consistent results."), ("💬 Great Support", "We're always here to help you.")],
+        "Get In Touch",
+        "/contact",
+    ))
+
+    headline, subheadline, features, cta_text, cta_link = copy
+
+    feat_blocks = ""
+    for icon_title, desc in features:
+        feat_blocks += (
+            "<!-- wp:column {\"textAlign\":\"center\"} -->"
+            "<div class=\"wp-block-column\" style=\"text-align:center\">"
+            f"<!-- wp:heading {{\"textAlign\":\"center\",\"level\":4}} --><h4 class=\"wp-block-heading has-text-align-center\">{icon_title}</h4><!-- /wp:heading -->"
+            f"<!-- wp:paragraph {{\"align\":\"center\"}} --><p class=\"has-text-align-center\">{desc}</p><!-- /wp:paragraph -->"
+            "</div>"
+            "<!-- /wp:column -->"
+        )
+
+    return (
+        # ── Hero ──────────────────────────────────────────────────────────────
+        "<!-- wp:cover {\"minHeight\":520,\"minHeightUnit\":\"px\",\"align\":\"full\","
+        "\"overlayColor\":\"ast-global-color-0\",\"dimRatio\":70,"
+        "\"style\":{\"spacing\":{\"padding\":{\"top\":\"80px\",\"bottom\":\"80px\"}}}} -->"
+        "<div class=\"wp-block-cover alignfull\" style=\"min-height:520px;padding-top:80px;padding-bottom:80px\">"
+        "<span aria-hidden=\"true\" class=\"wp-block-cover__background has-ast-global-color-0-background-color has-background-dim-70 has-background-dim\"></span>"
+        "<div class=\"wp-block-cover__inner-container\">"
+        "<!-- wp:heading {\"textAlign\":\"center\",\"level\":1,\"textColor\":\"white\","
+        "\"style\":{\"typography\":{\"fontSize\":\"clamp(2rem,5vw,3.5rem)\"}}} -->"
+        f"<h1 class=\"wp-block-heading has-text-align-center has-white-color has-text-color\">{headline}</h1>"
+        "<!-- /wp:heading -->"
+        "<!-- wp:paragraph {\"align\":\"center\",\"textColor\":\"white\","
+        "\"style\":{\"typography\":{\"fontSize\":\"1.2rem\"},\"spacing\":{\"margin\":{\"top\":\"16px\",\"bottom\":\"32px\"}}}} -->"
+        f"<p class=\"has-text-align-center has-white-color has-text-color\" style=\"margin-top:16px;margin-bottom:32px;font-size:1.2rem\">{subheadline}</p>"
+        "<!-- /wp:paragraph -->"
+        "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"},\"style\":{\"spacing\":{\"blockGap\":\"16px\"}}} -->"
+        "<div class=\"wp-block-buttons\">"
+        "<!-- wp:button {\"style\":{\"border\":{\"radius\":\"30px\"}},\"backgroundColor\":\"white\",\"textColor\":\"ast-global-color-0\"} -->"
+        f"<div class=\"wp-block-button\"><a class=\"wp-block-button__link has-ast-global-color-0-color has-white-background-color has-text-color has-background\" href=\"{cta_link}\" style=\"border-radius:30px\">{cta_text}</a></div>"
+        "<!-- /wp:button -->"
+        "<!-- wp:button {\"style\":{\"border\":{\"radius\":\"30px\"},\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+        "<div class=\"wp-block-button\"><a class=\"wp-block-button__link has-white-color has-text-color has-background\" href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\" style=\"border-radius:30px;background-color:#25d366\">💬 WhatsApp Us</a></div>"
+        "<!-- /wp:button -->"
+        "</div>"
+        "<!-- /wp:buttons -->"
+        "</div>"
+        "</div>"
+        "<!-- /wp:cover -->"
+
+        # ── Features strip ────────────────────────────────────────────────────
+        "<!-- wp:group {\"align\":\"full\",\"style\":{\"spacing\":{\"padding\":{\"top\":\"60px\",\"bottom\":\"60px\",\"left\":\"2rem\",\"right\":\"2rem\"}},\"color\":{\"background\":\"#f8f9fa\"}}} -->"
+        "<div class=\"wp-block-group alignfull\" style=\"padding:60px 2rem;background-color:#f8f9fa\">"
+        "<!-- wp:heading {\"textAlign\":\"center\",\"level\":2} -->"
+        f"<h2 class=\"wp-block-heading has-text-align-center\">Why Choose {business_name}?</h2>"
+        "<!-- /wp:heading -->"
+        "<!-- wp:columns {\"align\":\"wide\",\"style\":{\"spacing\":{\"margin\":{\"top\":\"40px\"}}}} -->"
+        "<div class=\"wp-block-columns alignwide\" style=\"margin-top:40px\">"
+        + feat_blocks +
+        "</div>"
+        "<!-- /wp:columns -->"
+        "</div>"
+        "<!-- /wp:group -->"
+
+        # ── CTA band ──────────────────────────────────────────────────────────
+        "<!-- wp:group {\"align\":\"full\",\"style\":{\"spacing\":{\"padding\":{\"top\":\"60px\",\"bottom\":\"60px\"}}},\"backgroundColor\":\"ast-global-color-0\"} -->"
+        "<div class=\"wp-block-group alignfull has-ast-global-color-0-background-color has-background\" style=\"padding:60px 0\">"
+        "<!-- wp:heading {\"textAlign\":\"center\",\"level\":2,\"textColor\":\"white\"} -->"
+        "<h2 class=\"wp-block-heading has-text-align-center has-white-color has-text-color\">Ready to Get Started?</h2>"
+        "<!-- /wp:heading -->"
+        "<!-- wp:paragraph {\"align\":\"center\",\"textColor\":\"white\"} -->"
+        "<p class=\"has-text-align-center has-white-color has-text-color\">Contact us today and let us help you.</p>"
+        "<!-- /wp:paragraph -->"
+        "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"},\"style\":{\"spacing\":{\"margin\":{\"top\":\"24px\"}}}} -->"
+        "<div class=\"wp-block-buttons\" style=\"margin-top:24px\">"
+        "<!-- wp:button {\"backgroundColor\":\"white\",\"textColor\":\"ast-global-color-0\",\"style\":{\"border\":{\"radius\":\"30px\"}}} -->"
+        "<div class=\"wp-block-button\"><a class=\"wp-block-button__link has-ast-global-color-0-color has-white-background-color has-text-color has-background\" href=\"/contact\" style=\"border-radius:30px\">Get In Touch Today</a></div>"
+        "<!-- /wp:button -->"
+        "</div>"
+        "<!-- /wp:buttons -->"
+        "</div>"
+        "<!-- /wp:group -->"
+    )
+
+
 class ZiloBlogService:
     """Creates WordPress subsites and publishes posts on behalf of Zilo clients."""
 
@@ -299,6 +417,9 @@ class ZiloBlogService:
 
         # 3. Apply industry-specific theme
         await self._apply_industry_theme(slug, industry)
+
+        # 3b. Create industry homepage (hero + features + CTA, Astra-styled)
+        await self._create_industry_homepage(slug, site_url, business_name, industry)
 
         # 4. Activate plugins (WooCommerce shop + WPForms) — use public URL (now mapped)
         await self._activate_site_plugins(slug, site_url)
@@ -757,7 +878,7 @@ class ZiloBlogService:
             except Exception as exc:
                 logger.warning(f"[blog] page create {page['slug']} failed: {exc}")
 
-        # 6. Set front page to /shop and blog page to /blog
+        # 6. Create blog page and set it as posts page
         try:
             r = await _wp(
                 "post", "create",
@@ -769,21 +890,11 @@ class ZiloBlogService:
                 "--porcelain",
             )
             blog_page_id = r.stdout.strip() if r.returncode == 0 else None
-
-            r_shop = await _wp("post", "list", "--post_type=page", "--name=shop", "--format=ids")
-            shop_page_id = r_shop.stdout.strip() if r_shop.returncode == 0 else None
-
-            if shop_page_id:
-                await _wp("option", "update", "show_on_front", "page")
-                await _wp("option", "update", "page_on_front", shop_page_id)
-                logger.info(f"[blog] Set Shop (id={shop_page_id}) as front page for {slug}")
-
             if blog_page_id:
                 await _wp("option", "update", "page_for_posts", blog_page_id)
                 logger.info(f"[blog] Set Blog (id={blog_page_id}) as posts page for {slug}")
-
         except Exception as exc:
-            logger.warning(f"[blog] front/blog page configuration failed: {exc}")
+            logger.warning(f"[blog] blog page configuration failed: {exc}")
 
         # 7. Remove the default "Sample Page" WordPress creates on every new site
         try:
@@ -795,6 +906,33 @@ class ZiloBlogService:
             logger.info(f"[blog] Sample Page removed for {slug}")
         except Exception as exc:
             logger.warning(f"[blog] Sample Page removal failed: {exc}")
+
+    async def _create_industry_homepage(self, slug: str, site_url: str, business_name: str, industry: str):
+        """
+        Creates a polished Gutenberg homepage (hero + features + CTA) styled by Astra,
+        then sets it as the site front page.
+        """
+        content = _build_homepage_content(business_name, industry)
+
+        async def _wp(*args):
+            return await _wp_cli(*args, url=site_url)
+
+        r = await _wp(
+            "post", "create",
+            "--post_type=page",
+            "--post_status=publish",
+            "--post_title=Home",
+            "--post_name=home",
+            f"--post_content={content}",
+            "--porcelain",
+        )
+        if r.returncode == 0:
+            home_id = r.stdout.strip()
+            await _wp("option", "update", "show_on_front", "page")
+            await _wp("option", "update", "page_on_front", home_id)
+            logger.info(f"[blog] Homepage created (id={home_id}) and set as front page for {slug}")
+        else:
+            logger.warning(f"[blog] Homepage creation failed for {slug}: {r.stderr[:150]}")
 
     async def _apply_industry_theme(self, slug: str, industry: str):
         """
