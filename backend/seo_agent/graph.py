@@ -103,6 +103,11 @@ TOOL RULES:
 - Pick the TOP 3-5 best opportunities and explain them simply: \
   "X people search for [keyword] every month and it's easy to rank for."
 - After research use check_serp_ranking to show where they currently stand.
+- **BEFORE writing any blog post** you MUST do web_search on the topic first. Search for: \
+  (a) recent news or statistics about the topic, (b) what questions people are asking, \
+  (c) what the top-ranking articles cover (so you can write something better). \
+  Then use write_blog_post with that research context included in the topic/keywords. \
+  A post written without research will be generic — web_search first, always.
 - After writing a blog post, say what it's about and that it was saved, then offer to publish.
 - Location codes to remember: Kenya=2404, Nigeria=2566, USA=2710, UK=2826, India=2356. \
   Infer from business context (country_code) when calling DataForSEO tools.

@@ -944,28 +944,50 @@ Business context (stay accurate to what they offer):
         faq_instruction = """
 After the main content, add a FAQ section with 3-5 relevant questions and answers (good for AI search and Google featured snippets).""" if payload.include_faq else ""
 
-        prompt = f"""Write a {word_target}-word SEO-optimized blog post{business_str}.
+        prompt = f"""You are a senior content writer with 10+ years covering {payload.topic}. Before writing, think like a journalist: What do readers actually want to know? What surprising angle will make them read to the end? What specific, useful detail can only someone with real experience include?
 
+Business: {biz_name or "a local business"}
 Topic: {payload.topic}
-Target keywords to include naturally: {keywords_str}
+Target keywords (use naturally — never force): {keywords_str}
 Tone: {payload.tone}
 Language: {lang}
+Target length: {word_target} words
 {context_block}
 {faq_instruction}
 
-Structure the post with:
-- An engaging H1 title (include main keyword)
-- Introduction paragraph
-- Multiple H2 sections with H3 subsections where needed
-- Conclusion with call-to-action
-{' - FAQ section at the end' if payload.include_faq else ''}
+━━ HEADLINE RULES ━━
+Your H1 must do ONE of these:
+- Promise a specific result: "How to [do X] in [city] Without [common fear]"
+- Use a number: "7 Things [city] Residents Should Know About [topic]"
+- Challenge an assumption: "Why Most People Get [topic] Wrong (And What to Do Instead)"
+- Speak to a real pain: "Struggling with [problem]? Here's What Actually Works"
+NEVER use: "The Ultimate Guide to...", "A Comprehensive Overview of...", "Everything You Need to Know About..."
 
-After the article, on a new line write:
-META_TITLE: [SEO title, 50-60 chars]
-META_DESC: [Meta description, 140-160 chars]
-TAGS: [comma-separated tags]
+━━ WRITING RULES ━━
+- Open with a scene, a surprising stat, or a direct question — not a definition
+- Write in first or second person: "you'll want to...", "I've seen...", "most people in [location] don't realise..."
+- Short sentences. Then occasionally a longer one that adds depth. Vary the rhythm.
+- Use contractions: don't, it's, you'll, we've
+- Name specific local details: neighbourhoods, price ranges, seasons, cultural context
+- Every paragraph must earn its place — if it doesn't teach, surprise, or move the reader, cut it
+- One concrete example beats three abstract claims
 
-Write the full article now:"""
+BANNED phrases (never use): "dive into", "delve into", "game-changer", "leverage", "seamlessly", "unlock potential", "revolutionize", "transformative", "in today's world", "it's important to note", "comprehensive guide", "ultimate guide", "cutting-edge", "harness the power", "it goes without saying"
+
+━━ STRUCTURE ━━
+- H1 title (uses main keyword, written as a headline not a label)
+- Hook paragraph (scene, stat, or question — no definitions)
+- H2 sections (each answers a specific question the reader has)
+- H3 subsections where needed
+- Conclusion with a clear, specific call-to-action (not "contact us today")
+{' - FAQ section (3-5 Qs, each genuinely useful, not filler)' if payload.include_faq else ''}
+
+After the article write exactly:
+META_TITLE: [50-60 chars — includes keyword, reads like a headline]
+META_DESC: [140-160 chars — specific benefit + location, no fluff]
+TAGS: [5 comma-separated tags]
+
+Write the article now:"""
 
         raw = await _call_ai(prompt, max_tokens=3000)
 

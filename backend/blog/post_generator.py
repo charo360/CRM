@@ -142,7 +142,7 @@ async def generate_blog_post(
         messages=[
             {
                 "role": "user",
-                "content": f"""You are a skilled local content writer. Your job is to write a blog post that sounds like it was written by a real person who has worked in this industry for years — not by AI.
+                "content": f"""You are a senior local content writer with 10+ years of real-world experience in {industry}. You write articles that people actually read to the end — not AI summaries. Before writing, ask: what does someone searching this topic REALLY want to know? What's the angle that makes this worth reading?
 
 Business: {business_name}
 Industry: {industry}
@@ -154,6 +154,21 @@ Article style: {tpl['name']}
 Structure: {tpl['structure']}
 Writing guidance: {tpl['hint']}
 
+━━━ HEADLINE RULES ━━━
+Your title must do ONE of these — pick the most natural fit:
+• Specific outcome: "How to [X] in {location} Without [common fear]"
+• Surprising number: "5 Things {location} Residents Get Wrong About [topic]"
+• Challenge assumption: "Why Most People in {location} Get [topic] Wrong"
+• Speak to pain: "Struggling with [problem]? Here's What Actually Works in {location}"
+NEVER: "The Ultimate Guide", "A Comprehensive Overview", "Everything You Need to Know", "Top Tips for"
+
+━━━ OPENING HOOK — MANDATORY ━━━
+First paragraph must be ONE of:
+• A scene the reader recognises: "You've asked three [industry] businesses for a quote, and every price was different..."
+• A counter-intuitive fact with a number: "Most people in {location} pay 40% more than they need to for [topic]..."
+• A direct reader question: "How do you know if you're getting a fair deal on [topic]?"
+NEVER open with a definition, background history, or "In today's [adjective] world..."
+
 ━━━ WRITING RULES — READ CAREFULLY ━━━
 
 HUMAN VOICE — the most important rule:
@@ -162,19 +177,23 @@ HUMAN VOICE — the most important rule:
 - Use specific local detail: name actual neighbourhoods, markets, local price ranges, seasons, cultural references. Don't be vague.
 - Contractions: use them. "don't", "it's", "you'll", "we've". Formal writing sounds robotic.
 - One or two imperfect, conversational sentences are fine — that's what humans write.
+- Every paragraph must earn its place. If it doesn't teach something specific or move the story forward, cut it.
+- One concrete example beats three vague claims every time.
 
 BANNED PHRASES — never use these:
 "dive into", "delve into", "game-changer", "game changer", "leverage", "seamlessly", "navigate",
 "unlock", "unlock potential", "revolutionize", "transformative", "landscape", "in today's world",
 "in today's fast-paced", "it's important to note", "it goes without saying", "at the end of the day",
-"comprehensive guide", "ultimate guide", "cutting-edge", "state-of-the-art", "harness the power"
+"comprehensive guide", "ultimate guide", "cutting-edge", "state-of-the-art", "harness the power",
+"look no further", "without further ado", "in conclusion", "as we have seen"
 
 STRUCTURE & SEO:
-- 750-950 words of readable content
+- 850-1050 words of readable content
 - Use the location naturally (e.g. "in {location}", "across {location}")
 - The primary keyword must appear in: the title, the first paragraph, at least one H2, and the excerpt
-- Mention "{business_name}" and "Powered by Zilo" once each, naturally
-- No keyword stuffing — if a keyword doesn't fit, skip it
+- Mention "{business_name}" once naturally — as the local expert, not an advertisement
+- No keyword stuffing — if a keyword doesn't fit naturally, skip it
+- Call-to-action must be specific: say what happens when they contact, not just "contact us today"
 
 ━━━ GUTENBERG BLOCK FORMAT ━━━
 

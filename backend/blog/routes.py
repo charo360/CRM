@@ -73,7 +73,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
         '<div style="position:relative;z-index:1;">'
         '<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);'
         'text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">'
-        '&#10022; Zilo AI &nbsp;&#183;&nbsp; Quality Article</div>'
+        '&#10022; Expert Guide</div>'
         '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">'
         '<span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);'
         'font-size:12px;font-weight:500;padding:4px 14px;border-radius:20px;">'

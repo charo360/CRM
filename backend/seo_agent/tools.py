@@ -243,23 +243,55 @@ async def write_blog_post(
     biz = f" for {business_name}" if business_name else ""
     faq_note = "\n- End with a FAQ section (3-5 Q&As, great for AI search snippets)" if include_faq else ""
 
-    prompt = f"""Write a {target}-word SEO-optimized blog post{biz}.
+    prompt = f"""You are a senior content writer and SEO expert with deep real-world experience in this topic. You write like a human who has lived it — not like an AI summarising the web.
 
 Topic: {topic}
-Keywords to weave in naturally: {kw_str}
+Keywords (weave in naturally — never force): {kw_str}
 Tone: {tone}
+Length: {target} words{biz}
 {faq_note}
 
-Structure:
-- H1 title (include main keyword)
-- Short intro
-- H2 sections with H3 subsections
-- Conclusion with a call-to-action
-{('- FAQ section' if include_faq else '')}
+STEP 1 — Before writing, think like a journalist:
+- What does someone searching this topic ACTUALLY want to know?
+- What's the surprising angle most articles miss?
+- What specific detail can only an expert include?
+- What's the real pain or goal behind this search?
+
+STEP 2 — Write the article with these rules:
+
+HEADLINE (H1) — must do one of:
+• Promise a specific outcome: "How to [X] in [place] Without [fear]"
+• Use a number: "5 Things to Know About [topic] Before You [action]"
+• Challenge an assumption: "Why Most People Get [topic] Wrong"
+• Speak to pain: "Struggling with [problem]? Here's What Actually Works"
+NEVER: "The Ultimate Guide", "A Comprehensive Overview", "Everything You Need to Know"
+
+OPENING — Start with ONE of:
+• A scene the reader recognises ("You've been quoted three prices for...")
+• A counter-intuitive fact ("Most people spend twice what they need to...")
+• A direct question ("How do you know if you're getting a good deal?")
+NEVER start with a definition or "In today's world..."
+
+BODY — Each H2 section must answer a real question:
+- Write in second person or first person: "you'll want...", "I've seen clients..."
+- Short sentences. Then longer ones that explain. Mix the rhythm.
+- Use contractions: don't, it's, you'll, we've
+- Name specific details: local areas, real price ranges, seasons, actual examples
+- Every paragraph must teach or surprise — no filler
+
+BANNED phrases: "dive into", "delve into", "game-changer", "leverage", "seamlessly", "unlock potential", "revolutionize", "transformative", "in today's world", "it's important to note", "comprehensive guide", "ultimate guide", "cutting-edge", "harness the power", "at the end of the day"
+
+STRUCTURE:
+- H1 headline
+- Hook paragraph
+- H2 sections (each answers a specific reader question)
+- H3 subsections where needed
+- Conclusion with a SPECIFIC call-to-action (not "contact us today" — say what happens when they do)
+{('- FAQ section: 3-5 questions a real person would actually ask, with genuinely useful answers' if include_faq else '')}
 
 After the article write these 3 lines exactly:
-META_TITLE: [50-60 char SEO title]
-META_DESC: [140-160 char meta description]
+META_TITLE: [50-60 char SEO title — reads like a headline, not a label]
+META_DESC: [140-160 char meta description — specific benefit, no fluff]
 TAGS: [5 comma-separated tags]"""
 
     raw = await _ai(prompt, max_tokens=3500)
@@ -1034,6 +1066,59 @@ async def add_keywords_to_tracker(
         return f"Error saving keywords to tracker: {e}"
 
 
+@tool
+async def web_search(
+    query: str,
+    max_results: int = 5,
+) -> str:
+    """
+    Search the web for real-time information: recent news, statistics, competitor content,
+    trending topics, or any external knowledge needed to write a well-informed blog post.
+    ALWAYS call this before write_blog_post to gather research.
+
+    Args:
+        query: The search query — be specific (e.g. "installment financing Nairobi 2025 statistics").
+        max_results: Number of results to return (default 5, max 8).
+    """
+    query = (query or "").strip()
+    if not query:
+        return "Error: query is required"
+    limit = min(int(max_results), 8)
+
+    tavily_key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    if tavily_key:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    "https://api.tavily.com/search",
+                    json={"api_key": tavily_key, "query": query, "max_results": limit,
+                          "search_depth": "basic", "include_answer": True},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    lines = []
+                    if data.get("answer"):
+                        lines.append(f"Summary: {data['answer']}\n")
+                    for r in (data.get("results") or [])[:limit]:
+                        lines.append(f"• {r.get('title', '')}\n  {r.get('content', '')[:300]}\n  URL: {r.get('url', '')}")
+                    return "\n".join(lines) if lines else "No results found"
+        except Exception as e:
+            logger.warning("[seo web_search] Tavily failed: %s", e)
+
+    # Fallback: DuckDuckGo
+    try:
+        from duckduckgo_search import AsyncDDGS
+        async with AsyncDDGS() as ddgs:
+            raw = await ddgs.text(query, max_results=limit)
+        if raw:
+            lines = [f"• {r.get('title', '')}\n  {r.get('body', '')[:300]}\n  URL: {r.get('href', '')}" for r in raw]
+            return "\n".join(lines)
+    except Exception as e:
+        logger.warning("[seo web_search] DuckDuckGo failed: %s", e)
+
+    return f"Web search unavailable for: {query}"
+
+
 # ── Tool registry exported to graph ──────────────────────────────────────────
 
 SEO_TOOLS = [
@@ -1051,4 +1136,5 @@ SEO_TOOLS = [
     publish_post_to_platform,
     get_seo_summary,
     add_keywords_to_tracker,
+    web_search,
 ]
