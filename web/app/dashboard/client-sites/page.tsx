@@ -498,6 +498,92 @@ function WhatsAppEditor({ wpSlug, initial }: { wpSlug: string; initial: string }
   );
 }
 
+interface NavItem { id?: number; title: string; url: string; }
+
+function NavEditor({ wpSlug, siteUrl }: { wpSlug: string; siteUrl: string }) {
+  const [items, setItems] = useState<NavItem[]>([]);
+  const [menuId, setMenuId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newUrl, setNewUrl] = useState("");
+
+  useEffect(() => {
+    api.get<{ menu_id: number | null; items: NavItem[] }>(`/blog/clients/${wpSlug}/menu`)
+      .then(d => { setItems(d.items); setMenuId(d.menu_id); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [wpSlug]);
+
+  async function save() {
+    setSaving(true); setSaved(false);
+    try {
+      await api.put(`/blog/clients/${wpSlug}/menu`, { menu_id: menuId, items });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch { /* ignore */ } finally { setSaving(false); }
+  }
+
+  function addItem() {
+    const t = newTitle.trim(); const u = newUrl.trim();
+    if (!t || !u) return;
+    const url = u.startsWith("http") ? u : `${siteUrl}/${u.replace(/^\//, "")}`;
+    setItems(prev => [...prev, { title: t, url }]);
+    setNewTitle(""); setNewUrl("");
+  }
+
+  function removeItem(i: number) { setItems(prev => prev.filter((_, idx) => idx !== i)); }
+  function renameItem(i: number, title: string) { setItems(prev => prev.map((item, idx) => idx === i ? { ...item, title } : item)); }
+
+  return (
+    <div className="space-y-2 pt-2 border-t border-slate-200">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+        <Globe size={11} /> Site Navigation
+      </p>
+      {loading ? (
+        <p className="text-[10px] text-slate-400">Loading…</p>
+      ) : (
+        <>
+          <div className="space-y-1">
+            {items.map((item, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  value={item.title}
+                  onChange={e => renameItem(i, e.target.value)}
+                  className="flex-1 px-2 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200"
+                />
+                <span className="text-[10px] text-slate-400 truncate max-w-[100px]">{item.url.replace(/^https?:\/\/[^/]+/, "")}</span>
+                <button onClick={() => removeItem(i)} className="text-slate-300 hover:text-rose-500 transition-colors">
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-1.5">
+            <input value={newTitle} onChange={e => setNewTitle(e.target.value)}
+              placeholder="Label" className="w-20 px-2 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200" />
+            <input value={newUrl} onChange={e => setNewUrl(e.target.value)}
+              placeholder="/page or full URL" onKeyDown={e => e.key === "Enter" && addItem()}
+              className="flex-1 px-2 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200" />
+            <button onClick={addItem} disabled={!newTitle.trim() || !newUrl.trim()}
+              className="px-2 py-1 text-xs bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 disabled:opacity-40 transition-colors font-medium">
+              <Plus size={11} />
+            </button>
+          </div>
+
+          <button onClick={save} disabled={saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium">
+            {saving ? <Loader2 size={11} className="animate-spin" /> : saved ? <Check size={11} /> : <Save size={11} />}
+            {saving ? "Saving…" : saved ? "Saved!" : "Save Menu"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages, activatingPlugins,
   engagementOpen, engagementTab, engagementLoading, comments, formEntries, wpPosts, pendingCount,
   onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onActivatePlugins, onOpenEngagement }: SiteCardProps) {
@@ -720,6 +806,7 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           </div>
 
           <WhatsAppEditor wpSlug={site.wp_slug} initial={site.whatsapp_number ?? ""} />
+          <NavEditor wpSlug={site.wp_slug} siteUrl={siteUrl} />
 
           <div className="text-xs text-slate-400 flex flex-wrap gap-3">
             <span>Email: <span className="text-slate-600">{site.client_email}</span></span>

@@ -1542,6 +1542,79 @@ def make_blog_router(db, get_current_user):
                     logger.warning("[blog] reseed-forms page patch error: %s", exc)
 
         return {"status": "ok", "slugs": slugs, "pages_patched": patched}
+    # ── Navigation menu management ────────────────────────────────────────────
+
+    @router.get("/clients/{wp_slug}/menu")
+    async def get_menu(wp_slug: str, user=Depends(get_current_user)):
+        """Returns the current nav menu items for a client site."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+
+        async with httpx.AsyncClient(timeout=15) as hc:
+            auth = _wp_headers()
+            # Find the main-menu
+            r = await hc.get(f"{site_base}/wp-json/wp/v2/menus", headers=auth)
+            menus = r.json() if r.status_code == 200 else []
+            menu = next((m for m in menus if m.get("slug") == "main-menu"), menus[0] if menus else None)
+            if not menu:
+                return {"menu_id": None, "items": []}
+            menu_id = menu["id"]
+            ri = await hc.get(f"{site_base}/wp-json/wp/v2/menu-items?menus={menu_id}&per_page=50", headers=auth)
+            items = ri.json() if ri.status_code == 200 else []
+            return {
+                "menu_id": menu_id,
+                "items": sorted([
+                    {"id": i["id"], "title": i["title"]["rendered"], "url": i["url"], "order": i["menu_order"]}
+                    for i in items
+                ], key=lambda x: x["order"])
+            }
+
+    @router.put("/clients/{wp_slug}/menu")
+    async def save_menu(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """
+        Saves the nav menu for a client site.
+        body: { items: [{title, url}], menu_id?: int }
+        Creates main-menu if it doesn't exist yet.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        new_items = body.get("items", [])
+        auth = _wp_headers()
+
+        async with httpx.AsyncClient(timeout=20) as hc:
+            menu_id = body.get("menu_id")
+
+            # Create menu if missing
+            if not menu_id:
+                r = await hc.post(f"{site_base}/wp-json/wp/v2/menus", headers=auth,
+                                  json={"name": "Main Menu", "slug": "main-menu"})
+                if r.status_code not in (200, 201):
+                    raise HTTPException(500, f"Could not create menu: {r.text[:100]}")
+                menu_id = r.json()["id"]
+
+            # Delete all existing items
+            ri = await hc.get(f"{site_base}/wp-json/wp/v2/menu-items?menus={menu_id}&per_page=50", headers=auth)
+            for item in (ri.json() if ri.status_code == 200 else []):
+                await hc.delete(f"{site_base}/wp-json/wp/v2/menu-items/{item['id']}?force=true", headers=auth)
+
+            # Add new items in order
+            for i, item in enumerate(new_items):
+                await hc.post(f"{site_base}/wp-json/wp/v2/menu-items", headers=auth,
+                              json={"title": item["title"], "url": item["url"],
+                                    "type": "custom", "menus": menu_id,
+                                    "menu_order": i + 1, "status": "publish"})
+
+            # Assign to primary location via WP-CLI
+            await _wp_cli("menu", "location", "assign", "main-menu", "primary", url=site_base)
+
+        return {"status": "ok", "menu_id": menu_id, "items_saved": len(new_items)}
+
     # ── Save / update WhatsApp number for a client site ───────────────────────
 
     @router.patch("/clients/{wp_slug}/whatsapp")
