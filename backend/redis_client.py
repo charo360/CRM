@@ -139,6 +139,27 @@ async def dequeue_job(queue: str, timeout: int = 5) -> Optional[dict]:
         return None
 
 
+async def dequeue_job_multi(queues: list, timeout: int = 30) -> Optional[tuple]:
+    """
+    Block-pop from multiple queues with a single Redis command.
+    Returns (queue_name, job_dict) or None on timeout / unavailable.
+    This is ~15× more efficient than polling each queue separately.
+    """
+    r = await get_redis()
+    if not r:
+        return None
+    try:
+        result = await r.blpop(queues, timeout=timeout)
+        if result:
+            queue_name, raw = result
+            return (queue_name, json.loads(raw))
+        return None
+    except Exception as e:
+        logging.warning(f"[Queue] dequeue_job_multi error: {e}")
+        await asyncio.sleep(30)
+        return None
+
+
 async def queue_length(queue: str) -> int:
     """Return how many jobs are waiting in a queue."""
     r = await get_redis()

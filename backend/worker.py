@@ -24,6 +24,7 @@ load_dotenv()
 
 from redis_client import (
     dequeue_job,
+    dequeue_job_multi,
     QUEUE_BROADCAST,
     QUEUE_RECEIPT,
     QUEUE_AI_REPLY,
@@ -177,30 +178,29 @@ async def main():
 
     while _running:
         try:
-            # Poll each queue in round-robin (short timeout so we check _running often)
-            for queue in QUEUES:
-                if not _running:
-                    break
-                job = await dequeue_job(queue, timeout=2)
-                if not job:
-                    continue
+            # Single blpop watches all queues at once — 1 Redis command per 30s idle
+            # instead of 3 commands per 6s (15× fewer commands, well under Upstash free tier)
+            result = await dequeue_job_multi(QUEUES, timeout=30)
+            if not result:
+                continue
 
-                job_type = job.get("type", queue)
-                logging.info(f"[Worker] Processing job type={job_type} queue={queue}")
+            queue, job = result
+            job_type = job.get("type", queue)
+            logging.info(f"[Worker] Processing job type={job_type} queue={queue}")
 
-                try:
-                    if queue == QUEUE_BROADCAST:
-                        await handle_broadcast(job, db)
-                    elif queue == QUEUE_RECEIPT:
-                        await handle_receipt(job, db)
-                    else:
-                        logging.warning(f"[Worker] No handler for queue {queue}")
-                except Exception as e:
-                    logging.error(f"[Worker] Job failed (type={job_type}): {e}", exc_info=True)
+            try:
+                if queue == QUEUE_BROADCAST:
+                    await handle_broadcast(job, db)
+                elif queue == QUEUE_RECEIPT:
+                    await handle_receipt(job, db)
+                else:
+                    logging.warning(f"[Worker] No handler for queue {queue}")
+            except Exception as e:
+                logging.error(f"[Worker] Job failed (type={job_type}): {e}", exc_info=True)
 
         except Exception as e:
             logging.error(f"[Worker] Unexpected error in main loop: {e}", exc_info=True)
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
 
     logging.info("[Worker] Stopped cleanly")
 
