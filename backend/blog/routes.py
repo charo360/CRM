@@ -487,6 +487,119 @@ def make_blog_router(db, get_current_user):
         logger.info(f"[blog/seed-forms] Seeded forms for user={user_id}: {slugs}")
         return {"status": "ok", "forms": slugs}
 
+    # ── Patch WordPress pages with Zilo Form widgets ──────────────────────────
+
+    @router.post("/patch-pages")
+    async def patch_blog_pages(user=Depends(get_current_user)):
+        """
+        Embeds Zilo Form widgets into the Contact, Order Forms, and Survey
+        pages of the user's WordPress subsite. Safe to call multiple times.
+        """
+        import base64, httpx, os
+        user_id = str(user.get("_id") or user.get("id", ""))
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="No blog found for this account")
+
+        site_url = blog.get("blog_url", "")
+        if not site_url:
+            raise HTTPException(status_code=400, detail="Blog URL not set")
+
+        # Get the user's form slugs from the forms collection
+        forms = await db.forms.find(
+            {"user_id": user_id, "source": "blog_autoseed"}
+        ).to_list(10)
+
+        slugs = {"contact": "", "order": "", "survey": ""}
+        for f in forms:
+            title_l = f.get("title", "").lower()
+            if "contact" in title_l:
+                slugs["contact"] = f.get("slug", "")
+            elif any(k in title_l for k in ["order", "reservation", "inquiry", "booking"]):
+                slugs["order"] = f.get("slug", "")
+            elif any(k in title_l for k in ["survey", "feedback"]):
+                slugs["survey"] = f.get("slug", "")
+
+        if not any(slugs.values()):
+            raise HTTPException(
+                status_code=400,
+                detail="No auto-seeded forms found. Call POST /api/blog/seed-forms first."
+            )
+
+        api_base = os.getenv("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pass = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth = base64.b64encode(f"{wp_user}:{wp_pass}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+
+        def _widget_block(slug: str) -> str:
+            if not slug:
+                return ""
+            uid = f"zf-{slug[-10:].replace('-', '')}"
+            src = f"{api_base}/api/forms/widget.js"
+            call = f"ZiloForm.render('{uid}','{slug}')"
+            return (
+                "<!-- wp:html -->"
+                f'<div id="{uid}"></div>'
+                f'<script src="{src}" onload="{call}"></script>'
+                "<!-- /wp:html -->"
+            )
+
+        page_patches = {
+            "contact": (
+                "<!-- wp:paragraph --><p>We’d love to hear from you. "
+                "Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
+                "<div class=\"wp-block-buttons\">"
+                "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+                "<div class=\"wp-block-button\">"
+                "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+                "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
+                "\U0001f4ac Chat on WhatsApp</a></div>"
+                "<!-- /wp:button --></div>"
+                "<!-- /wp:buttons -->"
+                + _widget_block(slugs["contact"])
+            ),
+            "forms": (
+                "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
+                "We’ll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
+                + _widget_block(slugs["order"])
+            ),
+            "survey": (
+                "<!-- wp:paragraph --><p>We value your feedback! "
+                "Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
+                + _widget_block(slugs["survey"])
+            ),
+        }
+
+        results = {}
+        async with httpx.AsyncClient(timeout=20) as hc:
+            for page_slug, new_content in page_patches.items():
+                try:
+                    chk = await hc.get(
+                        f"{site_url}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
+                        headers=headers,
+                    )
+                    pages_found = chk.json() if chk.status_code == 200 else []
+                    if not pages_found:
+                        results[page_slug] = "page not found"
+                        continue
+                    pid = pages_found[0]["id"]
+                    patch = await hc.post(
+                        f"{site_url}/wp-json/wp/v2/pages/{pid}",
+                        headers=headers,
+                        json={"content": new_content, "status": "publish"},
+                    )
+                    results[page_slug] = "ok" if patch.status_code == 200 else f"error {patch.status_code}"
+                    logger.info(f"[blog/patch-pages] /{page_slug} → {results[page_slug]} for {site_url}")
+                except Exception as exc:
+                    results[page_slug] = f"error: {exc}"
+
+        return {"status": "done", "site_url": site_url, "slugs": slugs, "pages": results}
+
     # ── Manually trigger a post for one client ─────────────────────────────────
 
     @router.post("/publish-now")
@@ -1331,12 +1444,11 @@ def make_blog_router(db, get_current_user):
     @router.post("/clients/{wp_slug}/reseed-forms")
     async def reseed_forms(wp_slug: str, user=Depends(get_current_user)):
         """
-        Creates industry-specific WPForms via WP-CLI (works with Lite) and patches
-        the Contact, Order Forms, and Customer Survey pages with the real form IDs.
-        Safe to re-run — creates new forms each time.
+        Seeds Zilo Forms for a client site and patches the Contact, Order,
+        and Survey WordPress pages with the JS widget embed. Uses the Zilo
+        Forms system (stored in MongoDB, rendered client-side via widget.js).
         """
-        from blog.blog_service import _seed_forms_via_cli
-
+        import base64, os
         user_id = str(user.get("_id") or user.get("id", ""))
         blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
         if not blog:
@@ -1346,80 +1458,90 @@ def make_blog_router(db, get_current_user):
         if not site_base:
             raise HTTPException(400, "Site URL unavailable")
 
-        industry = blog.get("industry", "general")
+        industry = blog.get("industry", "services")
         business_name = blog.get("business_name", "Business")
 
-        # Create forms via WP-CLI
-        seeded_ids = await _seed_forms_via_cli(wp_slug, site_base, business_name, industry)
-        logger.info("[blog] reseed-forms %s → %s", wp_slug, seeded_ids)
+        from forms_routes import seed_blog_forms
+        slugs = await seed_blog_forms(db, user_id, business_name, industry)
+        logger.info("[blog] reseed-forms (Zilo) %s -> %s", wp_slug, slugs)
 
-        if not any(seeded_ids.values()):
-            raise HTTPException(500, "WP-CLI form creation failed — check bridge logs")
-
-        # Patch pages with real form IDs
+        # Patch WordPress pages with widget embeds
+        api_base = os.getenv("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
         wp_user = os.getenv("WP_ADMIN_USER", "")
         wp_pwd  = os.getenv("WP_ADMIN_APP_PASSWORD", "")
-        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
-        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+        auth = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
 
-        def _sc(fid):
+        def _widget(slug):
+            if not slug:
+                return ""
+            uid = f"zf-{slug[-10:].replace('-', '')}"
+            src = f"{api_base}/api/forms/widget.js"
+            call = f"ZiloForm.render('{uid}','{slug}')"
             return (
-                "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
-                f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
-            ) if fid else ""
+                "<!-- wp:html -->"
+                f'<div id="{uid}"></div>'
+                f'<script src="{src}" onload="{call}"></script>'
+                "<!-- /wp:html -->"
+            )
 
         wa_number = blog.get("whatsapp_number", "")
-        wa_url = (
-            f"https://wa.me/{wa_number}?text=Hi%2C+I+found+you+on+Zilo"
-            if wa_number else "https://wa.me/?text=Hi%2C+I+found+you+on+Zilo"
-        )
+        wa_url = (f"https://wa.me/{wa_number}?text=Hi%2C+I+found+you+on+Zilo"
+                  if wa_number else "https://wa.me/?text=Hi%2C+I+found+you+on+Zilo")
 
+        wa_btn = (
+            '<!-- wp:buttons {"layout":{"type":"flex","justifyContent":"center"}} -->'
+            '<div class="wp-block-buttons">'
+            '<!-- wp:button {"style":{"color":{"background":"#25d366"}},"textColor":"white"} -->'
+            '<div class="wp-block-button">'
+            f'<a class="wp-block-button__link has-white-color has-text-color has-background"'
+            f' href="{wa_url}" target="_blank" rel="noreferrer noopener">'
+            '💬 Chat on WhatsApp</a></div>'
+            '<!-- /wp:button --></div>'
+            '<!-- /wp:buttons -->'
+        )
         page_patches = {
             "contact": (
-                "<!-- wp:paragraph --><p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
-                f"<!-- wp:buttons {{\"layout\":{{\"type\":\"flex\",\"justifyContent\":\"center\"}}}} -->"
-                "<div class=\"wp-block-buttons\">"
-                "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
-                "<div class=\"wp-block-button\">"
-                f"<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
-                f"href=\"{wa_url}\" target=\"_blank\" rel=\"noreferrer noopener\">"
-                "\U0001f4ac Chat on WhatsApp</a></div>"
-                "<!-- /wp:button --></div>"
-                "<!-- /wp:buttons -->"
-                + _sc(seeded_ids.get("contact", ""))
+                "<!-- wp:paragraph --><p>We’d love to hear from you. "
+                "Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                + wa_btn
+                + _widget(slugs.get("contact", ""))
             ),
             "forms": (
-                "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry.</p><!-- /wp:paragraph -->"
-                + _sc(seeded_ids.get("order", ""))
+                "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
+                "We'll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
+                + _widget(slugs.get("order", ""))
             ),
             "survey": (
-                "<!-- wp:paragraph --><p>We value your feedback! Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
-                + _sc(seeded_ids.get("survey", ""))
+                "<!-- wp:paragraph --><p>We value your feedback! "
+                "Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
+                + _widget(slugs.get("survey", ""))
             ),
         }
-
         patched = []
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20) as hc:
             for page_slug, new_content in page_patches.items():
-                chk = await client.get(
-                    f"{site_base}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
-                    headers=headers,
-                )
-                pages_found = chk.json() if chk.status_code == 200 else []
-                if pages_found:
-                    pid = pages_found[0]["id"]
-                    r = await client.post(
-                        f"{site_base}/wp-json/wp/v2/pages/{pid}",
+                try:
+                    chk = await hc.get(
+                        f"{site_base}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
                         headers=headers,
-                        json={"content": new_content, "status": "publish"},
                     )
-                    if r.status_code in (200, 201):
-                        patched.append(page_slug)
-                    else:
-                        logger.warning("[blog] reseed-forms patch %s: %s", page_slug, r.status_code)
+                    pages_found = chk.json() if chk.status_code == 200 else []
+                    if pages_found:
+                        pid = pages_found[0]["id"]
+                        r = await hc.post(
+                            f"{site_base}/wp-json/wp/v2/pages/{pid}",
+                            headers=headers,
+                            json={"content": new_content, "status": "publish"},
+                        )
+                        if r.status_code in (200, 201):
+                            patched.append(page_slug)
+                        else:
+                            logger.warning("[blog] reseed-forms patch %s: %s", page_slug, r.status_code)
+                except Exception as exc:
+                    logger.warning("[blog] reseed-forms page patch error: %s", exc)
 
-        return {"status": "ok", "form_ids": seeded_ids, "pages_patched": patched}
-
+        return {"status": "ok", "slugs": slugs, "pages_patched": patched}
     # ── Save / update WhatsApp number for a client site ───────────────────────
 
     @router.patch("/clients/{wp_slug}/whatsapp")
@@ -1539,34 +1661,6 @@ def make_blog_router(db, get_current_user):
             logger.error("[blog] reseed_products error: %s", exc)
             raise HTTPException(500, str(exc))
 
-    # ── Re-seed AI forms for a client site ────────────────────────────────────
-
-    @router.post("/clients/{wp_slug}/reseed-forms")
-    async def reseed_forms(wp_slug: str, user=Depends(get_current_user)):
-        """
-        Re-runs the AI form seeder for a client site.
-        Creates industry-specific WPForms (booking, inquiry, support, etc.).
-        """
-        user_id = str(user.get("_id") or user.get("id", ""))
-        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
-        if not blog:
-            raise HTTPException(404, "Site not found")
-
-        site_base = await _blog_url_for_response(db, blog)
-        if not site_base:
-            raise HTTPException(400, "Site URL unavailable — check WP_BASE_URL env var")
-
-        try:
-            from blog.form_seeder import seed_forms
-            result = await seed_forms(
-                site_url=site_base,
-                business_name=blog.get("business_name", "Business"),
-                industry=blog.get("industry", "General"),
-            )
-            return {"status": "ok", "forms_pushed": result.get("pushed", 0), "detail": result}
-        except Exception as exc:
-            logger.error("[blog] reseed_forms error: %s", exc)
-            raise HTTPException(500, str(exc))
 
     # ── Create a WooCommerce product ───────────────────────────────────────────
 
