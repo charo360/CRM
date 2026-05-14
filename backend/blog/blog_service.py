@@ -307,17 +307,26 @@ class ZiloBlogService:
         prod_result = await _seed_products(site_url, business_name, industry, location)
         logger.info(f"[blog] AI products seeded: {prod_result}")
 
-        # 6. Seed forms via WP-CLI (works with WPForms Lite — no Pro API needed)
-        seeded_ids = await _seed_forms_via_cli(slug, site_url, business_name, industry)
-        logger.info(f"[blog] WPForms forms seeded via CLI: {seeded_ids}")
+        # 6. Seed Zilo Forms (stored in MongoDB, rendered by JS widget)
+        from forms.routes import seed_zilo_forms
+        seeded_ids = await seed_zilo_forms(self.db, client_id, business_name, industry)
+        logger.info(f"[blog] Zilo Forms seeded: {seeded_ids}")
 
-        # 6b. Patch pages with real WPForms IDs
+        # 6b. Embed Zilo Forms widget into Contact, Order Forms, and Survey pages
         try:
-            def _sc(fid):
+            api_base = os.getenv("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+
+            def _zilo_form_block(form_id: str) -> str:
+                if not form_id:
+                    return ""
+                uid = f"zf-{form_id[-8:]}"
                 return (
-                    "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
-                    f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
-                ) if fid else ""
+                    f"<!-- wp:html -->"
+                    f"<div id="{uid}"></div>"
+                    f"<script src="{api_base}/api/forms/widget.js" "
+                    f"onload="ZiloForm.render('{uid}','{form_id}')"></script>"
+                    f"<!-- /wp:html -->"
+                )
 
             auth_header = base64.b64encode(
                 f"{os.getenv('WP_ADMIN_USER', '')}:{os.getenv('WP_ADMIN_APP_PASSWORD', '')}".encode()
@@ -325,26 +334,26 @@ class ZiloBlogService:
             _headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
             page_patches = {
                 "contact": (
-                    "<!-- wp:paragraph --><p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                    "<!-- wp:paragraph --><p>We’d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
                     "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
                     "<div class=\"wp-block-buttons\">"
                     "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
                     "<div class=\"wp-block-button\">"
                     "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
                     "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
-                    "\U0001f4ac Chat on WhatsApp</a></div>"
+                    "💬 Chat on WhatsApp</a></div>"
                     "<!-- /wp:button --></div>"
                     "<!-- /wp:buttons -->"
-                    + _sc(seeded_ids.get("contact", ""))
+                    + _zilo_form_block(seeded_ids.get("contact", ""))
                 ),
                 "forms": (
                     "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
                     "We'll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
-                    + _sc(seeded_ids.get("order", ""))
+                    + _zilo_form_block(seeded_ids.get("order", ""))
                 ),
                 "survey": (
                     "<!-- wp:paragraph --><p>We value your feedback! Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
-                    + _sc(seeded_ids.get("survey", ""))
+                    + _zilo_form_block(seeded_ids.get("survey", ""))
                 ),
             }
             async with httpx.AsyncClient(timeout=15) as _hc:
@@ -361,7 +370,7 @@ class ZiloBlogService:
                             headers=_headers,
                             json={"content": new_content, "status": "publish"},
                         )
-                        logger.info(f"[blog] Patched /{page_slug} with wpforms form for {slug}")
+                        logger.info(f"[blog] Patched /{page_slug} with Zilo Form widget for {slug}")
         except Exception as exc:
             logger.warning(f"[blog] page-form patch failed (non-fatal): {exc}")
 

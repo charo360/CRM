@@ -13559,6 +13559,14 @@ except Exception as _e:
     _blog_mount_error = f"{_e}\n{_tb.format_exc()}"
     logging.error(f"[blog] failed to mount routes: {_blog_mount_error}")
 
+# ── Zilo Forms ────────────────────────────────────────────────────────────────
+try:
+    from forms.routes import make_forms_router as _mk_forms_router
+    api_router.include_router(_mk_forms_router(db, get_current_user), prefix="/forms")
+    logging.info("[forms] routes mounted at /api/forms/*")
+except Exception as _e:
+    logging.error(f"[forms] failed to mount routes: {_e}")
+
 @api_router.get("/blog/debug")
 async def blog_debug():
     return {"mounted": not bool(_blog_mount_error), "error": _blog_mount_error or None}
