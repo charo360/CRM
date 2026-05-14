@@ -27,6 +27,58 @@ async def _seed_forms(site_url, business_name, industry):
     return await seed_forms(site_url, business_name, industry)
 
 
+async def _seed_forms_via_cli(slug: str, site_url: str, business_name: str, industry: str) -> dict:
+    """
+    Creates industry-specific WPForms directly via WP-CLI wp post create.
+    Works with WPForms Lite (no Pro REST API required).
+    Returns dict {contact, order, survey} → WPForms post IDs (strings).
+    """
+    import json as _json
+    from blog.form_seeder import _get_forms_for_industry, _build_wpforms_payload
+
+    forms = _get_forms_for_industry(industry)
+    result = {"contact": "", "order": "", "survey": ""}
+
+    for i, form_def in enumerate(forms):
+        payload = _build_wpforms_payload(form_def, business_name)
+        form_json = _json.dumps(payload)
+        r = await _wp_cli(
+            "post", "create",
+            "--post_type=wpforms",
+            f"--post_title={form_def['name']}",
+            f"--post_content={form_json}",
+            "--post_status=publish",
+            "--porcelain",
+            url=site_url,
+        )
+        if r.returncode == 0:
+            fid = r.stdout.strip()
+            name_l = form_def["name"].lower()
+            if "contact" in name_l:
+                result.setdefault("contact", fid) or result.update({"contact": fid})
+                result["contact"] = fid
+            elif any(k in name_l for k in ["order", "inquiry", "booking", "reservation", "quote", "request"]):
+                result["order"] = fid
+            elif any(k in name_l for k in ["survey", "feedback", "customer", "satisfaction"]):
+                result["survey"] = fid
+            else:
+                # positional fallback
+                key = ["contact", "order", "survey"][min(i, 2)]
+                if not result[key]:
+                    result[key] = fid
+            logger.info(f"[blog] WPForms form '{form_def['name']}' id={fid} created for {slug}")
+        else:
+            logger.warning(f"[blog] WP-CLI form create failed for '{form_def['name']}': {r.stderr[:150]}")
+
+    # Fill any missing slots with whatever we got
+    all_ids = [v for v in result.values() if v]
+    if all_ids:
+        for key in result:
+            if not result[key]:
+                result[key] = all_ids[0]
+    return result
+
+
 def _get_wp_auth() -> str:
     user = os.getenv("WP_ADMIN_USER", "")
     password = os.getenv("WP_ADMIN_APP_PASSWORD", "")
@@ -255,78 +307,61 @@ class ZiloBlogService:
         prod_result = await _seed_products(site_url, business_name, industry, location)
         logger.info(f"[blog] AI products seeded: {prod_result}")
 
-        # 6. AI-seed forms (industry-specific WPForms)
-        form_result = await _seed_forms(site_url, business_name, industry)
-        logger.info(f"[blog] AI forms seeded: {form_result}")
+        # 6. Seed forms via WP-CLI (works with WPForms Lite — no Pro API needed)
+        seeded_ids = await _seed_forms_via_cli(slug, site_url, business_name, industry)
+        logger.info(f"[blog] WPForms forms seeded via CLI: {seeded_ids}")
 
-        # 6b. Patch pages with real WPForms IDs now that forms are seeded
+        # 6b. Patch pages with real WPForms IDs
         try:
+            def _sc(fid):
+                return (
+                    "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                    f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
+                ) if fid else ""
+
             auth_header = base64.b64encode(
                 f"{os.getenv('WP_ADMIN_USER', '')}:{os.getenv('WP_ADMIN_APP_PASSWORD', '')}".encode()
             ).decode()
             _headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+            page_patches = {
+                "contact": (
+                    "<!-- wp:paragraph --><p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                    "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
+                    "<div class=\"wp-block-buttons\">"
+                    "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+                    "<div class=\"wp-block-button\">"
+                    "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+                    "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
+                    "\U0001f4ac Chat on WhatsApp</a></div>"
+                    "<!-- /wp:button --></div>"
+                    "<!-- /wp:buttons -->"
+                    + _sc(seeded_ids.get("contact", ""))
+                ),
+                "forms": (
+                    "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
+                    "We'll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
+                    + _sc(seeded_ids.get("order", ""))
+                ),
+                "survey": (
+                    "<!-- wp:paragraph --><p>We value your feedback! Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
+                    + _sc(seeded_ids.get("survey", ""))
+                ),
+            }
             async with httpx.AsyncClient(timeout=15) as _hc:
-                fr = await _hc.get(
-                    f"{site_url}/wp-json/wp/v2/wpforms?per_page=50&orderby=date&order=asc",
-                    headers=_headers,
-                )
-            if fr.status_code == 200 and fr.json():
-                _forms = fr.json()
-                _titles = [(str(f["id"]), (f.get("title", {}).get("rendered") or "").lower()) for f in _forms]
-                def _best_id(keywords):
-                    for fid, t in _titles:
-                        if any(k in t for k in keywords):
-                            return fid
-                    return ""
-                contact_fid = _best_id(["contact"]) or (_titles[0][0] if _titles else "")
-                order_fid   = _best_id(["order", "inquiry", "booking", "reservation", "quote", "request"]) or (_titles[1][0] if len(_titles) > 1 else _titles[0][0] if _titles else "")
-                survey_fid  = _best_id(["survey", "feedback", "customer", "satisfaction"]) or (_titles[-1][0] if _titles else "")
-
-                def _sc(fid):
-                    return (
-                        "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
-                        f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
-                    ) if fid else ""
-
-                page_patches = {
-                    "contact": (
-                        "<!-- wp:paragraph --><p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
-                        "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
-                        "<div class=\"wp-block-buttons\">"
-                        "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
-                        "<div class=\"wp-block-button\">"
-                        "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
-                        "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
-                        "\U0001f4ac Chat on WhatsApp</a></div>"
-                        "<!-- /wp:button --></div>"
-                        "<!-- /wp:buttons -->"
-                        + _sc(contact_fid)
-                    ),
-                    "forms": (
-                        "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
-                        "We'll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
-                        + _sc(order_fid)
-                    ),
-                    "survey": (
-                        "<!-- wp:paragraph --><p>We value your feedback! Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
-                        + _sc(survey_fid)
-                    ),
-                }
-                async with httpx.AsyncClient(timeout=15) as _hc:
-                    for page_slug, new_content in page_patches.items():
-                        chk = await _hc.get(
-                            f"{site_url}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
+                for page_slug, new_content in page_patches.items():
+                    chk = await _hc.get(
+                        f"{site_url}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
+                        headers=_headers,
+                    )
+                    pages_found = chk.json() if chk.status_code == 200 else []
+                    if pages_found:
+                        pid = pages_found[0]["id"]
+                        await _hc.post(
+                            f"{site_url}/wp-json/wp/v2/pages/{pid}",
                             headers=_headers,
+                            json={"content": new_content, "status": "publish"},
                         )
-                        pages_found = chk.json() if chk.status_code == 200 else []
-                        if pages_found:
-                            pid = pages_found[0]["id"]
-                            await _hc.post(
-                                f"{site_url}/wp-json/wp/v2/pages/{pid}",
-                                headers=_headers,
-                                json={"content": new_content, "status": "publish"},
-                            )
-                            logger.info(f"[blog] Patched /{page_slug} with wpforms form for {slug}")
+                        logger.info(f"[blog] Patched /{page_slug} with wpforms form for {slug}")
         except Exception as exc:
             logger.warning(f"[blog] page-form patch failed (non-fatal): {exc}")
 

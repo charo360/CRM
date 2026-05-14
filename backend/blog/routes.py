@@ -1085,30 +1085,59 @@ def make_blog_router(db, get_current_user):
     async def _find_all_wpforms_ids(site_base: str, auth_headers: dict) -> dict:
         """
         Returns a dict {contact, order, survey} with the best matching WPForms
-        form ID for each page type.  Falls back by position if no keyword match.
-        All values default to "" if no forms exist.
+        form ID for each page type.
+        - First tries WP REST API (works if WPForms Pro or CPT is REST-exposed)
+        - Falls back to WP-CLI wp post list (works with WPForms Lite)
         """
+        from blog.blog_service import _wp_cli
+
         result = {"contact": "", "order": "", "survey": ""}
+
+        def _assign(titles):
+            def _best(keywords):
+                for fid, t in titles:
+                    if any(k in t for k in keywords):
+                        return fid
+                return ""
+            result["contact"] = _best(["contact"]) or (titles[0][0] if titles else "")
+            result["order"]   = _best(["order", "inquiry", "booking", "reservation", "quote", "request"]) or (titles[1][0] if len(titles) > 1 else titles[0][0] if titles else "")
+            result["survey"]  = _best(["survey", "feedback", "customer", "satisfaction"]) or (titles[-1][0] if titles else "")
+
+        # 1. Try WP REST API
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
                     f"{site_base}/wp-json/wp/v2/wpforms?per_page=50&orderby=date&order=asc",
                     headers=auth_headers,
                 )
-                if r.status_code != 200 or not r.json():
-                    return result
-                forms = r.json()
-                titles = [(str(f["id"]), (f.get("title", {}).get("rendered") or "").lower()) for f in forms]
-                def _best(keywords):
-                    for fid, t in titles:
-                        if any(k in t for k in keywords):
-                            return fid
-                    return ""
-                result["contact"] = _best(["contact"]) or (titles[0][0] if titles else "")
-                result["order"]   = _best(["order", "inquiry", "booking", "reservation", "quote", "request"]) or (titles[1][0] if len(titles) > 1 else titles[0][0] if titles else "")
-                result["survey"]  = _best(["survey", "feedback", "customer", "satisfaction"]) or (titles[-1][0] if titles else "")
+                if r.status_code == 200:
+                    forms = r.json()
+                    if forms:
+                        titles = [(str(f["id"]), (f.get("title", {}).get("rendered") or "").lower()) for f in forms]
+                        _assign(titles)
+                        return result
         except Exception as exc:
-            logger.debug("[blog] _find_all_wpforms_ids failed: %s", exc)
+            logger.debug("[blog] _find_all_wpforms_ids REST failed: %s", exc)
+
+        # 2. Fall back to WP-CLI (WPForms Lite stores forms as wpforms CPT)
+        try:
+            import json as _json
+            r = await _wp_cli(
+                "post", "list",
+                "--post_type=wpforms",
+                "--post_status=publish",
+                "--fields=ID,post_title",
+                "--format=json",
+                url=site_base,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                rows = _json.loads(r.stdout.strip())
+                titles = [(str(row["ID"]), (row.get("post_title") or "").lower()) for row in rows]
+                if titles:
+                    _assign(titles)
+        except Exception as exc:
+            logger.debug("[blog] _find_all_wpforms_ids CLI fallback failed: %s", exc)
+
         return result
 
     async def _find_wpforms_id(site_base: str, auth_headers: dict) -> str:
@@ -1273,6 +1302,100 @@ def make_blog_router(db, get_current_user):
                 logger.info("[blog] activated %s on %s", plugin, wp_slug)
 
         return {"status": "done", "results": results}
+
+    # ── Reseed WPForms on an existing client site ─────────────────────────────
+
+    @router.post("/clients/{wp_slug}/reseed-forms")
+    async def reseed_forms(wp_slug: str, user=Depends(get_current_user)):
+        """
+        Creates industry-specific WPForms via WP-CLI (works with Lite) and patches
+        the Contact, Order Forms, and Customer Survey pages with the real form IDs.
+        Safe to re-run — creates new forms each time.
+        """
+        from blog.blog_service import _seed_forms_via_cli
+
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        industry = blog.get("industry", "general")
+        business_name = blog.get("business_name", "Business")
+
+        # Create forms via WP-CLI
+        seeded_ids = await _seed_forms_via_cli(wp_slug, site_base, business_name, industry)
+        logger.info("[blog] reseed-forms %s → %s", wp_slug, seeded_ids)
+
+        if not any(seeded_ids.values()):
+            raise HTTPException(500, "WP-CLI form creation failed — check bridge logs")
+
+        # Patch pages with real form IDs
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd  = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        def _sc(fid):
+            return (
+                "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
+            ) if fid else ""
+
+        wa_number = blog.get("whatsapp_number", "")
+        wa_url = (
+            f"https://wa.me/{wa_number}?text=Hi%2C+I+found+you+on+Zilo"
+            if wa_number else "https://wa.me/?text=Hi%2C+I+found+you+on+Zilo"
+        )
+
+        page_patches = {
+            "contact": (
+                "<!-- wp:paragraph --><p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                f"<!-- wp:buttons {{\"layout\":{{\"type\":\"flex\",\"justifyContent\":\"center\"}}}} -->"
+                "<div class=\"wp-block-buttons\">"
+                "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+                "<div class=\"wp-block-button\">"
+                f"<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+                f"href=\"{wa_url}\" target=\"_blank\" rel=\"noreferrer noopener\">"
+                "\U0001f4ac Chat on WhatsApp</a></div>"
+                "<!-- /wp:button --></div>"
+                "<!-- /wp:buttons -->"
+                + _sc(seeded_ids.get("contact", ""))
+            ),
+            "forms": (
+                "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry.</p><!-- /wp:paragraph -->"
+                + _sc(seeded_ids.get("order", ""))
+            ),
+            "survey": (
+                "<!-- wp:paragraph --><p>We value your feedback! Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
+                + _sc(seeded_ids.get("survey", ""))
+            ),
+        }
+
+        patched = []
+        async with httpx.AsyncClient(timeout=20) as client:
+            for page_slug, new_content in page_patches.items():
+                chk = await client.get(
+                    f"{site_base}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
+                    headers=headers,
+                )
+                pages_found = chk.json() if chk.status_code == 200 else []
+                if pages_found:
+                    pid = pages_found[0]["id"]
+                    r = await client.post(
+                        f"{site_base}/wp-json/wp/v2/pages/{pid}",
+                        headers=headers,
+                        json={"content": new_content, "status": "publish"},
+                    )
+                    if r.status_code in (200, 201):
+                        patched.append(page_slug)
+                    else:
+                        logger.warning("[blog] reseed-forms patch %s: %s", page_slug, r.status_code)
+
+        return {"status": "ok", "form_ids": seeded_ids, "pages_patched": patched}
 
     # ── Save / update WhatsApp number for a client site ───────────────────────
 
