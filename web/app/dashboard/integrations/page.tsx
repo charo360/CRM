@@ -11,6 +11,7 @@ import { getToken } from "@/lib/auth";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
 import { zernioApi } from "@/lib/api";
+import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
 import { Plug, Mail, Calendar, CheckCircle, CheckCircle2, Loader2, AlertCircle, X, ExternalLink } from "lucide-react";
 
 // ── Glyphs ────────────────────────────────────────────────────────────────────
@@ -531,8 +532,8 @@ function IntegrationsPageInner() {
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
   const [psConn, setPsConn] = useState<PaystackConnection>({ connected: false });
   const [phConn, setPhConn] = useState<PayheroConnection>({ connected: false });
-  const [zernioAccounts, setZernioAccounts] = useState<ZernioAccount[]>([]);
-  const [zernioApiOk, setZernioApiOk] = useState<boolean | null>(null);
+  const { accounts: rawZernioAccounts, apiConnected: zernioApiOk, refresh: refreshZernioCtx, connect: zernioCtxConnect, disconnect: zernioCtxDisconnect } = useZernioAccounts();
+  const zernioAccounts = rawZernioAccounts as ZernioAccount[];
   const [zernioConnecting, setZernioConnecting] = useState<string | null>(null);
   const [zernioDisconnecting, setZernioDisconnecting] = useState<string | null>(null);
   const [fbHeadlessPages, setFbHeadlessPages] = useState<FacebookHeadlessPage[]>([]);
@@ -545,23 +546,15 @@ function IntegrationsPageInner() {
   const [fbCompletingPageId, setFbCompletingPageId] = useState<string | null>(null);
 
   const refreshZernio = useCallback(async () => {
-    try {
-      const status = await zernioApi.status();
-      setZernioApiOk(status.connected === true);
-      if (status.connected) setZernioAccounts((status.accounts as ZernioAccount[]) ?? []);
-      else setZernioAccounts([]);
-    } catch {
-      setZernioApiOk(false);
-      setZernioAccounts([]);
-    }
-  }, []);
+    await refreshZernioCtx();
+  }, [refreshZernioCtx]);
 
   async function zernioConnect(platformId: string) {
     setZernioConnecting(platformId);
     try {
       const redirectUrl = `${window.location.origin}/dashboard/integrations?connected=${encodeURIComponent(platformId)}`;
       const isHeadlessFacebook = platformId === "facebook";
-      const { authUrl } = await zernioApi.connect(platformId, redirectUrl, isHeadlessFacebook);
+      const { authUrl } = await zernioCtxConnect(platformId, redirectUrl, isHeadlessFacebook);
       if (authUrl) {
         if (isHeadlessFacebook) {
           // Headless flow must remain in same tab to receive callback params here.
@@ -599,7 +592,7 @@ function IntegrationsPageInner() {
     if (!confirm(`Disconnect ${label}?`)) return;
     setZernioDisconnecting(accountId);
     try {
-      await zernioApi.disconnect(accountId);
+      await zernioCtxDisconnect(accountId);
       await refreshZernio();
     } catch (e) {
       setBanner({ type: "error", msg: e instanceof Error ? e.message : `Failed to disconnect ${label}.` });

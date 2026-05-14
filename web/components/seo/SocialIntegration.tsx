@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { zernioApi, socialSchedulerApi, type ScheduledPost } from "@/lib/api";
+import { socialSchedulerApi, type ScheduledPost } from "@/lib/api";
+import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
 
 type Platform = "facebook" | "twitter" | "linkedin" | "instagram" | "tiktok";
 
@@ -37,9 +38,10 @@ const STATUS_COLORS: Record<string, string> = {
 const ALL_PLATFORMS: Platform[] = ["facebook", "twitter", "linkedin", "instagram"];
 
 export default function SocialIntegration() {
-  const [accounts, setAccounts] = useState<ZernioAccount[]>([]);
+  const { accounts: rawAccounts, loading: loadingAccounts, refresh: refreshAccounts, connect: zernioConnect, disconnect: zernioDisconnect } = useZernioAccounts();
+  const accounts = rawAccounts.map(a => ({ ...a, platform: a.platform as Platform }));
+
   const [posts, setPosts] = useState<ScheduledPost[]>([]);
-  const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [loadingPosts, setLoadingPosts] = useState(true);
   const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
@@ -55,27 +57,6 @@ export default function SocialIntegration() {
   });
   const [error, setError] = useState("");
 
-  const loadAccounts = useCallback(async () => {
-    setLoadingAccounts(true);
-    try {
-      const data = await zernioApi.status();
-      const raw = (data as any).accounts ?? [];
-      setAccounts(
-        raw.map((a: any) => ({
-          id: String(a.id || a._id || ""),
-          platform: String(a.platform || "").toLowerCase() as Platform,
-          displayName: a.displayName || a.name || a.username || "",
-          username: a.username || a.displayName || "",
-          avatar: a.avatar || a.picture || "",
-        }))
-      );
-    } catch {
-      setAccounts([]);
-    } finally {
-      setLoadingAccounts(false);
-    }
-  }, []);
-
   const loadPosts = useCallback(async () => {
     setLoadingPosts(true);
     try {
@@ -89,23 +70,22 @@ export default function SocialIntegration() {
   }, []);
 
   useEffect(() => {
-    loadAccounts();
     loadPosts();
-  }, [loadAccounts, loadPosts]);
+  }, [loadPosts]);
 
   async function handleConnect(platform: string) {
     setConnectingPlatform(platform);
     setError("");
     try {
       const redirectUrl = `${window.location.origin}/dashboard/seo?tab=social&connected=${platform}`;
-      const data = await zernioApi.connect(platform, redirectUrl);
+      const data = await zernioConnect(platform, redirectUrl);
       if (data.authUrl) {
         const popup = window.open(data.authUrl, `connect_${platform}`, "width=600,height=700");
         const check = setInterval(() => {
           if (popup?.closed) {
             clearInterval(check);
             setConnectingPlatform(null);
-            loadAccounts();
+            refreshAccounts();
           }
         }, 800);
       }
@@ -119,8 +99,7 @@ export default function SocialIntegration() {
     if (!confirm("Disconnect this account?")) return;
     setDisconnecting(accountId);
     try {
-      await zernioApi.disconnect(accountId);
-      setAccounts(prev => prev.filter(a => a.id !== accountId));
+      await zernioDisconnect(accountId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to disconnect");
     } finally {

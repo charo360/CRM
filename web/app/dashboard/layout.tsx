@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Toaster } from "sonner";
 import { isAuthenticated } from "@/lib/auth";
 import { BusinessProvider } from "@/contexts/BusinessContext";
+import { ZernioAccountsProvider } from "@/contexts/ZernioAccountsContext";
 import Sidebar from "@/components/Sidebar";
 import Navbar from "@/components/Navbar";
 import AssistantLauncher from "@/components/AssistantLauncher";
@@ -42,6 +43,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <BusinessProvider>
+      <ZernioAccountsProvider>
       <div className="flex h-screen bg-slate-50" suppressHydrationWarning>
         {/* Sidebar */}
         {!mounted ? (
@@ -66,6 +68,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {mounted && <CommandBar />}
       {mounted && <OnboardingWizard />}
       <Toaster richColors position="top-center" />
+      </ZernioAccountsProvider>
     </BusinessProvider>
   );
 }
