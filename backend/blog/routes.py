@@ -794,6 +794,46 @@ def make_blog_router(db, get_current_user):
 
         return {"keywords": entries}
 
+    @router.post("/keyword-tracker/enrich-volumes")
+    async def enrich_keyword_volumes(user=Depends(get_current_user)):
+        """Batch-fetch real search volumes from DataForSEO for tracker keywords missing volumes."""
+        from seo.dataforseo import dfs_enabled, fetch_search_volumes_batch, resolve_location_code, language_code_from_settings
+
+        user_id = str(user.get("_id") or user.get("id", ""))
+        if not dfs_enabled():
+            return {"ok": False, "message": "DataForSEO not configured", "updated": 0}
+
+        # Gather keywords with no/zero volume
+        entries = await db.keyword_tracker.find(
+            {"user_id": user_id},
+            {"keyword": 1, "search_volume": 1, "_id": 0},
+        ).to_list(None)
+
+        missing = [e["keyword"] for e in entries if not e.get("search_volume")]
+        if not missing:
+            return {"ok": True, "message": "All keywords already have volumes", "updated": 0}
+
+        settings = user.get("settings") or {}
+        lc = resolve_location_code(
+            str(settings.get("country") or ""),
+            str(settings.get("country_code") or user.get("country_code") or ""),
+        )
+        dlang = language_code_from_settings(str(settings.get("primary_language") or "English"))
+
+        volume_map = await fetch_search_volumes_batch(missing, location_code=lc, language_code=dlang)
+
+        updated = 0
+        for kw, vol in volume_map.items():
+            if vol > 0:
+                result = await db.keyword_tracker.update_one(
+                    {"user_id": user_id, "keyword": {"$regex": f"^{kw}$", "$options": "i"}},
+                    {"$set": {"search_volume": vol}},
+                )
+                if result.modified_count:
+                    updated += 1
+
+        return {"ok": True, "updated": updated, "checked": len(missing)}
+
     # ── Blog listing template catalogue & picker ──────────────────────────────
 
     @router.get("/templates")

@@ -2383,6 +2383,9 @@ export const blogApi = {
   /** Get all tracked keywords with their linked blog posts. */
   getKeywordTracker: () =>
     api.get<{ keywords: KeywordTrackerRow[] }>("/blog/keyword-tracker"),
+  /** Batch-fetch real search volumes from DataForSEO for keywords missing volumes. */
+  enrichVolumes: () =>
+    api.post<{ ok: boolean; updated: number; checked: number; message?: string }>("/blog/keyword-tracker/enrich-volumes", {}),
 };
 
 export const seoAgentApi = {

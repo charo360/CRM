@@ -216,6 +216,10 @@ export default function SeoHubWorkspace({
   const [publishUrls, setPublishUrls] = useState<Record<string, string>>({});
   const [trackerError, setTrackerError] = useState("");
 
+  // Volume enrichment
+  const [enriching, setEnriching] = useState(false);
+  const [enrichMsg, setEnrichMsg] = useState("");
+
   // Brief (autonomous SEO expert) state
   const [brief, setBrief] = useState<SeoBrief | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
@@ -248,6 +252,25 @@ export default function SeoHubWorkspace({
       setBriefLoading(false);
     }
   }, []);
+
+  async function enrichVolumes() {
+    setEnriching(true);
+    setEnrichMsg("");
+    try {
+      const res = await blogApi.enrichVolumes();
+      if (res.updated > 0) {
+        setEnrichMsg(`✓ Updated ${res.updated} keyword${res.updated !== 1 ? "s" : ""} with real volumes`);
+        await loadTracker();
+      } else {
+        setEnrichMsg(res.message ?? "No new volumes found");
+      }
+    } catch {
+      setEnrichMsg("Volume lookup failed");
+    } finally {
+      setEnriching(false);
+      setTimeout(() => setEnrichMsg(""), 4000);
+    }
+  }
 
   useEffect(() => {
     seoApi.businessContext().then(setProfile).catch(() => {});
@@ -740,7 +763,18 @@ export default function SeoHubWorkspace({
                   All your keywords with search volumes — click <strong>Publish to Blog</strong> to generate &amp; publish a post instantly.
                 </p>
               </div>
-              <div className="flex gap-2 shrink-0">
+              <div className="flex gap-2 shrink-0 flex-wrap">
+                {enrichMsg && (
+                  <span className="text-xs text-emerald-700 self-center font-medium">{enrichMsg}</span>
+                )}
+                <button
+                  onClick={enrichVolumes}
+                  disabled={enriching}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 flex items-center gap-1"
+                  title="Look up real search volumes from Google for keywords missing data"
+                >
+                  {enriching ? <><span className="animate-spin inline-block">⚙</span> Fetching…</> : "📊 Get volumes"}
+                </button>
                 <button
                   onClick={loadTracker}
                   className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"

@@ -125,6 +125,49 @@ async def fetch_diverse_keywords(
     return sorted_results[:limit]
 
 
+async def fetch_search_volumes_batch(
+    keywords: list[str],
+    *,
+    location_code: int = 2404,
+    language_code: str = "en",
+) -> dict[str, int]:
+    """Look up exact search volumes for a list of known keywords.
+    Returns {keyword_lower: volume} mapping. Missing keywords get volume=0.
+    Uses keywords_data/google_ads/search_volume/live (works on all plans).
+    """
+    kws = [k.strip() for k in keywords if k.strip()]
+    if not kws:
+        return {}
+    out: dict[str, int] = {}
+    try:
+        # DataForSEO accepts up to 1000 keywords per call; chunk at 100 to stay safe
+        chunk_size = 100
+        for i in range(0, len(kws), chunk_size):
+            batch = kws[i:i + chunk_size]
+            data = await dfs_post(
+                "keywords_data/google_ads/search_volume/live",
+                [{
+                    "keywords": batch,
+                    "location_code": location_code,
+                    "language_code": language_code,
+                }],
+            )
+            tasks = data.get("tasks") or []
+            if not tasks or tasks[0].get("status_code") != 20000:
+                msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
+                logger.warning("[dataforseo] search_volume batch status: %s", msg)
+                continue
+            items = tasks[0].get("result") or []
+            for item in items:
+                kw = (item.get("keyword") or "").lower().strip()
+                vol = int(item.get("search_volume") or 0)
+                if kw:
+                    out[kw] = vol
+    except Exception as e:
+        logger.warning("[dataforseo] fetch_search_volumes_batch failed: %s", e)
+    return out
+
+
 async def fetch_keyword_ideas_live(
     seed_keyword: str,
     *,
