@@ -44,10 +44,13 @@ def make_forms_router(db, user_dep):
 
     @router.get("/widget.js", include_in_schema=False)
     async def form_widget_js(request: Request):
-        base_url = str(request.base_url).rstrip("/")
+        import os
+        base_url = os.getenv("BACKEND_PUBLIC_URL", "").rstrip("/")
+        if not base_url:
+            base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
         js = _build_widget_js(base_url)
         return Response(content=js, media_type="application/javascript",
-                        headers={"Cache-Control": "public, max-age=3600"})
+                        headers={"Cache-Control": "no-cache"})
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public — serve & submit (NO auth — must be defined before /{form_id})
