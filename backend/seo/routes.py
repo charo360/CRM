@@ -986,6 +986,21 @@ Write the full article now:"""
         if result.deleted_count == 0: raise HTTPException(404, "Post not found")
         return {"ok": True}
 
+    @router.get("/blog/scheduled")
+    async def list_scheduled_posts(user=user_dep):
+        """Return all posts with status='scheduled', ordered by scheduled_at ascending."""
+        tid = _tid(user)
+        docs = await db.seo_blog_posts.find(
+            {"user_id": tid, "status": "scheduled"}
+        ).sort("scheduled_at", 1).limit(50).to_list(50)
+        result = []
+        for d in docs:
+            s = _ser(d)
+            content = s.get("content", "")
+            s["content_preview"] = content[:120].strip() + ("…" if len(content) > 120 else "")
+            result.append(s)
+        return result
+
     # ── Auto-Publish ────────────────────────────────────────────────────────
 
     @router.post("/blog/publish")

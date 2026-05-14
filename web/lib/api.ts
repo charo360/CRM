@@ -2092,6 +2092,14 @@ export const seoApi = {
     website: string;
   }) => api.post<{ success: boolean; listing: Record<string, unknown> }>("/seo/local/listings", body),
 
+  // Analytics events log
+  analyticsEvents: (limit = 50) =>
+    api.get<{ id: string; type: string; created_at: string; payload?: Record<string, unknown> }[]>(`/seo/analytics/events?limit=${limit}`),
+
+  // Scheduled posts queue
+  scheduledPosts: () =>
+    api.get<{ id: string; title: string; scheduled_at: string; platform: string; status: string; content_preview: string }[]>("/seo/blog/scheduled"),
+
   /** Scrape a website (homepage + sub-pages) and use LLM to write rich content for all Settings fields. */
   scrapeWebsite: (url: string) =>
     api.post<{

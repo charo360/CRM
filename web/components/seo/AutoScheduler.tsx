@@ -53,18 +53,20 @@ export default function AutoScheduler() {
         }
         setCredentials(creds);
 
-        // Load scheduled posts (mock data for now - endpoint doesn't exist yet)
-        const mockScheduled: ScheduledPost[] = [
-          {
-            id: "1",
-            title: "5 Signs You Need Emergency Plumbing Services",
-            scheduled_date: new Date(Date.now() + 86400000).toISOString(), // Tomorrow
-            platform: "wordpress",
-            status: "scheduled",
-            content_preview: "Learn the warning signs that indicate you need to call an emergency plumber immediately..."
-          }
-        ];
-        setScheduledPosts(mockScheduled);
+        // Load real scheduled posts from backend
+        try {
+          const scheduled = await seoApi.scheduledPosts();
+          setScheduledPosts(scheduled.map(p => ({
+            id: p.id,
+            title: p.title,
+            scheduled_date: p.scheduled_at,
+            platform: p.platform as "wordpress" | "shopify" | "social",
+            status: p.status as "scheduled" | "published" | "failed",
+            content_preview: p.content_preview,
+          })));
+        } catch {
+          setScheduledPosts([]);
+        }
 
       } catch (error) {
         console.error("Failed to load scheduler data:", error);
