@@ -206,9 +206,14 @@ async def fetch_keyword_ideas_live(
                        msg, tasks[0].get("status_code") if tasks else "N/A")
         return []
 
-    items = tasks[0].get("result") or []
-    if not items:
+    # keywords_for_keywords/live wraps items under result[0]["items"], not result[] directly
+    result = tasks[0].get("result") or []
+    if not result:
         logger.warning("[dataforseo] keyword_ideas returned empty result for seed=%r", seed_keyword)
+        return []
+    items = result[0].get("items") or []
+    if not items:
+        logger.warning("[dataforseo] keyword_ideas returned no items for seed=%r", seed_keyword)
         return []
 
     items.sort(key=lambda x: x.get("search_volume") or 0, reverse=True)
