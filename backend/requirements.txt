@@ -135,3 +135,8 @@ qdrant-client>=1.9.0
 duckduckgo-search>=6.0
 composio-core>=0.7.0
 python-slugify==8.0.4
+# LangChain / LangGraph — required by the SEO LangGraph agent
+langchain-core>=0.3.0
+langgraph>=0.2.0
+langchain-openai>=0.1.0
+langchain-anthropic>=0.1.0
