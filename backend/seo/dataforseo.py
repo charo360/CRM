@@ -86,13 +86,18 @@ async def fetch_keyword_ideas_live(
         return []
     lim = max(1, min(int(limit), 50))
 
+    # Use the standard keywords_data endpoint (works on all plans).
+    # The Labs endpoint (dataforseo_labs/google/keyword_ideas/live) requires a
+    # separate Labs subscription and silently returns [] when not available.
     try:
         data = await dfs_post(
-            "dataforseo_labs/google/keyword_ideas/live",
+            "keywords_data/google_ads/keywords_for_keywords/live",
             [{
                 "keywords": [seed_keyword],
                 "location_code": location_code,
                 "language_code": language_code,
+                "include_seed_keyword": True,
+                "include_serp_info": False,
                 "limit": lim,
             }],
         )
@@ -103,36 +108,32 @@ async def fetch_keyword_ideas_live(
     tasks = data.get("tasks") or []
     if not tasks or tasks[0].get("status_code") != 20000:
         msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
-        logger.warning("[dataforseo] keyword_ideas API status: %s", msg)
+        logger.warning("[dataforseo] keyword_ideas API status: %s | code: %s",
+                       msg, tasks[0].get("status_code") if tasks else "N/A")
         return []
 
-    items = (tasks[0].get("result") or [{}])[0].get("items") or []
+    items = tasks[0].get("result") or []
     if not items:
+        logger.warning("[dataforseo] keyword_ideas returned empty result for seed=%r", seed_keyword)
         return []
 
-    items.sort(
-        key=lambda x: (x.get("keyword_info") or {}).get("search_volume") or 0,
-        reverse=True,
-    )
+    items.sort(key=lambda x: x.get("search_volume") or 0, reverse=True)
 
     out: list[dict[str, Any]] = []
     for item in items:
         kw = item.get("keyword") or ""
         if not kw:
             continue
-        ki = item.get("keyword_info") or {}
-        vol = int(ki.get("search_volume") or 0)
-        kd_raw = (item.get("keyword_properties") or {}).get("keyword_difficulty")
-        kd: int | None = int(kd_raw) if kd_raw is not None else None
-        intent = (item.get("search_intent_info") or {}).get("main_intent") or "informational"
-        cpc = ki.get("cpc")
-        comp = ki.get("competition_level") or ""
+        vol = int(item.get("search_volume") or 0)
+        cpc_raw = item.get("cpc")
+        comp_raw = item.get("competition")  # 0.0–1.0 float
 
-        if kd is None:
+        # Map competition float → difficulty string
+        if comp_raw is None:
             diff_s = "medium"
-        elif kd < 30:
+        elif comp_raw < 0.33:
             diff_s = "low"
-        elif kd < 60:
+        elif comp_raw < 0.66:
             diff_s = "medium"
         else:
             diff_s = "high"
@@ -153,26 +154,22 @@ async def fetch_keyword_ideas_live(
 
         row: dict[str, Any] = {
             "keyword": kw,
-            "intent": str(intent).lower(),
+            "intent": "informational",
             "difficulty": diff_s,
             "priority": pri,
             "content_idea": idea,
             "search_volume": vol if vol else None,
         }
-        if cpc is not None:
-            try:
-                row["cpc"] = float(cpc)
-            except (TypeError, ValueError):
-                row["cpc"] = None
-        else:
+        try:
+            row["cpc"] = float(cpc_raw) if cpc_raw is not None else None
+        except (TypeError, ValueError):
             row["cpc"] = None
-        if comp:
-            row["competition"] = comp
-        if kd is not None:
-            row["keyword_difficulty_score"] = kd
+        if comp_raw is not None:
+            row["competition"] = comp_raw
 
         out.append(row)
         if len(out) >= lim:
             break
 
+    logger.info("[dataforseo] Returning %d keyword ideas for seed=%r", len(out), seed_keyword)
     return out
