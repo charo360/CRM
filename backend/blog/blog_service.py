@@ -259,6 +259,77 @@ class ZiloBlogService:
         form_result = await _seed_forms(site_url, business_name, industry)
         logger.info(f"[blog] AI forms seeded: {form_result}")
 
+        # 6b. Patch pages with real WPForms IDs now that forms are seeded
+        try:
+            auth_header = base64.b64encode(
+                f"{os.getenv('WP_ADMIN_USER', '')}:{os.getenv('WP_ADMIN_APP_PASSWORD', '')}".encode()
+            ).decode()
+            _headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient(timeout=15) as _hc:
+                fr = await _hc.get(
+                    f"{site_url}/wp-json/wp/v2/wpforms?per_page=50&orderby=date&order=asc",
+                    headers=_headers,
+                )
+            if fr.status_code == 200 and fr.json():
+                _forms = fr.json()
+                _titles = [(str(f["id"]), (f.get("title", {}).get("rendered") or "").lower()) for f in _forms]
+                def _best_id(keywords):
+                    for fid, t in _titles:
+                        if any(k in t for k in keywords):
+                            return fid
+                    return ""
+                contact_fid = _best_id(["contact"]) or (_titles[0][0] if _titles else "")
+                order_fid   = _best_id(["order", "inquiry", "booking", "reservation", "quote", "request"]) or (_titles[1][0] if len(_titles) > 1 else _titles[0][0] if _titles else "")
+                survey_fid  = _best_id(["survey", "feedback", "customer", "satisfaction"]) or (_titles[-1][0] if _titles else "")
+
+                def _sc(fid):
+                    return (
+                        "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                        f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
+                    ) if fid else ""
+
+                page_patches = {
+                    "contact": (
+                        "<!-- wp:paragraph --><p>We\u2019d love to hear from you. Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                        "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
+                        "<div class=\"wp-block-buttons\">"
+                        "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+                        "<div class=\"wp-block-button\">"
+                        "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+                        "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
+                        "\U0001f4ac Chat on WhatsApp</a></div>"
+                        "<!-- /wp:button --></div>"
+                        "<!-- /wp:buttons -->"
+                        + _sc(contact_fid)
+                    ),
+                    "forms": (
+                        "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
+                        "We'll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
+                        + _sc(order_fid)
+                    ),
+                    "survey": (
+                        "<!-- wp:paragraph --><p>We value your feedback! Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
+                        + _sc(survey_fid)
+                    ),
+                }
+                async with httpx.AsyncClient(timeout=15) as _hc:
+                    for page_slug, new_content in page_patches.items():
+                        chk = await _hc.get(
+                            f"{site_url}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
+                            headers=_headers,
+                        )
+                        pages_found = chk.json() if chk.status_code == 200 else []
+                        if pages_found:
+                            pid = pages_found[0]["id"]
+                            await _hc.post(
+                                f"{site_url}/wp-json/wp/v2/pages/{pid}",
+                                headers=_headers,
+                                json={"content": new_content, "status": "publish"},
+                            )
+                            logger.info(f"[blog] Patched /{page_slug} with wpforms form for {slug}")
+        except Exception as exc:
+            logger.warning(f"[blog] page-form patch failed (non-fatal): {exc}")
+
         # 7. Persist to MongoDB
         blog_doc = {
             "client_id": client_id,
@@ -587,7 +658,6 @@ class ZiloBlogService:
                     "<p>Fill in the form below to place an order or make an inquiry. "
                     "We'll get back to you via WhatsApp within minutes.</p>"
                     "<!-- /wp:paragraph -->"
-                    "\n[wpforms id=\"\" title=\"false\"]"
                 ),
             },
             {
@@ -597,7 +667,6 @@ class ZiloBlogService:
                     "<!-- wp:paragraph -->"
                     "<p>We value your feedback! Take 2 minutes to help us serve you better.</p>"
                     "<!-- /wp:paragraph -->"
-                    "\n[wpforms id=\"\" title=\"false\"]"
                 ),
             },
             {

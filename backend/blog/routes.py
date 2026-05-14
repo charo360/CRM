@@ -1080,34 +1080,40 @@ def make_blog_router(db, get_current_user):
                 return {"status": "replied", "comment_id": r.json().get("id")}
             raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
 
-    # ── Helper: find a real WPForms form ID on a subsite ─────────────────────
+    # ── Helper: find real WPForms form IDs on a subsite ────────────────────────
 
-    async def _find_wpforms_id(site_base: str, auth_headers: dict) -> str:
+    async def _find_all_wpforms_ids(site_base: str, auth_headers: dict) -> dict:
         """
-        Returns the ID of the best WPForms form to embed on the contact page.
-        Priority: form whose title contains 'contact', else the first available form.
-        Returns "" if no forms are found.
+        Returns a dict {contact, order, survey} with the best matching WPForms
+        form ID for each page type.  Falls back by position if no keyword match.
+        All values default to "" if no forms exist.
         """
+        result = {"contact": "", "order": "", "survey": ""}
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
-                    f"{site_base}/wp-json/wp/v2/wpforms?per_page=20&orderby=date&order=asc",
+                    f"{site_base}/wp-json/wp/v2/wpforms?per_page=50&orderby=date&order=asc",
                     headers=auth_headers,
                 )
-                if r.status_code == 200:
-                    forms = r.json()
-                    if not forms:
-                        return ""
-                    # Prefer a form whose title mentions 'contact'
-                    for f in forms:
-                        title = (f.get("title", {}).get("rendered") or "").lower()
-                        if "contact" in title:
-                            return str(f["id"])
-                    # Fall back to the first form
-                    return str(forms[0]["id"])
+                if r.status_code != 200 or not r.json():
+                    return result
+                forms = r.json()
+                titles = [(str(f["id"]), (f.get("title", {}).get("rendered") or "").lower()) for f in forms]
+                def _best(keywords):
+                    for fid, t in titles:
+                        if any(k in t for k in keywords):
+                            return fid
+                    return ""
+                result["contact"] = _best(["contact"]) or (titles[0][0] if titles else "")
+                result["order"]   = _best(["order", "inquiry", "booking", "reservation", "quote", "request"]) or (titles[1][0] if len(titles) > 1 else titles[0][0] if titles else "")
+                result["survey"]  = _best(["survey", "feedback", "customer", "satisfaction"]) or (titles[-1][0] if titles else "")
         except Exception as exc:
-            logger.debug("[blog] _find_wpforms_id failed: %s", exc)
-        return ""
+            logger.debug("[blog] _find_all_wpforms_ids failed: %s", exc)
+        return result
+
+    async def _find_wpforms_id(site_base: str, auth_headers: dict) -> str:
+        ids = await _find_all_wpforms_ids(site_base, auth_headers)
+        return ids["contact"]
 
     # ── Recreate standard pages for an existing client site ───────────────────
 
@@ -1134,8 +1140,11 @@ def make_blog_router(db, get_current_user):
         auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
         headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
 
-        # Look up a real WPForms form ID for this site
-        form_id = await _find_wpforms_id(site_base, headers)
+        # Look up real WPForms form IDs for all page types
+        form_ids = await _find_all_wpforms_ids(site_base, headers)
+        contact_form_id = form_ids["contact"]
+        order_form_id   = form_ids["order"]
+        survey_form_id  = form_ids["survey"]
         wa_number = blog.get("whatsapp_number", "")
         wa_url = (
             f"https://wa.me/{wa_number}?text=Hi%2C+I+found+you+on+Zilo"
@@ -1144,7 +1153,7 @@ def make_blog_router(db, get_current_user):
         )
         contact_intro = (
             "We\u2019d love to hear from you. Reach us instantly on WhatsApp"
-            + (" or fill in the form below." if form_id else ".")
+            + (" or fill in the form below." if contact_form_id else ".")
         )
         contact_content = (
             "<!-- wp:paragraph -->"
@@ -1161,10 +1170,18 @@ def make_blog_router(db, get_current_user):
             "<!-- /wp:buttons -->"
             + (
                 "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
-                f"<!-- wp:shortcode -->[wpforms id=\"{form_id}\" title=\"false\"]<!-- /wp:shortcode -->"
-                if form_id else ""
+                f"<!-- wp:shortcode -->[wpforms id=\"{contact_form_id}\" title=\"false\"]<!-- /wp:shortcode -->"
+                if contact_form_id else ""
             )
         )
+
+        def _shortcode_block(fid: str) -> str:
+            if fid:
+                return (
+                    "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                    f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
+                )
+            return ""
 
         pages = [
             {
@@ -1179,7 +1196,7 @@ def make_blog_router(db, get_current_user):
                     "<!-- wp:paragraph -->"
                     "<p>Fill in the form below to place an order or make an inquiry.</p>"
                     "<!-- /wp:paragraph -->"
-                    "\n[wpforms id=\"\" title=\"false\"]"
+                    + _shortcode_block(order_form_id)
                 ),
             },
             {
@@ -1189,7 +1206,7 @@ def make_blog_router(db, get_current_user):
                     "<!-- wp:paragraph -->"
                     "<p>We value your feedback! Take 2 minutes to help us serve you better.</p>"
                     "<!-- /wp:paragraph -->"
-                    "\n[wpforms id=\"\" title=\"false\"]"
+                    + _shortcode_block(survey_form_id)
                 ),
             },
         ]
