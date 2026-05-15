@@ -1,16 +1,39 @@
 """
 LangGraph tool definitions for the SEO agent.
 Each tool is a pure async function decorated with @tool.
-db and user_id are injected via LangGraph RunnableConfig.
+db and user_id are injected via LangGraph RunnableConfig (primary)
+or via contextvars (fallback, set by the route handler before graph.ainvoke).
 """
 from __future__ import annotations
-import os, re, uuid, httpx, logging
+import os, re, uuid, httpx, logging, contextvars as _cv
 from datetime import datetime, timedelta
 from typing import Optional
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
+
+# ── Contextvars fallback (set by route handler before graph.ainvoke) ──────────
+
+_seo_db: _cv.ContextVar = _cv.ContextVar("seo_db", default=None)
+_seo_user_id: _cv.ContextVar = _cv.ContextVar("seo_user_id", default=None)
+
+
+def set_seo_context(db, user_id: str) -> None:
+    _seo_db.set(db)
+    _seo_user_id.set(user_id)
+
+
+def _get_db_and_user(config=None):
+    """Try config first; fall back to contextvars."""
+    db, user_id = None, None
+    if config:
+        try:
+            db = config["configurable"].get("db")
+            user_id = config["configurable"].get("user_id")
+        except (KeyError, TypeError, AttributeError):
+            pass
+    return db or _seo_db.get(), user_id or _seo_user_id.get()
 
 
 # ── Shared AI caller (reuses existing env vars) ───────────────────────────────
@@ -147,8 +170,7 @@ async def audit_website(url: str, config: RunnableConfig) -> str:
 
     # Persist to db if available
     try:
-        db = config["configurable"].get("db")
-        user_id = config["configurable"].get("user_id")
+        db, user_id = _get_db_and_user(config)
         if db and user_id:
             await db.seo_audits.insert_one({
                 "_id": str(uuid.uuid4()), "user_id": user_id, "url": url,
@@ -328,8 +350,7 @@ Start writing now — first line is your opening:"""
     # Auto-save as draft
     post_id = str(uuid.uuid4())
     try:
-        db = config["configurable"].get("db") if config else None
-        user_id = config["configurable"].get("user_id") if config else None
+        db, user_id = _get_db_and_user(config)
         if db and user_id:
             await db.seo_blog_posts.insert_one({
                 "_id": post_id, "user_id": user_id, "title": title, "content": content,
@@ -475,8 +496,7 @@ async def list_saved_posts(config: RunnableConfig) -> str:
     Use this when the user asks to see their posts, drafts, or published articles.
     """
     try:
-        db = config["configurable"].get("db")
-        user_id = config["configurable"].get("user_id")
+        db, user_id = _get_db_and_user(config)
         if not db or not user_id:
             return "Could not access posts — no database connection."
 
@@ -520,8 +540,7 @@ async def publish_post_to_platform(
         shopify_token: Shopify Admin API access token.
     """
     try:
-        db = config["configurable"].get("db") if config else None
-        user_id = config["configurable"].get("user_id") if config else None
+        db, user_id = _get_db_and_user(config)
         if not db or not user_id:
             return "Cannot publish — no database connection."
 
@@ -590,8 +609,7 @@ async def get_seo_summary(config: RunnableConfig) -> str:
     Use this when the user asks for a summary, overview, or how things are going.
     """
     try:
-        db = config["configurable"].get("db")
-        user_id = config["configurable"].get("user_id")
+        db, user_id = _get_db_and_user(config)
         if not db or not user_id:
             return "No database connection available."
 
@@ -624,8 +642,7 @@ async def get_business_context(config: RunnableConfig) -> str:
     and content history. ALWAYS call this first before giving any SEO advice.
     """
     try:
-        db = config["configurable"].get("db")
-        user_id = config["configurable"].get("user_id")
+        db, user_id = _get_db_and_user(config)
         if not db or not user_id:
             return "No business data available."
 
@@ -637,9 +654,10 @@ async def get_business_context(config: RunnableConfig) -> str:
 
         business_name = (user or {}).get("business_name", "your business") if user else "your business"
         settings = (user or {}).get("settings", {})
-        business_type = settings.get("business_type", "general")
-        location = settings.get("location", "")
-        website = settings.get("website_url", "")
+        bk = (user or {}).get("business_knowledge", {})
+        business_type = settings.get("business_type") or bk.get("business_type") or (user or {}).get("business_type", "general")
+        location = settings.get("location") or bk.get("location") or (user or {}).get("location", "")
+        website = settings.get("website_url") or bk.get("website_url") or bk.get("website") or ""
         country_code = (user or {}).get("country_code", "")
 
         # Fetch products
@@ -1038,8 +1056,7 @@ async def add_keywords_to_tracker(
             difficulty: low/medium/high. intent: informational/transactional/local.
     """
     try:
-        db = config["configurable"].get("db")
-        user_id = config["configurable"].get("user_id")
+        db, user_id = _get_db_and_user(config)
         if not db or not user_id:
             return "Cannot save keywords — no database connection."
 

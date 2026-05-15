@@ -258,7 +258,9 @@ def make_seo_agent_router(db, user_dep):
                 lc_messages.append(AIMessage(content=m.content))
         lc_messages.append(HumanMessage(content=payload.message))
 
-        # ── Run the LangGraph (db + user_id injected via config) ─────────────
+        # ── Run the LangGraph (db + user_id injected via config + contextvars) ─
+        from .tools import set_seo_context
+        set_seo_context(db, tid)
         try:
             result = await graph.ainvoke(
                 {"messages": lc_messages},
@@ -410,6 +412,8 @@ def make_seo_agent_router(db, user_dep):
         tid = _tid(user)
         conv_id = payload.conversation_id or str(uuid.uuid4())
 
+        from .tools import set_seo_context
+        set_seo_context(db, tid)
         try:
             result = await graph.ainvoke(
                 {"messages": [HumanMessage(content=payload.agent_prompt)]},
