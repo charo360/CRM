@@ -11846,6 +11846,17 @@ async def startup_tasks():
         except Exception as e:
             logging.warning(f"[qdrant] bootstrap failed (Qdrant may not be ready yet): {e}")
 
+    # Pre-warm the SEO LangGraph so the first user message doesn't pay the
+    # compile cost (~2-3 s). Runs in background so it doesn't block startup.
+    async def _prewarm_seo_graph():
+        try:
+            from seo_agent.graph import get_seo_graph
+            get_seo_graph()
+            logging.info("[seo-agent] graph pre-warmed at startup")
+        except Exception as e:
+            logging.warning(f"[seo-agent] pre-warm failed: {e}")
+    asyncio.create_task(_prewarm_seo_graph())
+
 
 async def _email_sync_runner(db) -> None:
     """Background task: sync emails for all users with Gmail connected every 10 minutes."""
