@@ -125,7 +125,7 @@ export default function Sidebar() {
     { href: "/dashboard/x-ads", label: "X Ads", icon: Hash },
     { href: "/dashboard/google-business", label: "Google Business", icon: MapPinned },
     { href: "/dashboard/social-inbox", label: "Social Inbox", icon: Inbox },
-    { href: "/dashboard/seo", label: "Website & SEO", icon: Search },
+    { href: "/dashboard/seo", label: "SEOhub", icon: Search },
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const businessNavFiltered = [
