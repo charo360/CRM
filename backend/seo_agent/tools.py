@@ -636,15 +636,16 @@ async def get_seo_summary(config: RunnableConfig) -> str:
 
 
 @tool
-async def get_business_context(config: RunnableConfig) -> str:
+async def get_business_context() -> str:
     """
     Fetch comprehensive business context including profile, performance data, SEO memory,
     and content history. ALWAYS call this first before giving any SEO advice.
     """
     try:
-        db, user_id = _get_db_and_user(config)
+        db = _seo_db.get()
+        user_id = _seo_user_id.get()
         if not db or not user_id:
-            return "No business data available."
+            return "No business data available — context not set."
 
         import asyncio as _asyncio
 
