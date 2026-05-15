@@ -135,9 +135,9 @@ qdrant-client==1.12.1
 duckduckgo-search>=6.0,<7.0
 composio-core==0.7.20
 python-slugify==8.0.4
-# LangChain / LangGraph — pinned to avoid pip backtracking during build
+# LangChain / LangGraph — pinned to a verified-compatible set
 langchain-core==0.3.65
-langsmith==0.2.11
+langsmith==0.3.45
 langgraph==0.2.73
 langchain-openai==0.2.14
 langchain-anthropic==0.2.4
