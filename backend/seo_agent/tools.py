@@ -646,13 +646,26 @@ async def get_business_context(config: RunnableConfig) -> str:
         if not db or not user_id:
             return "No business data available."
 
-        # Fetch user/business profile
-        user = await db.users.find_one({"_id": user_id})
+        import asyncio as _asyncio
+
+        # Fetch user profile + all other data in parallel
+        user, products, product_count, customer_count, last_audit, seo_summary, posts, seo_memory, saved_keywords = await _asyncio.gather(
+            db.users.find_one({"_id": user_id}),
+            db.products.find({"user_id": user_id}).limit(10).to_list(10),
+            db.products.count_documents({"user_id": user_id}),
+            db.customers.count_documents({"user_id": user_id}),
+            db.seo_audits.find_one({"user_id": user_id}, sort=[("created_at", -1)]),
+            db.seo_summary.find_one({"user_id": user_id}),
+            db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(10).to_list(10),
+            db.seo_memory.find_one({"user_id": user_id}, sort=[("created_at", -1)]),
+            db.seo_saved_keywords.find_one({"user_id": user_id}, sort=[("month", -1)]),
+        )
+
+        # Team member fallback
         if not user:
-            # Try as business_id (team member scenario)
             user = await db.users.find_one({"business_id": user_id})
 
-        business_name = (user or {}).get("business_name", "your business") if user else "your business"
+        business_name = (user or {}).get("business_name", "your business")
         settings = (user or {}).get("settings", {})
         bk = (user or {}).get("business_knowledge", {})
         business_type = settings.get("business_type") or bk.get("business_type") or (user or {}).get("business_type", "general")
@@ -660,32 +673,23 @@ async def get_business_context(config: RunnableConfig) -> str:
         website = settings.get("website_url") or bk.get("website_url") or bk.get("website") or ""
         country_code = (user or {}).get("country_code", "")
 
-        # Fetch products
-        products = await db.products.find({"user_id": user_id}).limit(10).to_list(10)
         product_names = [p.get("name", "") for p in products if p.get("name")]
-        product_count = await db.products.count_documents({"user_id": user_id})
-
-        # Fetch customer count
-        customer_count = await db.customers.count_documents({"user_id": user_id})
-
-        # Fetch SEO performance data
-        last_audit = await db.seo_audits.find_one({"user_id": user_id}, sort=[("created_at", -1)])
-        seo_summary = await db.seo_summary.find_one({"user_id": user_id})
-        
-        # Fetch content performance
-        posts = await db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(10).to_list(10)
         published_posts = [p for p in posts if p.get("status") == "published"]
         draft_posts = [p for p in posts if p.get("status") == "draft"]
-        
-        # Calculate content velocity (posts in last 30 days)
+
+        # Content velocity — handle datetime objects or ISO strings safely
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-        recent_posts = [p for p in posts if p.get("created_at") and datetime.fromisoformat(p["created_at"].replace("Z", "+00:00")) > thirty_days_ago]
-        
-        # Fetch SEO memory if available
-        seo_memory = await db.seo_memory.find_one({"user_id": user_id}, sort=[("created_at", -1)])
-        
-        # Fetch saved keywords
-        saved_keywords = await db.seo_saved_keywords.find_one({"user_id": user_id}, sort=[("month", -1)])
+        def _post_dt(p):
+            v = p.get("created_at")
+            if v is None:
+                return None
+            if isinstance(v, datetime):
+                return v.replace(tzinfo=None)
+            try:
+                return datetime.fromisoformat(str(v).replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                return None
+        recent_posts = [p for p in posts if (_post_dt(p) or datetime.min) > thirty_days_ago]
 
         lines = [
             f"Business Name: {business_name}",
