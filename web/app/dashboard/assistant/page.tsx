@@ -55,6 +55,10 @@ function AssistantPageInner() {
 
   const [conversations, setConversations] = useState<AssistantConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(requestedConvId);
+  // chatKey controls when AssistantChat actually remounts. It only changes on
+  // explicit user actions (New chat, sidebar click) — NOT when the chat itself
+  // creates a new conversation. This prevents the blink on first message.
+  const [chatKey, setChatKey] = useState<string>(requestedConvId ?? "new-0");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -66,8 +70,8 @@ function AssistantPageInner() {
   // (e.g. after saving a new message) don't override an intentional "New" click.
   const initialLoadDone = useRef(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setLoadError(null);
     try {
       const list = await assistantApi.listConversations();
@@ -85,15 +89,17 @@ function AssistantPageInner() {
       initialLoadDone.current = true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not load conversations";
-      setLoadError(msg);
-      setConversations([]);
+      if (!silent) {
+        setLoadError(msg);
+        setConversations([]);
+      }
       // Still allow a new chat even when the list endpoint fails.
       if (!initialLoadDone.current) {
         setActiveId(null);
         initialLoadDone.current = true;
       }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -163,9 +169,11 @@ function AssistantPageInner() {
           <button
             type="button"
             onClick={() => {
+              const next = newNonce + 1;
               setActiveId(null);
               setEditingId(null);
-              setNewNonce((n) => n + 1);
+              setNewNonce(next);
+              setChatKey(`new-${next}`);
             }}
             className="flex w-full items-center gap-2.5 rounded-lg bg-[#009B3A] px-3 py-2 text-[13px] font-medium text-white shadow-sm ring-2 ring-transparent transition hover:bg-[#4CD137] hover:text-[#0a2614] hover:ring-[#4CD137]/40 active:scale-[0.98]"
           >
@@ -224,7 +232,7 @@ function AssistantPageInner() {
                           ? "bg-white font-semibold text-brand-dark shadow-sm"
                           : "text-slate-700 hover:bg-white hover:text-slate-900"
                       }`}
-                      onClick={() => !editing && setActiveId(c.id)}
+                      onClick={() => { if (!editing) { setActiveId(c.id); setChatKey(c.id); } }}
                       onDoubleClick={(e) => { e.stopPropagation(); startEdit(c); }}
                     >
                       {editing ? (
@@ -283,7 +291,7 @@ function AssistantPageInner() {
       {/* Chat pane */}
       <main className="min-w-0 flex-1 overflow-hidden bg-white">
         <AssistantChat
-          key={activeId ?? `new-${newNonce}`}
+          key={chatKey}
           conversationId={activeId}
           initialMessage={templateMessage ?? undefined}
           onConversationChange={(id) => {
@@ -302,7 +310,8 @@ function AssistantPageInner() {
               return [stub, ...prev];
             });
             // Reload after smart-title background task finishes (~3 s).
-            setTimeout(() => void load(), 3200);
+            // Pass silent=true so the sidebar list doesn't flash a spinner.
+            setTimeout(() => void load(true), 3200);
           }}
         />
       </main>
