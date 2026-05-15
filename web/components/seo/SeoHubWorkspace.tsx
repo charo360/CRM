@@ -514,13 +514,14 @@ export default function SeoHubWorkspace({
         </div>
 
         {briefLoading && !brief && (
-          <div className="flex items-center gap-3 px-5 py-6 text-slate-500 text-sm">
-            <span className="animate-spin">⚙</span> Analysing published posts, keywords, rankings…
+          <div className="flex items-center justify-center gap-3 px-5 py-16 text-slate-400 text-sm min-h-[220px]">
+            <span className="animate-spin text-indigo-500">⚙</span>
+            <span>Analysing your SEO — wins, gaps &amp; top actions…</span>
           </div>
         )}
 
         {brief && (
-          <div className="p-5 space-y-5">
+          <div className="p-5 space-y-5 min-h-[220px]">
             {/* Health row */}
             <div className="flex flex-wrap items-start gap-4">
               {/* Score */}
