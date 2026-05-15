@@ -62,7 +62,7 @@ mypy_extensions==1.1.0
 numpy==2.4.1
 oauthlib==3.3.1
 openai==1.99.9
-packaging==24.2
+packaging>=23.2,<25
 pandas==2.3.3
 passlib==1.7.4
 pathspec==1.0.3
@@ -131,12 +131,12 @@ reportlab==4.2.5
 markdown==3.8
 playwright==1.49.0
 weasyprint==62.3
-qdrant-client>=1.9.0
-duckduckgo-search>=6.0
+qdrant-client==1.12.1
+duckduckgo-search>=6.0,<7.0
 composio-core==0.7.20
 python-slugify==8.0.4
 # LangChain / LangGraph — pinned to avoid pip backtracking during build
-langchain-core==0.3.58
+langchain-core==0.3.65
 langsmith==0.2.11
 langgraph==0.2.73
 langchain-openai==0.2.14
