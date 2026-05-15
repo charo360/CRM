@@ -654,10 +654,10 @@ def _mk_router(db, get_current_user):
             if not conv or not can_access_conversation_row(conv, user):
                 raise HTTPException(404, "Conversation not found")
 
-        _MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB hard limit
+        _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB hard limit
         content = await file.read()
         if len(content) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(413, f"File too large. Maximum allowed size is 20 MB.")
+            raise HTTPException(413, f"File too large. Maximum allowed size is 50 MB.")
         allowed_mime_prefixes = ("image/", "application/pdf", "text/", "application/vnd.", "application/msword")
         mime = file.content_type or "application/octet-stream"
         if not any(mime.startswith(p) for p in allowed_mime_prefixes):

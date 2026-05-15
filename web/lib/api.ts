@@ -1071,6 +1071,8 @@ export interface AssistantMessage {
   agent?: string;
   /** Tap-to-send follow-ups (e.g. Meta / Google Ads step-by-step) */
   suggestions?: string[];
+  /** Documents attached to this user message (shown as chips in the bubble) */
+  documents?: AssistantDocument[];
 }
 
 export interface AssistantAgent {
@@ -1190,7 +1192,9 @@ export const assistantApi = {
     auto_approve?: boolean;
     agent?: string;
     visibility?: "team" | "private";
+    signal?: AbortSignal;
   }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     let controller!: ReadableStreamDefaultController<string>;
     const stream = new ReadableStream<string>({
@@ -1204,7 +1208,8 @@ export const assistantApi = {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(bodyRest),
+          signal,
         });
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => res.statusText);
@@ -1265,6 +1270,33 @@ export const assistantApi = {
     a.download = `${filename || "zilo-export"}.${format}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
+  uploadDocumentWithProgress: (
+    file: File,
+    conversationId: string | null | undefined,
+    onProgress: (pct: number) => void,
+  ): Promise<{ conversation_id: string; document: AssistantDocument }> => {
+    return new Promise((resolve, reject) => {
+      const token = getToken();
+      const form = new FormData();
+      form.append("file", file);
+      const qs = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/assistant/upload${qs}`);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) onProgress(Math.round((ev.loaded / ev.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error("Invalid response")); }
+        } else {
+          try { reject(new Error(JSON.parse(xhr.responseText)?.detail ?? xhr.statusText)); } catch { reject(new Error(xhr.statusText)); }
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload failed"));
+      xhr.send(form);
+    });
   },
   uploadDocument: async (file: File, conversationId?: string | null) => {
     const token = getToken();
