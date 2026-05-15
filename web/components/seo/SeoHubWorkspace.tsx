@@ -348,6 +348,7 @@ export default function SeoHubWorkspace({
   // ── Execute autonomous brief action ───────────────────────────────────────
 
   async function executeAction(action: SeoBriefAction) {
+    if (!action.agent_prompt?.trim()) return;
     setBriefExecuting(action.id);
     setMessages(prev => [...prev, {
       role: "user",

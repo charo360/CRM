@@ -400,11 +400,14 @@ def make_seo_agent_router(db, user_dep):
     # Runs the action through the full LangGraph agent and returns the result.
 
     class ExecuteActionRequest(BaseModel):
-        agent_prompt: str
+        agent_prompt: Optional[str] = None
         conversation_id: Optional[str] = None
 
     @router.post("/execute-action")
     async def execute_action(payload: ExecuteActionRequest, user=Depends(user_dep)):
+        if not payload.agent_prompt or not payload.agent_prompt.strip():
+            raise HTTPException(400, "agent_prompt is required and cannot be empty.")
+
         graph = get_seo_graph() if get_seo_graph else None
         if graph is None:
             raise HTTPException(503, "SEO agent not available.")
