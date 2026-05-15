@@ -194,7 +194,7 @@ export type SeoHubWorkspaceOpenTab =
   | "autoblog"
   | "scheduler";
 
-export default function SeoHubWorkspace({
+function SeoHubWorkspace({
   onOpenTab,
 }: {
   onOpenTab?: (tab: SeoHubWorkspaceOpenTab) => void;
@@ -229,15 +229,15 @@ export default function SeoHubWorkspace({
   const [quickGenLoading, setQuickGenLoading] = useState(false);
   const [quickGenDone, setQuickGenDone] = useState(false);
 
-  const loadTracker = useCallback(async () => {
-    setTrackerLoading(true);
+  const loadTracker = useCallback(async (silent = false) => {
+    if (!silent) setTrackerLoading(true);
     try {
       const data = await blogApi.getKeywordTracker();
       setTrackerRows(data.keywords ?? []);
     } catch {
       // tracker empty — that's fine
     } finally {
-      setTrackerLoading(false);
+      if (!silent) setTrackerLoading(false);
     }
   }, []);
 
@@ -305,8 +305,8 @@ export default function SeoHubWorkspace({
         content: res.reply,
         tool_steps: res.tool_steps,
       }]);
-      // After assistant responds, refresh tracker (agent may have written posts)
-      setTimeout(loadTracker, 1500);
+      // Silently refresh tracker in background (agent may have added keywords/posts)
+      setTimeout(() => loadTracker(true), 1500);
     } catch (e) {
       setMessages(prev => [...prev, {
         role: "assistant",
@@ -363,7 +363,7 @@ export default function SeoHubWorkspace({
         content: res.reply,
         tool_steps: res.tool_steps,
       }]);
-      setTimeout(() => { loadTracker(); loadBrief(true); }, 1500);
+      setTimeout(() => { loadTracker(true); loadBrief(true); }, 1500);
     } catch (e) {
       setMessages(prev => [...prev, {
         role: "assistant",
@@ -485,142 +485,6 @@ export default function SeoHubWorkspace({
           </div>
         </div>
       )}
-
-      {/* ── SEO Expert Brief ─────────────────────────────────────────────────── */}
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-        {/* Brief header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-gradient-to-r from-indigo-50/60 to-white">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
-              <Zap className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-slate-800">SEO Expert — Autonomous Brief</p>
-              <p className="text-[11px] text-slate-500">
-                {brief
-                  ? `Updated ${Math.round((Date.now() - new Date(brief.generated_at).getTime()) / 3600000)} h ago · next check ${brief.next_check}`
-                  : briefLoading ? "Analysing your SEO…" : "No brief yet"}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => loadBrief(true)}
-            disabled={briefLoading}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3 h-3 ${briefLoading ? "animate-spin" : ""}`} />
-            {briefLoading ? "Refreshing…" : "Refresh"}
-          </button>
-        </div>
-
-        {briefLoading && !brief && (
-          <div className="flex items-center gap-3 px-5 py-6 text-slate-500 text-sm">
-            <span className="animate-spin">⚙</span> Analysing published posts, keywords, rankings…
-          </div>
-        )}
-
-        {brief && (
-          <div className="p-5 space-y-5">
-            {/* Health row */}
-            <div className="flex flex-wrap items-start gap-4">
-              {/* Score */}
-              <div className={`flex flex-col items-center justify-center w-20 h-20 rounded-2xl border-2 shrink-0 ${
-                brief.health_grade === "A" ? "border-emerald-400 bg-emerald-50 text-emerald-700" :
-                brief.health_grade === "B" ? "border-blue-400 bg-blue-50 text-blue-700" :
-                brief.health_grade === "C" ? "border-yellow-400 bg-yellow-50 text-yellow-700" :
-                brief.health_grade === "D" ? "border-orange-400 bg-orange-50 text-orange-700" :
-                "border-red-400 bg-red-50 text-red-700"
-              }`}>
-                <span className="text-3xl font-black leading-none">{brief.health_grade}</span>
-                <span className="text-[11px] font-semibold mt-0.5">{brief.health_score}/100</span>
-              </div>
-
-              {/* Summary + wins/gaps */}
-              <div className="flex-1 min-w-0 space-y-3">
-                <p className="text-sm text-slate-700 leading-relaxed">{brief.status_summary}</p>
-                <div className="grid sm:grid-cols-2 gap-3">
-                  {brief.wins?.length > 0 && (
-                    <div>
-                      <p className="text-[11px] font-bold text-emerald-700 uppercase tracking-wide mb-1.5">✓ Wins</p>
-                      <ul className="space-y-0.5">
-                        {brief.wins.slice(0, 3).map((w, i) => (
-                          <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
-                            <span className="text-emerald-500 shrink-0 mt-0.5">•</span>{w}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {brief.gaps?.length > 0 && (
-                    <div>
-                      <p className="text-[11px] font-bold text-amber-700 uppercase tracking-wide mb-1.5">⚡ Gaps</p>
-                      <ul className="space-y-0.5">
-                        {brief.gaps.slice(0, 3).map((g, i) => (
-                          <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
-                            <span className="text-amber-500 shrink-0 mt-0.5">•</span>{g}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Action cards */}
-            {brief.actions?.length > 0 && (
-              <div>
-                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-2.5">Recommended actions</p>
-                <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                  {brief.actions.slice(0, 6).map((action) => {
-                    const typeIcon: Record<string, string> = {
-                      write_post: "✍️",
-                      run_audit: "🔧",
-                      research_keywords: "🔍",
-                      check_rankings: "🏆",
-                      fix_issue: "⚠️",
-                    };
-                    const effortColor: Record<string, string> = {
-                      low: "text-emerald-700 bg-emerald-50 border-emerald-200",
-                      medium: "text-yellow-700 bg-yellow-50 border-yellow-200",
-                      high: "text-red-700 bg-red-50 border-red-200",
-                    };
-                    const isExecuting = briefExecuting === action.id;
-                    return (
-                      <div key={action.id} className="flex flex-col gap-2 border border-slate-200 rounded-xl p-3.5 bg-slate-50/60 hover:border-indigo-200 hover:bg-indigo-50/30 transition-colors">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-lg shrink-0">{typeIcon[action.type] ?? "⚙️"}</span>
-                            <span className="text-xs font-bold text-slate-800 leading-tight">{action.title}</span>
-                          </div>
-                          <span className="text-[10px] font-bold text-slate-400 shrink-0">#{action.priority}</span>
-                        </div>
-                        <p className="text-[11px] text-slate-500 leading-relaxed">{action.reason}</p>
-                        <div className="flex items-center justify-between gap-2 mt-auto pt-1">
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border capitalize ${effortColor[action.effort?.toLowerCase()] ?? "text-slate-600 bg-slate-100 border-slate-200"}`}>
-                            {action.effort} effort
-                          </span>
-                          <button
-                            onClick={() => executeAction(action)}
-                            disabled={!!briefExecuting || chatLoading}
-                            className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
-                          >
-                            {isExecuting ? (
-                              <><span className="animate-spin inline-block">⚙</span> Running…</>
-                            ) : (
-                              <><Zap className="w-3 h-3" /> Execute</>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
 
       <div className="flex flex-col lg:flex-row gap-4 sm:gap-5 flex-1 min-h-0">
         {/* ── LEFT: AI Chat ─────────────────────────────────────────────────── */}
@@ -777,7 +641,7 @@ export default function SeoHubWorkspace({
                   {enriching ? <><span className="animate-spin inline-block">⚙</span> Fetching…</> : "📊 Get volumes"}
                 </button>
                 <button
-                  onClick={loadTracker}
+                  onClick={() => loadTracker()}
                   className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"
                 >
                   ↻ Refresh
@@ -898,6 +762,185 @@ export default function SeoHubWorkspace({
           </div>
         </div>
       </div>
+
+      {/* ── SEO Expert Brief ─────────────────────────────────────────────────── */}
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden min-h-[460px]">
+        {/* Brief header */}
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-gradient-to-r from-indigo-50/60 to-white">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
+              <Zap className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-slate-800">SEO Expert — Autonomous Brief</p>
+              <p className="text-[11px] text-slate-500">
+                {brief
+                  ? `Updated ${Math.round((Date.now() - new Date(brief.generated_at).getTime()) / 3600000)} h ago · next check ${brief.next_check}`
+                  : briefLoading ? "Analysing your SEO…" : "No brief yet"}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => loadBrief(true)}
+            disabled={briefLoading}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3 h-3 ${briefLoading ? "animate-spin" : ""}`} />
+            {briefLoading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+
+        {briefLoading && !brief && (
+          <div className="p-5 space-y-5 animate-pulse">
+            {/* health row skeleton */}
+            <div className="flex items-start gap-4">
+              <div className="w-20 h-20 rounded-2xl bg-slate-100 shrink-0" />
+              <div className="flex-1 space-y-2 pt-1">
+                <div className="h-3 bg-slate-100 rounded w-3/4" />
+                <div className="h-3 bg-slate-100 rounded w-full" />
+                <div className="h-3 bg-slate-100 rounded w-5/6" />
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <div className="space-y-1.5">
+                    <div className="h-2.5 bg-slate-100 rounded w-1/3" />
+                    <div className="h-2.5 bg-slate-100 rounded w-full" />
+                    <div className="h-2.5 bg-slate-100 rounded w-4/5" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="h-2.5 bg-slate-100 rounded w-1/3" />
+                    <div className="h-2.5 bg-slate-100 rounded w-full" />
+                    <div className="h-2.5 bg-slate-100 rounded w-3/4" />
+                  </div>
+                </div>
+              </div>
+            </div>
+            {/* action cards skeleton */}
+            <div>
+              <div className="h-2.5 bg-slate-100 rounded w-40 mb-3" />
+              <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="border border-slate-100 rounded-xl p-3.5 space-y-2">
+                    <div className="flex gap-2 items-center">
+                      <div className="w-6 h-6 bg-slate-100 rounded" />
+                      <div className="h-3 bg-slate-100 rounded flex-1" />
+                    </div>
+                    <div className="h-2.5 bg-slate-100 rounded w-full" />
+                    <div className="h-2.5 bg-slate-100 rounded w-3/4" />
+                    <div className="flex justify-between items-center pt-1">
+                      <div className="h-5 bg-slate-100 rounded-full w-16" />
+                      <div className="h-6 bg-slate-100 rounded-lg w-16" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {brief && (
+          <div className="p-5 space-y-5">
+            {/* Health row */}
+            <div className="flex flex-wrap items-start gap-4">
+              {/* Score */}
+              <div className={`flex flex-col items-center justify-center w-20 h-20 rounded-2xl border-2 shrink-0 ${
+                brief.health_grade === "A" ? "border-emerald-400 bg-emerald-50 text-emerald-700" :
+                brief.health_grade === "B" ? "border-blue-400 bg-blue-50 text-blue-700" :
+                brief.health_grade === "C" ? "border-yellow-400 bg-yellow-50 text-yellow-700" :
+                brief.health_grade === "D" ? "border-orange-400 bg-orange-50 text-orange-700" :
+                "border-red-400 bg-red-50 text-red-700"
+              }`}>
+                <span className="text-3xl font-black leading-none">{brief.health_grade}</span>
+                <span className="text-[11px] font-semibold mt-0.5">{brief.health_score}/100</span>
+              </div>
+
+              {/* Summary + wins/gaps */}
+              <div className="flex-1 min-w-0 space-y-3">
+                <p className="text-sm text-slate-700 leading-relaxed">{brief.status_summary}</p>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {brief.wins?.length > 0 && (
+                    <div>
+                      <p className="text-[11px] font-bold text-emerald-700 uppercase tracking-wide mb-1.5">✓ Wins</p>
+                      <ul className="space-y-0.5">
+                        {brief.wins.slice(0, 3).map((w, i) => (
+                          <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                            <span className="text-emerald-500 shrink-0 mt-0.5">•</span>{w}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {brief.gaps?.length > 0 && (
+                    <div>
+                      <p className="text-[11px] font-bold text-amber-700 uppercase tracking-wide mb-1.5">⚡ Gaps</p>
+                      <ul className="space-y-0.5">
+                        {brief.gaps.slice(0, 3).map((g, i) => (
+                          <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                            <span className="text-amber-500 shrink-0 mt-0.5">•</span>{g}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Action cards */}
+            {brief.actions?.length > 0 && (
+              <div>
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-2.5">Recommended actions</p>
+                <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {brief.actions.slice(0, 6).map((action) => {
+                    const typeIcon: Record<string, string> = {
+                      write_post: "✍️",
+                      run_audit: "🔧",
+                      research_keywords: "🔍",
+                      check_rankings: "🏆",
+                      fix_issue: "⚠️",
+                    };
+                    const effortColor: Record<string, string> = {
+                      low: "text-emerald-700 bg-emerald-50 border-emerald-200",
+                      medium: "text-yellow-700 bg-yellow-50 border-yellow-200",
+                      high: "text-red-700 bg-red-50 border-red-200",
+                    };
+                    const isExecuting = briefExecuting === action.id;
+                    return (
+                      <div key={action.id} className="flex flex-col gap-2 border border-slate-200 rounded-xl p-3.5 bg-slate-50/60 hover:border-indigo-200 hover:bg-indigo-50/30 transition-colors">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg shrink-0">{typeIcon[action.type] ?? "⚙️"}</span>
+                            <span className="text-xs font-bold text-slate-800 leading-tight">{action.title}</span>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400 shrink-0">#{action.priority}</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">{action.reason}</p>
+                        <div className="flex items-center justify-between gap-2 mt-auto pt-1">
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border capitalize ${effortColor[action.effort?.toLowerCase()] ?? "text-slate-600 bg-slate-100 border-slate-200"}`}>
+                            {action.effort} effort
+                          </span>
+                          <button
+                            onClick={() => executeAction(action)}
+                            disabled={!!briefExecuting || chatLoading}
+                            className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {isExecuting ? (
+                              <><span className="animate-spin inline-block">⚙</span> Running…</>
+                            ) : (
+                              <><Zap className="w-3 h-3" /> Execute</>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
+
   );
 }
+
+export default React.memo(SeoHubWorkspace);

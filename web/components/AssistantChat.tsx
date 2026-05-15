@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   assistantApi,
   teamApi,
@@ -19,6 +20,7 @@ import { getAgentPersona, personaBadgeLabel, personaHandoffLine, personaThinking
 import {
   Loader2,
   Send,
+  Square,
   Wrench,
   AlertTriangle,
   CheckCircle2,
@@ -272,11 +274,25 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   const [shareBusy, setShareBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [documents, setDocuments] = useState<AssistantDocument[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState<{ name: string; progress: number }[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamReaderRef = useRef<ReadableStreamDefaultReader<string> | null>(null);
+  // AbortController for the active chatStream fetch — aborting this kills the network request.
+  const abortControllerRef = useRef<AbortController | null>(null);
+  // Set to true when the user intentionally stops generation so send() knows not to show an error.
+  const stopRequestedRef = useRef(false);
+  // Stores the message currently being streamed so stopGeneration can restore it to the input.
+  const currentMsgRef = useRef<string>("");
+  // Ref-based sending guard to prevent race conditions with multiple rapid clicks.
+  const sendingRef = useRef(false);
+  // Timestamp of last stop click — used to block accidental re-sends within 500ms.
+  const lastStopAtRef = useRef(0);
+  // When this component creates a new conversation itself, the parent echoes the id
+  // back as `conversationId` prop. We must NOT reload the conversation in that case
+  // (messages are already in state) — doing so causes the visible blink/flash.
+  const selfCreatedConvIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     assistantApi
@@ -394,23 +410,44 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     }
   }
 
+  const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+
   async function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
     e.target.value = "";
     setError(null);
-    setUploading(true);
+
+    // Client-side size check
+    const tooBig = files.filter((f) => f.size > MAX_FILE_BYTES);
+    if (tooBig.length) {
+      setError(`File${tooBig.length > 1 ? "s" : ""} too large (max 50 MB): ${tooBig.map((f) => f.name).join(", ")}`);
+      return;
+    }
+
+    // Register a progress entry for each file
+    setUploadingFiles(files.map((f) => ({ name: f.name, progress: 0 })));
     try {
-      const res = await assistantApi.uploadDocument(file, convId);
-      if (!convId) {
-        setConvId(res.conversation_id);
-        onConversationChange?.(res.conversation_id);
+      const results = await Promise.all(
+        files.map((f, i) =>
+          assistantApi.uploadDocumentWithProgress(f, convId, (pct) =>
+            setUploadingFiles((prev) =>
+              prev.map((u, j) => (j === i ? { ...u, progress: pct } : u))
+            )
+          )
+        )
+      );
+      const firstNew = results[0];
+      if (!convId && firstNew) {
+        selfCreatedConvIdRef.current = firstNew.conversation_id;
+        setConvId(firstNew.conversation_id);
+        onConversationChange?.(firstNew.conversation_id);
       }
-      setDocuments((prev) => [...prev, res.document]);
+      setDocuments((prev) => [...prev, ...results.map((r) => r.document)]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
-      setUploading(false);
+      setUploadingFiles([]);
     }
   }
 
@@ -428,6 +465,13 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   // prevent loading when the component remounts with the same id.
   useEffect(() => {
     if (!conversationId) return;
+    // If this component just created the conversation, the parent reflects the id
+    // back as a prop change. Skip the reload — messages are already in state.
+    if (conversationId === selfCreatedConvIdRef.current) {
+      selfCreatedConvIdRef.current = null;
+      setConvId(conversationId);
+      return;
+    }
     setConvId(conversationId);
     void loadConversation(conversationId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -437,24 +481,61 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, sending]);
 
+  function stopGeneration() {
+    // Guard against double-clicking
+    if (stopRequestedRef.current) return;
+    
+    stopRequestedRef.current = true;
+    lastStopAtRef.current = Date.now();
+    // Do NOT reset sendingRef here — only finally() should do that.
+    
+    // Cancel the stream reader first — this drains any buffered chunks and
+    // causes the next read() in send() to return {done:true}, breaking the loop.
+    try { streamReaderRef.current?.cancel(); } catch { /* ignore */ }
+    
+    // Also abort the underlying fetch to stop the network request.
+    try { abortControllerRef.current?.abort(); } catch { /* ignore */ }
+    
+    // Use flushSync to force React to process these state updates SYNCHRONOUSLY
+    // so the UI reflects the stopped state before any JS continues.
+    const msg = currentMsgRef.current;
+    flushSync(() => {
+      setInput(msg);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        return last?.role === "user" && last.content === msg ? prev.slice(0, -1) : prev;
+      });
+      setSending(false);
+      setStreamingText("");
+      setStreamingTools([]);
+      setStreamingAgentId(null);
+      setPendingConfirm(null);
+    });
+  }
+
   async function send(messageOverride?: string, autoApprove = false) {
     const msg = (messageOverride ?? input).trim();
-    if (!msg || sending) return;
+    const msSinceStop = Date.now() - lastStopAtRef.current;
+    if (!msg || sending || sendingRef.current || msSinceStop < 500) return;
+    sendingRef.current = true;
+    currentMsgRef.current = msg;
+    const attachedDocs = documents.length ? [...documents] : undefined;
     setInput("");
     setError(null);
     setSending(true);
+    setDocuments([]);
+    stopRequestedRef.current = false;
     setStreamingText("");
     setStreamingTools([]);
     setStreamingAgentId(null);
 
     // Optimistic user bubble
-    setMessages((prev) => [...prev, { role: "user", content: msg }]);
+    setMessages((prev) => [...prev, { role: "user", content: msg, documents: attachedDocs }]);
 
-    // Cancel any previous stream
-    if (streamReaderRef.current) {
-      try { await streamReaderRef.current.cancel(); } catch { /* ignore */ }
-      streamReaderRef.current = null;
-    }
+    // Abort any in-flight request before starting a new one
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       const stream = assistantApi.chatStream({
@@ -462,6 +543,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         conversation_id: convId,
         model: modelId || undefined,
         auto_approve: autoApprove,
+        signal: abortController.signal,
       });
       const reader = stream.getReader();
       streamReaderRef.current = reader;
@@ -470,8 +552,10 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       let donePayload: AssistantChatResponse | null = null;
 
       while (true) {
+        if (stopRequestedRef.current) break;
         const { done, value } = await reader.read();
         if (done) break;
+        if (stopRequestedRef.current) break;
         try {
           const event = JSON.parse(value) as {
             type: string;
@@ -496,7 +580,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             setStreamingTools((prev) => [...prev, event.tool ?? ""]);
           } else if (event.type === "token") {
             fullReply += event.text ?? "";
-            setStreamingText(fullReply);
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
           } else if (event.type === "done") {
             donePayload = {
               conversation_id: event.conversation_id ?? convId ?? "",
@@ -516,8 +600,13 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         }
       }
 
-      if (donePayload) {
+      if (stopRequestedRef.current) {
+        // UI already restored by stopGeneration() — nothing to do here.
+      } else if (donePayload) {
         if (!convId) {
+          // Mark as self-created BEFORE calling onConversationChange so the
+          // useEffect above can recognise the echo-back and skip loadConversation.
+          selfCreatedConvIdRef.current = donePayload.conversation_id;
           setConvId(donePayload.conversation_id);
           onConversationChange?.(donePayload.conversation_id);
         }
@@ -538,14 +627,29 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         setMessages((prev) => [...prev, { role: "assistant", content: fullReply }]);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send");
-      setMessages((prev) => prev.slice(0, -1));
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to send");
+        // Remove the optimistic user bubble on real errors.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          return last?.role === "user" && last.content === msg ? prev.slice(0, -1) : prev;
+        });
+      }
+      // If stopRequestedRef is true, UI was already restored by stopGeneration() — skip.
     } finally {
-      setSending(false);
-      setStreamingText("");
-      setStreamingTools([]);
-      setStreamingAgentId(null);
+      // If user stopped generation, stopGeneration() already cleaned up the UI.
+      // Don't undo it or re-enable the send button.
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      // Always clean up refs
       streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
     }
   }
 
@@ -893,6 +997,24 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       {/* Composer — centered Claude/ChatGPT-style pill */}
       <div className="border-t border-slate-100 bg-linear-to-b from-white to-slate-50/40">
         <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3">
+          {/* Uploading progress chips */}
+          {uploadingFiles.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {uploadingFiles.map((u) => (
+                <div key={u.name} className="flex w-40 flex-col gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+                  <p className="truncate text-[11px] font-medium text-slate-700">{u.name}</p>
+                  <div className="h-1 w-full overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className="h-full rounded-full bg-brand transition-all duration-200"
+                      style={{ width: `${u.progress}%` }}
+                    />
+                  </div>
+                  <p className="text-right text-[10px] text-slate-400">{u.progress}%</p>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Attachment chips */}
           {documents.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
@@ -924,7 +1046,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                     <button
                       type="button"
                       onClick={() => void removeDocument(d.id)}
-                      className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition group-hover:opacity-100 hover:bg-red-600"
+                      className="absolute right-0.5 top-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition group-hover:opacity-100 hover:bg-red-600"
                       aria-label="Remove image"
                     >
                       <XIcon size={8} />
@@ -969,6 +1091,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               className="hidden"
               accept=".pdf,.docx,.txt,.md,.csv,image/png,image/jpeg,image/webp,image/gif"
               onChange={onFilePicked}
@@ -976,12 +1099,12 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
+              disabled={uploadingFiles.length > 0}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-brand-dark disabled:opacity-50"
               aria-label="Attach document"
-              title="Attach PDF, DOCX, TXT, CSV, or image"
+              title="Attach PDF, DOCX, TXT, CSV, or image (max 50 MB each)"
             >
-              {uploading ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
+              {uploadingFiles.length > 0 ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
             </button>
             <textarea
               ref={textareaRef}
@@ -1011,14 +1134,26 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               }
               className="max-h-60 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-2 text-[14px] text-slate-900 placeholder:text-slate-400 focus:outline-none"
             />
-            <button
-              type="submit"
-              disabled={!input.trim() || sending}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-brand disabled:bg-slate-200 disabled:text-slate-400"
-              aria-label="Send"
-            >
-              {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            </button>
+            {sending ? (
+              <button
+                type="button"
+                onClick={stopGeneration}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-500 text-white transition hover:bg-red-600 active:scale-95"
+                aria-label="Stop generation"
+                title="Stop generating"
+              >
+                <Square size={13} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-brand disabled:bg-slate-200 disabled:text-slate-400"
+                aria-label="Send"
+              >
+                <Send size={14} />
+              </button>
+            )}
           </form>
           <p className="mt-2 text-center text-[10.5px] text-slate-400">
             Zilo brings in a named specialist for the task (e.g. Elena for Meta Ads, Stephen for sales). You&apos;ll confirm anything sensitive before it runs.
@@ -1530,8 +1665,36 @@ function MessageBubble({
               </div>
             </div>
           ) : (
-            <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[14px] text-slate-900">
-              {msg.content}
+            <div className="space-y-1.5">
+              {msg.documents && msg.documents.length > 0 && (
+                <div className="flex flex-wrap justify-end gap-1.5">
+                  {msg.documents.map((d) => (
+                    d.kind === "image" ? (
+                      <div key={d.id} className="relative h-16 w-16 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+                        {d.public_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={d.public_url} alt={d.filename} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center bg-slate-100">
+                            <ImageIcon size={18} className="text-slate-400" />
+                          </div>
+                        )}
+                        <div className="absolute inset-x-0 bottom-0 bg-black/50 px-1 py-0.5">
+                          <p className="truncate text-[8px] font-medium text-white">{d.filename}</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={d.id} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-700 shadow-sm">
+                        <FileText size={11} className="text-brand" />
+                        <span className="max-w-[160px] truncate">{d.filename}</span>
+                      </div>
+                    )
+                  ))}
+                </div>
+              )}
+              <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[14px] text-slate-900">
+                {msg.content}
+              </div>
             </div>
           )}
           <div className="flex justify-end">

@@ -2426,7 +2426,7 @@ function SeoPageInner() {
           </div>
         </section>
 
-        {showQuickStart && summary && (summary.total_posts ?? 0) === 0 && (summary.total_audits ?? 0) === 0 && (
+        {showQuickStart && summary && tab !== "hub" && (summary.total_posts ?? 0) === 0 && (summary.total_audits ?? 0) === 0 && (
           <div className="relative mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3.5 shadow-sm sm:px-5">
             <button
               type="button"
