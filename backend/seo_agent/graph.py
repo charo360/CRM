@@ -17,11 +17,10 @@ from __future__ import annotations
 import os, logging
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 
 from .tools import SEO_TOOLS
 
@@ -155,13 +154,39 @@ def build_seo_graph():
             return "tools"
         return END
 
-    # ── Tool node (LangGraph built-in, passes config to tools automatically) ──
-    tool_node = ToolNode(SEO_TOOLS)
+    # ── Tool node — custom executor that explicitly passes config to every tool ─
+    # LangGraph's prebuilt ToolNode doesn't reliably propagate config (db,
+    # user_id) across all langgraph versions, so we execute tools ourselves.
+    _tool_map = {t.name: t for t in SEO_TOOLS}
+
+    async def tool_executor_node(state: SEOAgentState, config: RunnableConfig):
+        last = state["messages"][-1]
+        tool_messages = []
+        for tc in getattr(last, "tool_calls", []):
+            tool = _tool_map.get(tc["name"])
+            if tool is None:
+                tool_messages.append(ToolMessage(
+                    content=f"Unknown tool: {tc['name']}",
+                    tool_call_id=tc["id"],
+                    name=tc["name"],
+                ))
+                continue
+            try:
+                result = await tool.ainvoke(tc.get("args") or {}, config=config)
+            except Exception as exc:
+                logger.warning("[seo_agent] tool %s error: %s", tc["name"], exc)
+                result = f"Tool error: {exc}"
+            tool_messages.append(ToolMessage(
+                content=str(result),
+                tool_call_id=tc["id"],
+                name=tc["name"],
+            ))
+        return {"messages": tool_messages}
 
     # ── Assemble graph ────────────────────────────────────────────────────────
     graph = StateGraph(SEOAgentState)
     graph.add_node("agent", agent_node)
-    graph.add_node("tools", tool_node)
+    graph.add_node("tools", tool_executor_node)
     graph.set_entry_point("agent")
     graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
     graph.add_edge("tools", "agent")
