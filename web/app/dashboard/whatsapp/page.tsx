@@ -61,7 +61,7 @@ export default function WhatsAppPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
+    <div className="p-6 w-full max--4xl mx-auto space-y-6">
       {showQr && (
         <WhatsAppQrModal
           onConnected={() => { setShowQr(false); void loadStatus(); }}
