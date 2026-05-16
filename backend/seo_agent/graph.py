@@ -154,7 +154,10 @@ TOOL RULES:
   * If they have published content, reference it: "I see you've written about [topics]"
   * If you know their location, use it: "Since you're in [location], let's focus on local SEO"
 - If you need a URL or domain/credentials that's NOT in business context, ask for ONE thing at a time.
-- Never ask for info already in the conversation or available in business context."""
+- Never ask for info already in the conversation or available in business context.
+- **CACHE AWARENESS**: Results may come from cache (shown with a "Cached · Xd ago" note). \
+  This is normal and saves the user money. When the user says "refresh", "get live data", or \
+  "update", call clear_seo_cache (with specific tool_name if possible) then re-run the lookup."""
 
 # ── LLM factory (picks available provider) ────────────────────────────────────
 

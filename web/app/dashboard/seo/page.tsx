@@ -4,6 +4,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import BlogRenderer from "@/components/seo/BlogRenderer";
 import {
   seoApi,
+  seoAgentApi,
   blogApi,
   type SeoAudit,
   type SeoAuditIssue,
@@ -13,6 +14,7 @@ import {
   type ContentCalendarItem,
   type SeoSummary,
   type SeoBusinessContext,
+  type SeoCacheStats,
 } from "@/lib/api";
 import OnboardingChecklist from "@/components/seo/OnboardingChecklist";
 import SuccessMetrics from "@/components/seo/SuccessMetrics";
@@ -195,6 +197,155 @@ function BusinessSnapshotBar({ profile }: { profile: SeoBusinessContext | null }
   );
 }
 
+// ── Data Intelligence Panel ───────────────────────────────────────────────────
+
+const TOOL_LABELS: Record<string, string> = {
+  get_keyword_ideas: "Keyword Ideas",
+  get_keyword_search_volume: "Search Volumes",
+  check_serp_ranking: "SERP Rankings",
+  get_competitor_keywords: "Competitor Keywords",
+  veb_keyword_research: "Keyword Research",
+  veb_keyword_density: "Keyword Density",
+  veb_page_analysis: "Page Analysis",
+  veb_ai_visibility_audit: "AI Visibility",
+  veb_speed_check: "Speed Tests",
+  veb_backlinks: "Backlinks",
+  veb_top_search_keywords: "Top Keywords",
+  veb_ai_crawler_check: "AI Crawler Check",
+  veb_google_serp: "Google SERP",
+  veb_youtube_research: "YouTube Research",
+  veb_instagram_hashtags: "Instagram Hashtags",
+  veb_domain_data: "Domain Data",
+  audit_website: "Website Audit",
+};
+
+function DataIntelligencePanel() {
+  const [stats, setStats] = useState<SeoCacheStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [clearing, setClearing] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    seoAgentApi.cacheStats()
+      .then(setStats)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleClearAll = async () => {
+    if (!confirm("Clear all cached SEO data? Next searches will call live APIs.")) return;
+    setClearing(true);
+    try {
+      await seoAgentApi.clearCache();
+      load();
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-100 text-emerald-700 text-xs">⚡</span>
+            Data Intelligence Cache
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Searches are stored locally — reused across your account to save API costs
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={load}
+            disabled={loading}
+            className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+          >
+            {loading ? "…" : "Refresh"}
+          </button>
+          <button
+            onClick={handleClearAll}
+            disabled={clearing || loading}
+            className="px-3 py-1.5 text-xs border border-red-100 rounded-lg text-red-600 hover:bg-red-50 disabled:opacity-40"
+          >
+            {clearing ? "Clearing…" : "Clear all"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-slate-400 text-sm">Loading cache stats…</p>
+      ) : !stats ? (
+        <p className="text-slate-400 text-sm">Could not load cache stats.</p>
+      ) : (
+        <>
+          {/* Top stat cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+            <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600">Cached Queries</p>
+              <p className="text-2xl font-bold text-emerald-700 mt-0.5">{stats.valid_cached}</p>
+              <p className="text-[10px] text-emerald-500">{stats.expired_cached} expired</p>
+            </div>
+            <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600">API Calls Saved</p>
+              <p className="text-2xl font-bold text-blue-700 mt-0.5">{stats.api_calls_saved}</p>
+              <p className="text-[10px] text-blue-500">cache hits</p>
+            </div>
+            <div className="bg-purple-50 rounded-lg p-3 border border-purple-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-purple-600">Data Types</p>
+              <p className="text-2xl font-bold text-purple-700 mt-0.5">{stats.by_tool.length}</p>
+              <p className="text-[10px] text-purple-500">tools with cache</p>
+            </div>
+            <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">Total Stored</p>
+              <p className="text-2xl font-bold text-amber-700 mt-0.5">{stats.total_cached}</p>
+              <p className="text-[10px] text-amber-500">all entries</p>
+            </div>
+          </div>
+
+          {/* Per-tool breakdown */}
+          {stats.by_tool.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Breakdown by data type</p>
+              <div className="divide-y divide-slate-100">
+                {stats.by_tool.map((t) => (
+                  <div key={t.tool} className="flex items-center justify-between py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                      <span className="text-sm text-slate-700 truncate">
+                        {TOOL_LABELS[t.tool] ?? t.tool}
+                      </span>
+                      <span className="text-[10px] text-slate-400 flex-shrink-0">
+                        {t.ttl_days}d TTL
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-4 text-right flex-shrink-0">
+                      <span className="text-xs text-slate-500">{t.cached} stored</span>
+                      {t.hits > 0 && (
+                        <span className="text-xs font-semibold text-blue-600">
+                          {t.hits} saved
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {stats.valid_cached === 0 && (
+            <p className="text-slate-400 text-sm text-center py-4">
+              No cached data yet — use the SEO Coach to run searches and they'll be stored here automatically.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 
 type SeoMemory = {
@@ -238,6 +389,9 @@ function OverviewTab({ summary, onJump, profile }: { summary: SeoSummary | null;
 
   return (
     <div className="space-y-6">
+      {/* Data Intelligence Cache */}
+      <DataIntelligencePanel />
+
       {/* Success Metrics Dashboard */}
       <SuccessMetrics />
 

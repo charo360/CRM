@@ -2420,6 +2420,24 @@ export const blogApi = {
     api.post<{ ok: boolean; updated: number; checked: number; message?: string }>("/blog/keyword-tracker/enrich-volumes", {}),
 };
 
+export interface SeoCacheToolStat {
+  tool: string;
+  cached: number;
+  hits: number;
+  ttl_days: number;
+}
+
+export interface SeoCacheStats {
+  total_cached: number;
+  valid_cached: number;
+  expired_cached: number;
+  api_calls_saved: number;
+  oldest_entry: string | null;
+  newest_entry: string | null;
+  by_tool: SeoCacheToolStat[];
+  error?: string;
+}
+
 export const seoAgentApi = {
   chat: (message: string, conversation_id?: string, history?: { role: string; content: string }[]) =>
     api.post<SeoAgentChatResponse>("/seo-agent/chat", {
@@ -2444,4 +2462,11 @@ export const seoAgentApi = {
       agent_prompt,
       conversation_id: conversation_id ?? null,
     }),
+
+  cacheStats: () => api.get<SeoCacheStats>("/seo-agent/cache/stats"),
+
+  clearCache: (tool = "") =>
+    api.delete<{ ok: boolean; deleted: number }>(
+      `/seo-agent/cache${tool ? `?tool=${encodeURIComponent(tool)}` : ""}`
+    ),
 };

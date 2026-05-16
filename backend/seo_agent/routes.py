@@ -466,6 +466,68 @@ def make_seo_agent_router(db, user_dep):
 
         return SEOChatResponse(reply=reply, conversation_id=conv_id, tool_steps=tool_steps)
 
+    # ── GET /seo-agent/cache/stats ────────────────────────────────────────────
+
+    @router.get("/cache/stats")
+    async def cache_stats(_user=Depends(user_dep)):
+        now = datetime.utcnow()
+        try:
+            total = await db.seo_cache.count_documents({})
+            valid = await db.seo_cache.count_documents({"expires_at": {"$gt": now}})
+
+            agg = await db.seo_cache.aggregate([
+                {"$group": {
+                    "_id": None,
+                    "total_hits": {"$sum": "$hit_count"},
+                    "oldest": {"$min": "$created_at"},
+                    "newest": {"$max": "$created_at"},
+                }}
+            ]).to_list(1)
+            totals = agg[0] if agg else {}
+
+            by_tool = await db.seo_cache.aggregate([
+                {"$match": {"expires_at": {"$gt": now}}},
+                {"$group": {
+                    "_id": "$tool",
+                    "count": {"$sum": 1},
+                    "hits": {"$sum": "$hit_count"},
+                    "ttl_days": {"$first": "$ttl_days"},
+                }},
+                {"$sort": {"hits": -1}},
+            ]).to_list(50)
+
+            return {
+                "total_cached": total,
+                "valid_cached": valid,
+                "expired_cached": total - valid,
+                "api_calls_saved": totals.get("total_hits", 0),
+                "oldest_entry": totals.get("oldest").isoformat() if totals.get("oldest") else None,
+                "newest_entry": totals.get("newest").isoformat() if totals.get("newest") else None,
+                "by_tool": [
+                    {
+                        "tool": r["_id"],
+                        "cached": r["count"],
+                        "hits": r["hits"],
+                        "ttl_days": r.get("ttl_days", 0),
+                    }
+                    for r in by_tool
+                ],
+            }
+        except Exception as e:
+            return {"total_cached": 0, "valid_cached": 0, "expired_cached": 0,
+                    "api_calls_saved": 0, "by_tool": [], "error": str(e)}
+
+    # ── DELETE /seo-agent/cache ────────────────────────────────────────────────
+
+    @router.delete("/cache")
+    async def clear_cache(tool: str = "", _user=Depends(user_dep)):
+        try:
+            query = {"tool": tool} if tool else {}
+            result = await db.seo_cache.delete_many(query)
+            return {"ok": True, "deleted": result.deleted_count}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     # ── GET /seo-agent/status ─────────────────────────────────────────────────
 
     @router.get("/status")

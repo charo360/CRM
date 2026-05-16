@@ -5,7 +5,7 @@ db and user_id are injected via LangGraph RunnableConfig (primary)
 or via contextvars (fallback, set by the route handler before graph.ainvoke).
 """
 from __future__ import annotations
-import os, re, uuid, httpx, logging, contextvars as _cv
+import os, re, uuid, httpx, logging, hashlib, json, contextvars as _cv
 from datetime import datetime, timedelta
 from typing import Optional
 from langchain_core.tools import tool
@@ -38,6 +38,56 @@ def _get_db_and_user(config=None):
     if not user_id:
         user_id = _seo_user_id.get()
     return db, user_id
+
+
+# ── SEO Data Cache ─────────────────────────────────────────────────────────────
+
+def _seo_cache_key(tool: str, params: dict) -> str:
+    stable = json.dumps(dict(sorted(params.items())), default=str)
+    return hashlib.md5(f"{tool}:{stable}".encode()).hexdigest()
+
+
+async def _cache_get(tool: str, params: dict, ttl_days: int) -> str | None:
+    """Return cached result text if still fresh, else None."""
+    db = _seo_db.get()
+    if db is None:
+        return None
+    key = _seo_cache_key(tool, params)
+    try:
+        doc = await db.seo_cache.find_one({"_id": key, "expires_at": {"$gt": datetime.utcnow()}})
+        if doc:
+            await db.seo_cache.update_one({"_id": key}, {"$inc": {"hit_count": 1}})
+            age = datetime.utcnow() - doc.get("created_at", datetime.utcnow())
+            age_str = f"{age.days}d" if age.days >= 1 else f"{int(age.total_seconds() / 3600)}h"
+            return doc["result_text"] + f"\n\n_(Cached · {age_str} ago — say \"refresh\" to get live data)_"
+    except Exception:
+        pass
+    return None
+
+
+async def _cache_set(tool: str, params: dict, result_text: str, ttl_days: int) -> None:
+    """Store a successful result in the SEO cache collection."""
+    db = _seo_db.get()
+    if db is None:
+        return
+    key = _seo_cache_key(tool, params)
+    now = datetime.utcnow()
+    try:
+        await db.seo_cache.update_one(
+            {"_id": key},
+            {"$set": {
+                "tool": tool,
+                "params": params,
+                "result_text": result_text,
+                "created_at": now,
+                "expires_at": now + timedelta(days=ttl_days),
+                "ttl_days": ttl_days,
+                "hit_count": 0,
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 # ── Shared AI caller (reuses existing env vars) ───────────────────────────────
@@ -791,6 +841,10 @@ async def get_keyword_search_volume(keywords: str, location_code: int = 2404, la
     """
     try:
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()][:10]
+        _cp = {"keywords": sorted(kw_list), "location_code": location_code, "language_code": language_code}
+        _cached = await _cache_get("get_keyword_search_volume", _cp, 30)
+        if _cached:
+            return _cached
         data = await _dfs_post(
             "keywords_data/google_ads/search_volume/live",
             [{"keywords": kw_list, "location_code": location_code, "language_code": language_code}],
@@ -822,7 +876,9 @@ async def get_keyword_search_volume(keywords: str, location_code: int = 2404, la
 
         total = sum((r.get("search_volume") or 0) for r in results)
         lines.append(f"\nTotal combined searches/month: {total:,}")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("get_keyword_search_volume", _cp, result, 30)
+        return result
 
     except RuntimeError as e:
         return f"DataForSEO unavailable: {e}. Use research_keywords tool as fallback."
@@ -844,6 +900,10 @@ async def get_keyword_ideas(seed_keyword: str, location_code: int = 2404, langua
         limit: Number of keyword ideas to return (max 50, default 20).
     """
     try:
+        _cp = {"seed_keyword": seed_keyword, "location_code": location_code, "language_code": language_code}
+        _cached = await _cache_get("get_keyword_ideas", _cp, 30)
+        if _cached:
+            return _cached
         data = await _dfs_post(
             "dataforseo_labs/google/keyword_ideas/live",
             [{
@@ -865,7 +925,6 @@ async def get_keyword_ideas(seed_keyword: str, location_code: int = 2404, langua
         if not items:
             return f"No keyword ideas found for '{seed_keyword}'. Try a broader term."
 
-        # Sort by search volume descending (client-side)
         items.sort(key=lambda x: (x.get("keyword_info") or {}).get("search_volume") or 0, reverse=True)
 
         lines = [f"Keyword Ideas for: {seed_keyword}", f"({len(items)} results)", ""]
@@ -880,12 +939,12 @@ async def get_keyword_ideas(seed_keyword: str, location_code: int = 2404, langua
             vol = ki.get("search_volume") or 0
             diff = (item.get("keyword_properties") or {}).get("keyword_difficulty") or 0
             intent = (item.get("search_intent_info") or {}).get("main_intent", "informational")
-
             diff_label = "Easy" if diff < 30 else "Medium" if diff < 60 else "Hard"
-            vol_str = f"{vol:,}"
-            lines.append(f"{kw:<45} {vol_str:>10} {diff_label:>12} {intent}")
+            lines.append(f"{kw:<45} {vol:>10,} {diff_label:>12} {intent}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("get_keyword_ideas", _cp, result, 30)
+        return result
 
     except RuntimeError as e:
         return f"DataForSEO unavailable: {e}. Use research_keywords tool as fallback."
@@ -907,6 +966,10 @@ async def check_serp_ranking(keyword: str, domain: str, location_code: int = 240
         language_code: Language code, default 'en'.
     """
     try:
+        _cp = {"keyword": keyword, "domain": domain, "location_code": location_code, "language_code": language_code}
+        _cached = await _cache_get("check_serp_ranking", _cp, 3)
+        if _cached:
+            return _cached
         data = await _dfs_post(
             "serp/google/organic/live/advanced",
             [{
@@ -928,7 +991,6 @@ async def check_serp_ranking(keyword: str, domain: str, location_code: int = 240
 
         items = (tasks[0].get("result") or [{}])[0].get("items") or []
 
-        # Clean domain for matching
         clean_domain = domain.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
 
         found_position = None
@@ -993,7 +1055,9 @@ async def check_serp_ranking(keyword: str, domain: str, location_code: int = 240
             lines.append(f"\nTop 10 results for this keyword:")
             lines.extend(top_results[:5])
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("check_serp_ranking", _cp, result, 3)
+        return result
 
     except RuntimeError as e:
         return str(e)
@@ -1015,10 +1079,15 @@ async def get_competitor_keywords(competitor_domain: str, location_code: int = 2
         limit: Number of keywords to return (max 50).
     """
     try:
+        clean_cd = competitor_domain.replace("https://", "").replace("http://", "").strip("/")
+        _cp = {"competitor_domain": clean_cd, "location_code": location_code, "language_code": language_code}
+        _cached = await _cache_get("get_competitor_keywords", _cp, 7)
+        if _cached:
+            return _cached
         data = await _dfs_post(
             "dataforseo_labs/google/ranked_keywords/live",
             [{
-                "target": competitor_domain.replace("https://", "").replace("http://", "").strip("/"),
+                "target": clean_cd,
                 "location_code": location_code,
                 "language_code": language_code,
                 "limit": min(limit, 50),
@@ -1057,7 +1126,9 @@ async def get_competitor_keywords(competitor_domain: str, location_code: int = 2
 
         lines.append(f"\nShowing {len(items)} keywords where {competitor_domain} ranks.")
         lines.append("Consider writing content targeting these keywords to compete.")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("get_competitor_keywords", _cp, result, 7)
+        return result
 
     except RuntimeError as e:
         return str(e)
@@ -1234,6 +1305,10 @@ async def veb_keyword_research(keyword: str, country: str = "KE", mode: str = "r
         mode: 'related' for keyword ideas list (default), 'single' for one keyword detail.
     """
     try:
+        _cp = {"keyword": keyword, "country": country, "mode": mode}
+        _cached = await _cache_get("veb_keyword_research", _cp, 30)
+        if _cached:
+            return _cached
         if mode == "single":
             data = await _veb_get("/seo/singlekeyword", {"keyword": keyword, "country": country})
             vol = data.get("vol", "N/A")
@@ -1267,7 +1342,9 @@ async def veb_keyword_research(keyword: str, country: str = "KE", mode: str = "r
             cpc = str(kw.get("cpc", "?"))
             comp = str(kw.get("competition", "?"))
             lines.append(f"{text:<45} {vol:>10} {cpc:>8} {comp:>14}")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_keyword_research", _cp, result, 30)
+        return result
 
     except RuntimeError as e:
         return str(e)
@@ -1286,6 +1363,10 @@ async def veb_keyword_density(keyword: str, website: str) -> str:
         website: Domain or URL of the page (e.g. 'example.com' or 'example.com/page').
     """
     try:
+        _cp = {"keyword": keyword, "website": website}
+        _cached = await _cache_get("veb_keyword_density", _cp, 7)
+        if _cached:
+            return _cached
         data = await _veb_get("/seo/keyworddensity", {"keyword": keyword, "website": website})
         title = data.get("title", "")
         desc = data.get("description", "")
@@ -1319,7 +1400,9 @@ async def veb_keyword_density(keyword: str, website: str) -> str:
             for w in words[:10]:
                 lines.append(f"  {str(w.get('word','')):<30} {w.get('occurrences', w.get('count', '?'))} occurrences")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_keyword_density", _cp, result, 7)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1340,6 +1423,10 @@ async def veb_ai_visibility_audit(website: str, config: RunnableConfig) -> str:
     try:
         if not website.startswith("http"):
             website = "https://" + website
+        _cp = {"website": website}
+        _cached = await _cache_get("veb_ai_visibility_audit", _cp, 7)
+        if _cached:
+            return _cached
         data = await _veb_get("/api/seo/ai-visibility-checker/v2", {"website": website})
 
         ai_score = data.get("ai_score", {})
@@ -1390,7 +1477,9 @@ async def veb_ai_visibility_audit(website: str, config: RunnableConfig) -> str:
         except Exception:
             pass
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_ai_visibility_audit", _cp, result, 7)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1411,6 +1500,10 @@ async def veb_page_analysis(website: str, config: RunnableConfig) -> str:
         if not website.startswith("http"):
             website = "https://" + website
         clean = website.replace("https://", "").replace("http://", "")
+        _cp = {"website": website}
+        _cached = await _cache_get("veb_page_analysis", _cp, 7)
+        if _cached:
+            return _cached
         data = await _veb_get("/seo/analyze/v2", {"website": clean})
 
         summary = data.get("summary", {})
@@ -1463,7 +1556,9 @@ async def veb_page_analysis(website: str, config: RunnableConfig) -> str:
         except Exception:
             pass
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_page_analysis", _cp, result, 7)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1481,6 +1576,10 @@ async def veb_domain_data(domain: str) -> str:
     """
     try:
         domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        _cp = {"domain": domain}
+        _cached = await _cache_get("veb_domain_data", _cp, 30)
+        if _cached:
+            return _cached
         data = await _veb_get("/api/seo/domainnamedata/v2", {"website": domain})
 
         reg = data.get("registration", {})
@@ -1505,7 +1604,9 @@ async def veb_domain_data(domain: str) -> str:
                 if recs:
                     lines.append(f"  {rtype}: {', '.join(str(r) for r in (recs if isinstance(recs, list) else [recs])[:3])}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_domain_data", _cp, result, 30)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1524,6 +1625,10 @@ async def veb_speed_check(url: str) -> str:
     try:
         if not url.startswith("http"):
             url = "https://" + url
+        _cp = {"url": url}
+        _cached = await _cache_get("veb_speed_check", _cp, 7)
+        if _cached:
+            return _cached
         data = await _veb_get("/seo/loadingspeeddata/v2", {"website": url})
 
         summary = data.get("summary", {})
@@ -1545,7 +1650,9 @@ async def veb_speed_check(url: str) -> str:
                 grade = val.get("grade", val.get("score", val)) if isinstance(val, dict) else val
                 lines.append(f"  {label}: {grade}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_speed_check", _cp, result, 7)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1565,6 +1672,10 @@ async def veb_backlinks(domain: str, analysis_type: str = "all") -> str:
     """
     try:
         domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        _cp = {"domain": domain, "analysis_type": analysis_type}
+        _cached = await _cache_get("veb_backlinks", _cp, 14)
+        if _cached:
+            return _cached
         endpoint_map = {
             "all": "/seo/backlinkdata",
             "new": "/seo/newbacklinks",
@@ -1621,7 +1732,9 @@ async def veb_backlinks(domain: str, analysis_type: str = "all") -> str:
                 lines.append(f"  Anchor: {anchor}   DR: {dr}")
                 lines.append("")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_backlinks", _cp, result, 14)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1640,6 +1753,10 @@ async def veb_top_search_keywords(domain: str, config: RunnableConfig) -> str:
     """
     try:
         domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        _cp = {"domain": domain}
+        _cached = await _cache_get("veb_top_search_keywords", _cp, 7)
+        if _cached:
+            return _cached
         data = await _veb_get("/seo/topsearchkeywords", {"website": domain})
         keywords = data.get("keywords", [])
         if not keywords:
@@ -1674,7 +1791,9 @@ async def veb_top_search_keywords(domain: str, config: RunnableConfig) -> str:
         except Exception:
             pass
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_top_search_keywords", _cp, result, 7)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1692,6 +1811,10 @@ async def veb_ai_crawler_check(domain: str) -> str:
     """
     try:
         domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        _cp = {"domain": domain}
+        _cached = await _cache_get("veb_ai_crawler_check", _cp, 7)
+        if _cached:
+            return _cached
         data = await _veb_get("/api/seo/aiseochecker", {"website": domain})
 
         ai_access = data.get("ai_access", {})
@@ -1718,7 +1841,9 @@ async def veb_ai_crawler_check(domain: str) -> str:
             for s in suggestions[:5]:
                 lines.append(f"  • {s}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_ai_crawler_check", _cp, result, 7)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1736,6 +1861,10 @@ async def veb_google_serp(keyword: str, country: str = "KE") -> str:
         country: 2-letter ISO country code (KE=Kenya, NG=Nigeria, US=USA, GB=UK). Default KE.
     """
     try:
+        _cp = {"keyword": keyword, "country": country}
+        _cached = await _cache_get("veb_google_serp", _cp, 3)
+        if _cached:
+            return _cached
         data = await _veb_get("/seo/google_serp", {"keyword": keyword, "country": country})
         results = data.get("results", [])
         if not results:
@@ -1751,7 +1880,9 @@ async def veb_google_serp(keyword: str, country: str = "KE") -> str:
             dr = r.get("domain_inlink_rank", "?")
             lines.append(f"{str(rank):>3}  {domain:<35} {title:<45} {str(dr):>6}")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_google_serp", _cp, result, 3)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1768,6 +1899,10 @@ async def veb_youtube_research(keyword: str) -> str:
         keyword: Topic or keyword to research for YouTube.
     """
     try:
+        _cp = {"keyword": keyword}
+        _cached = await _cache_get("veb_youtube_research", _cp, 14)
+        if _cached:
+            return _cached
         import asyncio as _asyncio
         kw_data, tag_data = await _asyncio.gather(
             _veb_get("/youtube/keywordresearch", {"keyword": keyword}),
@@ -1804,7 +1939,9 @@ async def veb_youtube_research(keyword: str) -> str:
             clean_tags = [(f"#{t}" if not str(t).startswith("#") else t) for t in tags[:20]]
             lines += [f"Suggested Tags ({len(tags)}):", " ".join(clean_tags)]
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_youtube_research", _cp, result, 14)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
@@ -1932,6 +2069,10 @@ async def veb_instagram_hashtags(keyword: str) -> str:
         keyword: Topic or niche to find hashtags for.
     """
     try:
+        _cp = {"keyword": keyword}
+        _cached = await _cache_get("veb_instagram_hashtags", _cp, 7)
+        if _cached:
+            return _cached
         data = await _veb_get("/tools/instagramhashtags", {"keyword": keyword})
         hashtags = data if isinstance(data, list) else data.get("hashtags", [])
         if not hashtags:
@@ -1947,11 +2088,37 @@ async def veb_instagram_hashtags(keyword: str) -> str:
 
         lines += ["", "Copy-paste set:"]
         lines.append(" ".join(str(h.get("keyword", "")) for h in hashtags[:15]))
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        await _cache_set("veb_instagram_hashtags", _cp, result, 7)
+        return result
     except RuntimeError as e:
         return str(e)
     except Exception as e:
         return f"Instagram hashtag lookup failed: {e}"
+
+
+@tool
+async def clear_seo_cache(tool_name: str = "") -> str:
+    """
+    Clear cached SEO data so the next lookup fetches fresh live data.
+    Call this when the user says 'refresh', 'get live data', 'update my data', or 'clear cache'.
+
+    Args:
+        tool_name: Optional — name of specific tool to clear
+            (e.g. 'get_keyword_ideas', 'veb_page_analysis', 'veb_backlinks').
+            Leave blank to clear ALL cached data.
+    """
+    db = _seo_db.get()
+    if db is None:
+        return "Cannot clear cache — no database connection."
+    try:
+        query = {"tool": tool_name} if tool_name else {}
+        result = await db.seo_cache.delete_many(query)
+        if tool_name:
+            return f"Cleared {result.deleted_count} cached entries for '{tool_name}'. I'll fetch fresh live data next time."
+        return f"Cleared all {result.deleted_count} cached entries. All next lookups will fetch fresh live data."
+    except Exception as e:
+        return f"Cache clear failed: {e}"
 
 
 # ── Tool registry exported to graph ──────────────────────────────────────────
@@ -1990,4 +2157,6 @@ SEO_TOOLS = [
     get_seo_summary,
     add_keywords_to_tracker,
     web_search,
+    # ── Cache management ──
+    clear_seo_cache,
 ]
