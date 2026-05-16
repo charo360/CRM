@@ -213,6 +213,10 @@ class SEOChatResponse(BaseModel):
     conversation_id: str
     tool_steps: List[Dict[str, Any]] = []   # what tools ran and their output snippets
 
+class ExecuteActionRequest(BaseModel):
+    agent_prompt: Optional[str] = None
+    conversation_id: Optional[str] = None
+
 
 def _tid(user): return user.get("business_id", user["_id"])
 
@@ -398,10 +402,6 @@ def make_seo_agent_router(db, user_dep):
     # ── POST /seo-agent/execute-action ────────────────────────────────────────
     # One-click execution of a recommended action from the brief.
     # Runs the action through the full LangGraph agent and returns the result.
-
-    class ExecuteActionRequest(BaseModel):
-        agent_prompt: Optional[str] = None
-        conversation_id: Optional[str] = None
 
     @router.post("/execute-action")
     async def execute_action(payload: ExecuteActionRequest, user=Depends(user_dep)):

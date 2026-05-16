@@ -33,7 +33,11 @@ def _get_db_and_user(config=None):
             user_id = config["configurable"].get("user_id")
         except (KeyError, TypeError, AttributeError):
             pass
-    return db or _seo_db.get(), user_id or _seo_user_id.get()
+    if db is None:
+        db = _seo_db.get()
+    if not user_id:
+        user_id = _seo_user_id.get()
+    return db, user_id
 
 
 # ── Shared AI caller (reuses existing env vars) ───────────────────────────────
@@ -497,7 +501,7 @@ async def list_saved_posts(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Could not access posts — no database connection."
 
         docs = await db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(20).to_list(20)
@@ -541,7 +545,7 @@ async def publish_post_to_platform(
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Cannot publish — no database connection."
 
         doc = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": user_id})
@@ -610,7 +614,7 @@ async def get_seo_summary(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "No database connection available."
 
         total = await db.seo_blog_posts.count_documents({"user_id": user_id})
@@ -636,15 +640,15 @@ async def get_seo_summary(config: RunnableConfig) -> str:
 
 
 @tool
-async def get_business_context() -> str:
+async def get_business_context(config: RunnableConfig) -> str:
     """
     Fetch comprehensive business context including profile, performance data, SEO memory,
     and content history. ALWAYS call this first before giving any SEO advice.
     """
     try:
-        db = _seo_db.get()
-        user_id = _seo_user_id.get()
-        if not db or not user_id:
+        db, user_id = _get_db_and_user(config)
+        logger.info("[get_business_context] db=%s user_id=%s", "OK" if db is not None else "NONE", user_id or "NONE")
+        if db is None or not user_id:
             return "No business data available — context not set."
 
         import asyncio as _asyncio
@@ -666,6 +670,7 @@ async def get_business_context() -> str:
         if not user:
             user = await db.users.find_one({"business_id": user_id})
 
+        logger.info("[get_business_context] user_found=%s", user is not None)
         business_name = (user or {}).get("business_name", "your business")
         settings = (user or {}).get("settings", {})
         bk = (user or {}).get("business_knowledge", {})
@@ -743,6 +748,7 @@ async def get_business_context() -> str:
 
         return "\n".join(lines)
     except Exception as e:
+        logger.error("[get_business_context] exception: %s", e, exc_info=True)
         return f"Could not fetch business info: {e}"
 
 
@@ -761,6 +767,8 @@ async def _dfs_post(endpoint: str, payload: list) -> dict:
             headers=_dfs_headers(),
             json=payload,
         )
+    if resp.status_code == 402:
+        raise RuntimeError("DataForSEO account has no credits (402 Payment Required). Add credits at dataforseo.com or use research_keywords as fallback.")
     resp.raise_for_status()
     return resp.json()
 
@@ -789,7 +797,11 @@ async def get_keyword_search_volume(keywords: str, location_code: int = 2404, la
         )
         tasks = data.get("tasks", [])
         if not tasks or tasks[0].get("status_code") != 20000:
-            return f"DataForSEO error: {tasks[0].get('status_message', 'unknown') if tasks else 'no response'}"
+            sc = tasks[0].get("status_code", 0) if tasks else 0
+            msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
+            if sc == 40200:
+                raise RuntimeError("DataForSEO account has no credits. Use research_keywords as fallback.")
+            return f"DataForSEO error: {msg}. Use research_keywords tool as fallback."
 
         results = tasks[0].get("result", []) or []
         if not results:
@@ -813,9 +825,9 @@ async def get_keyword_search_volume(keywords: str, location_code: int = 2404, la
         return "\n".join(lines)
 
     except RuntimeError as e:
-        return str(e)
+        return f"DataForSEO unavailable: {e}. Use research_keywords tool as fallback."
     except Exception as e:
-        return f"Search volume lookup failed: {e}"
+        return f"Search volume lookup failed: {e}. Use research_keywords tool as fallback."
 
 
 @tool
@@ -843,8 +855,11 @@ async def get_keyword_ideas(seed_keyword: str, location_code: int = 2404, langua
         )
         tasks = data.get("tasks", [])
         if not tasks or tasks[0].get("status_code") != 20000:
+            sc = tasks[0].get("status_code", 0) if tasks else 0
             msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
-            return f"DataForSEO error: {msg}"
+            if sc == 40200:
+                raise RuntimeError("DataForSEO account has no credits. Use research_keywords as fallback.")
+            return f"DataForSEO error: {msg}. Use research_keywords tool as fallback."
 
         items = (tasks[0].get("result") or [{}])[0].get("items") or []
         if not items:
@@ -873,9 +888,9 @@ async def get_keyword_ideas(seed_keyword: str, location_code: int = 2404, langua
         return "\n".join(lines)
 
     except RuntimeError as e:
-        return str(e)
+        return f"DataForSEO unavailable: {e}. Use research_keywords tool as fallback."
     except Exception as e:
-        return f"Keyword ideas lookup failed: {e}"
+        return f"Keyword ideas lookup failed: {e}. Use research_keywords tool as fallback."
 
 
 @tool
@@ -905,8 +920,11 @@ async def check_serp_ranking(keyword: str, domain: str, location_code: int = 240
         )
         tasks = data.get("tasks", [])
         if not tasks or tasks[0].get("status_code") != 20000:
+            sc = tasks[0].get("status_code", 0) if tasks else 0
             msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
-            return f"DataForSEO error: {msg}"
+            if sc == 40200:
+                raise RuntimeError("DataForSEO account has no credits. Use research_keywords as fallback.")
+            return f"DataForSEO error: {msg}. Use research_keywords tool as fallback."
 
         items = (tasks[0].get("result") or [{}])[0].get("items") or []
 
@@ -1010,8 +1028,11 @@ async def get_competitor_keywords(competitor_domain: str, location_code: int = 2
         )
         tasks = data.get("tasks", [])
         if not tasks or tasks[0].get("status_code") != 20000:
+            sc = tasks[0].get("status_code", 0) if tasks else 0
             msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
-            return f"DataForSEO error: {msg}"
+            if sc == 40200:
+                raise RuntimeError("DataForSEO account has no credits. Use research_keywords as fallback.")
+            return f"DataForSEO error: {msg}. Use research_keywords tool as fallback."
 
         items = (tasks[0].get("result") or [{}])[0].get("items") or []
         if not items:
@@ -1062,7 +1083,7 @@ async def add_keywords_to_tracker(
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Cannot save keywords — no database connection."
 
         lines = [l.strip() for l in keywords_csv.strip().splitlines() if l.strip() and "|" in l]
@@ -1156,16 +1177,811 @@ async def web_search(
     return f"Web search unavailable for: {query}"
 
 
+# ── VebAPI helpers ────────────────────────────────────────────────────────────
+
+VEBAPI_BASE = "https://vebapi.com"
+
+
+def _veb_headers() -> dict:
+    key = os.environ.get("VEBAPI_KEY", "")
+    if not key:
+        raise RuntimeError("VEBAPI_KEY is not set. Add it to your environment variables.")
+    return {"X-API-KEY": key}
+
+
+async def _veb_get(endpoint: str, params: dict) -> dict:
+    async with httpx.AsyncClient(timeout=30) as hc:
+        resp = await hc.get(
+            f"{VEBAPI_BASE}{endpoint}",
+            headers=_veb_headers(),
+            params={k: v for k, v in params.items() if v is not None},
+        )
+    if resp.status_code == 401:
+        raise RuntimeError("VebAPI: Invalid or missing API key.")
+    if resp.status_code == 402:
+        raise RuntimeError("VebAPI: No credits remaining. Add credits at vebapi.com.")
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def _veb_post(endpoint: str, body: dict) -> dict:
+    async with httpx.AsyncClient(timeout=60) as hc:
+        resp = await hc.post(
+            f"{VEBAPI_BASE}{endpoint}",
+            headers={**_veb_headers(), "Content-Type": "application/json"},
+            json=body,
+        )
+    if resp.status_code == 401:
+        raise RuntimeError("VebAPI: Invalid or missing API key.")
+    if resp.status_code == 402:
+        raise RuntimeError("VebAPI: No credits remaining. Add credits at vebapi.com.")
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ── VebAPI Tools ─────────────────────────────────────────────────────────────
+
+@tool
+async def veb_keyword_research(keyword: str, country: str = "KE", mode: str = "related") -> str:
+    """
+    Research keywords using VebAPI. Returns related keyword ideas with volume and CPC data.
+    Use mode='related' for multiple keyword ideas, mode='single' for one keyword's full stats.
+    Use this as primary keyword research when DataForSEO is unavailable or as a supplementary source.
+
+    Args:
+        keyword: The keyword or topic to research.
+        country: 2-letter ISO country code (KE=Kenya, NG=Nigeria, US=USA, GB=UK). Default KE.
+        mode: 'related' for keyword ideas list (default), 'single' for one keyword detail.
+    """
+    try:
+        if mode == "single":
+            data = await _veb_get("/seo/singlekeyword", {"keyword": keyword, "country": country})
+            vol = data.get("vol", "N/A")
+            cpc = data.get("cpc", "N/A")
+            comp = data.get("competition", "N/A")
+            score = data.get("score", "N/A")
+            return "\n".join([
+                f"Keyword: {keyword}",
+                f"Monthly Searches: {vol}",
+                f"CPC: ${cpc}",
+                f"Competition: {comp}",
+                f"Score: {score}/100",
+            ])
+
+        data = await _veb_get("/seo/keywordresearch", {"keyword": keyword, "country": country})
+        keywords = data if isinstance(data, list) else data.get("keywords", [])
+        if not keywords:
+            return f"No keyword ideas found for '{keyword}'. Try a broader seed term."
+
+        keywords.sort(
+            key=lambda k: int(str(k.get("vol", 0)).replace(",", "").replace("K", "000") or 0),
+            reverse=True,
+        )
+
+        lines = [f"Keyword Ideas — {keyword} ({country})", f"{len(keywords)} results found", ""]
+        lines.append(f"{'Keyword':<45} {'Vol/mo':>10} {'CPC':>8} {'Competition':>14}")
+        lines.append("-" * 82)
+        for kw in keywords[:25]:
+            text = str(kw.get("text", ""))[:44]
+            vol = str(kw.get("vol", "?"))
+            cpc = str(kw.get("cpc", "?"))
+            comp = str(kw.get("competition", "?"))
+            lines.append(f"{text:<45} {vol:>10} {cpc:>8} {comp:>14}")
+        return "\n".join(lines)
+
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"VebAPI keyword research failed: {e}"
+
+
+@tool
+async def veb_keyword_density(keyword: str, website: str) -> str:
+    """
+    Check how often a keyword appears on a specific page and whether it's in the title/meta.
+    Use this to analyse on-page keyword optimisation for any URL.
+
+    Args:
+        keyword: The keyword phrase to analyse.
+        website: Domain or URL of the page (e.g. 'example.com' or 'example.com/page').
+    """
+    try:
+        data = await _veb_get("/seo/keyworddensity", {"keyword": keyword, "website": website})
+        title = data.get("title", "")
+        desc = data.get("description", "")
+        words = data.get("words", [])
+
+        kw_entry = next(
+            (w for w in words if str(w.get("word", "")).lower() == keyword.lower()), None
+        )
+
+        lines = [f"Keyword Density: '{keyword}' on {website}", ""]
+        lines.append(f"Page Title: {title or '(not found)'}")
+        lines.append(f"Meta Description: {(desc[:80] + '...') if len(desc) > 80 else desc or '(not found)'}")
+        lines.append("")
+
+        if kw_entry:
+            count = kw_entry.get("occurrences", kw_entry.get("count", 0))
+            density = kw_entry.get("density", "?")
+            in_title = kw_entry.get("in_title", False)
+            in_meta = kw_entry.get("in_meta", False)
+            lines += [
+                f"Occurrences: {count}",
+                f"Density: {density}%",
+                f"In title: {'✓ Yes' if in_title else '✗ No'}",
+                f"In meta description: {'✓ Yes' if in_meta else '✗ No'}",
+            ]
+        else:
+            lines.append(f"Keyword not found on this page.")
+
+        if words:
+            lines.append(f"\nTop words on page:")
+            for w in words[:10]:
+                lines.append(f"  {str(w.get('word','')):<30} {w.get('occurrences', w.get('count', '?'))} occurrences")
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Keyword density check failed: {e}"
+
+
+@tool
+async def veb_ai_visibility_audit(website: str, config: RunnableConfig) -> str:
+    """
+    Run a full AI Visibility Audit — checks whether AI search engines (ChatGPT, Perplexity,
+    Claude etc.) can discover and index a page. Returns AI score, indexability, robots.txt
+    analysis, llms.txt presence, and prioritised improvement actions.
+    Use this when the user asks about AI search visibility or AI SEO.
+
+    Args:
+        website: Full URL of the page (e.g. 'https://example.com').
+    """
+    try:
+        if not website.startswith("http"):
+            website = "https://" + website
+        data = await _veb_get("/api/seo/ai-visibility-checker/v2", {"website": website})
+
+        ai_score = data.get("ai_score", {})
+        score = ai_score.get("score", "?")
+        grade = ai_score.get("grade", "?")
+        ai_vis = data.get("ai_visibility", {})
+        structure = data.get("structure", {})
+        content = data.get("content", {})
+        ai_disc = data.get("ai_discovery", {})
+        issues = data.get("issues", [])
+        suggestions = data.get("suggestions", [])
+
+        lines = [
+            f"AI Visibility Audit: {website}",
+            f"AI Score: {score}/100  Grade: {grade}",
+            "",
+            f"Indexability: {ai_vis.get('status', 'Unknown')}",
+            f"robots.txt: {'✓ Found' if ai_disc.get('robots_found') else '✗ Not found'}",
+            f"llms.txt:   {'✓ Found' if ai_disc.get('llms_txt') else '✗ Missing (important for AI visibility)'}",
+            f"Sitemap:    {'✓ Found' if ai_disc.get('sitemap') else '✗ Not found'}",
+            "",
+            f"Title: {structure.get('title', '(missing)')}",
+            f"Word count: {content.get('word_count', '?')}",
+            f"Reading time: {content.get('reading_time', '?')}",
+        ]
+
+        if issues:
+            lines += ["", f"Issues ({len(issues)}):"]
+            for iss in issues[:8]:
+                sev = iss.get("severity", "").upper()
+                msg = iss.get("message", iss.get("issue", str(iss)))
+                lines.append(f"  [{sev}] {msg}")
+
+        if suggestions:
+            lines += ["", "Top Actions:"]
+            for s in suggestions[:5]:
+                text = s.get("suggestion", s) if isinstance(s, dict) else s
+                lines.append(f"  • {text}")
+
+        try:
+            db, user_id = _get_db_and_user(config)
+            if db is not None and user_id:
+                await db.seo_ai_audits.insert_one({
+                    "_id": str(uuid.uuid4()), "user_id": user_id, "url": website,
+                    "ai_score": score, "grade": grade, "issues_count": len(issues),
+                    "created_at": datetime.utcnow(),
+                })
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"AI visibility audit failed: {e}"
+
+
+@tool
+async def veb_page_analysis(website: str, config: RunnableConfig) -> str:
+    """
+    Run a comprehensive on-page SEO analysis covering technical, content, performance,
+    security, and AI-readiness. Returns scored categories and prioritised fixes.
+    Use this for a deep-dive audit — more detailed than audit_website.
+
+    Args:
+        website: URL to analyse (with or without https://).
+    """
+    try:
+        if not website.startswith("http"):
+            website = "https://" + website
+        clean = website.replace("https://", "").replace("http://", "")
+        data = await _veb_get("/seo/analyze/v2", {"website": clean})
+
+        summary = data.get("summary", {})
+        scores = data.get("scores", {})
+        findings = data.get("findings", [])
+        basic = data.get("basic_info", {})
+
+        overall = summary.get("score", summary.get("overall_score", "?"))
+        grade = summary.get("grade", "?")
+
+        lines = [f"On-Page SEO Analysis: {website}", f"Overall: {overall}/100  Grade: {grade}", ""]
+        lines.append("Category Scores:")
+        for key, label in [
+            ("performance", "Performance"), ("technical", "Technical"),
+            ("on_page", "On-Page"), ("security", "Security"),
+            ("accessibility", "Accessibility"), ("ai_readiness", "AI-Readiness"),
+        ]:
+            val = scores.get(key)
+            if val is not None:
+                lines.append(f"  {label:<16} {val}/100")
+
+        title = basic.get("title", "")
+        status = basic.get("http_status", "")
+        if title or status:
+            lines.append("")
+            if title:  lines.append(f"Title: {title}")
+            if status: lines.append(f"HTTP Status: {status}")
+
+        critical = [f for f in findings if f.get("severity", "").lower() in ("critical", "error", "high")]
+        warnings  = [f for f in findings if f.get("severity", "").lower() in ("warning", "medium")]
+
+        if critical:
+            lines += ["", f"Critical Issues ({len(critical)}):"]
+            for f in critical[:6]:
+                lines.append(f"  ✗ {f.get('message', f.get('description', str(f)))}")
+        if warnings:
+            lines += ["", f"Warnings ({len(warnings)}):"]
+            for f in warnings[:5]:
+                lines.append(f"  ⚠ {f.get('message', f.get('description', str(f)))}")
+
+        try:
+            db, user_id = _get_db_and_user(config)
+            if db is not None and user_id:
+                await db.seo_audits.insert_one({
+                    "_id": str(uuid.uuid4()), "user_id": user_id, "url": website,
+                    "score": int(overall) if str(overall).isdigit() else 0, "grade": grade,
+                    "issues": [{"message": f.get("message", str(f)), "type": f.get("severity", "info")} for f in findings[:20]],
+                    "created_at": datetime.utcnow(),
+                })
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Page analysis failed: {e}"
+
+
+@tool
+async def veb_domain_data(domain: str) -> str:
+    """
+    Look up WHOIS registration data, DNS records, and domain age for any domain.
+    Use this when the user asks who owns a domain, when it expires, or its DNS records.
+
+    Args:
+        domain: Domain to look up (e.g. 'example.com').
+    """
+    try:
+        domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        data = await _veb_get("/api/seo/domainnamedata/v2", {"website": domain})
+
+        reg = data.get("registration", {})
+        dns = data.get("dns", {})
+
+        lines = [f"Domain Data: {domain}", ""]
+        lines += [
+            "Registration:",
+            f"  Created:    {reg.get('creation_date', reg.get('created', 'Unknown'))}",
+            f"  Expires:    {reg.get('expiration_date', reg.get('expires', 'Unknown'))}",
+            f"  Registrar:  {reg.get('registrar', 'Unknown')}",
+        ]
+        ns = reg.get("nameservers", [])
+        if ns:
+            lines.append(f"  Nameservers: {', '.join(ns[:3])}")
+
+        if dns:
+            lines.append("")
+            lines.append("DNS Records:")
+            for rtype in ("A", "AAAA", "MX", "TXT"):
+                recs = dns.get(rtype, [])
+                if recs:
+                    lines.append(f"  {rtype}: {', '.join(str(r) for r in (recs if isinstance(recs, list) else [recs])[:3])}")
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Domain data lookup failed: {e}"
+
+
+@tool
+async def veb_speed_check(url: str) -> str:
+    """
+    Test website loading speed and get a performance score with Core Web Vitals data.
+    Use this when the user asks about site speed, page load time, or performance.
+
+    Args:
+        url: Full URL to test (e.g. 'https://example.com').
+    """
+    try:
+        if not url.startswith("http"):
+            url = "https://" + url
+        data = await _veb_get("/seo/loadingspeeddata/v2", {"website": url})
+
+        summary = data.get("summary", {})
+        improve = data.get("improve_page_performance", {})
+
+        lines = [f"Speed Analysis: {url}", ""]
+        lines += [
+            f"Performance Score: {summary.get('performance_score', summary.get('score', '?'))}/100",
+            f"First Contentful Paint: {summary.get('first_contentful_paint', '?')}",
+            f"Largest Contentful Paint: {summary.get('largest_contentful_paint', '?')}",
+            f"Time to Interactive: {summary.get('time_to_interactive', '?')}",
+            f"Total Blocking Time: {summary.get('total_blocking_time', '?')}",
+        ]
+
+        if improve:
+            lines += ["", "Areas to Improve:"]
+            for key, val in list(improve.items())[:6]:
+                label = key.replace("_", " ").title()
+                grade = val.get("grade", val.get("score", val)) if isinstance(val, dict) else val
+                lines.append(f"  {label}: {grade}")
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Speed check failed: {e}"
+
+
+@tool
+async def veb_backlinks(domain: str, analysis_type: str = "all") -> str:
+    """
+    Analyse backlinks for any domain. See all links, recent additions, toxic links, or referring domains.
+    Use this for link building analysis, competitor research, or checking your own domain authority.
+
+    Args:
+        domain: Domain to analyse (e.g. 'example.com').
+        analysis_type: 'all' = full backlink list, 'new' = recently found links,
+                       'poor' = toxic/low-quality links, 'referral' = referring domains summary.
+    """
+    try:
+        domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        endpoint_map = {
+            "all": "/seo/backlinkdata",
+            "new": "/seo/newbacklinks",
+            "poor": "/seo/poorbacklinks",
+            "referral": "/seo/referraldomains",
+        }
+        endpoint = endpoint_map.get(analysis_type, "/seo/backlinkdata")
+        params: dict = {"website": domain}
+        if analysis_type == "referral":
+            params["rows"] = "50"
+
+        data = await _veb_get(endpoint, params)
+        lines = [f"Backlinks ({analysis_type.title()}): {domain}", ""]
+
+        if analysis_type == "referral":
+            referrers = data.get("referrers", [])
+            lines.append(f"Referring Domains: {len(referrers)}")
+            lines.append("")
+            lines.append(f"{'Domain':<40} {'Backlinks':>10} {'DoFollow':>10} {'DR':>6}")
+            lines.append("-" * 72)
+            for r in referrers[:20]:
+                lines.append(
+                    f"{r.get('refdomain',''):<40} {str(r.get('backlinks',0)):>10} "
+                    f"{str(r.get('dofollow_backlinks',0)):>10} {str(r.get('domain_inlink_rank','?')):>6}"
+                )
+
+        elif analysis_type == "all":
+            counts = data.get("counts", {})
+            backlinks = data.get("backlinks", [])
+            lines += [
+                f"Total Backlinks: {counts.get('total', len(backlinks))}",
+                f"DoFollow: {counts.get('dofollow', '?')}",
+                f"Referring Domains: {counts.get('referring_domains', '?')}",
+                "",
+                f"{'Source URL':<55} {'Anchor':<20} {'DR':>6}",
+                "-" * 85,
+            ]
+            for bl in backlinks[:15]:
+                url_from = str(bl.get("url_from", ""))[:54]
+                anchor = str(bl.get("anchor", "") or "")[:19]
+                dr = bl.get("inlink_rank", "?")
+                lines.append(f"{url_from:<55} {anchor:<20} {str(dr):>6}")
+
+        else:
+            items = data.get("backlinks", data if isinstance(data, list) else [])
+            label = "New" if analysis_type == "new" else "Poor/Toxic"
+            lines.append(f"{label} Backlinks: {len(items)}")
+            lines.append("")
+            for bl in items[:15]:
+                url_from = bl.get("url_from", "")
+                anchor = bl.get("anchor", "(no anchor)")
+                dr = bl.get("inlink_rank", "?")
+                lines.append(f"  {url_from}")
+                lines.append(f"  Anchor: {anchor}   DR: {dr}")
+                lines.append("")
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Backlink analysis failed: {e}"
+
+
+@tool
+async def veb_top_search_keywords(domain: str, config: RunnableConfig) -> str:
+    """
+    Get the top keywords a domain currently ranks for in Google — with position, volume, and SEO clicks.
+    Works for your own domain or any competitor. Auto-saves keywords to your tracker.
+    Use this to discover existing rankings or spy on competitor traffic sources.
+
+    Args:
+        domain: Domain to look up (e.g. 'example.com' — no https://).
+    """
+    try:
+        domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        data = await _veb_get("/seo/topsearchkeywords", {"website": domain})
+        keywords = data.get("keywords", [])
+        if not keywords:
+            return f"No ranking keywords found for {domain}. The domain may be too new or have low organic traffic."
+
+        lines = [f"Top Search Keywords: {domain}", f"{len(keywords)} keywords found", ""]
+        lines.append(f"{'Keyword':<45} {'Rank':>6} {'±Change':>8} {'Volume/mo':>12} {'SEO Clicks':>12}")
+        lines.append("-" * 90)
+        for kw in keywords[:30]:
+            keyword = str(kw.get("keyword", ""))[:44]
+            rank = kw.get("rank", "?")
+            change = kw.get("rankChange", 0)
+            vol = kw.get("searchVolume", "?")
+            clicks = kw.get("seoClicks", "?")
+            change_str = (f"+{change}" if isinstance(change, (int, float)) and change > 0 else str(change))
+            lines.append(f"{keyword:<45} {str(rank):>6} {change_str:>8} {str(vol):>12} {str(clicks):>12}")
+
+        try:
+            db, user_id = _get_db_and_user(config)
+            if db is not None and user_id and keywords:
+                month = datetime.utcnow().strftime("%Y-%m")
+                kw_docs = [
+                    {"keyword": kw.get("keyword", ""), "search_volume": kw.get("searchVolume"),
+                     "rank": kw.get("rank"), "source": "veb_top_keywords"}
+                    for kw in keywords[:30] if kw.get("keyword")
+                ]
+                await db.seo_saved_keywords.update_one(
+                    {"user_id": user_id, "month": month, "source": "veb_top_keywords"},
+                    {"$set": {"keywords": kw_docs, "domain": domain, "updated_at": datetime.utcnow()}},
+                    upsert=True,
+                )
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Top keyword lookup failed: {e}"
+
+
+@tool
+async def veb_ai_crawler_check(domain: str) -> str:
+    """
+    Check which AI bots can crawl a website — GPTBot, ClaudeBot, PerplexityBot, Google-Extended, etc.
+    Use this to find out if the site is being blocked from AI search engines and get fix recommendations.
+
+    Args:
+        domain: Domain to check (e.g. 'example.com').
+    """
+    try:
+        domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
+        data = await _veb_get("/api/seo/aiseochecker", {"website": domain})
+
+        ai_access = data.get("ai_access", {})
+        all_allowed = data.get("ai_bots_allowed", None)
+        robots_found = data.get("robots_found", None)
+        suggestions = data.get("suggestions", [])
+
+        allowed_bots = [b for b, ok in ai_access.items() if ok]
+        blocked_bots = [b for b, ok in ai_access.items() if not ok]
+
+        lines = [
+            f"AI Crawler Access: {domain}",
+            f"robots.txt: {'✓ Found' if robots_found else '✗ Not found'}",
+            f"AI Access:  {'✓ All bots allowed' if all_allowed else '✗ Some bots blocked'}",
+            "",
+        ]
+        if allowed_bots:
+            lines.append(f"✓ Allowed ({len(allowed_bots)}): {', '.join(allowed_bots)}")
+        if blocked_bots:
+            lines.append(f"✗ Blocked ({len(blocked_bots)}): {', '.join(blocked_bots)}")
+
+        if suggestions:
+            lines += ["", "Recommendations:"]
+            for s in suggestions[:5]:
+                lines.append(f"  • {s}")
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"AI crawler check failed: {e}"
+
+
+@tool
+async def veb_google_serp(keyword: str, country: str = "KE") -> str:
+    """
+    Get live Google search results for any keyword — see who ranks, their domain authority, and URLs.
+    Use this to research competition for a keyword before writing content.
+
+    Args:
+        keyword: Search query to look up.
+        country: 2-letter ISO country code (KE=Kenya, NG=Nigeria, US=USA, GB=UK). Default KE.
+    """
+    try:
+        data = await _veb_get("/seo/google_serp", {"keyword": keyword, "country": country})
+        results = data.get("results", [])
+        if not results:
+            return f"No SERP results for '{keyword}' in {country}."
+
+        lines = [f"Google SERP: '{keyword}' ({country})", f"{len(results)} results", ""]
+        lines.append(f"{'#':>3}  {'Domain':<35} {'Title':<45} {'DR':>6}")
+        lines.append("-" * 94)
+        for r in results[:20]:
+            rank = r.get("rank", "?")
+            title = str(r.get("title", "") or "")[:44]
+            domain = str(r.get("hostname", r.get("domain", "")) or "")[:34]
+            dr = r.get("domain_inlink_rank", "?")
+            lines.append(f"{str(rank):>3}  {domain:<35} {title:<45} {str(dr):>6}")
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Google SERP lookup failed: {e}"
+
+
+@tool
+async def veb_youtube_research(keyword: str) -> str:
+    """
+    Get YouTube keyword research (search volume, competition, difficulty) AND tag suggestions.
+    Use this for YouTube SEO — before uploading a video, to find the right keywords and tags.
+
+    Args:
+        keyword: Topic or keyword to research for YouTube.
+    """
+    try:
+        import asyncio as _asyncio
+        kw_data, tag_data = await _asyncio.gather(
+            _veb_get("/youtube/keywordresearch", {"keyword": keyword}),
+            _veb_get("/youtube/taggenerator", {"keyword": keyword}),
+        )
+
+        lines = [f"YouTube Research: {keyword}", ""]
+
+        exact = kw_data.get("exact_keyword", {})
+        if exact:
+            lines += [
+                "This Keyword:",
+                f"  Monthly Searches: {exact.get('monthlysearch', '?')}",
+                f"  Competition Score: {exact.get('competition_score', '?')}",
+                f"  Difficulty: {exact.get('difficulty', '?')}",
+                f"  Overall Score: {exact.get('overallscore', '?')}",
+                "",
+            ]
+
+        related = kw_data.get("related_keywords", [])
+        if related:
+            lines += [f"Related Keywords ({len(related)}):", ""]
+            lines.append(f"{'Keyword':<42} {'Vol/mo':>10} {'Difficulty':>12}")
+            lines.append("-" * 68)
+            for kw in related[:15]:
+                text = str(kw.get("keyword", ""))[:41]
+                vol = kw.get("monthlysearch", "?")
+                diff = kw.get("difficulty", "?")
+                lines.append(f"{text:<42} {str(vol):>10} {str(diff):>12}")
+            lines.append("")
+
+        tags = tag_data.get("tags", [])
+        if tags:
+            clean_tags = [(f"#{t}" if not str(t).startswith("#") else t) for t in tags[:20]]
+            lines += [f"Suggested Tags ({len(tags)}):", " ".join(clean_tags)]
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"YouTube research failed: {e}"
+
+
+@tool
+async def veb_domain_check(domain: str, tlds: str = "com,net,org,co,io") -> str:
+    """
+    Check if a domain name is available across multiple TLD extensions (.com, .net, .org, etc.).
+    Use this when the user wants to register a new domain or find an available name.
+
+    Args:
+        domain: Name to check without any extension (e.g. 'mybusiness').
+        tlds: Comma-separated extensions to check (e.g. 'com,net,org,co,io'). Default: 5 common ones.
+    """
+    try:
+        domain = domain.replace("https://", "").replace("http://", "").replace("www.", "")
+        domain = domain.split(".")[0].strip()
+        tld_list = [t.strip().lstrip(".") for t in tlds.split(",") if t.strip()]
+
+        if len(tld_list) == 1:
+            data = await _veb_get("/tools/domainsearchsingle", {"domain": domain, "tld": tld_list[0]})
+            results = data if isinstance(data, list) else [data]
+        else:
+            data = await _veb_get("/tools/domainsearchmulti", {"domain": domain, "tlds": tlds})
+            results = data if isinstance(data, list) else []
+
+        available, taken = [], []
+        for r in results:
+            full = f"{r.get('domain', domain)}.{r.get('tld', '')}"
+            if "available" in str(r.get("status", "")).lower():
+                available.append(full)
+            else:
+                taken.append(full)
+
+        lines = [f"Domain Availability: {domain}", ""]
+        if available:
+            lines.append(f"✓ Available ({len(available)}):")
+            lines += [f"  {d}" for d in available]
+        if taken:
+            lines.append(f"\n✗ Taken ({len(taken)}):")
+            lines += [f"  {d}" for d in taken]
+
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Domain check failed: {e}"
+
+
+@tool
+async def veb_com_generator(keyword: str) -> str:
+    """
+    Generate available .com domain name ideas based on a keyword or business name.
+    Use this when the user needs a creative available domain for a new site or project.
+
+    Args:
+        keyword: Business name, niche, or keyword to build domain ideas around.
+    """
+    try:
+        seed = keyword.replace("https://", "").replace("http://", "").split(".")[0]
+        data = await _veb_get("/tools/comdomaingenerator", {"domain": seed})
+        results = data if isinstance(data, list) else data.get("domains", [])
+        if not results:
+            return f"No available .com domains found for '{keyword}'. Try a different keyword."
+
+        lines = [f"Available .com Domains for: {keyword}", f"{len(results)} options", ""]
+        for r in results[:20]:
+            domain = r.get("newdomain", "")
+            variant = r.get("generated", "")
+            if domain:
+                lines.append(f"  ✓ {domain}  ({variant})")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Domain generator failed: {e}"
+
+
+@tool
+async def veb_screenshot(url: str) -> str:
+    """
+    Capture a screenshot of any website and return a shareable image link.
+    Use this when the user wants to visualise a webpage for reports or competitor analysis.
+
+    Args:
+        url: Full URL to screenshot (must include https://).
+    """
+    try:
+        if not url.startswith("http"):
+            url = "https://" + url
+        data = await _veb_post("/websitescreenshot", {
+            "jobId": str(uuid.uuid4()),
+            "url": url,
+            "width": 1280,
+            "height": 800,
+            "fullPage": False,
+            "format": "png",
+            "blockCookieBanners": True,
+        })
+        img_url = data.get("url", "")
+        if not img_url:
+            return "Screenshot failed — no image URL returned."
+
+        return "\n".join([
+            f"Screenshot: {url}",
+            f"Image URL: {img_url}",
+            f"Expires: {data.get('expiresAt', 'N/A')}",
+            f"Size: {data.get('bytes', '?')} bytes",
+        ])
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Screenshot failed: {e}"
+
+
+@tool
+async def veb_instagram_hashtags(keyword: str) -> str:
+    """
+    Get Instagram hashtag suggestions with live post-per-hour data for any topic.
+    Use this when the user wants to improve Instagram reach or social media strategy.
+
+    Args:
+        keyword: Topic or niche to find hashtags for.
+    """
+    try:
+        data = await _veb_get("/tools/instagramhashtags", {"keyword": keyword})
+        hashtags = data if isinstance(data, list) else data.get("hashtags", [])
+        if not hashtags:
+            return f"No Instagram hashtags found for '{keyword}'."
+
+        lines = [f"Instagram Hashtags: {keyword}", f"{len(hashtags)} suggestions", ""]
+        lines.append(f"{'Hashtag':<35} {'Posts/hr':>10}")
+        lines.append("-" * 47)
+        for h in hashtags[:30]:
+            tag = str(h.get("keyword", ""))
+            posts = h.get("post_last_hr", "?")
+            lines.append(f"{tag:<35} {str(posts):>10}")
+
+        lines += ["", "Copy-paste set:"]
+        lines.append(" ".join(str(h.get("keyword", "")) for h in hashtags[:15]))
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Instagram hashtag lookup failed: {e}"
+
+
 # ── Tool registry exported to graph ──────────────────────────────────────────
 
 SEO_TOOLS = [
     get_business_context,
-    audit_website,
-    research_keywords,
-    get_keyword_search_volume,
+    # ── DataForSEO: SERP + Keywords + Competitor Analysis ──
     get_keyword_ideas,
+    get_keyword_search_volume,
     check_serp_ranking,
     get_competitor_keywords,
+    # ── VebAPI: AI visibility, page analysis, backlinks, domain tools ──
+    veb_keyword_research,
+    veb_keyword_density,
+    veb_ai_visibility_audit,
+    veb_page_analysis,
+    veb_speed_check,
+    veb_backlinks,
+    veb_top_search_keywords,
+    veb_ai_crawler_check,
+    veb_google_serp,
+    veb_domain_data,
+    veb_youtube_research,
+    veb_domain_check,
+    veb_com_generator,
+    veb_screenshot,
+    veb_instagram_hashtags,
+    # ── Content & writing tools ──
+    audit_website,
+    research_keywords,
     write_blog_post,
     generate_content_calendar,
     fix_seo_issues,
