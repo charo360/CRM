@@ -30,6 +30,74 @@ _PLATFORM_MAP = {
 }
 
 
+async def _get_zernio_account_ids(profile_id: str) -> Dict[str, str]:
+    """
+    Fetch the connected social-account IDs for a Zernio profile.
+
+    Zernio requires platforms in the form [{"platform": "facebook", "accountId": "xxx"}].
+    Returns a dict mapping platform slug → accountId, e.g.
+        {"facebook": "acc_abc123", "instagram": "acc_def456"}
+    An empty dict means no connected accounts were found or the request failed.
+    """
+    if not ZERNIO_API_KEY or not profile_id:
+        return {}
+
+    headers = {"Authorization": f"Bearer {ZERNIO_API_KEY}"}
+
+    # Primary endpoint: GET /accounts?profileId=<id>  (same as the web routes use)
+    # Use httpx params= so the profile_id is properly URL-encoded.
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{ZERNIO_BASE}/accounts",
+                headers=headers,
+                params={"profileId": profile_id},
+            )
+        if resp.is_success:
+            raw = resp.json()
+            items = (
+                raw.get("accounts")
+                or raw.get("data")
+                or (raw if isinstance(raw, list) else [])
+            )
+            result: Dict[str, str] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                platform = (item.get("platform") or item.get("type") or "").lower()
+                acct_id = (
+                    item.get("accountId")
+                    or item.get("id")
+                    or item.get("_id")
+                )
+                if platform and acct_id:
+                    result[platform] = str(acct_id)
+            if result:
+                logger.info(
+                    "[social_publisher] Fetched %d connected account(s) for profile %s",
+                    len(result), profile_id,
+                )
+                return result
+            logger.debug(
+                "[social_publisher] /accounts returned success but no usable accounts for profile %s: %s",
+                profile_id, raw,
+            )
+        else:
+            logger.debug(
+                "[social_publisher] /accounts returned HTTP %s for profile %s: %s",
+                resp.status_code, profile_id, resp.text[:200],
+            )
+    except Exception as exc:
+        logger.debug("[social_publisher] /accounts fetch failed for profile %s: %s", profile_id, exc)
+
+    logger.warning(
+        "[social_publisher] No connected social accounts found for profile %s. "
+        "Make sure social accounts are linked under Integrations → Social Inbox.",
+        profile_id,
+    )
+    return {}
+
+
 async def _get_zernio_profile_id(db, user_id: str) -> str | None:
     """Return the Zernio profile ID for a user, creating one if needed."""
     user = await db.users.find_one({"_id": user_id})
@@ -59,12 +127,41 @@ async def _get_zernio_profile_id(db, user_id: str) -> str | None:
 async def _publish_post(post: Dict[str, Any], profile_id: str) -> Dict[str, Any]:
     """Push a single post to Zernio. Returns dict with success flag and Zernio post ID."""
     channels = post.get("channels") or ["facebook"]
-    platforms = [_PLATFORM_MAP.get(c, c) for c in channels]
+    platform_slugs = [_PLATFORM_MAP.get(c, c) for c in channels]
+
+    # Zernio requires platforms as objects: [{"platform": "...", "accountId": "..."}]
+    account_map = await _get_zernio_account_ids(profile_id)
+
+    platforms_payload: List[Dict[str, str]] = []
+    missing_accounts: List[str] = []
+    for slug in platform_slugs:
+        acct_id = account_map.get(slug)
+        if acct_id:
+            platforms_payload.append({"platform": slug, "accountId": acct_id})
+        else:
+            missing_accounts.append(slug)
+
+    if missing_accounts:
+        logger.warning(
+            "[social_publisher] Post %s: could not find accountIds for platforms: %s",
+            post["_id"], missing_accounts,
+        )
+
+    if not platforms_payload:
+        # No real account IDs — fail with a clear, actionable error instead of
+        # sending a bogus accountId (which causes Zernio's "Invalid platforms format" 400).
+        error_msg = (
+            f"No connected social account found for platform(s): "
+            f"{', '.join(platform_slugs)}. "
+            "Please connect your social accounts under Integrations → Social Inbox."
+        )
+        logger.error("[social_publisher] Post %s: %s", post["_id"], error_msg)
+        return {"success": False, "zernio_post_id": None, "error": error_msg}
 
     body: Dict[str, Any] = {
         "profileId": profile_id,
         "content": post.get("body") or "",
-        "platforms": platforms,
+        "platforms": platforms_payload,
         "scheduledAt": post.get("scheduled_at").isoformat()
             if hasattr(post.get("scheduled_at"), "isoformat")
             else str(post.get("scheduled_at", "")),

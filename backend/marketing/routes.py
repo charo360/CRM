@@ -120,7 +120,14 @@ class ScheduledPostUpdate(BaseModel):
 
 def _serialize_post(row: Dict[str, Any]) -> Dict[str, Any]:
     def _dt(v):
-        return v.isoformat() if hasattr(v, "isoformat") else (v or "")
+        if not hasattr(v, "isoformat"):
+            return v or ""
+        iso = v.isoformat()
+        # MongoDB returns naive datetimes stored as UTC; append Z so browsers
+        # parse them as UTC instead of local time.
+        if "+" not in iso and not iso.endswith("Z"):
+            iso += "Z"
+        return iso
     return {
         "id": str(row["_id"]),
         "title": row.get("title") or "",
@@ -137,6 +144,7 @@ def _serialize_post(row: Dict[str, Any]) -> Dict[str, Any]:
         "link_url": row.get("link_url"),
         "assets": row.get("assets") or [],
         "image_url": row.get("image_url"),
+        "publish_error": row.get("publish_error") or None,
     }
 
 
@@ -451,7 +459,7 @@ def make_marketing_router(db, user_dep):
         from ai_service import get_drafter
 
         drafter = get_drafter()
-        if not drafter.clients:
+        if not drafter.client:
             raise HTTPException(
                 status_code=503,
                 detail="AI is not configured. Add OPENAI_API_KEY or another provider on the server.",
