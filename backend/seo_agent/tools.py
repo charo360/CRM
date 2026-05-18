@@ -203,8 +203,9 @@ async def research_keywords(business_type: str, location: str = "", language: st
     Returns 15-20 keywords with search intent, difficulty, and content ideas.
     Use this when the user asks for keyword ideas, keyword research, or what to rank for.
     """
+    city = location.split(",")[0].strip() if location else ""
     loc = f" in {location}" if location else ""
-    prompt = f"""You are an SEO keyword research expert. Generate 15 keyword ideas for a {business_type} business{loc}.
+    prompt = f"""You are an SEO keyword strategist. Generate 15 keyword ideas for a {business_type} business{loc}.
 
 For each keyword return this format (one per line):
 KEYWORD | intent | difficulty | content_idea
@@ -215,7 +216,18 @@ Where:
 - content_idea: one short blog/page idea (max 8 words)
 
 Language: {language}
-Focus on: long-tail phrases, local keywords, buying-intent keywords, question keywords.
+
+KEYWORD MIX — spread across these types:
+- LOCAL (5): '{business_type} {city}', 'best {business_type} near me', '{business_type} delivery {city}'
+- TRANSACTIONAL (5): 'buy [service/product] {city}', 'affordable [service]', '[service] price {city}'
+- INFORMATIONAL (5): 'how to [relevant action]', 'best [service] for [customer type]', '[service] guide'
+
+STRICT RULES:
+- Every keyword must describe a SERVICE or BUYING ACTION — never a standalone product/drug/ingredient name
+- Use '{city}' naturally in local and transactional keywords
+- 2-5 words per keyword (real phrases people type into Google)
+- NO single product names with no service context (e.g. NOT 'azithromycin' — use 'buy azithromycin {city}')
+
 Return only the list, no extra text."""
 
     raw = await _ai(prompt, max_tokens=1500)

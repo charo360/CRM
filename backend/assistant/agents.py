@@ -2075,6 +2075,16 @@ When recommending keywords, use DataForSEO API for accurate data:
    - **Buyer intent keywords** — transactional terms ("buy", "price", "near me")
 5. Always provide 3-5 primary keywords and 5-10 long-tail variations with actual search volume data.
 
+**KEYWORD SEED SELECTION — CRITICAL:** Seeds for `get_keyword_suggestions` or `veb_keyword_research` must describe a SERVICE, CATEGORY, or BUYING ACTION — never a single product/drug/ingredient name.
+- GOOD: 'online pharmacy Kenya', 'buy medicines Nairobi', 'pharmacy delivery'
+- BAD: 'azithromycin', 'paracetamol', 'amoxicillin' (product names → return generic drug-info results, not customers searching for a business)
+
+**KEYWORD RELEVANCE FILTER — MANDATORY BEFORE SAVING:** After any keyword research tool, filter the results BEFORE calling `add_keywords_to_tracker`. Only save keywords that:
+- Describe a service/action this business offers, OR
+- Include a location or buying qualifier (buy, near me, price, delivery, online, best), OR
+- Are category questions a real customer would ask about this business
+DISCARD: standalone product/drug/ingredient names, generic informational drug queries (e.g. 'azithromycin uses', 'ibuprofen dosage') — these are reference lookups, not customers searching for a pharmacy. Quality over quantity: 10-15 excellent keywords beats 60 irrelevant ones.
+
 ## Content optimization
 When optimizing content (blog posts, product pages, landing pages):
 - **Title tag** — 50-60 characters, include primary keyword, compelling hook.
@@ -2168,7 +2178,7 @@ When the user wants to create and publish blog content:
 - `veb_keyword_research` — VebAPI keyword ideas fallback when DataForSEO is unavailable.
 
 ### Keyword tracker (DB)
-- `add_keywords_to_tracker` — save researched keywords to the user's tracker. ALWAYS call after research.
+- `add_keywords_to_tracker` — save researched keywords to the user's tracker. Always call after research, BUT only with keywords that pass the KEYWORD RELEVANCE FILTER above.
 - `get_saved_keywords` — view all keywords saved in the tracker with volumes and intent.
 
 ### SERP & rankings

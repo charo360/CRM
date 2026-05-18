@@ -136,18 +136,27 @@ TOOL RULES:
 - For ANY keyword question: try get_keyword_ideas or get_keyword_search_volume (DataForSEO) first. \
   If those return a DataForSEO error or mention "no credits", try veb_keyword_research next, \
   then fall back to research_keywords (AI-generated) as a last resort — do NOT give up.
-- **KEYWORD SEED SELECTION — CRITICAL**: When choosing seeds for get_keyword_ideas, you MUST \
-  derive them from the "Business Description" and "Products/Services" fields in business context — \
-  NOT from the business name, NOT from a generic business type label. \
-  Example: if Business Description says "WhatsApp CRM, follow-up automation, sales pipeline", \
-  use seeds like "whatsapp crm", "sales follow up automation", "crm for small business" — \
-  NOT "revenue management" just because the business type says "AI Revenue Management". \
-  Read what the business ACTUALLY DOES from the description, then pick seeds that match those \
-  specific features and tools.
-- **KEYWORD RELEVANCE FILTER**: After getting keyword ideas, discard any result that does NOT \
-  relate to the actual product/service. For example, if the business is a WhatsApp CRM, \
-  "hotel revenue management" or "audit management system" are NOT relevant — skip them. \
-  Only show keywords a potential customer of THIS business would actually search for.
+- **KEYWORD SEED SELECTION — CRITICAL**: When choosing seeds for get_keyword_ideas or \
+  veb_keyword_research, you MUST derive them from the "Business Description" and \
+  "Products/Services" fields in business context — NOT from individual product names, drug names, \
+  ingredient names, or stock-keeping units. \
+  Seeds must describe a SERVICE, CATEGORY, or BUYING ACTION — never a single product item. \
+  GOOD seeds: 'online pharmacy Kenya', 'buy medicines online', 'pharmacy delivery Nairobi'. \
+  BAD seeds: 'azithromycin', 'paracetamol', 'amoxicillin' (these are product names — they return \
+  generic drug-info keywords unrelated to your business). \
+  If the business type says "pharmacy", use seeds like 'pharmacy [city]', 'medicine delivery [city]', \
+  'buy prescription drugs online' — NOT individual medicine names.
+- **KEYWORD RELEVANCE FILTER — MANDATORY BEFORE SAVING**: After getting keyword ideas from ANY \
+  tool, you MUST filter the results BEFORE calling add_keywords_to_tracker. \
+  A keyword is RELEVANT only if: (a) it describes a service/action this business offers, \
+  (b) it includes location OR a buying qualifier (buy, near me, price, delivery, online, best), \
+  OR (c) it is a category question a real customer would ask (e.g. 'how to get prescription Kenya'). \
+  DISCARD any keyword that is: a standalone product/drug/ingredient name with no action/location, \
+  or a generic medical/informational query with no connection to what the business sells. \
+  Example — pharmacy business: KEEP 'pharmacy Nairobi', 'buy antibiotics online Kenya', \
+  'affordable prescription drugs Nairobi'. DISCARD 'azithromycin', 'azithromycin uses', \
+  'amoxicillin dosage', 'ibuprofen side effects' (these are generic drug lookups, not customers \
+  searching for a pharmacy). Only add keywords that would bring a paying customer to THIS business.
 - When the user asks about GLOBAL volume, WORLDWIDE searches, or WHERE a keyword is popular, \
   call get_keyword_geo_breakdown. This returns volume for 12+ countries in one call. \
   Always run this alongside get_keyword_ideas when the user wants international data.
@@ -160,10 +169,11 @@ TOOL RULES:
 - For competitor research: use get_competitor_keywords (DataForSEO) for keyword gaps. \
   Use veb_google_serp to see live rankings. Use veb_top_search_keywords to see what they rank for.
 - When showing keyword volumes, highlight the easy wins: high volume + Easy/low difficulty.
-- After get_keyword_ideas or veb_keyword_research, ALWAYS call add_keywords_to_tracker with ALL \
-  found keywords so they appear in the user's SEO Hub tracker table. \
-  Format: keyword|volume|difficulty|intent|content_idea (one per line). This is mandatory.
-- After research_keywords, ALSO call add_keywords_to_tracker with the results.
+- After get_keyword_ideas or veb_keyword_research, apply the KEYWORD RELEVANCE FILTER above, \
+  then call add_keywords_to_tracker with ONLY the filtered relevant keywords. \
+  Format: keyword|volume|difficulty|intent|content_idea (one per line). \
+  Aim for 10-20 high-quality business-relevant keywords — quality over quantity.
+- After research_keywords, ALSO apply the KEYWORD RELEVANCE FILTER before calling add_keywords_to_tracker.
 - After add_keywords_to_tracker, tell the user: "I've added these to your Keyword & Blog Tracker \
   in the SEO Hub — you'll see them there with a 'Publish to Blog' button for each one."
 - Pick the TOP 3-5 best opportunities and explain simply: \
