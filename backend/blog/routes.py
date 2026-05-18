@@ -194,7 +194,52 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
             parts.append('<hr style="border:none;border-top:2px solid ' + BDR + ';margin:36px 0;">')
             i += 1; continue
 
-        # Paragraph ΓÇö collect consecutive plain lines
+        # Markdown table — lines starting with |
+        if s.startswith("|"):
+            tbl_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                tbl_lines.append(lines[i].strip())
+                i += 1
+            if len(tbl_lines) >= 2:
+                def _parse_row(row):
+                    return [c.strip() for c in row.split("|") if c.strip() not in ("", "-", "--", "---", "----", ":---", "---:")]
+                # Second line is the separator — skip it if it only contains dashes/colons
+                sep = tbl_lines[1] if len(tbl_lines) > 1 else ""
+                is_sep = bool(re.match(r"^[\|\s\-:]+$", sep))
+                header_cells = _parse_row(tbl_lines[0])
+                body_rows = [_parse_row(r) for r in (tbl_lines[2:] if is_sep else tbl_lines[1:])]
+                th_html = "".join(
+                    '<th style="padding:10px 14px;text-align:left;font-size:12px;font-weight:700;'
+                    'text-transform:uppercase;letter-spacing:0.8px;color:#fff;'
+                    'border-right:1px solid rgba(255,255,255,0.15);white-space:nowrap;">'
+                    + _inline_md(c) + "</th>"
+                    for c in header_cells
+                )
+                rows_html = ""
+                for ri, row in enumerate(body_rows):
+                    bg = WHT if ri % 2 == 0 else BG
+                    td_html = "".join(
+                        '<td style="padding:9px 14px;font-size:14px;color:' + TEXT + ';'
+                        'border-top:1px solid ' + BDR + ';border-right:1px solid ' + BDR + ';'
+                        'vertical-align:top;">' + _inline_md(c) + "</td>"
+                        for c in row
+                    )
+                    rows_html += (
+                        '<tr style="background:' + bg + ';">' + td_html + "</tr>"
+                    )
+                parts.append(
+                    '<div style="overflow-x:auto;margin:24px 0;border-radius:10px;'
+                    'border:1px solid ' + BDR + ';box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
+                    '<table style="width:100%;border-collapse:collapse;font-family:'
+                    '-apple-system,BlinkMacSystemFont,sans-serif;">'
+                    '<thead><tr style="background:linear-gradient(135deg,#0f172a 0%,' + BLU + ' 100%);">'
+                    + th_html + "</tr></thead>"
+                    "<tbody>" + rows_html + "</tbody>"
+                    "</table></div>"
+                )
+            continue
+
+        # Paragraph — collect consecutive plain lines
         para_lines = []
         while (
             i < len(lines)
@@ -203,6 +248,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
             and not re.match(r"^[*\-]\s+", lines[i].strip())
             and not re.match(r"^\d+\.\s+", lines[i].strip())
             and not lines[i].strip().startswith("> ")
+            and not lines[i].strip().startswith("|")
             and lines[i].strip() not in ("---", "***", "___")
         ):
             para_lines.append(_inline_md(lines[i]))
