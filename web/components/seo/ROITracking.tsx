@@ -124,7 +124,7 @@ export default function ROITracking() {
             published_at: post.created_at || new Date().toISOString(),
             views: Math.floor(Math.random() * 500) + 200, // Placeholder until analytics integration
             traffic_source: "Google Organic",
-            keywords_ranked: (post.keywords?.split(',').length || 3),
+            keywords_ranked: (Array.isArray(post.keywords) ? post.keywords.length : (typeof post.keywords === 'string' ? post.keywords.split(',').length : 3)),
             conversion_rate: 2 + Math.random() * 3 // 2-5% placeholder
           }));
 
