@@ -33,7 +33,7 @@ def _get_db_and_user(config=None):
             user_id = config["configurable"].get("user_id")
         except (KeyError, TypeError, AttributeError):
             pass
-    return db or _seo_db.get(), user_id or _seo_user_id.get()
+    return (db if db is not None else _seo_db.get()), (user_id if user_id is not None else _seo_user_id.get())
 
 
 # ── Shared AI caller (reuses existing env vars) ───────────────────────────────
@@ -497,7 +497,7 @@ async def list_saved_posts(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Could not access posts — no database connection."
 
         docs = await db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(20).to_list(20)
@@ -541,7 +541,7 @@ async def publish_post_to_platform(
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Cannot publish — no database connection."
 
         doc = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": user_id})
@@ -610,7 +610,7 @@ async def get_seo_summary(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "No database connection available."
 
         total = await db.seo_blog_posts.count_documents({"user_id": user_id})
@@ -643,7 +643,7 @@ async def get_business_context(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             logger.error(f"[get_business_context] db={db is not None} user_id={user_id!r} config_keys={list(config.get('configurable', {}).keys()) if config else 'no-config'}")
             return f"DB_MISSING: db={db is not None}, user_id={user_id!r}"
 
@@ -1082,7 +1082,7 @@ async def add_keywords_to_tracker(
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Cannot save keywords — no database connection."
 
         lines = [l.strip() for l in keywords_csv.strip().splitlines() if l.strip() and "|" in l]
