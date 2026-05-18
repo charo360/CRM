@@ -297,6 +297,7 @@ class PublishFromSeoRequest(BaseModel):
     content: str
     keywords: list = []
     excerpt: str = ""
+    post_id: str = ""
 
 
 class KeywordTrackerEntry(BaseModel):
@@ -698,9 +699,21 @@ def make_blog_router(db, get_current_user):
                 excerpt=excerpt,
                 keywords=req.keywords,
             )
+            post_url = result["post_url"]
+            # Persist published state so the UI shows "View live" after reload
+            if req.post_id:
+                from datetime import datetime as _dt
+                await db.seo_blog_posts.update_one(
+                    {"_id": req.post_id, "user_id": user_id},
+                    {"$set": {
+                        "status": "published",
+                        "site_post_url": post_url,
+                        "updated_at": _dt.utcnow(),
+                    }},
+                )
             return {
                 "status": "published",
-                "post_url": result["post_url"],
+                "post_url": post_url,
                 "post_id": result["post_id"],
                 "blog_url": blog_url_out,
             }
