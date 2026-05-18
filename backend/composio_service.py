@@ -918,7 +918,7 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
 
                 headers=_headers(),
 
-                params={"userUuid": user_id, "showActiveOnly": "true"},
+                params={"userUuid": user_id},
 
             )
 
@@ -930,53 +930,43 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
 
             items = data.get("items") or data.get("data") or data.get("connectedAccounts") or []
 
+            logger.info("[composio] get_connection_status(%s) → %d accounts", toolkit, len(items))
+
+            import re as _re_norm
+            def _norm(s: str) -> str:
+                return _re_norm.sub(r"[_\-\s]+", "", s.lower())
+
+            app_name_norm = _norm(app_name)
+            toolkit_norm  = _norm(toolkit.lower())
+
+            # Statuses that indicate a usable connection
+            _OK_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "INITIATED", "SUCCESS", "ENABLED", ""}
+
             for item in items:
 
                 if not isinstance(item, dict):
-
                     continue
 
-                # Verify this connection actually belongs to the requesting user.
-
-                # Composio may return all accounts when the userUuid filter is
-
-                # not applied server-side — we enforce isolation here.
-
                 item_user = str(
-
                     item.get("userUuid") or item.get("clientUniqueUserId") or item.get("entityId") or ""
-
                 ).strip()
 
                 if item_user and item_user != user_id:
-
                     logger.debug(
-
                         "[composio] skipping account %s: belongs to %s, not %s",
-
                         item.get("id"), item_user, user_id,
-
                     )
-
                     continue
 
-                item_app = str(
+                item_app = str(item.get("appName") or item.get("appUniqueId") or "").lower()
+                item_status = str(item.get("status") or "").upper()
 
-                    item.get("appName") or item.get("appUniqueId") or ""
-
-                ).lower()
-
-                item_status = str(item.get("status") or "ACTIVE").upper()
-
-                # Normalize both sides: strip separators so
-                # "google_search_console" matches "googlesearchconsole"
-                def _norm(s: str) -> str:
-                    import re as _re
-                    return _re.sub(r"[_\-\s]+", "", s.lower())
+                logger.info(
+                    "[composio] account id=%s app=%s status=%s user=%s",
+                    item.get("id"), item_app, item_status, item_user or "(no uuid)"
+                )
 
                 item_app_norm = _norm(item_app)
-                app_name_norm = _norm(app_name)
-                toolkit_norm  = _norm(toolkit.lower())
 
                 if (
                     app_name_norm not in item_app_norm
@@ -985,8 +975,7 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
                 ):
                     continue
 
-                if item_status in ("ACTIVE", ""):
-
+                if item_status in _OK_STATUSES:
                     return {"connected": True, "connection_id": item.get("id")}
 
             return {"connected": False}
@@ -1021,7 +1010,7 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
 
                 headers=_headers(),
 
-                params={"userUuid": user_id, "showActiveOnly": "true"},
+                params={"userUuid": user_id},
 
             )
 
@@ -1039,7 +1028,7 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
 
         return {t: False for t in ALL_TOOLKITS}
 
-
+    _OK = {"ACTIVE", "CONNECTED", "VALID", "INITIATED", "SUCCESS", "ENABLED", ""}
 
     # Build set of connected app names (validated by userUuid)
 
@@ -1061,9 +1050,9 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
 
             continue
 
-        item_status = str(item.get("status") or "ACTIVE").upper()
+        item_status = str(item.get("status") or "").upper()
 
-        if item_status not in ("ACTIVE", ""):
+        if item_status not in _OK:
 
             continue
 
