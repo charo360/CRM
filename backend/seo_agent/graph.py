@@ -123,6 +123,18 @@ TOOL RULES:
 - For ANY keyword question: try get_keyword_ideas or get_keyword_search_volume (DataForSEO) first. \
   If those return a DataForSEO error or mention "no credits", try veb_keyword_research next, \
   then fall back to research_keywords (AI-generated) as a last resort — do NOT give up.
+- **KEYWORD SEED SELECTION — CRITICAL**: When choosing seeds for get_keyword_ideas, you MUST \
+  derive them from the "Business Description" and "Products/Services" fields in business context — \
+  NOT from the business name, NOT from a generic business type label. \
+  Example: if Business Description says "WhatsApp CRM, follow-up automation, sales pipeline", \
+  use seeds like "whatsapp crm", "sales follow up automation", "crm for small business" — \
+  NOT "revenue management" just because the business type says "AI Revenue Management". \
+  Read what the business ACTUALLY DOES from the description, then pick seeds that match those \
+  specific features and tools.
+- **KEYWORD RELEVANCE FILTER**: After getting keyword ideas, discard any result that does NOT \
+  relate to the actual product/service. For example, if the business is a WhatsApp CRM, \
+  "hotel revenue management" or "audit management system" are NOT relevant — skip them. \
+  Only show keywords a potential customer of THIS business would actually search for.
 - When the user asks about GLOBAL volume, WORLDWIDE searches, or WHERE a keyword is popular, \
   call get_keyword_geo_breakdown. This returns volume for 12+ countries in one call. \
   Always run this alongside get_keyword_ideas when the user wants international data.
