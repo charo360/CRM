@@ -1230,7 +1230,7 @@ Only return the JSON array, no other text."""
                         keywords.append({
                             "keyword": kw_text,
                             "search_volume": display_vol if display_vol else None,
-                            "local_country": dfs_country_label if local_vol else None,
+                            "local_country": dfs_country_label if dfs_country_label else None,
                             "global_search_volume": global_vol if global_vol else None,
                             "top_region": top_region,
                             "top_region_volume": top_region_vol if top_region else None,
@@ -2648,6 +2648,8 @@ Return ONLY a JSON array, no explanation:
             "language_code": payload.get("language_code", "en"),
             "checked_at": datetime.utcnow(),
             "search_volume": payload.get("search_volume"),
+            "local_country": payload.get("local_country"),
+            "global_search_volume": payload.get("global_search_volume"),
             "competition": payload.get("competition"),
         }
         await db.seo_serp_rankings.insert_one(doc)
