@@ -968,8 +968,21 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
 
                 item_status = str(item.get("status") or "ACTIVE").upper()
 
-                if app_name not in item_app and toolkit.lower() not in item_app:
+                # Normalize both sides: strip separators so
+                # "google_search_console" matches "googlesearchconsole"
+                def _norm(s: str) -> str:
+                    import re as _re
+                    return _re.sub(r"[_\-\s]+", "", s.lower())
 
+                item_app_norm = _norm(item_app)
+                app_name_norm = _norm(app_name)
+                toolkit_norm  = _norm(toolkit.lower())
+
+                if (
+                    app_name_norm not in item_app_norm
+                    and item_app_norm not in app_name_norm
+                    and toolkit_norm not in item_app_norm
+                ):
                     continue
 
                 if item_status in ("ACTIVE", ""):
@@ -1062,11 +1075,21 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
 
 
 
+    import re as _re2
+    def _norm2(s: str) -> str:
+        return _re2.sub(r"[_\-\s]+", "", s.lower())
+
+    connected_norm = {_norm2(a) for a in connected_apps}
+
     results: Dict[str, bool] = {}
 
     for toolkit, app_name in _APP_NAMES.items():
-
-        results[toolkit] = any(app_name in a or a in app_name for a in connected_apps)
+        an = _norm2(app_name)
+        tk = _norm2(toolkit)
+        results[toolkit] = any(
+            an in cn or cn in an or tk in cn
+            for cn in connected_norm
+        )
 
     return results
 

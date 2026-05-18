@@ -82,18 +82,29 @@ function ConnectButton({
       if (!url) { setWorking(false); return; }
       const popup = window.open(url, "composio-connect", "width=980,height=760,noopener,noreferrer");
       if (!popup) { window.location.href = url; return; }
+      let popupClosed = false;
       const poll = window.setInterval(async () => {
         const data = await composioFetch(`/composio/connections/${toolkit}`);
         if (data?.connected) {
           window.clearInterval(poll);
           onStatusChange(toolkit, "connected");
           setWorking(false);
+          return;
         }
-        if (popup.closed) {
+        if (!popupClosed && popup.closed) {
+          popupClosed = true;
           window.clearInterval(poll);
-          await new Promise(r => setTimeout(r, 1200));
-          const fresh = await composioFetch(`/composio/connections/${toolkit}`);
-          onStatusChange(toolkit, fresh?.connected ? "connected" : "disconnected");
+          // Retry up to 8 times over ~20s — Composio can take several seconds to register
+          for (let i = 0; i < 8; i++) {
+            await new Promise(r => setTimeout(r, 2500));
+            const fresh = await composioFetch(`/composio/connections/${toolkit}`);
+            if (fresh?.connected) {
+              onStatusChange(toolkit, "connected");
+              setWorking(false);
+              return;
+            }
+          }
+          onStatusChange(toolkit, "disconnected");
           setWorking(false);
         }
       }, 3000);
