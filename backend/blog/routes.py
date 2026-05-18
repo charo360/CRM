@@ -705,7 +705,7 @@ def make_blog_router(db, get_current_user):
             )
             return {
                 "status": "published",
-                "topic": topic,
+                "topic": seo["topic"],
                 "post_url": result["post_url"],
                 "post_id": result["post_id"],
                 "template_used": post.get("template_used", ""),
@@ -777,6 +777,30 @@ def make_blog_router(db, get_current_user):
             return {"status": "completed"}
         except Exception as e:
             logger.error(f"[blog/run-daily-job] {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # ─── Refresh favicon for the user's blog ────────────────────────────────────
+
+    @router.post("/refresh-favicon")
+    async def refresh_favicon(user=Depends(get_current_user)):
+        """Re-upload the Zilo logo as the site favicon for the user's active blog."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="Blog not found")
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(status_code=400, detail="Site URL unavailable")
+        try:
+            await blog_service._generate_and_set_favicon(
+                subsite_url=site_url,
+                slug=blog.get("wp_slug", ""),
+                business_name=blog.get("business_name", ""),
+                industry=blog.get("industry", ""),
+            )
+            return {"status": "ok", "site": site_url}
+        except Exception as e:
+            logger.error(f"[blog/refresh-favicon] {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
     # ΓöÇΓöÇ Recent posts log for a client ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
