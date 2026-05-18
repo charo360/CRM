@@ -240,6 +240,8 @@ async def fetch_keywords_for_seeds(
         cpc_raw = item.get("cpc")
         if comp_raw is None:
             diff_s = "medium"
+        elif isinstance(comp_raw, str):
+            diff_s = "low" if comp_raw.upper() == "LOW" else "high" if comp_raw.upper() == "HIGH" else "medium"
         elif comp_raw < 0.33:
             diff_s = "low"
         elif comp_raw < 0.66:
