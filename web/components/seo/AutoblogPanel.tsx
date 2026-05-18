@@ -3,16 +3,6 @@
 import React, { useEffect, useState } from "react";
 import { blogApi, settingsApi, businessKnowledgeApi, type BlogStatus, type AutoblogPost } from "@/lib/api";
 import { getUser } from "@/lib/auth";
-
-/** Autoblog routes use Mongo `client_id` (= user id). Never use `wp_slug` for these calls. */
-function autoblogClientId(blog: BlogStatus | null): string {
-  if (!blog?.connected) return "";
-  if (blog.client_id) return blog.client_id;
-  const u = getUser();
-  if (!u) return "";
-  const raw = u.id ?? u._id;
-  return raw != null ? String(raw) : "";
-}
 import {
   Rss,
   Globe,
@@ -28,6 +18,16 @@ import {
   AlertCircle,
   Settings,
 } from "lucide-react";
+
+/** Autoblog routes use Mongo `client_id` (= user id). Never use `wp_slug` for these calls. */
+function autoblogClientId(blog: BlogStatus | null): string {
+  if (!blog?.connected) return "";
+  if (blog.client_id) return blog.client_id;
+  const u = getUser();
+  if (!u) return "";
+  const raw = u.id ?? u._id;
+  return raw != null ? String(raw) : "";
+}
 
 function Badge({ active }: { active: boolean }) {
   return (

@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { seoApi } from "@/lib/api";
 
 interface LocalListing {
-  platform: "google-business" | "yelp" | "apple-maps" | "bing-places";
+  id: string;
+  platform: string;
   name: string;
   address: string;
   phone: string;
@@ -10,7 +11,8 @@ interface LocalListing {
   rating?: number;
   reviews?: number;
   status: "verified" | "pending" | "not-listed";
-  lastUpdated?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface LocalKeyword {
@@ -291,7 +293,7 @@ export default function LocalSEO() {
                     </div>
                   </td>
                   <td className="text-center py-3">
-                    <span className="font-medium text-slate-800">{keyword.searchVolume.toLocaleString()}</span>
+                    <span className="font-medium text-slate-800">{(keyword.searchVolume ?? 0).toLocaleString()}</span>
                   </td>
                   <td className="text-center py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${getDifficultyColor(keyword.difficulty)}`}>

@@ -298,6 +298,7 @@ export interface BlogRendererProps {
   templateId?: string;
   wordCount?: number;
   tags?: string[];
+  keywords?: string[];
   metaTitle?: string;
   metaDescription?: string;
   /** If provided, show as "Published at" link */
@@ -310,6 +311,7 @@ export default function BlogRenderer({
   templateId,
   wordCount,
   tags,
+  keywords: _keywords,
   metaTitle,
   metaDescription,
   publishedUrl,

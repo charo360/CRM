@@ -4,10 +4,10 @@ import { seoApi } from "@/lib/api";
 interface ScheduledPost {
   id: string;
   title: string;
-  scheduled_date: string;
+  scheduled_date?: string;
   platform: "wordpress" | "shopify" | "social";
   status: "scheduled" | "published" | "failed";
-  content_preview: string;
+  content_preview?: string;
 }
 
 interface PublishingCredentials {
@@ -438,7 +438,7 @@ export default function AutoScheduler() {
                     </div>
                     <p className="text-sm text-slate-600 line-clamp-2">{post.content_preview}</p>
                     <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
-                      <span>Scheduled: {new Date(post.scheduled_date).toLocaleString()}</span>
+                      <span>Scheduled: {post.scheduled_date ? new Date(post.scheduled_date).toLocaleString() : "—"}</span>
                       <span>Platform: {post.platform}</span>
                     </div>
                   </div>

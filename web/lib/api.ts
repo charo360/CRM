@@ -1071,6 +1071,8 @@ export interface AssistantMessage {
   agent?: string;
   /** Tap-to-send follow-ups (e.g. Meta / Google Ads step-by-step) */
   suggestions?: string[];
+  /** Documents attached to this user message (shown as chips in the bubble) */
+  documents?: AssistantDocument[];
 }
 
 export interface AssistantAgent {
@@ -1190,7 +1192,9 @@ export const assistantApi = {
     auto_approve?: boolean;
     agent?: string;
     visibility?: "team" | "private";
+    signal?: AbortSignal;
   }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     let controller!: ReadableStreamDefaultController<string>;
     const stream = new ReadableStream<string>({
@@ -1204,7 +1208,8 @@ export const assistantApi = {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(bodyRest),
+          signal,
         });
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => res.statusText);
@@ -1265,6 +1270,33 @@ export const assistantApi = {
     a.download = `${filename || "zilo-export"}.${format}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
+  uploadDocumentWithProgress: (
+    file: File,
+    conversationId: string | null | undefined,
+    onProgress: (pct: number) => void,
+  ): Promise<{ conversation_id: string; document: AssistantDocument }> => {
+    return new Promise((resolve, reject) => {
+      const token = getToken();
+      const form = new FormData();
+      form.append("file", file);
+      const qs = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/assistant/upload${qs}`);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) onProgress(Math.round((ev.loaded / ev.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error("Invalid response")); }
+        } else {
+          try { reject(new Error(JSON.parse(xhr.responseText)?.detail ?? xhr.statusText)); } catch { reject(new Error(xhr.statusText)); }
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload failed"));
+      xhr.send(form);
+    });
   },
   uploadDocument: async (file: File, conversationId?: string | null) => {
     const token = getToken();
@@ -1527,9 +1559,15 @@ export const onboardingApi = {
     api.post<{
       status: string;
       url: string;
+      business_name: string;
       summary: string;
       business_about_draft: string;
       products_services_hint: string;
+      services: { name: string; description: string; price: string }[];
+      location: string;
+      contact_email: string;
+      contact_phone: string;
+      website_url: string;
       where_to_fill: { label: string; path: string; tip: string }[];
     }>("/onboarding/analyze-website", body),
 };
@@ -1894,11 +1932,47 @@ export interface SeoKeyword {
   difficulty: string;
   priority: number;
   content_idea: string;
-  /** Present when results come from DataForSEO Labs */
   search_volume?: number | null;
+  local_country?: string | null;
+  global_search_volume?: number | null;
+  top_region?: string | null;
+  top_region_volume?: number | null;
   cpc?: number | null;
   competition?: string | null;
   keyword_difficulty_score?: number | null;
+}
+
+export interface ContentLink {
+  title: string;
+  url: string;
+  published_at: string;
+}
+
+export interface SerpRankingEntry {
+  keyword: string;
+  domain: string;
+  position: number | null;
+  global_position?: number | null;
+  checked_at: string;
+  location_code?: number;
+  search_volume?: number | null;
+  local_country?: string | null;
+  global_search_volume?: number | null;
+  top_region?: string | null;
+  top_region_volume?: number | null;
+  cpc?: number | null;
+  difficulty?: string | null;
+  trend?: "rising" | "declining" | "stable" | null;
+  content_idea?: string | null;
+  posts?: ContentLink[];
+}
+
+export interface AiVisibilityAudit {
+  url: string;
+  ai_score: number | null;
+  grade: string;
+  issues_count: number;
+  created_at: string;
 }
 
 export interface BlogPost {
@@ -1907,6 +1981,8 @@ export interface BlogPost {
   content: string;
   meta_title: string;
   meta_description: string;
+  image_url?: string;
+  keywords?: string[];
   tags: string[];
   status: "draft" | "scheduled" | "published";
   scheduled_at?: string;
@@ -1914,6 +1990,11 @@ export interface BlogPost {
   created_at: string;
   updated_at: string;
   published_at?: string;
+  site_post_url?: string;
+  /** Calendar generation metadata */
+  calendar_week?: number;
+  calendar_day?: string;
+  word_count?: number;
 }
 
 export interface BlogGenerateResult {
@@ -1921,6 +2002,7 @@ export interface BlogGenerateResult {
   content: string;
   meta_title: string;
   meta_description: string;
+  image_url?: string;
   tags: string[];
   word_count: number;
   topic: string;
@@ -1946,6 +2028,7 @@ export interface SeoBusinessContext {
   context_snippet: string;
   /** True when DATAFORSEO_TOKEN is set — Keywords tab can use live Google metrics. */
   live_keyword_data?: boolean;
+  website_url?: string;
 }
 
 export interface SeoSummary {
@@ -1959,7 +2042,6 @@ export interface SeoSummary {
   total_audits: number;
   avg_seo_score: number | null;
   last_audit: SeoAudit | null;
-  audit_trend?: { date: string; score: number }[];
 }
 
 export const seoApi = {
@@ -1975,7 +2057,8 @@ export const seoApi = {
       keywords: SeoKeyword[];
       business_type: string;
       location: string;
-      keyword_source: "dataforseo" | "ai";
+      keyword_source: "dataforseo" | "vebapi" | "ai";
+      excluded_count?: number;
     }>("/seo/keywords", {
       business_type: business_type ?? "",
       location: location ?? "",
@@ -1992,7 +2075,14 @@ export const seoApi = {
     business_name?: string;
     include_faq?: boolean;
     model_pref?: string;
+    existing_titles?: string[];
   }) => api.post<BlogGenerateResult>("/seo/blog/generate", body),
+
+  addContentLink: (keyword: string, domain: string, title: string, url: string) =>
+    api.post<{ ok: boolean }>("/seo/content-links", { keyword, domain, title, url }),
+
+  suggestAngles: (keyword: string, existingTitles: string[]) =>
+    api.post<{ keyword: string; angles: { title: string; angle: string }[] }>("/seo/suggest-angles", { keyword, existing_titles: existingTitles }),
 
   // Blog CRUD
   listPosts: () => api.get<BlogPost[]>("/seo/blog/posts"),
@@ -2021,7 +2111,115 @@ export const seoApi = {
 
   /** Saved business type, location, language, name — same sources as Settings / Business Knowledge. */
   businessContext: () => api.get<SeoBusinessContext>("/seo/context"),
-  summary: () => api.get<SeoSummary>("/seo/summary"),
+  summary: () => api.get<SeoSummary & { audit_trend: { date: string; score: number; url: string }[] }>("/seo/summary"),
+
+  // Saved keywords (persisted per month)
+  saveKeywords: (body: { keywords: Record<string, unknown>[]; month?: string; business_type?: string; location?: string }) =>
+    api.post<{ ok: boolean; month: string; count: number }>("/seo/keywords/save", body),
+  listSavedKeywords: () =>
+    api.get<{ month: string; count: number; business_type: string; location: string; saved_at: string }[]>("/seo/keywords/saved"),
+  getSavedKeywords: (month: string) =>
+    api.get<{ month: string; keywords: Record<string, unknown>[]; business_type: string; location: string }>(`/seo/keywords/saved/${month}`),
+
+  // Publish credentials (saved so user doesn't re-enter)
+  savePublishCredentials: (body: {
+    platform: string;
+    wp_url?: string; wp_username?: string; wp_password?: string;
+    shopify_domain?: string; shopify_token?: string;
+  }) => api.put<{ ok: boolean }>("/seo/publish-credentials", body),
+  getPublishCredentials: (platform: string) =>
+    api.get<{ platform?: string; wp_url?: string; wp_username?: string; wp_password?: string; shopify_domain?: string; shopify_token?: string; updated_at?: string }>(`/seo/publish-credentials/${platform}`),
+
+  // Monthly improvement suggestions
+  improvementSuggestions: () =>
+    api.get<{ suggestions: { priority: string; action: string; detail: string }[]; generated_at: string }>("/seo/improvement-suggestions"),
+
+  // Bulk calendar draft generation
+  generateCalendarDrafts: (body: {
+    items: { title: string; keywords: string[]; topic?: string; week: number; day: string }[];
+    tone?: string;
+    length?: string;
+  }) => api.post<{
+    drafts: { post_id?: string; title: string; week: number; day: string; status: string; word_count?: number; error?: string }[];
+    total: number;
+  }>("/seo/calendar/generate-drafts", body),
+
+  // SEO memory — progressive improvement history
+  getSeoMemory: () => api.get<{
+    audit_history: { date: string; score: number; url: string; critical_issues: string[] }[];
+    published_count: number;
+    draft_count: number;
+    published_topics: { title: string; tags: string[]; keywords: string[] }[];
+    draft_topics: { title: string; tags: string[]; keywords: string[] }[];
+    score_trend: "improving" | "declining" | "stable";
+    analysis: {
+      working: string[];
+      not_working: string[];
+      next_month_focus: string[];
+      score_trend: string;
+    };
+    kw_months: string[];
+  }>("/seo/seo-memory"),
+
+  /** Local SEO (mock/contextual data — same handlers as CRM backend `/seo/local/*`). */
+  getLocalListings: () => api.get<{ listings: Record<string, unknown>[] }>("/seo/local/listings"),
+  getLocalKeywords: () => api.get<{ keywords: Record<string, unknown>[] }>("/seo/local/keywords"),
+  getLocalCompetitors: () => api.get<{ competitors: Record<string, unknown>[] }>("/seo/local/competitors"),
+  getLocalScore: () => api.get<Record<string, unknown>>("/seo/local/score"),
+  addLocalListing: (body: {
+    platform: string;
+    name: string;
+    address: string;
+    phone?: string;
+    website?: string;
+  }) => api.post<{ success: boolean; listing: Record<string, unknown> }>("/seo/local/listings", body),
+  updateLocalListing: (id: string, body: Partial<{ platform: string; name: string; address: string; phone: string; website: string; status: string; rating: number; reviews: number }>) =>
+    api.patch<{ success: boolean; listing: Record<string, unknown> }>(`/seo/local/listings/${id}`, body),
+  deleteLocalListing: (id: string) =>
+    api.delete<{ ok: boolean }>(`/seo/local/listings/${id}`),
+
+  // Analytics events log
+  analyticsEvents: (limit = 50) =>
+    api.get<{ id: string; type: string; created_at: string; payload?: Record<string, unknown> }[]>(`/seo/analytics/events?limit=${limit}`),
+
+  // List sitemaps for a GSC property
+  listSearchConsoleSitemaps: (siteUrl?: string) =>
+    api.get<{
+      connected: boolean; site_url?: string; error?: string;
+      sitemaps: { path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number; submitted: number; indexed: number }[];
+    }>(`/seo/analytics/search-console/sitemaps${siteUrl ? `?site_url=${encodeURIComponent(siteUrl)}` : ""}`),
+
+  // List verified GSC properties
+  listSearchConsoleSites: () =>
+    api.get<{ connected: boolean; sites: { url: string; level: string }[]; error?: string }>("/seo/analytics/search-console/sites"),
+
+  // Google Search Console (via Composio)
+  getSearchConsoleData: (siteUrl?: string, days = 28, searchType = "web") =>
+    api.get<{
+      connected: boolean; error?: string; site_url?: string; period_days?: number;
+      summary?: { total_clicks: number; total_impressions: number; avg_ctr: number; avg_position: number };
+      top_queries?: { query: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      top_pages?: { page: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      devices?: { device: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      countries?: { country: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      trend?: { date: string; clicks: number; impressions: number }[];
+    }>(`/seo/analytics/search-console?days=${days}&search_type=${searchType}${siteUrl ? `&site_url=${encodeURIComponent(siteUrl)}` : ""}`),
+
+  // Google Analytics 4 (via Composio)
+  getGa4Data: (propertyId?: string, days = 28) =>
+    api.get<{
+      connected: boolean; error?: string; property_id?: string; period_days?: number;
+      summary?: { total_sessions: number; total_users: number; total_views: number };
+      daily?: { date: string; sessions: number; users: number; views: number; bounce_rate: number; avg_session_duration: number }[];
+    }>(`/seo/analytics/ga4${propertyId ? `?property_id=${encodeURIComponent(propertyId)}&days=${days}` : `?days=${days}`}`),
+
+  // Scheduled posts queue
+  scheduledPosts: () =>
+    api.get<{ id: string; title: string; scheduled_at: string; platform: string; status: string; content_preview: string }[]>("/seo/blog/scheduled"),
+
+  /** Batch-schedule calendar topics — creates or promotes draft→scheduled with a publish date. */
+  scheduleCalendarPosts: (items: { title: string; keywords: string[]; scheduled_at: string; topic?: string; week?: number; day?: string }[]) =>
+    api.post<{ ok: boolean; scheduled: number; results: { post_id: string; title: string; action: string }[] }>("/seo/blog/schedule-batch", { items }),
 
   /** Scrape a website (homepage + sub-pages) and use LLM to write rich content for all Settings fields. */
   scrapeWebsite: (url: string) =>
@@ -2042,34 +2240,35 @@ export const seoApi = {
       };
     }>("/seo/scrape-website", { url }),
 
-  // ── Google Search Console (via Composio) ──────────────────────────────────
-  getSearchConsoleData: (siteUrl?: string, days = 28, searchType = "web") =>
-    api.get<{
-      connected: boolean; error?: string; site_url?: string; period_days?: number;
-      summary?: { total_clicks: number; total_impressions: number; avg_ctr: number; avg_position: number };
-      top_queries?: { query: string; clicks: number; impressions: number; ctr: number; position: number }[];
-      top_pages?: { page: string; clicks: number; impressions: number; ctr: number; position: number }[];
-      devices?: { device: string; clicks: number; impressions: number; ctr: number; position: number }[];
-      countries?: { country: string; clicks: number; impressions: number; ctr: number; position: number }[];
-      trend?: { date: string; clicks: number; impressions: number }[];
-    }>(`/seo/analytics/search-console?days=${days}&search_type=${searchType}${siteUrl ? `&site_url=${encodeURIComponent(siteUrl)}` : ""}`),
+  // SERP Rankings
+  getRankings: (keyword?: string, domain?: string, limit = 200) =>
+    api.get<{ rankings: SerpRankingEntry[] }>(
+      `/seo/serp/rankings?limit=${limit}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ""}${domain ? `&domain=${encodeURIComponent(domain)}` : ""}`
+    ),
+  getRankingTrends: (keyword: string, domain: string, days = 30) =>
+    api.get<{ trends: { date: string; position: number | null; checks: number }[]; keyword: string; domain: string }>(
+      `/seo/serp/rankings/trends?keyword=${encodeURIComponent(keyword)}&domain=${encodeURIComponent(domain)}&days=${days}`
+    ),
+  checkRanking: (keyword: string, domain: string, country?: string) =>
+    api.post<{ keyword: string; domain: string; position: number | null; country: string; checked_at: string; top_results: { pos: number; domain: string; url: string }[]; total_results: number }>(
+      "/seo/serp/check", { keyword, domain, country }
+    ),
+  bulkCheckRankings: (keywords: Partial<SeoKeyword>[], domain: string, country?: string) =>
+    api.post<{ results: { keyword: string; position: number | null; checked_at: string }[]; domain: string; checked: number; failed: number }>(
+      "/seo/serp/bulk-check", { keywords, domain, country }
+    ),
+  refreshAllRankings: (country?: string) =>
+    api.post<{ checked: number; failed: number; results: { keyword: string; position: number | null; checked_at: string }[] }>(
+      "/seo/serp/refresh-all", { country }
+    ),
+  backfillVolumes: () =>
+    api.post<{ updated: number }>("/seo/serp/backfill-volumes", {}),
+  deleteRanking: (keyword: string, domain: string) =>
+    api.delete<{ deleted: number }>(`/seo/serp/rankings?keyword=${encodeURIComponent(keyword)}&domain=${encodeURIComponent(domain)}`),
 
-  listSearchConsoleSites: () =>
-    api.get<{ connected: boolean; sites: { url: string; level: string }[]; error?: string }>("/seo/analytics/search-console/sites"),
-
-  listSearchConsoleSitemaps: (siteUrl?: string) =>
-    api.get<{
-      connected: boolean; site_url?: string; error?: string; note?: string;
-      sitemaps: { path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number; submitted: number; indexed: number }[];
-    }>(`/seo/analytics/search-console/sitemaps${siteUrl ? `?site_url=${encodeURIComponent(siteUrl)}` : ""}`),
-
-  // ── Google Analytics 4 (via Composio) ────────────────────────────────────
-  getGa4Data: (propertyId?: string, days = 28) =>
-    api.get<{
-      connected: boolean; error?: string; property_id?: string; period_days?: number;
-      summary?: { total_sessions: number; total_users: number; total_views: number };
-      daily?: { date: string; sessions: number; users: number; views: number; bounce_rate: number; avg_session_duration: number }[];
-    }>(`/seo/analytics/ga4${propertyId ? `?property_id=${encodeURIComponent(propertyId)}&days=${days}` : `?days=${days}`}`),
+  // AI Visibility Audit History
+  getAiAudits: (limit = 30) =>
+    api.get<{ audits: AiVisibilityAudit[] }>(`/seo/ai-audits?limit=${limit}`),
 };
 
 // ── Zernio Live Ads ───────────────────────────────────────────────────────────
@@ -2236,6 +2435,126 @@ export interface SeoAgentConversationDetail extends SeoAgentConversation {
   messages: { role: "user" | "assistant"; content: string; tool_steps?: SeoAgentToolStep[]; ts: string }[];
 }
 
+export interface SeoBriefAction {
+  id: string;
+  priority: number;
+  type: "write_post" | "run_audit" | "research_keywords" | "check_rankings" | "fix_issue";
+  title: string;
+  reason: string;
+  effort: string;
+  keyword?: string | null;
+  url?: string | null;
+  agent_prompt: string;
+}
+
+export interface SeoBrief {
+  health_score: number;
+  health_grade: string;
+  status_summary: string;
+  wins: string[];
+  gaps: string[];
+  actions: SeoBriefAction[];
+  generated_at: string;
+  next_check: string;
+  data_snapshot: {
+    published_posts: number;
+    draft_posts: number;
+    keywords_tracked: number;
+    keywords_without_post: number;
+    audit_score: number | null;
+    days_since_audit: number | null;
+    rankings_tracked: number;
+  };
+}
+
+// ── Zilo Autoblogging ─────────────────────────────────────────────────────────
+
+export interface BlogStatus {
+  connected: boolean;
+  /** Mongo/autoblog `client_id` — always the authenticated user id. Use for deactivate/activate/publish-now/posts. */
+  client_id?: string;
+  blog_url?: string;
+  wp_slug?: string;
+  industry?: string;
+  location?: string;
+  plan?: string;
+  posts_count?: number;
+  last_posted_at?: string;
+  active?: boolean;
+}
+
+export interface AutoblogPost {
+  title: string;
+  post_url: string;
+  published_at: string;
+  keywords?: string[];
+}
+
+export interface KeywordTrackerRow {
+  keyword: string;
+  search_volume: number;
+  difficulty: string;
+  intent: string;
+  content_idea: string;
+  posts: { title: string; url: string; published_at: string }[];
+  created_at: string;
+  updated_at: string;
+}
+
+export const blogApi = {
+  getMyBlog: () => api.get<BlogStatus & { connected: boolean }>("/blog/my"),
+  getStatus: (clientId: string) => api.get<BlogStatus>(`/blog/status/${clientId}`),
+  create: (body: { client_id: string; business_name: string; client_email: string; industry: string; location: string }) =>
+    api.post<{ status: string; blog_url: string; wp_slug: string }>("/blog/create", body),
+  /** Idempotent — call after settings save or onboarding. Auto-uses user._id as client_id. */
+  provision: (body: { business_name: string; client_email: string; industry: string; location: string }) =>
+    api.post<{ status: string; connected: boolean; blog_url?: string; wp_slug?: string }>("/blog/provision", body),
+  publishNow: (client_id: string) =>
+    api.post<{ status: string; topic: string; post_url: string; post_id: number; template_used?: string }>("/blog/publish-now", { client_id }),
+  getPosts: (clientId: string) =>
+    api.get<{ posts: AutoblogPost[] }>(`/blog/posts/${clientId}`),
+  deactivate: (clientId: string) =>
+    request<{ status: string }>(`/blog/deactivate/${clientId}`, { method: "PATCH" }),
+  activate: (clientId: string) =>
+    request<{ status: string }>(`/blog/activate/${clientId}`, { method: "PATCH" }),
+  /** Publish a pre-written SEO post directly to the user's WordPress subsite. */
+  publishFromSeo: (body: { title: string; content: string; keywords?: string[]; excerpt?: string; post_id?: string }) =>
+    api.post<{ status: string; post_url: string; post_id: number; blog_url: string }>("/blog/publish-from-seo", body),
+  /** Keyword tracker — save a keyword to the tracker table. */
+  saveKeywordToTracker: (body: { keyword: string; search_volume?: number; difficulty?: string; intent?: string; content_idea?: string }) =>
+    api.post<{ ok: boolean }>("/blog/keyword-tracker/save", body),
+  /** Link a published post to a tracked keyword. */
+  linkPostToKeyword: (params: { keyword: string; post_title: string; post_url: string }) =>
+    api.post<{ ok: boolean }>(`/blog/keyword-tracker/link-post?keyword=${encodeURIComponent(params.keyword)}&post_title=${encodeURIComponent(params.post_title)}&post_url=${encodeURIComponent(params.post_url)}`, {}),
+  /** Get all tracked keywords with their linked blog posts. */
+  getKeywordTracker: () =>
+    api.get<{ keywords: KeywordTrackerRow[] }>("/blog/keyword-tracker"),
+  /** Batch-fetch real search volumes from DataForSEO for keywords missing volumes. */
+  enrichVolumes: () =>
+    api.post<{ ok: boolean; updated: number; checked: number; message?: string }>("/blog/keyword-tracker/enrich-volumes", {}),
+  /** Regenerate and upload a custom favicon for the user's WordPress subsite. */
+  refreshFavicon: () =>
+    api.post<{ status: string; message: string }>("/blog/refresh-favicon", {}),
+};
+
+export interface SeoCacheToolStat {
+  tool: string;
+  cached: number;
+  hits: number;
+  ttl_days: number;
+}
+
+export interface SeoCacheStats {
+  total_cached: number;
+  valid_cached: number;
+  expired_cached: number;
+  api_calls_saved: number;
+  oldest_entry: string | null;
+  newest_entry: string | null;
+  by_tool: SeoCacheToolStat[];
+  error?: string;
+}
+
 export const seoAgentApi = {
   chat: (message: string, conversation_id?: string, history?: { role: string; content: string }[]) =>
     api.post<SeoAgentChatResponse>("/seo-agent/chat", {
@@ -2251,85 +2570,20 @@ export const seoAgentApi = {
   deleteConversation: (id: string) => api.delete<{ ok: boolean }>(`/seo-agent/conversations/${id}`),
 
   status: () => api.get<{ available: boolean; tools: string[] }>("/seo-agent/status"),
-};
 
-// ── Blog / Autoblog types ──────────────────────────────────────────────────
+  brief: (refresh = false) =>
+    api.get<SeoBrief>(`/seo-agent/brief${refresh ? "?refresh=true" : ""}`),
 
-export interface BlogStatus {
-  connected: boolean;
-  active?: boolean;
-  blog_url?: string;
-  wp_slug?: string;
-  client_id?: string;
-  posts_count?: number;
-  industry?: string;
-  location?: string;
-  business_name?: string;
-  schedule?: string;
-  last_published?: string | null;
-}
+  executeAction: (agent_prompt: string, conversation_id?: string) =>
+    api.post<SeoAgentChatResponse>("/seo-agent/execute-action", {
+      agent_prompt,
+      conversation_id: conversation_id ?? null,
+    }),
 
-export interface AutoblogPost {
-  title: string;
-  published_at: string;
-  wp_id?: number;
-  url?: string;
-  status?: string;
-  template?: string;
-  industry?: string;
-}
+  cacheStats: () => api.get<SeoCacheStats>("/seo-agent/cache/stats"),
 
-export const blogApi = {
-  getMyBlog: () => api.get<BlogStatus>("/blog/status"),
-
-  getPosts: (client_id: string) =>
-    api.get<{ posts: AutoblogPost[] }>(`/blog/posts/${client_id}`),
-
-  provision: (body: {
-    business_name: string;
-    client_email?: string;
-    industry?: string;
-    location?: string;
-  }) => api.post<BlogStatus>("/blog/provision", body),
-
-  publishNow: (client_id: string) =>
-    api.post<{ ok: boolean; template_used?: string; post_url?: string }>(
-      "/blog/publish-now",
-      { client_id }
+  clearCache: (tool = "") =>
+    api.delete<{ ok: boolean; deleted: number }>(
+      `/seo-agent/cache${tool ? `?tool=${encodeURIComponent(tool)}` : ""}`
     ),
-
-  refreshFavicon: () =>
-    api.post<{ status: string; message?: string }>("/blog/refresh-favicon", {}),
-
-  activate: (client_id: string) =>
-    api.post<{ ok: boolean }>("/blog/activate", { client_id }),
-
-  deactivate: (client_id: string) =>
-    api.post<{ ok: boolean }>("/blog/deactivate", { client_id }),
-
-  getKeywordTracker: () =>
-    api.get<{ keywords: Record<string, unknown>[] }>("/blog/keyword-tracker"),
-
-  saveKeywordToTracker: (body: {
-    keyword: string;
-    search_volume?: number;
-    difficulty?: string;
-    intent?: string;
-  }) => api.post<{ ok: boolean }>("/blog/keyword-tracker", body),
-
-  enrichVolumes: () =>
-    api.post<{ updated: number }>("/blog/enrich-volumes", {}),
-
-  publishFromSeo: (body: {
-    title: string;
-    content: string;
-    keywords?: string[];
-    excerpt?: string;
-  }) => api.post<{ ok: boolean; post_url?: string }>("/blog/publish-from-seo", body),
-
-  linkPostToKeyword: (body: {
-    keyword: string;
-    post_title: string;
-    post_url?: string;
-  }) => api.post<{ ok: boolean }>("/blog/link-keyword", body),
 };

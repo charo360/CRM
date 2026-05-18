@@ -1186,9 +1186,11 @@ async def composio_proxy(
 
         "parameters": param_list,
 
-        "body": json or {},
-
     }
+
+    if method.upper() not in ("GET", "HEAD"):
+
+        proxy_body["body"] = json or {}
 
     if conn_id:
 

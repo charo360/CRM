@@ -100,8 +100,8 @@ function TrackerRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-slate-800 text-sm">{row.keyword}</span>
-            {intentBadge(row.intent)}
-            {difficultyBadge(row.difficulty)}
+            {intentBadge(row.intent ?? "")}
+            {difficultyBadge(row.difficulty ?? "")}
           </div>
           {row.content_idea && (
             <p className="text-xs text-slate-500 mt-0.5 truncate">💡 {row.content_idea}</p>
@@ -233,7 +233,7 @@ function SeoHubWorkspace({
     if (!silent) setTrackerLoading(true);
     try {
       const data = await blogApi.getKeywordTracker();
-      setTrackerRows(data.keywords ?? []);
+      setTrackerRows(data.keywords);
     } catch {
       // tracker empty — that's fine
     } finally {
@@ -404,7 +404,7 @@ function SeoHubWorkspace({
         post_title: post.title,
         post_url: result.post_url,
       }).catch(() => {});
-      setPublishUrls(u => ({ ...u, [key]: result.post_url }));
+      setPublishUrls(u => ({ ...u, [key]: result.post_url ?? "" }));
       setPublishStates(s => ({ ...s, [key]: "done" }));
       await loadTracker();
     } catch (e) {
