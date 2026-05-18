@@ -2208,6 +2208,22 @@ export const seoApi = {
   analyticsEvents: (limit = 50) =>
     api.get<{ id: string; type: string; created_at: string; payload?: Record<string, unknown> }[]>(`/seo/analytics/events?limit=${limit}`),
 
+  // Page indexing breakdown (URL Inspection API)
+  getPageIndexingStatus: (siteUrl?: string, sitemapUrl?: string, maxUrls = 20) =>
+    api.get<{
+      connected: boolean; error?: string;
+      total_inspected?: number; indexed?: number; not_indexed?: number;
+      sitemap_url?: string;
+      reasons?: {
+        reason: string; label: string; color: string; fix: string | null;
+        count: number; urls: string[];
+      }[];
+    }>(
+      `/seo/analytics/search-console/indexing?max_urls=${maxUrls}` +
+      (siteUrl ? `&site_url=${encodeURIComponent(siteUrl)}` : "") +
+      (sitemapUrl ? `&sitemap_url=${encodeURIComponent(sitemapUrl)}` : "")
+    ),
+
   // List sitemaps for a GSC property
   listSearchConsoleSitemaps: (siteUrl?: string) =>
     api.get<{

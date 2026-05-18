@@ -148,6 +148,11 @@ export default function AnalyticsIntegration() {
   const [sitemaps, setSitemaps] = useState<{ path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number; submitted: number; indexed: number }[] | null>(null);
   const [sitemapsNote, setSitemapsNote] = useState<string | null>(null);
   const [sitemapsLoading, setSitemapsLoading] = useState(false);
+  const [indexingData, setIndexingData] = useState<{
+    total_inspected?: number; indexed?: number; not_indexed?: number; sitemap_url?: string; error?: string;
+    reasons?: { reason: string; label: string; color: string; fix: string | null; count: number; urls: string[] }[];
+  } | null>(null);
+  const [indexingLoading, setIndexingLoading] = useState(false);
   const [ga4Data, setGa4Data] = useState<Ga4Data | null>(null);
   const [ga4Loading, setGa4Loading] = useState(false);
   const [ga4PropertyId, setGa4PropertyId] = useState("");
@@ -188,6 +193,20 @@ export default function AnalyticsIntegration() {
       setSitemapsNote((d as Record<string, unknown>).note as string ?? null);
     } catch { setSitemaps([]); setSitemapsNote(null); }
     setSitemapsLoading(false);
+  }, [gscActiveUrl]);
+
+  const fetchIndexingData = useCallback(async (siteUrl?: string, sitemapUrl?: string) => {
+    setIndexingLoading(true);
+    setIndexingData(null);
+    try {
+      const d = await seoApi.getPageIndexingStatus(
+        siteUrl || gscActiveUrl || undefined,
+        sitemapUrl,
+        20,
+      );
+      setIndexingData(d);
+    } catch { setIndexingData({ error: "Failed to fetch indexing data" }); }
+    setIndexingLoading(false);
   }, [gscActiveUrl]);
 
   const handleListSites = useCallback(async () => {
@@ -763,6 +782,99 @@ export default function AnalyticsIntegration() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+
+              {/* Page Indexing Breakdown */}
+              <div className="mt-4 pt-4 border-t border-slate-100">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-700">🔍 Page Indexing Breakdown</h4>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Inspects your sitemap URLs via Google&apos;s URL Inspection API to show exactly why pages aren&apos;t indexed.</p>
+                  </div>
+                  <button
+                    onClick={() => fetchIndexingData(gscActiveUrl || undefined, sitemaps?.[0]?.path)}
+                    disabled={indexingLoading}
+                    className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {indexingLoading ? "Inspecting…" : indexingData ? "↻ Re-run" : "Run Analysis"}
+                  </button>
+                </div>
+
+                {indexingLoading && (
+                  <div className="space-y-2 animate-pulse">
+                    <div className="h-4 bg-slate-100 rounded w-1/2" />
+                    {[1,2,3].map(i => <div key={i} className="h-16 bg-slate-100 rounded-xl" />)}
+                  </div>
+                )}
+
+                {!indexingLoading && indexingData?.error && (
+                  <div className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{indexingData.error}</div>
+                )}
+
+                {!indexingLoading && indexingData && !indexingData.error && (
+                  <>
+                    {/* Summary bar */}
+                    <div className="flex gap-4 mb-4 text-xs">
+                      <div className="flex items-center gap-1.5 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+                        <span className="text-green-600 font-bold text-base">{indexingData.indexed ?? 0}</span>
+                        <span className="text-green-700">Indexed</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                        <span className="text-red-600 font-bold text-base">{indexingData.not_indexed ?? 0}</span>
+                        <span className="text-red-700">Not indexed</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-500">
+                        {indexingData.total_inspected ?? 0} URLs inspected
+                      </div>
+                    </div>
+
+                    {/* Reasons list */}
+                    <div className="space-y-3">
+                      {(indexingData.reasons ?? []).map((r, i) => {
+                        const colorMap: Record<string, { bg: string; border: string; badge: string; badgeText: string; bar: string }> = {
+                          green:  { bg: "bg-green-50",  border: "border-green-200",  badge: "bg-green-100",  badgeText: "text-green-700",  bar: "bg-green-500"  },
+                          red:    { bg: "bg-red-50",    border: "border-red-200",    badge: "bg-red-100",    badgeText: "text-red-700",    bar: "bg-red-500"    },
+                          amber:  { bg: "bg-amber-50",  border: "border-amber-200",  badge: "bg-amber-100",  badgeText: "text-amber-700",  bar: "bg-amber-400"  },
+                          blue:   { bg: "bg-blue-50",   border: "border-blue-200",   badge: "bg-blue-100",   badgeText: "text-blue-700",   bar: "bg-blue-400"   },
+                          slate:  { bg: "bg-slate-50",  border: "border-slate-200",  badge: "bg-slate-100",  badgeText: "text-slate-600",  bar: "bg-slate-400"  },
+                        };
+                        const c = colorMap[r.color] ?? colorMap.slate;
+                        return (
+                          <div key={i} className={`rounded-xl border p-4 ${c.bg} ${c.border}`}>
+                            <div className="flex items-center justify-between mb-2">
+                              <span className={`text-xs font-semibold ${c.badgeText}`}>{r.label}</span>
+                              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${c.badge} ${c.badgeText}`}>{r.count} page{r.count !== 1 ? "s" : ""}</span>
+                            </div>
+                            {r.fix && (
+                              <p className="text-[11px] text-slate-700 mb-2 leading-relaxed">{r.fix}</p>
+                            )}
+                            {r.urls.length > 0 && (
+                              <div className="space-y-0.5">
+                                <p className="text-[10px] text-slate-400 font-medium">Example URLs:</p>
+                                {r.urls.map((u, j) => (
+                                  <a key={j} href={u} target="_blank" rel="noreferrer"
+                                    className="block text-[10px] text-blue-600 hover:underline truncate max-w-full">
+                                    {u.replace(/^https?:\/\//, "")}
+                                  </a>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-2">
+                      Inspected first {indexingData.total_inspected} URLs from {indexingData.sitemap_url?.replace(/^https?:\/\//, "")}.
+                    </p>
+                  </>
+                )}
+
+                {!indexingLoading && !indexingData && (
+                  <div className="text-center py-6 text-slate-400 text-xs">
+                    <p className="text-2xl mb-1">🔍</p>
+                    <p>Click <strong>Run Analysis</strong> to inspect your sitemap URLs and see exactly why pages aren&apos;t indexed.</p>
                   </div>
                 )}
               </div>

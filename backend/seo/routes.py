@@ -3459,6 +3459,201 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
                 continue
         return {"connected": True, "sitemaps": [], "error": "Could not retrieve sitemaps — check site URL."}
 
+    @router.get("/analytics/search-console/indexing")
+    async def get_page_indexing_status(
+        site_url: str = "",
+        sitemap_url: str = "",
+        max_urls: int = 20,
+        user=user_dep,
+    ):
+        """
+        Inspect each sitemap URL via the GSC URL Inspection API and return a
+        breakdown of why pages are (or aren't) indexed — mirroring the
+        'Why pages aren't indexed' table in GSC.
+        """
+        import httpx as _hx
+        import xml.etree.ElementTree as _ET
+        from composio_service import composio_proxy, get_connection_status
+
+        tid = _tid(user)
+        status = await get_connection_status(tid, "googlesearchconsole")
+        if not status.get("connected"):
+            return {"connected": False, "reasons": []}
+
+        ctx = _seo_business_context(user)
+        raw_site = (site_url.strip() or ctx.get("website_url", "")).strip().rstrip("/")
+        if not raw_site:
+            return {"connected": True, "reasons": [], "error": "No site URL provided"}
+        if not raw_site.startswith("http"):
+            raw_site = f"https://{raw_site}"
+
+        # Derive sitemap URL
+        sm_url = sitemap_url.strip() or f"{raw_site}/sitemap.xml"
+
+        # Fetch and parse sitemap XML for the list of page URLs
+        urls_to_inspect: list[str] = []
+        try:
+            async with _hx.AsyncClient(timeout=12, follow_redirects=True) as cl:
+                resp = await cl.get(sm_url)
+                if resp.status_code == 200:
+                    root = _ET.fromstring(resp.content)
+                    ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+                    for loc in root.findall(".//sm:url/sm:loc", ns):
+                        if loc.text:
+                            urls_to_inspect.append(loc.text.strip())
+                    # Handle sitemap index files
+                    if not urls_to_inspect:
+                        for loc in root.findall(".//sm:sitemap/sm:loc", ns):
+                            if loc.text:
+                                urls_to_inspect.append(loc.text.strip())
+        except Exception as exc:
+            logger.warning("[gsc/indexing] sitemap fetch failed %s: %s", sm_url, exc)
+
+        if not urls_to_inspect:
+            return {
+                "connected": True, "reasons": [],
+                "error": f"Could not fetch or parse sitemap at {sm_url}",
+            }
+
+        urls_to_inspect = urls_to_inspect[: min(max_urls, 50)]
+
+        # Actionable advice per GSC coverage state
+        _ADVICE: dict[str, dict] = {
+            "Submitted and indexed": {
+                "color": "green", "fix": None,
+                "label": "Indexed ✓",
+            },
+            "Crawled - currently not indexed": {
+                "color": "red",
+                "label": "Crawled – not indexed",
+                "fix": (
+                    "Google read these pages but decided they weren't valuable enough to index. "
+                    "Add more unique, in-depth content (aim for 500+ words). Remove duplicate or thin pages. "
+                    "Strengthen internal linking to these pages."
+                ),
+            },
+            "Alternate page with proper canonical tag": {
+                "color": "amber",
+                "label": "Alternate page (canonical set)",
+                "fix": (
+                    "These pages have a canonical tag pointing to a different URL. "
+                    "If they should be indexed, update the canonical tag to point to themselves. "
+                    "If intentional, this is fine — Google is indexing the canonical version."
+                ),
+            },
+            "Page with redirect": {
+                "color": "amber",
+                "label": "Page with redirect",
+                "fix": (
+                    "These sitemap URLs redirect to other pages. Update your sitemap to use the final "
+                    "destination URLs instead. Remove any unnecessary redirect chains."
+                ),
+            },
+            "Discovered - currently not indexed": {
+                "color": "blue",
+                "label": "Discovered – not yet crawled",
+                "fix": (
+                    "Google found these pages but hasn't crawled them yet. "
+                    "Use the URL Inspection tool in GSC and click 'Request Indexing' for each one. "
+                    "Also improve internal linking to these pages."
+                ),
+            },
+            "Duplicate, submitted URL not selected as canonical": {
+                "color": "amber",
+                "label": "Duplicate (not chosen as canonical)",
+                "fix": (
+                    "Google considers these duplicates of other pages and chose a different canonical. "
+                    "Add a self-referencing canonical tag or consolidate the content into one URL."
+                ),
+            },
+            "Blocked by robots.txt": {
+                "color": "red",
+                "label": "Blocked by robots.txt",
+                "fix": (
+                    "Your robots.txt is preventing Google from crawling these pages. "
+                    "Update robots.txt to allow Googlebot access to these URLs."
+                ),
+            },
+            "Not found (404)": {
+                "color": "red",
+                "label": "Not found (404)",
+                "fix": (
+                    "These pages return 404. Either restore the pages, redirect to relevant existing "
+                    "pages with a 301, or remove them from your sitemap."
+                ),
+            },
+            "Soft 404": {
+                "color": "red",
+                "label": "Soft 404",
+                "fix": (
+                    "These pages return a 200 status but show empty or 'not found' content. "
+                    "Fix the page content or return a proper 404 status code."
+                ),
+            },
+            "Server error (5xx)": {
+                "color": "red",
+                "label": "Server error",
+                "fix": (
+                    "These pages are returning server errors. Check your server logs and fix the "
+                    "underlying errors before Google can index them."
+                ),
+            },
+        }
+        _DEFAULT_ADVICE = {
+            "color": "slate", "label": "Other",
+            "fix": "Use the URL Inspection tool in GSC for details on this page.",
+        }
+
+        reasons_map: dict[str, dict] = {}
+        indexed_count = 0
+        not_indexed_count = 0
+
+        for url in urls_to_inspect:
+            try:
+                result = await composio_proxy(
+                    tid, "googlesearchconsole", "POST",
+                    "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect",
+                    json={"inspectionUrl": url, "siteUrl": raw_site + "/"},
+                    timeout=20.0,
+                )
+                ir = result.get("inspectionResult") or result
+                idx = ir.get("indexStatusResult") or {}
+                verdict = idx.get("verdict", "")
+                coverage = idx.get("coverageState") or verdict or "Unknown"
+
+                if verdict == "PASS":
+                    indexed_count += 1
+                else:
+                    not_indexed_count += 1
+
+                if coverage not in reasons_map:
+                    advice = _ADVICE.get(coverage, _DEFAULT_ADVICE)
+                    reasons_map[coverage] = {
+                        "reason": coverage,
+                        "label": advice.get("label", coverage),
+                        "color": advice["color"],
+                        "fix": advice["fix"],
+                        "count": 0,
+                        "urls": [],
+                    }
+                reasons_map[coverage]["count"] += 1
+                if len(reasons_map[coverage]["urls"]) < 3:
+                    reasons_map[coverage]["urls"].append(url)
+
+            except Exception as exc:
+                logger.warning("[gsc/indexing] inspect failed %s: %s", url, exc)
+                continue
+
+        reasons = sorted(reasons_map.values(), key=lambda r: -r["count"])
+        return {
+            "connected": True,
+            "total_inspected": len(urls_to_inspect),
+            "indexed": indexed_count,
+            "not_indexed": not_indexed_count,
+            "reasons": reasons,
+            "sitemap_url": sm_url,
+        }
+
     @router.get("/analytics/search-console/sites")
     async def list_search_console_sites(user=user_dep):
         """List all sites the user has verified in Google Search Console."""
