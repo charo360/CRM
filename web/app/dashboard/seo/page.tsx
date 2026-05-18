@@ -1149,7 +1149,7 @@ function RankingsTab() {
                             ) : null}
                             {r.cpc ? (
                               <span className="text-[9px] bg-purple-50 text-purple-700 border border-purple-100 px-1 py-0.5 rounded-full font-medium">
-                                💰 CPC ${r.cpc.toFixed(2)}
+                                💰 CPC ${Number(r.cpc).toFixed(2)}
                               </span>
                             ) : null}
                           </div>
@@ -2685,7 +2685,7 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                             ) : null}
                             {row.cpc ? (
                               <span className="text-[10px] bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded-full font-medium">
-                                💰 CPC ${row.cpc.toFixed(2)}
+                                💰 CPC ${Number(row.cpc).toFixed(2)}
                               </span>
                             ) : null}
                             {row.difficulty ? (
