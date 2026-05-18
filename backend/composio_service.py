@@ -78,33 +78,44 @@ _APP_NAMES: Dict[str, str] = {
 
     "mailchimp":       "mailchimp",
 
-    "brevo":           "brevo",
+    "brevo":                "brevo",
+
+    # Google Analytics toolkits
+    "googlesearchconsole":  "googlesearchconsole",
+    "googleanalytics":      "googleanalytics",
+    "googleads":            "googleads",
 
 }
 
 
 
-TOOLKIT_GMAIL        = "gmail"
+TOOLKIT_GMAIL              = "gmail"
 
-TOOLKIT_CALENDAR     = "googlecalendar"
+TOOLKIT_CALENDAR           = "googlecalendar"
 
-TOOLKIT_OUTLOOK      = "outlook"
+TOOLKIT_OUTLOOK            = "outlook"
 
-TOOLKIT_SLACK        = "slack"
+TOOLKIT_SLACK              = "slack"
 
-TOOLKIT_GOOGLESHEETS = "googlesheets"
+TOOLKIT_GOOGLESHEETS       = "googlesheets"
 
-TOOLKIT_NOTION       = "notion"
+TOOLKIT_NOTION             = "notion"
 
-TOOLKIT_SHOPIFY      = "shopify"
+TOOLKIT_SHOPIFY            = "shopify"
 
-TOOLKIT_STRIPE       = "stripe"
+TOOLKIT_STRIPE             = "stripe"
 
-TOOLKIT_KLAVIYO      = "klaviyo"
+TOOLKIT_KLAVIYO            = "klaviyo"
 
-TOOLKIT_MAILCHIMP    = "mailchimp"
+TOOLKIT_MAILCHIMP          = "mailchimp"
 
-TOOLKIT_BREVO        = "brevo"
+TOOLKIT_BREVO              = "brevo"
+
+TOOLKIT_SEARCHCONSOLE      = "googlesearchconsole"
+
+TOOLKIT_GOOGLEANALYTICS    = "googleanalytics"
+
+TOOLKIT_GOOGLEADS          = "googleads"
 
 
 
