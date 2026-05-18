@@ -3064,7 +3064,9 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
             </div>
           ) : (() => {
             const readyPosts = posts.filter(p => !publishedUrls[p.id] && !p.site_post_url && p.status !== "published");
-            const donePosts  = posts.filter(p =>  publishedUrls[p.id] ||  p.site_post_url || p.status === "published");
+            const donePosts  = posts
+              .filter(p => publishedUrls[p.id] || p.site_post_url || p.status === "published")
+              .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime());
             const renderPost = (post: BlogPost) => (
               <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3 hover:bg-slate-50/50 transition-colors">
                 <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setReadPost(post)}>
