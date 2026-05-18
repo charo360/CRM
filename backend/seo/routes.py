@@ -336,9 +336,9 @@ def _keyword_research_seed(business_type: str, business_name: str, snippet: str)
 async def _ai_generate_keywords(
     snippet: str, business_type: str, location: str, exclude: set[str]
 ) -> list[dict]:
-    """Generate 25 keyword phrases + compelling blog angles in one AI call.
-    Returns list of {"keyword": str, "angle": str} dicts.
-    Works with just business_type if snippet is empty.
+    """Generate 25 business-specific keyword phrases with intent + blog angles.
+    Returns list of {"keyword": str, "intent": str, "angle": str} dicts.
+    Keywords are service+location phrases, NOT generic product/ingredient names.
     """
     exclude_sample = sorted(exclude)[:30]
     exclude_block = (
@@ -346,53 +346,69 @@ async def _ai_generate_keywords(
         + "\n".join(f"- {k}" for k in exclude_sample)
     ) if exclude_sample else ""
 
+    city = location.split(",")[0].strip() if location else ""
+    loc_line = f"Location: {location}" if location else ""
+
     if snippet and snippet.strip():
         context_block = (
-            f"A business sells this product/service:\n"
-            f"\"\"\"\n{snippet[:900]}\n\"\"\"\n\n"
-            f"What specific tools does it use (WhatsApp, Instagram, Shopify...)? "
-            f"What exact problem does it solve? Who is the customer?\n\n"
-            f"Generate 25 search keyword + blog topic pairs for this business."
+            f"Business type: {business_type}\n"
+            f"{loc_line}\n"
+            f"Business description:\n\"\"\"\n{snippet[:900]}\n\"\"\"\n\n"
+            f"Generate 25 search keyword phrases that potential CUSTOMERS of THIS business type in {location or 'their area'} would type into Google."
         )
     else:
         context_block = (
-            f"Generate 25 search keyword + blog topic pairs for a '{business_type}' business.\n"
-            f"Think: what would someone search at 2am when they have this problem?"
+            f"Business type: {business_type}\n"
+            f"{loc_line}\n\n"
+            f"Generate 25 search keyword phrases that potential CUSTOMERS of a '{business_type}' business{f' in {location}' if location else ''} would type into Google."
         )
 
     prompt = (
-        f"You are an SEO content strategist.\n\n"
+        f"You are an SEO keyword strategist.\n\n"
         f"{context_block}\n\n"
-        f"For each entry output TWO things on one line, separated by ||\n\n"
+        f"For each keyword output THREE things on one line, separated by ||\n\n"
         f"FORMAT (exactly):\n"
-        f"search keyword || Compelling blog title that makes someone click\n\n"
+        f"search keyword || intent || Compelling blog title that makes someone click\n\n"
+        f"INTENT must be one of: local | transactional | informational | navigational\n\n"
+        f"KEYWORD MIX — generate EXACTLY this distribution (5 each):\n"
+        f"- 5 LOCAL: '[service] {city}', '[business type] near me', 'best [service] in {city}'\n"
+        f"- 5 TRANSACTIONAL: 'buy [product]', 'order [service] online', '[service] price', 'affordable [service]'\n"
+        f"- 5 BUYER-INTENT: 'best [service]', '[service] for [customer type]', 'where to get [product]'\n"
+        f"- 5 INFORMATIONAL: 'how to [relevant action]', 'what is [relevant thing]', '[service] guide'\n"
+        f"- 5 LONG-TAIL: 3-5 word phrases combining service + qualifier + location or customer type\n\n"
         f"KEYWORD RULES:\n"
-        f"- 2-4 plain words people actually type in Google\n"
-        f"- No jargon: BAD='omnichannel revenue optimization', GOOD='whatsapp crm'\n"
-        f"- No brand names, no city names\n\n"
+        f"- 2-5 words that real customers type — based on WHAT THIS BUSINESS SELLS/DOES\n"
+        f"- Use '{city}' naturally in local keywords (e.g. 'pharmacy {city}', 'dentist {city}')\n"
+        f"- NO standalone product/ingredient/drug names (e.g. NOT 'azithromycin' alone — use 'buy azithromycin {city}' or 'azithromycin price {city}')\n"
+        f"- NO generic single-word keywords like a product name with nothing else\n"
+        f"- NO brand names of competitors\n"
+        f"- Every keyword must describe a SERVICE or BUYING ACTION, not just name a product\n\n"
         f"BLOG TITLE RULES:\n"
-        f"- Must make a real person want to click and read\n"
         f"- Use numbers, specific outcomes, or provocative questions\n"
-        f"- GOOD: '7 Ways to Stop Losing Sales on WhatsApp', 'Why 80% of Follow-ups Fail (And the Fix)', "
-        f"'I Automated My Sales — Here's What Happened After 30 Days'\n"
-        f"- BAD: 'A Guide to X', 'Understanding X', 'Everything About X', 'The Importance of X'\n"
-        f"- Write like a journalist, not a marketer\n"
+        f"- Reference {city} or the customer's situation where natural\n"
+        f"- GOOD: '7 Signs You Need a {city} Pharmacist Today', 'Where to Buy Affordable Medicines in {city}'\n"
+        f"- BAD: 'A Guide to X', 'Understanding X', 'The Importance of X'\n"
         f"{exclude_block}\n\n"
-        f"Output exactly 25 lines in the format: keyword || Blog Title\nNo numbering, no extra text."
+        f"Output exactly 25 lines in the format: keyword || intent || Blog Title\nNo numbering, no extra text."
     )
     try:
-        raw = await _call_ai(prompt, max_tokens=700)
+        raw = await _call_ai(prompt, max_tokens=900)
         results = []
         for line in raw.strip().splitlines():
             line = line.strip().strip("-•123456789. ").strip()
             if "||" not in line:
                 continue
-            parts = line.split("||", 1)
-            kw = parts[0].strip().strip('"').strip("'")
-            angle = parts[1].strip().strip('"').strip("'") if len(parts) > 1 else ""
+            parts = [p.strip().strip('"').strip("'") for p in line.split("||")]
+            kw = parts[0] if parts else ""
+            intent = parts[1].lower().strip() if len(parts) > 1 else "informational"
+            angle = parts[2] if len(parts) > 2 else ""
+            # Normalise intent
+            valid_intents = {"local", "transactional", "informational", "navigational"}
+            if intent not in valid_intents:
+                intent = "informational"
             if kw and len(kw) >= 3 and kw.lower() not in {e.lower() for e in exclude}:
-                results.append({"keyword": kw, "angle": angle or f"Write about '{kw}'"})
-        logger.info("[seo] AI generated %d keyword+angle pairs", len(results))
+                results.append({"keyword": kw, "intent": intent, "angle": angle or f"Write about '{kw}'"})
+        logger.info("[seo] AI generated %d keyword+intent+angle triples", len(results))
         return results[:25]
     except Exception as e:
         logger.warning("[seo] _ai_generate_keywords failed: %s", e)
@@ -1185,6 +1201,7 @@ Only return the JSON array, no other text."""
                     # Extract keyword strings for volume lookup
                     kw_strings = [item["keyword"] for item in ai_kw_list]
                     angle_map = {item["keyword"].lower().strip(): item["angle"] for item in ai_kw_list}
+                    intent_map = {item["keyword"].lower().strip(): item.get("intent", "informational") for item in ai_kw_list}
 
                     # Fetch local + global + top markets in parallel.
                     # GLOBAL_MARKETS covers 25 countries across all continents — no hardcoding here.
@@ -1236,10 +1253,10 @@ Only return the JSON array, no other text."""
                             "difficulty": diff,
                             "trend": trend,
                             "monthly_searches": monthly_searches,
-                            "intent": "informational",
+                            "intent": intent_map.get(key, "informational"),
                             "priority": pri,
                             "content_idea": angle_map.get(key, f"Write about '{kw_text}'"),
-                            "strategy_type": "informational",
+                            "strategy_type": intent_map.get(key, "informational"),
                         })
                     keyword_source = "ai+dataforseo"
                     with_vol = sum(1 for k in keywords if k.get("global_search_volume"))
