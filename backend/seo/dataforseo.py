@@ -367,3 +367,70 @@ async def fetch_keyword_ideas_live(
 
     logger.info("[dataforseo] Returning %d keyword ideas for seed=%r", len(out), seed_keyword)
     return out
+
+
+# ── Global market location codes (location_code, country_name) ────────────────
+GLOBAL_MARKETS: list[tuple[int, str]] = [
+    (2710, "USA"), (2826, "UK"), (2124, "Canada"), (2036, "Australia"),
+    (2356, "India"), (2076, "Brazil"), (2484, "Mexico"), (2840, "Germany"),
+    (2250, "France"), (2380, "Italy"), (2724, "Spain"), (2792, "Turkey"),
+    (2682, "Saudi Arabia"), (2784, "UAE"), (2818, "Egypt"), (2566, "Nigeria"),
+    (2288, "Ghana"), (2800, "Uganda"), (2713, "South Africa"), (2716, "Zimbabwe"),
+    (2630, "Pakistan"), (2702, "Singapore"), (2458, "Malaysia"), (2404, "Kenya"),
+    (2630, "Pakistan"),
+]
+
+
+async def fetch_keyword_meta_batch(
+    keywords: list[str],
+    *,
+    location_code: int | None = 2404,
+    language_code: str = "en",
+) -> dict[str, dict]:
+    """Like fetch_search_volumes_batch but returns full metadata per keyword:
+    {keyword: {volume, cpc, competition, competition_index, trend, monthly_searches}}
+    """
+    kws = [k.strip() for k in keywords if k.strip()]
+    if not kws:
+        return {}
+    out: dict[str, dict] = {}
+    try:
+        chunk_size = 100
+        for i in range(0, len(kws), chunk_size):
+            batch = kws[i:i + chunk_size]
+            payload: dict = {"keywords": batch, "language_code": language_code}
+            if location_code is not None:
+                payload["location_code"] = location_code
+            data = await dfs_post(
+                "keywords_data/google_ads/search_volume/live",
+                [payload],
+            )
+            tasks = data.get("tasks") or []
+            if not tasks or tasks[0].get("status_code") != 20000:
+                msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
+                logger.warning("[dataforseo] fetch_keyword_meta_batch status: %s", msg)
+                continue
+            items = tasks[0].get("result") or []
+            for item in items:
+                kw = (item.get("keyword") or "").lower().strip()
+                if not kw:
+                    continue
+                monthly = item.get("monthly_searches") or []
+                trend = None
+                if len(monthly) >= 2:
+                    recent = int(monthly[0].get("search_volume") or 0)
+                    older = int(monthly[-1].get("search_volume") or 0)
+                    if older > 0:
+                        trend = "up" if recent > older * 1.1 else "down" if recent < older * 0.9 else "stable"
+                cpc_raw = item.get("cpc")
+                out[kw] = {
+                    "volume": int(item.get("search_volume") or 0),
+                    "cpc": float(cpc_raw) if cpc_raw is not None else None,
+                    "competition": float(item.get("competition") or 0),
+                    "competition_index": item.get("competition_index"),
+                    "trend": trend,
+                    "monthly_searches": monthly[:12],
+                }
+    except Exception as e:
+        logger.warning("[dataforseo] fetch_keyword_meta_batch failed: %s", e)
+    return out
