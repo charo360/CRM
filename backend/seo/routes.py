@@ -1324,7 +1324,7 @@ Only return the JSON array, no other text."""
             try:
                 import asyncio as _asyncio
                 settings = user.get("settings") or {}
-                country_code = str(settings.get("country_code") or user.get("country_code") or "KE").upper()[:2]
+                country_code = str(settings.get("country_code") or user.get("country_code") or "").upper()[:2]
 
                 # Build seed list: AI generates 3 short natural-search phrases from description.
                 # No location in seeds — location collisions (e.g. "Kenya airways") come from
@@ -2914,7 +2914,7 @@ Return ONLY a JSON array, no explanation:
             "keyword": payload["keyword"],
             "domain": payload["domain"],
             "position": payload.get("position"),
-            "location_code": payload.get("location_code", 2404),
+            "location_code": payload.get("location_code"),
             "language_code": payload.get("language_code", "en"),
             "checked_at": datetime.utcnow(),
             "search_volume": payload.get("search_volume"),
@@ -3045,7 +3045,7 @@ Return ONLY a JSON array, no explanation:
         settings = user.get("settings") or {}
         loc_code = dfs.resolve_location_code(
             country=str(settings.get("country") or user.get("country") or ""),
-            country_code=str(settings.get("country_code") or user.get("country_code") or "KE"),
+            country_code=str(settings.get("country_code") or user.get("country_code") or ""),
         )
         lang_code = dfs.language_code_from_settings(
             str(settings.get("primary_language") or "English")
@@ -3244,7 +3244,7 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
 
         settings = user.get("settings") or {}
         country_code = str(
-            settings.get("country_code") or user.get("country_code") or "KE"
+            settings.get("country_code") or user.get("country_code") or ""
         ).upper()[:2]
 
         # Step 1: build vol_map from saved keywords (fast, free)
@@ -3312,7 +3312,7 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
         settings = user.get("settings") or {}
         loc_code = dfs.resolve_location_code(
             country=str(settings.get("country") or user.get("country") or ""),
-            country_code=str(settings.get("country_code") or user.get("country_code") or "KE"),
+            country_code=str(settings.get("country_code") or user.get("country_code") or ""),
         )
         lang_code = dfs.language_code_from_settings(
             str(settings.get("primary_language") or "English")

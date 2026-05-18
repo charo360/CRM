@@ -33,7 +33,7 @@ async def research_seo_topic(db, client_id: str) -> dict:
     """
     blog = await db.blogs.find_one({"client_id": client_id})
     industry = blog.get("industry", "services") if blog else "services"
-    location = blog.get("location", "Nairobi") if blog else "Nairobi"
+    location = blog.get("location", "") if blog else ""
     business_name = blog.get("business_name", "") if blog else ""
 
     # Always get a chat-based seed topic as fallback
@@ -135,7 +135,7 @@ async def generate_topic_from_chats(db, client_id: str) -> str:
 
     blog = await db.blogs.find_one({"client_id": client_id})
     business_name = blog.get("business_name", "this business") if blog else "this business"
-    location = blog.get("location", "Nairobi") if blog else "Nairobi"
+    location = blog.get("location", "") if blog else ""
     industry = blog.get("industry", "services") if blog else "services"
 
     if not recent_chats:

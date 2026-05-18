@@ -252,7 +252,7 @@ def make_action_mode_router(db, user_dep):
         biz_context = {
             "business_name": biz.get("business_name", ""),
             "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", "Kenya"),
+            "country": biz.get("country", ""),
             "goals": goals,
         }
 
@@ -281,7 +281,7 @@ def make_action_mode_router(db, user_dep):
         biz_context = {
             "business_name": biz.get("business_name", ""),
             "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", "Kenya"),
+            "country": biz.get("country", ""),
             "goals": settings.get("goals", ""),
         }
         runners = {
@@ -617,7 +617,7 @@ def make_action_mode_router(db, user_dep):
         biz_context = {
             "business_name": biz.get("business_name", ""),
             "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", "Kenya"),
+            "country": biz.get("country", ""),
             "goals": settings.get("goals", ""),
         }
         bg.add_task(_run_social_engagement, db, uid, social_cfg, biz_context)
@@ -647,7 +647,7 @@ def make_action_mode_router(db, user_dep):
         biz_context = {
             "business_name": biz.get("business_name", ""),
             "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", "Kenya"),
+            "country": biz.get("country", ""),
             "goals": settings_doc.get("goals", ""),
         }
         bg.add_task(_run_fusion_engine, db, uid, biz_context)
@@ -684,7 +684,7 @@ def make_action_mode_router(db, user_dep):
         biz_context  = {
             "business_name": biz.get("business_name", ""),
             "business_type": biz.get("business_type", ""),
-            "country":       biz.get("country", "Kenya"),
+            "country":       biz.get("country", ""),
             "goals":         settings_doc.get("goals", ""),
             "keywords":      social_cfg.get("keywords", []),
         }
@@ -722,7 +722,7 @@ def make_action_mode_router(db, user_dep):
         biz_context  = {
             "business_name": biz.get("business_name", ""),
             "business_type": biz.get("business_type", ""),
-            "country":       biz.get("country", "Kenya"),
+            "country":       biz.get("country", ""),
             "city":          biz.get("city", ""),
             "goals":         settings_doc.get("goals", ""),
             "keywords":      social_cfg.get("keywords", []),
@@ -827,7 +827,7 @@ def make_action_mode_router(db, user_dep):
         biz_context = {
             "business_name": biz.get("business_name", ""),
             "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", "Kenya"),
+            "country": biz.get("country", ""),
             "goals": settings.get("goals", ""),
         }
         bg.add_task(_run_custom_agent, db, uid, agent_doc, biz_context)
@@ -1023,7 +1023,7 @@ async def _run_funding_hunter(db, uid: str, ctx: Dict[str, Any]):
     try:
         biz_name = ctx.get("business_name", "my business")
         biz_type = ctx.get("business_type", "business")
-        country = ctx.get("country", "Kenya")
+        country = ctx.get("country", "")
         goals = ctx.get("goals", "")
         region = "East Africa" if country in ("Kenya", "Uganda", "Tanzania", "Rwanda", "Ethiopia") else \
                  "West Africa" if country in ("Nigeria", "Ghana", "Senegal", "Ivory Coast") else \
@@ -1149,7 +1149,7 @@ async def _run_lead_gen(db, uid: str, ctx: Dict[str, Any]):
     try:
         biz_name = ctx.get("business_name", "my business")
         biz_type = ctx.get("business_type", "business")
-        country = ctx.get("country", "Kenya")
+        country = ctx.get("country", "")
         goals   = ctx.get("goals", "")
 
         await _log_activity(db, uid, "lead_gen",
@@ -1243,7 +1243,7 @@ async def _run_lead_gen(db, uid: str, ctx: Dict[str, Any]):
 async def _run_social_scout(db, uid: str, ctx: Dict[str, Any]):
     try:
         biz_type = ctx.get("business_type", "business")
-        country  = ctx.get("country", "Kenya")
+        country  = ctx.get("country", "")
         biz_name = ctx.get("business_name", "")
         goals    = ctx.get("goals", "")
 
@@ -1800,7 +1800,7 @@ async def _run_custom_agent(db, uid: str, agent_doc: Dict[str, Any], ctx: Dict[s
     description = agent_doc.get("description", "")
     biz_name = ctx.get("business_name", "my business")
     biz_type = ctx.get("business_type", "business")
-    country = ctx.get("country", "Kenya")
+    country = ctx.get("country", "")
     goals   = ctx.get("goals", "")
 
     try:
@@ -2028,7 +2028,7 @@ async def _run_predictive_radar(db, uid: str, biz_context: dict):
     try:
         biz_name  = biz_context.get("business_name", "this business")
         biz_type  = biz_context.get("business_type", "")
-        country   = biz_context.get("country", "Kenya")
+        country   = biz_context.get("country", "")
         goals     = biz_context.get("goals", "")
         keywords  = biz_context.get("keywords", [])
 
@@ -2163,7 +2163,7 @@ async def _run_recon_engine(db, uid: str, biz_context: dict):
     try:
         biz_name  = biz_context.get("business_name", "")
         biz_type  = biz_context.get("business_type", "general")
-        country   = biz_context.get("country", "Kenya")
+        country   = biz_context.get("country", "")
         city      = biz_context.get("city", "") or country
         keywords  = biz_context.get("keywords", [])
         kw_str    = ", ".join(keywords[:5]) if keywords else biz_type

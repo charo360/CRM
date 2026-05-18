@@ -1751,7 +1751,7 @@ async def refresh_all_rankings(config: RunnableConfig) -> str:
         settings = user.get("settings") or {}
         loc_code = dfs.resolve_location_code(
             country=str(settings.get("country") or user.get("country") or ""),
-            country_code=str(settings.get("country_code") or user.get("country_code") or "KE"),
+            country_code=str(settings.get("country_code") or user.get("country_code") or ""),
         )
         lang_code = dfs.language_code_from_settings(str(settings.get("primary_language") or "English"))
         # Deduplicate: latest per keyword+domain

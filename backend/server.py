@@ -997,6 +997,7 @@ class WebRegisterRequest(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
     business_name: str = Field(..., min_length=1, max_length=200)
     owner_name: Optional[str] = Field(None, max_length=200)
+    country_code: Optional[str] = Field(None, max_length=2)  # ISO 3166-1 alpha-2
 
 
 class WebLoginRequest(BaseModel):
@@ -2243,8 +2244,8 @@ async def register_web(req: WebRegisterRequest):
 
     user_id = str(uuid.uuid4())
     phone = _web_placeholder_phone(user_id)
-    country_code = "KE"
-    country_config = get_payment_methods_for_country(country_code)
+    country_code = (req.country_code or "").strip().upper() or None
+    country_config = get_payment_methods_for_country(country_code or "")
     now = datetime.utcnow()
     business_name = req.business_name.strip()
     owner_name = (req.owner_name or "").strip()
@@ -2473,7 +2474,7 @@ async def get_settings(user = Depends(get_current_user)):
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
         "business_type": s.get("business_type") or user.get("business_type", ""),
         "primary_language": s.get("primary_language", "English"),
-        "country": s.get("country", "Kenya"),
+        "country": s.get("country", ""),
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
         "restaurant_has_reservations": s.get("restaurant_has_reservations", False),
