@@ -107,12 +107,18 @@ DATA PROVIDERS (never mention these names to the user):
                  Instagram hashtags, website screenshots.
 
 TOOL QUICK REFERENCE:
-• Website full audit          → veb_page_analysis(url)              [score + category breakdown + issues]
+• On-page SEO audit           → veb_page_analysis(url)              [score + category breakdown + issues]
 • AI search visibility        → veb_ai_visibility_audit(url)         [AI score, llms.txt, indexability]
+• Page speed / Core Web Vitals→ veb_speed_check(url)                [performance score, FCP, LCP, CLS]
+• AI bot crawler check        → veb_ai_crawler_check(domain)         [GPTBot, ClaudeBot, PerplexityBot]
 • Backlink analysis           → veb_backlinks(domain, type)          [all/new/poor/referral]
+• Domain WHOIS / DNS / expiry → veb_domain_data(domain)             [registrar, expiry, nameservers]
 • Domain's current rankings   → veb_top_search_keywords(domain)      [all keywords + positions]
 • Keyword research (backup)   → veb_keyword_research(keyword, country) [volume + CPC]
 • Live Google SERP            → veb_google_serp(keyword, country)    [who ranks + domain authority]
+• Google AI Mode SERP         → veb_google_ai_serp(query, country)  [AI-generated answer + sources]
+• Instagram hashtags          → veb_instagram_hashtags(keyword)      [30 optimized hashtags]
+• YouTube SEO                 → veb_youtube_research(keyword, type)  [type: 'keywords' or 'tags']
 • Geo keyword breakdown       → get_keyword_geo_breakdown(keyword)   [volume in 12 countries]
 • All tracked rankings        → get_rankings()                       [positions + trends + volumes]
 • Refresh all positions       → refresh_all_rankings()               [live SERP check for all keywords]

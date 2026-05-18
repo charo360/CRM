@@ -1243,7 +1243,7 @@ async def veb_page_analysis(url: str) -> str:
         url: Full website URL including https://
     """
     try:
-        data = await _veb_get("/seo/audit", {"url": url})
+        data = await _veb_get("/page-analysis-version-2", {"url": url})
         score = data.get("score") or data.get("seo_score") or 0
         grade = data.get("grade") or ("A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F")
         lines = [f"Website Audit: {url}", f"Overall Score: {score}/100 ({grade})", ""]
@@ -1279,7 +1279,7 @@ async def veb_ai_visibility_audit(url: str) -> str:
         url: Full website URL including https://
     """
     try:
-        data = await _veb_get("/seo/ai-visibility", {"url": url})
+        data = await _veb_get("/ai-visibility-analyzer", {"url": url})
         score = data.get("ai_score") or data.get("score") or 0
         grade = data.get("grade") or ("A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "F")
         lines = [f"AI Visibility Audit: {url}", f"AI Score: {score}/100 ({grade})", ""]
@@ -1315,8 +1315,10 @@ async def veb_backlinks(domain: str, analysis_type: str = "all") -> str:
         domain: Domain to analyze (e.g. example.com — no https://).
         analysis_type: 'all' for overview, 'new' for recent links, 'poor' for toxic links, 'referral' for referring domains.
     """
+    endpoint_map = {"all": "/backlink-data", "new": "/new-backlinks", "poor": "/poorbacklinks", "referral": "/referral-domains"}
+    endpoint = endpoint_map.get(analysis_type, "/backlink-data")
     try:
-        data = await _veb_get("/seo/backlinks", {"domain": domain, "type": analysis_type})
+        data = await _veb_get(endpoint, {"domain": domain})
         total = data.get("total_backlinks") or data.get("total") or 0
         authority = data.get("domain_authority") or data.get("authority_score") or 0
         lines = [f"Backlink Analysis: {domain}", f"Domain Authority: {authority}/100", f"Total Backlinks: {total:,}", ""]
@@ -1351,7 +1353,7 @@ async def veb_google_serp(keyword: str, country: str = "KE") -> str:
         country: 2-letter ISO country code (KE, NG, US, GB).
     """
     try:
-        data = await _veb_get("/seo/serp", {"keyword": keyword, "country": country})
+        data = await _veb_get("/seo/google-serp", {"keyword": keyword, "country": country})
         results = data if isinstance(data, list) else data.get("results") or data.get("organic") or []
         if not results:
             return f"No SERP results for '{keyword}' in {country}."
@@ -1381,7 +1383,7 @@ async def veb_top_search_keywords(domain: str, country: str = "KE") -> str:
         country: 2-letter ISO country code.
     """
     try:
-        data = await _veb_get("/seo/topkeywords", {"domain": domain, "country": country})
+        data = await _veb_get("/topsearch-keywords", {"domain": domain, "country": country})
         kws = data if isinstance(data, list) else data.get("keywords") or data.get("results") or []
         if not kws:
             return f"No ranking keywords found for {domain}. The site may be new or not indexed."
@@ -1456,6 +1458,208 @@ async def get_keyword_geo_breakdown(keyword: str) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Geo breakdown failed: {e}"
+
+
+@tool
+async def veb_domain_data(domain: str) -> str:
+    """
+    Get domain data including WHOIS, expiry date, DNS records, name servers, and domain age.
+    Use when the user asks 'when does my domain expire', 'who owns X domain', or 'domain info'.
+
+    Args:
+        domain: Domain to check (e.g. example.com — no https://).
+    """
+    try:
+        data = await _veb_get("/domain-name-data-v2", {"domain": domain})
+        lines = [f"Domain Data: {domain}"]
+        expiry = data.get("expiry") or data.get("expiry_date") or data.get("expires")
+        if expiry:
+            lines.append(f"Expires: {expiry}")
+        created = data.get("created") or data.get("creation_date")
+        if created:
+            lines.append(f"Registered: {created}")
+        age = data.get("age") or data.get("domain_age")
+        if age:
+            lines.append(f"Domain Age: {age}")
+        registrar = data.get("registrar")
+        if registrar:
+            lines.append(f"Registrar: {registrar}")
+        ns = data.get("name_servers") or data.get("nameservers") or []
+        if ns:
+            lines.append(f"Name Servers: {', '.join(ns) if isinstance(ns, list) else ns}")
+        dns = data.get("dns") or data.get("dns_records") or []
+        if dns:
+            lines.append(f"DNS Records: {len(dns) if isinstance(dns, list) else dns}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Domain data lookup failed: {e}"
+
+
+@tool
+async def veb_speed_check(url: str) -> str:
+    """
+    Check website loading speed and Core Web Vitals. Returns performance score, FCP, LCP, and suggestions.
+    Use when the user asks 'how fast is my site', 'page speed', or 'Core Web Vitals'.
+
+    Args:
+        url: Full website URL including https://
+    """
+    try:
+        data = await _veb_get("/loading-speed-data-v2", {"url": url})
+        score = data.get("performance_score") or data.get("score") or 0
+        lines = [f"Speed Check: {url}", f"Performance Score: {score}/100", ""]
+        fcp = data.get("fcp") or data.get("first_contentful_paint")
+        if fcp:
+            lines.append(f"First Contentful Paint: {fcp}")
+        lcp = data.get("lcp") or data.get("largest_contentful_paint")
+        if lcp:
+            lines.append(f"Largest Contentful Paint: {lcp}")
+        tbt = data.get("tbt") or data.get("total_blocking_time")
+        if tbt:
+            lines.append(f"Total Blocking Time: {tbt}")
+        cls = data.get("cls") or data.get("cumulative_layout_shift")
+        if cls:
+            lines.append(f"Cumulative Layout Shift: {cls}")
+        suggestions = data.get("suggestions") or data.get("opportunities") or []
+        if suggestions:
+            lines.append("\nTop Speed Improvements:")
+            for s in suggestions[:5]:
+                msg = s.get("message") or s.get("title") or str(s)
+                lines.append(f"  → {msg}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Speed check failed: {e}"
+
+
+@tool
+async def veb_ai_crawler_check(domain: str) -> str:
+    """
+    Check whether a website allows AI bots to crawl it (GPTBot, Google-Extended, PerplexityBot, ClaudeBot).
+    Use when the user asks 'can AI find my site', 'is my site blocked from AI', or 'AI crawler access'.
+
+    Args:
+        domain: Domain to check (e.g. example.com — no https://).
+    """
+    try:
+        data = await _veb_get("/ai-seo-crawler", {"domain": domain})
+        lines = [f"AI Crawler Access: {domain}", ""]
+        bots = data.get("bots") or data.get("crawlers") or data if isinstance(data, dict) else {}
+        if isinstance(bots, dict):
+            for bot, status in bots.items():
+                allowed = status if isinstance(status, bool) else str(status).lower() in ("allowed", "true", "yes", "1")
+                icon = "✓ Allowed" if allowed else "✗ Blocked"
+                lines.append(f"  {bot}: {icon}")
+        else:
+            lines.append(str(data))
+        robots = data.get("robots_txt") or data.get("robots")
+        if robots:
+            lines.append(f"\nrobots.txt: {robots}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"AI crawler check failed: {e}"
+
+
+@tool
+async def veb_instagram_hashtags(keyword: str) -> str:
+    """
+    Generate high-quality Instagram hashtags for a keyword or topic.
+    Use when the user asks for Instagram hashtag suggestions for their content.
+
+    Args:
+        keyword: Topic or keyword to generate hashtags for.
+    """
+    try:
+        data = await _veb_get("/instagramhashtags", {"keyword": keyword})
+        tags = data if isinstance(data, list) else data.get("hashtags") or data.get("tags") or []
+        if not tags:
+            return f"No hashtags found for '{keyword}'."
+        formatted = []
+        for t in tags:
+            tag = t if isinstance(t, str) else t.get("tag") or t.get("hashtag") or str(t)
+            if not tag.startswith("#"):
+                tag = "#" + tag
+            formatted.append(tag)
+        return f"Instagram Hashtags for '{keyword}':\n\n" + "  ".join(formatted[:30])
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Hashtag generation failed: {e}"
+
+
+@tool
+async def veb_youtube_research(keyword: str, research_type: str = "keywords") -> str:
+    """
+    YouTube SEO research — get keyword search volumes or generate video tags for a keyword.
+    Use when the user asks about YouTube SEO, video tags, or YouTube search volume.
+
+    Args:
+        keyword: The keyword or video topic to research.
+        research_type: 'keywords' for search volume data, 'tags' for video tag suggestions.
+    """
+    try:
+        if research_type == "tags":
+            data = await _veb_get("/youtube-tag-generator", {"keyword": keyword})
+            tags = data if isinstance(data, list) else data.get("tags") or data.get("results") or []
+            if not tags:
+                return f"No YouTube tags found for '{keyword}'."
+            tag_list = [t if isinstance(t, str) else t.get("tag") or str(t) for t in tags[:30]]
+            return f"YouTube Tags for '{keyword}':\n\n" + ", ".join(tag_list)
+        else:
+            data = await _veb_get("/youtube-keyword-research", {"keyword": keyword})
+            results = data if isinstance(data, list) else data.get("keywords") or data.get("results") or []
+            if not results:
+                return f"No YouTube keyword data for '{keyword}'."
+            lines = [f"YouTube Keyword Research: '{keyword}'\n"]
+            lines.append(f"{'Keyword':<45} {'Volume':>10} {'Difficulty':>12}")
+            lines.append("-" * 70)
+            for r in results[:20]:
+                kw = r.get("keyword") or r.get("text") or str(r)
+                vol = _parse_vol(r.get("volume") or r.get("search_volume"))
+                diff = r.get("difficulty") or r.get("competition") or "—"
+                vol_str = f"{vol:,}" if vol else "—"
+                lines.append(f"{kw:<45} {vol_str:>10} {str(diff):>12}")
+            return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"YouTube research failed: {e}"
+
+
+@tool
+async def veb_google_ai_serp(query: str, country: str = "KE") -> str:
+    """
+    Access Google AI Mode search results for a query (the AI-generated answer panel).
+    Use when the user asks what Google AI says about a topic, or wants AI search result analysis.
+
+    Args:
+        query: The search query to check in Google AI Mode.
+        country: 2-letter ISO country code (KE, NG, US, GB).
+    """
+    try:
+        data = await _veb_get("/google-ai-mode-serp", {"keyword": query, "country": country})
+        lines = [f"Google AI Mode SERP: '{query}' ({country})", ""]
+        ai_answer = data.get("ai_answer") or data.get("answer") or data.get("ai_overview")
+        if ai_answer:
+            lines.append(f"AI Answer:\n{str(ai_answer)[:800]}")
+            lines.append("")
+        sources = data.get("sources") or data.get("results") or []
+        if sources:
+            lines.append("Sources cited by Google AI:")
+            for s in sources[:8]:
+                title = s.get("title") or ""
+                url = s.get("url") or s.get("link") or ""
+                lines.append(f"  • {title} — {url}")
+        return "\n".join(lines) if len(lines) > 2 else f"No AI Mode results for '{query}'."
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Google AI SERP lookup failed: {e}"
 
 
 @tool
@@ -1799,11 +2003,18 @@ SEO_TOOLS = [
     # Website audit
     veb_page_analysis,
     veb_ai_visibility_audit,
+    veb_ai_crawler_check,
+    veb_speed_check,
     audit_website,
     fix_seo_issues,
     # Backlinks & SERP
     veb_backlinks,
     veb_google_serp,
+    veb_google_ai_serp,
+    # Domain & social
+    veb_domain_data,
+    veb_instagram_hashtags,
+    veb_youtube_research,
     # Blog & content
     write_blog_post,
     list_saved_posts,
