@@ -260,8 +260,47 @@ def make_seo_agent_router(db, user_dep):
         tid = _tid(user)
         conv_id = payload.conversation_id or str(uuid.uuid4())
 
+        # ── Fetch business context and inject into system message ─────────────
+        # This ensures the AI always has context without needing to call a tool.
+        from langchain_core.messages import SystemMessage as _SM
+        biz_context_block = ""
+        try:
+            u = await db.users.find_one({"_id": tid})
+            if not u:
+                u = await db.users.find_one({"business_id": tid})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                settings = u.get("settings") or {}
+                biz_name = u.get("business_name", "")
+                biz_type = (str(bk.get("business_type") or "").strip()
+                            or str(settings.get("business_type") or "").strip()
+                            or str(u.get("business_type") or "").strip())
+                loc_parts = []
+                bl = str(bk.get("business_location") or "").strip()
+                if bl: loc_parts.append(bl)
+                country = str(settings.get("country") or "").strip()
+                if country and country not in loc_parts: loc_parts.append(country)
+                location = ", ".join(loc_parts)
+                website = str(bk.get("website_url") or settings.get("website_url") or "").strip()
+                description = str(bk.get("business_description") or "").strip()
+                products_services = str(bk.get("products_services") or "").strip()
+                country_code = str(u.get("country_code") or "").strip()
+                parts = [f"BUSINESS CONTEXT (use this — do NOT ask the user for info already here):"]
+                if biz_name: parts.append(f"Business Name: {biz_name}")
+                if biz_type: parts.append(f"Business Type: {biz_type}")
+                if location: parts.append(f"Location: {location}")
+                if website: parts.append(f"Website: {website}")
+                if country_code: parts.append(f"Country Code: {country_code}")
+                if description: parts.append(f"Business Description: {description[:500]}")
+                if products_services: parts.append(f"Products/Services: {products_services[:500]}")
+                biz_context_block = "\n".join(parts)
+        except Exception as _ctx_err:
+            logger.warning("[seo_agent] Context injection failed: %s", _ctx_err)
+
         # ── Rebuild message list from history + new user turn ─────────────────
         lc_messages = []
+        if biz_context_block:
+            lc_messages.append(_SM(content=biz_context_block))
         for m in payload.history:
             if m.role == "user":
                 lc_messages.append(HumanMessage(content=m.content))
