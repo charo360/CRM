@@ -3062,121 +3062,151 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                 Write Your First Post
               </button>
             </div>
-          ) : (
-            <div className="divide-y divide-slate-50">
-              {posts.map(post => (
-                <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3 hover:bg-slate-50/50 transition-colors">
-                  <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setReadPost(post)}>
-                    <p className="text-sm font-semibold text-slate-800 hover:text-emerald-700 transition-colors">{post.title}</p>
-                    {post.image_url && (
-                      <img src={post.image_url} alt={post.title} className="w-full h-20 object-cover rounded-xl mt-3 border border-slate-200" />
-                    )}
-                    {(post.keywords ?? []).length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-1">
-                        {(post.keywords ?? []).slice(0, 4).map((kw, index) => (
-                          <span key={`${post.id}-kw-${index}`} className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
-                        ))}
-                      </div>
-                    )}
-                    <p className="text-xs text-slate-400 mt-2">
-                      {post.created_at ? new Date(post.created_at).toLocaleDateString() : ""}
-                      {(post as BlogPost & { word_count?: number }).word_count ? ` · ${(post as BlogPost & { word_count?: number }).word_count} words` : ""}
-                    </p>
-                    {(post.tags ?? []).length > 0 && (
-                      <div className="flex gap-1 mt-1 flex-wrap">
-                        {(post.tags ?? []).slice(0, 3).map(t => (
-                          <span key={t} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                    <p className="text-[10px] text-slate-300 mt-1">Click to read →</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1.5 shrink-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusColor(post.status ?? "")}`}>{post.status}</span>
+          ) : (() => {
+            const readyPosts = posts.filter(p => !publishedUrls[p.id] && !p.site_post_url && p.status !== "published");
+            const donePosts  = posts.filter(p =>  publishedUrls[p.id] ||  p.site_post_url || p.status === "published");
+            const renderPost = (post: BlogPost) => (
+              <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3 hover:bg-slate-50/50 transition-colors">
+                <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setReadPost(post)}>
+                  <p className="text-sm font-semibold text-slate-800 hover:text-emerald-700 transition-colors">{post.title}</p>
+                  {post.image_url && (
+                    <img src={post.image_url} alt={post.title} className="w-full h-20 object-cover rounded-xl mt-3 border border-slate-200" />
+                  )}
+                  {(post.keywords ?? []).length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1">
+                      {(post.keywords ?? []).slice(0, 4).map((kw, index) => (
+                        <span key={`${post.id}-kw-${index}`} className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-slate-400 mt-2">
+                    {post.created_at ? new Date(post.created_at).toLocaleDateString() : ""}
+                    {(post as BlogPost & { word_count?: number }).word_count ? ` · ${(post as BlogPost & { word_count?: number }).word_count} words` : ""}
+                  </p>
+                  {(post.tags ?? []).length > 0 && (
+                    <div className="flex gap-1 mt-1 flex-wrap">
+                      {(post.tags ?? []).slice(0, 3).map(t => (
+                        <span key={t} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{t}</span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[10px] text-slate-300 mt-1">Click to read →</p>
+                </div>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => openEditModal(post)}
+                      className="text-xs px-2 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
+                    >
+                      Edit
+                    </button>
+                    {(() => {
+                      const liveUrl = publishedUrls[post.id] || post.site_post_url;
+                      if (liveUrl) {
+                        return (
+                          <a
+                            href={liveUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium whitespace-nowrap"
+                          >
+                            ✓ View live →
+                          </a>
+                        );
+                      }
+                      if (post.status !== "published") {
+                        return (
+                          <button
+                            onClick={() => publishToSite(post)}
+                            disabled={publishingSiteId === post.id}
+                            className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-60 font-medium whitespace-nowrap"
+                          >
+                            {publishingSiteId === post.id ? "Publishing…" : "🚀 Publish"}
+                          </button>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {post.status === "draft" && schedulingPostId !== post.id && (
                       <button
-                        onClick={() => openEditModal(post)}
-                        className="text-xs px-2 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
+                        type="button"
+                        onClick={() => {
+                          setSchedulingPostId(post.id);
+                          setSchedulePostDate(prev => ({ ...prev, [post.id]: prev[post.id] || defaultScheduleDate() }));
+                        }}
+                        className="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 font-medium whitespace-nowrap"
                       >
-                        Edit
+                        📅 Schedule
                       </button>
-                      {(() => {
-                        const liveUrl = publishedUrls[post.id] || post.site_post_url;
-                        if (liveUrl) {
-                          return (
-                            <a
-                              href={liveUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium whitespace-nowrap"
-                            >
-                              ✓ View live →
-                            </a>
-                          );
-                        }
-                        if (post.status !== "published") {
-                          return (
-                            <button
-                              onClick={() => publishToSite(post)}
-                              disabled={publishingSiteId === post.id}
-                              className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-60 font-medium whitespace-nowrap"
-                            >
-                              {publishingSiteId === post.id ? "Publishing…" : "🚀 Publish"}
-                            </button>
-                          );
-                        }
-                        return null;
-                      })()}
-                      {post.status === "draft" && schedulingPostId !== post.id && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSchedulingPostId(post.id);
-                            setSchedulePostDate(prev => ({ ...prev, [post.id]: prev[post.id] || defaultScheduleDate() }));
-                          }}
-                          className="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 font-medium whitespace-nowrap"
-                        >
-                          📅 Schedule
-                        </button>
-                      )}
+                    )}
+                    <button
+                      onClick={() => deletePost(post.id)}
+                      className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  {schedulingPostId === post.id && (
+                    <div className="flex items-center gap-1.5 p-2 bg-blue-50 border border-blue-100 rounded-lg">
+                      <input
+                        type="date"
+                        value={schedulePostDate[post.id] || ""}
+                        onChange={e => setSchedulePostDate(prev => ({ ...prev, [post.id]: e.target.value }))}
+                        min={new Date().toISOString().slice(0, 10)}
+                        className="border border-blue-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
                       <button
-                        onClick={() => deletePost(post.id)}
-                        className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"
+                        type="button"
+                        onClick={() => scheduleExistingPost(post)}
+                        disabled={schedulePostPosting === post.id}
+                        className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 font-semibold whitespace-nowrap"
                       >
-                        Delete
+                        {schedulePostPosting === post.id ? "…" : "Confirm"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSchedulingPostId(null)}
+                        className="text-xs px-2 py-1 bg-white text-slate-500 rounded-lg hover:bg-slate-100 border border-slate-200"
+                      >
+                        ✕
                       </button>
                     </div>
-                    {schedulingPostId === post.id && (
-                      <div className="flex items-center gap-1.5 p-2 bg-blue-50 border border-blue-100 rounded-lg">
-                        <input
-                          type="date"
-                          value={schedulePostDate[post.id] || ""}
-                          onChange={e => setSchedulePostDate(prev => ({ ...prev, [post.id]: e.target.value }))}
-                          min={new Date().toISOString().slice(0, 10)}
-                          className="border border-blue-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => scheduleExistingPost(post)}
-                          disabled={schedulePostPosting === post.id}
-                          className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 font-semibold whitespace-nowrap"
-                        >
-                          {schedulePostPosting === post.id ? "…" : "Confirm"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSchedulingPostId(null)}
-                          className="text-xs px-2 py-1 bg-white text-slate-500 rounded-lg hover:bg-slate-100 border border-slate-200"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            );
+            return (
+              <div>
+                {/* Ready to publish section */}
+                <div className="px-5 py-2.5 bg-emerald-50 border-b border-emerald-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-emerald-800">Ready to Publish</span>
+                    <span className="text-[11px] px-2 py-0.5 bg-emerald-600 text-white rounded-full font-semibold">{readyPosts.length}</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-600">Fully written — click 🚀 Publish to go live</p>
+                </div>
+                {readyPosts.length === 0 ? (
+                  <div className="px-5 py-6 text-center">
+                    <p className="text-sm text-slate-400">No posts waiting to be published.</p>
+                    <button onClick={() => setTab("write")} className="mt-2 text-xs text-emerald-600 hover:underline">Write a new post →</button>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-50">{readyPosts.map(renderPost)}</div>
+                )}
+
+                {/* Published section */}
+                {donePosts.length > 0 && (
+                  <>
+                    <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-500">Published</span>
+                      <span className="text-[11px] px-2 py-0.5 bg-slate-200 text-slate-600 rounded-full font-semibold">{donePosts.length}</span>
+                    </div>
+                    <div className="divide-y divide-slate-50">{donePosts.map(renderPost)}</div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
