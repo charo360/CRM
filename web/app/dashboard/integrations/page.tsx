@@ -861,6 +861,12 @@ function IntegrationsPageInner() {
     const connected = searchParams.get("connected");
     const error = searchParams.get("error");
     if (connected) {
+      // If this page loaded inside an OAuth popup, close it so the parent window
+      // picks up the connection via its polling loop.
+      if (typeof window !== "undefined" && window.opener && !window.opener.closed) {
+        window.close();
+        return;
+      }
       setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!` });
       refreshTg(); void refreshNango(); void refreshZernio(); void refreshComposio();
       window.history.replaceState({}, "", window.location.pathname);
