@@ -746,8 +746,14 @@ function IntegrationsPageInner() {
         body: JSON.stringify({ redirect_base: window.location.origin }),
       });
       if (!res.ok) {
-        const err = (await res.json().catch(() => ({} as { detail?: string }))) as { detail?: string };
-        if (!silent) setBanner({ type: "error", msg: err.detail || "Could not start connection. Please try again." });
+        const err = (await res.json().catch(() => ({} as { detail?: unknown }))) as { detail?: unknown };
+        const rawDetail = err.detail;
+        const errMsg = typeof rawDetail === "string"
+          ? rawDetail
+          : rawDetail && typeof rawDetail === "object"
+            ? ((rawDetail as Record<string, unknown>).message as string) || JSON.stringify(rawDetail)
+            : "Could not start connection. Please try again.";
+        if (!silent) setBanner({ type: "error", msg: errMsg });
         return;
       }
       const data = (await res.json()) as { redirect_url?: string };
