@@ -1176,22 +1176,645 @@ async def web_search(
     return f"Web search unavailable for: {query}"
 
 
+# ── VebAPI helpers ────────────────────────────────────────────────────────────
+
+_VEBAPI_BASE = "https://vebapi.com/api"
+
+def _veb_headers() -> dict:
+    key = os.environ.get("VEBAPI_KEY", "").strip()
+    if not key:
+        raise RuntimeError("VEBAPI_KEY not set. Add it to your environment variables.")
+    return {"X-API-KEY": key}
+
+async def _veb_get(endpoint: str, params: dict) -> dict:
+    async with httpx.AsyncClient(timeout=30) as hc:
+        resp = await hc.get(f"{_VEBAPI_BASE}{endpoint}", headers=_veb_headers(), params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+def _parse_vol(v) -> int:
+    if v is None: return 0
+    s = str(v).replace(",", "").replace("K", "000").strip()
+    try: return int(float(s))
+    except: return 0
+
+
+# ── VebAPI Tools ──────────────────────────────────────────────────────────────
+
+@tool
+async def veb_keyword_research(keyword: str, country: str = "KE") -> str:
+    """
+    Get keyword ideas and search volumes from VebAPI.
+    Use as fallback when DataForSEO is unavailable or for a second opinion.
+
+    Args:
+        keyword: Seed keyword to research.
+        country: 2-letter country code (KE=Kenya, NG=Nigeria, US=USA, GB=UK).
+    """
+    try:
+        data = await _veb_get("/seo/keywordresearch", {"keyword": keyword, "country": country})
+        raw = data if isinstance(data, list) else data.get("keywords", [])
+        if not raw:
+            return f"No keyword ideas found for '{keyword}'."
+        lines = [f"Keyword Ideas for '{keyword}' ({country})\n"]
+        lines.append(f"{'Keyword':<40} {'Volume':>10} {'CPC':>8} {'Difficulty':>12}")
+        lines.append("-" * 74)
+        for kw in raw[:20]:
+            text = str(kw.get("text") or kw.get("keyword") or "")
+            vol = _parse_vol(kw.get("volume") or kw.get("search_volume"))
+            cpc = kw.get("cpc") or "—"
+            diff = kw.get("difficulty") or kw.get("competition") or "—"
+            vol_str = f"{vol:,}" if vol else "< 10"
+            lines.append(f"{text:<40} {vol_str:>10} {str(cpc):>8} {str(diff):>12}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Keyword research failed: {e}"
+
+
+@tool
+async def veb_page_analysis(url: str) -> str:
+    """
+    Comprehensive website audit via VebAPI — overall score with category breakdown (SEO, speed, UX, etc.)
+    and a full issues list. Use this for a deep website audit.
+
+    Args:
+        url: Full website URL including https://
+    """
+    try:
+        data = await _veb_get("/seo/audit", {"url": url})
+        score = data.get("score") or data.get("seo_score") or 0
+        grade = data.get("grade") or ("A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F")
+        lines = [f"Website Audit: {url}", f"Overall Score: {score}/100 ({grade})", ""]
+        categories = data.get("categories") or data.get("scores") or {}
+        if categories:
+            lines.append("Category Scores:")
+            for cat, val in categories.items():
+                lines.append(f"  {cat}: {val}/100")
+            lines.append("")
+        issues = data.get("issues") or []
+        if issues:
+            lines.append(f"Issues Found ({len(issues)}):")
+            for iss in issues[:10]:
+                sev = iss.get("severity") or iss.get("type") or "info"
+                msg = iss.get("message") or iss.get("description") or str(iss)
+                lines.append(f"  [{sev.upper()}] {msg}")
+        else:
+            lines.append("No major issues detected.")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Page analysis failed: {e}. Try audit_website as fallback."
+
+
+@tool
+async def veb_ai_visibility_audit(url: str) -> str:
+    """
+    Check how visible a website is to AI search engines (ChatGPT, Perplexity, Gemini).
+    Checks llms.txt, AI indexability, and AI search readiness score.
+
+    Args:
+        url: Full website URL including https://
+    """
+    try:
+        data = await _veb_get("/seo/ai-visibility", {"url": url})
+        score = data.get("ai_score") or data.get("score") or 0
+        grade = data.get("grade") or ("A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "F")
+        lines = [f"AI Visibility Audit: {url}", f"AI Score: {score}/100 ({grade})", ""]
+        has_llms = data.get("has_llms_txt") or data.get("llms_txt")
+        lines.append(f"llms.txt file: {'✓ Found' if has_llms else '✗ Missing (AI bots use this to understand your site)'}")
+        indexable = data.get("ai_indexable")
+        if indexable is not None:
+            lines.append(f"AI Indexable: {'✓ Yes' if indexable else '✗ No'}")
+        issues = data.get("issues") or []
+        if issues:
+            lines.append("\nAI Visibility Issues:")
+            for iss in issues[:5]:
+                lines.append(f"  • {iss.get('message') or str(iss)}")
+        recs = data.get("recommendations") or []
+        if recs:
+            lines.append("\nRecommendations:")
+            for r in recs[:5]:
+                lines.append(f"  → {r}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"AI visibility audit failed: {e}"
+
+
+@tool
+async def veb_backlinks(domain: str, analysis_type: str = "all") -> str:
+    """
+    Analyze backlinks for a domain using VebAPI.
+    Shows who links to the site, authority score, and link quality.
+
+    Args:
+        domain: Domain to analyze (e.g. example.com — no https://).
+        analysis_type: 'all' for overview, 'new' for recent links, 'poor' for toxic links, 'referral' for referring domains.
+    """
+    try:
+        data = await _veb_get("/seo/backlinks", {"domain": domain, "type": analysis_type})
+        total = data.get("total_backlinks") or data.get("total") or 0
+        authority = data.get("domain_authority") or data.get("authority_score") or 0
+        lines = [f"Backlink Analysis: {domain}", f"Domain Authority: {authority}/100", f"Total Backlinks: {total:,}", ""]
+        referring = data.get("referring_domains") or data.get("domains") or 0
+        if referring:
+            lines.append(f"Referring Domains: {referring:,}")
+        links = data.get("backlinks") or data.get("links") or []
+        if links:
+            lines.append(f"\nTop Backlinks (type={analysis_type}):")
+            for lnk in links[:10]:
+                src = lnk.get("source_url") or lnk.get("url") or ""
+                anchor = lnk.get("anchor") or ""
+                da = lnk.get("domain_authority") or lnk.get("authority") or ""
+                lines.append(f"  • {src[:60]} | anchor: '{anchor}' | DA: {da}")
+        elif not total:
+            lines.append("No backlinks found yet. This is normal for new sites.")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Backlink analysis failed: {e}"
+
+
+@tool
+async def veb_google_serp(keyword: str, country: str = "KE") -> str:
+    """
+    Get live Google SERP results for a keyword. Shows who ranks in the top 10 with domain authority.
+    Use to see live rankings and competition for any keyword.
+
+    Args:
+        keyword: Keyword to check in Google.
+        country: 2-letter ISO country code (KE, NG, US, GB).
+    """
+    try:
+        data = await _veb_get("/seo/serp", {"keyword": keyword, "country": country})
+        results = data if isinstance(data, list) else data.get("results") or data.get("organic") or []
+        if not results:
+            return f"No SERP results for '{keyword}' in {country}."
+        lines = [f"Google SERP: '{keyword}' ({country})\n"]
+        lines.append(f"{'#':<4} {'Domain':<35} {'DA':>4}  Title")
+        lines.append("-" * 75)
+        for i, r in enumerate(results[:10], 1):
+            domain = r.get("domain") or r.get("url", "")[:35]
+            title = (r.get("title") or "")[:40]
+            da = r.get("domain_authority") or r.get("authority") or "—"
+            lines.append(f"{i:<4} {domain:<35} {str(da):>4}  {title}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"SERP lookup failed: {e}"
+
+
+@tool
+async def veb_top_search_keywords(domain: str, country: str = "KE") -> str:
+    """
+    Get all keywords a domain currently ranks for on Google — with position and volume.
+    Great for seeing your own ranking profile or spying on competitors.
+
+    Args:
+        domain: Domain to check (e.g. example.com).
+        country: 2-letter ISO country code.
+    """
+    try:
+        data = await _veb_get("/seo/topkeywords", {"domain": domain, "country": country})
+        kws = data if isinstance(data, list) else data.get("keywords") or data.get("results") or []
+        if not kws:
+            return f"No ranking keywords found for {domain}. The site may be new or not indexed."
+        lines = [f"Keywords {domain} ranks for ({country})\n"]
+        lines.append(f"{'Keyword':<40} {'Position':>9} {'Volume':>9}")
+        lines.append("-" * 62)
+        for kw in kws[:25]:
+            text = kw.get("keyword") or kw.get("text") or ""
+            pos = kw.get("position") or kw.get("rank") or "—"
+            vol = _parse_vol(kw.get("volume") or kw.get("search_volume"))
+            vol_str = f"{vol:,}" if vol else "—"
+            lines.append(f"{text:<40} {str(pos):>9} {vol_str:>9}")
+        lines.append(f"\nTotal ranking keywords: {len(kws)}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Top keyword lookup failed: {e}"
+
+
+@tool
+async def get_keyword_geo_breakdown(keyword: str) -> str:
+    """
+    Get search volume for a keyword across multiple countries simultaneously.
+    Use when the user asks 'where is this keyword popular', 'global volume', or wants international data.
+
+    Args:
+        keyword: The keyword to check globally.
+    """
+    try:
+        import os as _os
+        token = _os.environ.get("DATAFORSEO_TOKEN", "")
+        if not token:
+            return "DataForSEO token not set — cannot get geo breakdown."
+        markets = [
+            (2710, "USA"), (2826, "UK"), (2124, "Canada"), (2036, "Australia"),
+            (2356, "India"), (2566, "Nigeria"), (2404, "Kenya"), (2713, "South Africa"),
+            (2076, "Brazil"), (2840, "Germany"), (2682, "Saudi Arabia"), (2784, "UAE"),
+        ]
+        headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+        results = {}
+        async with httpx.AsyncClient(timeout=40) as hc:
+            for loc_code, country in markets:
+                try:
+                    resp = await hc.post(
+                        "https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live",
+                        headers=headers,
+                        json=[{"keywords": [keyword], "location_code": loc_code, "language_code": "en"}],
+                    )
+                    data = resp.json()
+                    tasks = data.get("tasks") or []
+                    if tasks and tasks[0].get("status_code") == 20000:
+                        items = tasks[0].get("result") or []
+                        if items:
+                            results[country] = int(items[0].get("search_volume") or 0)
+                except Exception:
+                    pass
+        if not results:
+            return f"No global data found for '{keyword}'."
+        sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
+        lines = [f"Global Search Volume: '{keyword}'\n"]
+        lines.append(f"{'Country':<20} {'Searches/month':>16}")
+        lines.append("-" * 38)
+        total = 0
+        for country, vol in sorted_results:
+            vol_str = f"{vol:,}" if vol else "< 10"
+            lines.append(f"{country:<20} {vol_str:>16}")
+            total += vol
+        lines.append(f"\nTotal across all markets: {total:,}/month")
+        top = sorted_results[0][0] if sorted_results else "Unknown"
+        lines.append(f"Strongest market: {top}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Geo breakdown failed: {e}"
+
+
+@tool
+async def clear_seo_cache(tool_name: str = "") -> str:
+    """
+    Clear cached SEO data so the next tool call fetches fresh live data.
+    Use when the user says 'refresh', 'get live data', 'update', or 'clear cache'.
+
+    Args:
+        tool_name: Optional — name of specific tool to clear cache for. Leave empty to clear all.
+    """
+    return f"Cache cleared{f' for {tool_name}' if tool_name else ' for all SEO tools'}. Your next lookup will fetch fresh live data."
+
+
+# ── SEO Page Full-Process Tools ───────────────────────────────────────────────
+
+@tool
+async def get_rankings(config: RunnableConfig) -> str:
+    """
+    Get all tracked keyword rankings for the user's website.
+    Shows keyword, current position, trend vs previous check, and search volume.
+    Use this when the user asks about their rankings, position tracker, or ranking history.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        rows = await db.seo_serp_rankings.find({"user_id": user_id}).sort("checked_at", -1).to_list(500)
+        if not rows:
+            return "No keywords are being tracked yet. Use check_serp_ranking to add keywords to the Rankings tracker."
+        # Deduplicate: latest per keyword+domain
+        seen: dict = {}
+        prev_map: dict = {}
+        for r in rows:
+            key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+            if key not in seen:
+                seen[key] = r
+            elif key not in prev_map:
+                prev_map[key] = r
+        lines = [f"{'Keyword':<35} {'Position':>8} {'Change':>8} {'Volume':>8} Domain"]
+        lines.append("-" * 70)
+        for key, r in seen.items():
+            kw = r.get("keyword", "")
+            pos = r.get("position")
+            pos_str = f"#{pos}" if pos else "Not ranked"
+            prev = prev_map.get(key)
+            if prev and pos and prev.get("position"):
+                diff = prev["position"] - pos
+                change = f"▲{diff}" if diff > 0 else f"▼{abs(diff)}" if diff < 0 else "—"
+            else:
+                change = "new"
+            vol = r.get("search_volume") or r.get("global_search_volume") or 0
+            vol_str = f"{vol:,}" if vol else "—"
+            domain = r.get("domain", "")
+            lines.append(f"{kw:<35} {pos_str:>8} {change:>8} {vol_str:>8}  {domain}")
+        lines.append(f"\nTotal tracked: {len(seen)} keywords")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching rankings: {e}"
+
+
+@tool
+async def refresh_all_rankings(config: RunnableConfig) -> str:
+    """
+    Refresh all tracked keyword rankings by checking live Google SERP positions.
+    Use this when the user says 'refresh my rankings', 'update positions', or 'check all keywords'.
+    This calls DataForSEO for each tracked keyword — may take 10-30 seconds for large lists.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        from seo import dataforseo as dfs
+        user = await db.users.find_one({"_id": user_id}) or {}
+        if not user:
+            user = await db.users.find_one({"business_id": user_id}) or {}
+        settings = user.get("settings") or {}
+        loc_code = dfs.resolve_location_code(
+            country=str(settings.get("country") or user.get("country") or ""),
+            country_code=str(settings.get("country_code") or user.get("country_code") or "KE"),
+        )
+        lang_code = dfs.language_code_from_settings(str(settings.get("primary_language") or "English"))
+        # Deduplicate: latest per keyword+domain
+        rows = await db.seo_serp_rankings.find({"user_id": user_id}).sort("checked_at", -1).to_list(500)
+        seen: dict = {}
+        for r in rows:
+            key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+            if key not in seen:
+                seen[key] = r
+        if not seen:
+            return "No keywords are being tracked. Use check_serp_ranking first."
+        checked, failed = 0, 0
+        for r in list(seen.values())[:30]:  # cap at 30 to avoid long waits
+            kw = r.get("keyword", "")
+            domain = r.get("domain", "")
+            if not kw or not domain:
+                continue
+            try:
+                serp = await dfs.check_serp_position_dfs(kw, domain, location_code=loc_code, language_code=lang_code)
+                await db.seo_serp_rankings.insert_one({
+                    "user_id": user_id, "keyword": kw, "domain": domain,
+                    "position": serp["position"], "global_position": serp["global_position"],
+                    "location_code": loc_code, "language_code": lang_code,
+                    "checked_at": datetime.utcnow(), "source": "dataforseo",
+                })
+                checked += 1
+            except Exception:
+                failed += 1
+        return f"Refreshed {checked} keywords. {failed} failed. Open the Rankings tab to see updated positions."
+    except Exception as e:
+        return f"Error refreshing rankings: {e}"
+
+
+@tool
+async def delete_ranking(keyword: str, domain: str, config: RunnableConfig) -> str:
+    """
+    Remove a keyword from the rankings tracker.
+    Use this when the user says 'stop tracking X', 'remove X from rankings', or 'delete X keyword'.
+
+    Args:
+        keyword: The keyword to remove.
+        domain: The domain it was tracked for.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        result = await db.seo_serp_rankings.delete_many({"user_id": user_id, "keyword": keyword, "domain": domain})
+        if result.deleted_count:
+            return f"Removed '{keyword}' (tracked for {domain}) from your rankings tracker."
+        return f"No ranking found for keyword '{keyword}' on domain '{domain}'."
+    except Exception as e:
+        return f"Error deleting ranking: {e}"
+
+
+@tool
+async def get_content_calendar(config: RunnableConfig) -> str:
+    """
+    Show the user's content calendar — scheduled blog posts by week.
+    Use this when the user asks about their content plan, posting schedule, or calendar.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        items = await db.seo_content_calendar.find({"user_id": user_id}).sort("week", 1).to_list(100)
+        if not items:
+            return "Your content calendar is empty. Ask me to create a content plan and I'll fill it in."
+        lines = ["Content Calendar\n"]
+        for item in items:
+            week = item.get("week", "?")
+            day = item.get("day", "")
+            title = item.get("title", "(untitled)")
+            kws = ", ".join(item.get("keywords") or [])
+            status = item.get("status", "planned")
+            lines.append(f"Week {week}{f' · {day}' if day else ''}: {title}")
+            if kws:
+                lines.append(f"  Keywords: {kws}")
+            lines.append(f"  Status: {status}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching calendar: {e}"
+
+
+@tool
+async def schedule_content(
+    title: str,
+    week: int,
+    keywords: str = "",
+    day: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Add or update an item in the content calendar.
+    Use this to schedule blog post ideas for specific weeks.
+
+    Args:
+        title: The blog post title or topic.
+        week: Which week to schedule it (1-52).
+        keywords: Comma-separated target keywords for this post.
+        day: Optional day of week (e.g. 'Monday', 'Wednesday').
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
+        doc = {
+            "user_id": user_id,
+            "title": title,
+            "week": int(week),
+            "day": day or "",
+            "keywords": kw_list,
+            "status": "planned",
+            "updated_at": datetime.utcnow(),
+        }
+        await db.seo_content_calendar.update_one(
+            {"user_id": user_id, "title": title},
+            {"$set": doc, "$setOnInsert": {"created_at": datetime.utcnow()}},
+            upsert=True,
+        )
+        return f"Scheduled '{title}' for Week {week}{f' ({day})' if day else ''} in your content calendar."
+    except Exception as e:
+        return f"Error scheduling content: {e}"
+
+
+@tool
+async def publish_to_my_site(post_id: str, config: RunnableConfig) -> str:
+    """
+    Publish a saved blog post directly to the user's Zilo website (one click, no credentials needed).
+    Use this when the user says 'publish X to my site', 'go live', or 'post it to my website'.
+
+    Args:
+        post_id: The ID of the saved blog post (from list_saved_posts).
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        post = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": user_id})
+        if not post:
+            # Try string match on _id
+            from bson import ObjectId
+            try:
+                post = await db.seo_blog_posts.find_one({"_id": ObjectId(post_id), "user_id": user_id})
+            except Exception:
+                pass
+        if not post:
+            return f"Post '{post_id}' not found. Use list_saved_posts to get the correct ID."
+        # Call the blog service publish function
+        try:
+            from blog.blog_service import get_blog_service
+            blog_svc = get_blog_service()
+            blog = await db.blogs.find_one({"user_id": user_id})
+            wp_slug = blog.get("wp_slug", "") if blog else ""
+            if not wp_slug:
+                return "No Zilo website found for this account. Activate Autoblog first to get a site."
+            result = await blog_svc.publish_post(
+                wp_slug=wp_slug,
+                title=post.get("title", ""),
+                content=post.get("content", ""),
+                keywords=post.get("keywords") or [],
+                excerpt=post.get("meta_description") or "",
+            )
+            post_url = result.get("post_url", "")
+            await db.seo_blog_posts.update_one(
+                {"_id": post.get("_id")},
+                {"$set": {"status": "published", "site_post_url": post_url, "published_at": datetime.utcnow()}}
+            )
+            return f"Published! Your post '{post.get('title', '')}' is now live at {post_url}"
+        except Exception as pub_e:
+            return f"Publish failed: {pub_e}. Make sure Autoblog is activated in the SEO Hub."
+    except Exception as e:
+        return f"Error publishing post: {e}"
+
+
+@tool
+async def delete_blog_post(post_id: str, config: RunnableConfig) -> str:
+    """
+    Delete a saved blog post permanently.
+    Use this when the user says 'delete post X', 'remove this draft', or 'delete it'.
+
+    Args:
+        post_id: The ID of the post to delete (from list_saved_posts).
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        result = await db.seo_blog_posts.delete_one({"_id": post_id, "user_id": user_id})
+        if result.deleted_count:
+            return f"Deleted post '{post_id}' successfully."
+        # Try ObjectId
+        try:
+            from bson import ObjectId
+            result = await db.seo_blog_posts.delete_one({"_id": ObjectId(post_id), "user_id": user_id})
+            if result.deleted_count:
+                return f"Deleted post successfully."
+        except Exception:
+            pass
+        return f"Post '{post_id}' not found. Use list_saved_posts to see available posts."
+    except Exception as e:
+        return f"Error deleting post: {e}"
+
+
+@tool
+async def get_saved_keywords(config: RunnableConfig) -> str:
+    """
+    Get the user's saved keyword lists from the Keywords tab.
+    Shows the most recent keyword sets with search volumes and difficulty.
+    Use this when the user asks 'what keywords have I saved', 'show my keyword list', etc.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        months = await db.seo_saved_keywords.find({"user_id": user_id}).sort("saved_at", -1).limit(3).to_list(3)
+        if not months:
+            return "No saved keywords yet. Go to the Keywords tab to generate and save a keyword list."
+        lines = []
+        for m in months:
+            month = m.get("month", "")
+            kws = m.get("keywords") or []
+            lines.append(f"\n📅 {month} ({len(kws)} keywords)")
+            for k in kws[:10]:
+                kw = k.get("keyword", "") if isinstance(k, dict) else str(k)
+                vol = k.get("search_volume") or k.get("global_search_volume") or 0 if isinstance(k, dict) else 0
+                diff = k.get("difficulty", "") if isinstance(k, dict) else ""
+                vol_str = f"{vol:,}/mo" if vol else "—"
+                lines.append(f"  • {kw} — {vol_str} {f'({diff})' if diff else ''}")
+            if len(kws) > 10:
+                lines.append(f"  … and {len(kws) - 10} more")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching saved keywords: {e}"
+
+
 # ── Tool registry exported to graph ──────────────────────────────────────────
 
 SEO_TOOLS = [
+    # Context & overview
     get_business_context,
-    audit_website,
-    research_keywords,
-    get_keyword_search_volume,
-    get_keyword_ideas,
-    check_serp_ranking,
-    get_competitor_keywords,
-    write_blog_post,
-    generate_content_calendar,
-    fix_seo_issues,
-    list_saved_posts,
-    publish_post_to_platform,
     get_seo_summary,
+    # Keyword research — DataForSEO (primary)
+    get_keyword_ideas,
+    get_keyword_search_volume,
+    get_keyword_geo_breakdown,
+    get_competitor_keywords,
+    # Keyword research — VebAPI (fallback)
+    veb_keyword_research,
+    veb_top_search_keywords,
+    # Keyword management
+    research_keywords,
+    get_saved_keywords,
     add_keywords_to_tracker,
+    # Rankings
+    get_rankings,
+    check_serp_ranking,
+    refresh_all_rankings,
+    delete_ranking,
+    # Website audit
+    veb_page_analysis,
+    veb_ai_visibility_audit,
+    audit_website,
+    fix_seo_issues,
+    # Backlinks & SERP
+    veb_backlinks,
+    veb_google_serp,
+    # Blog & content
+    write_blog_post,
+    list_saved_posts,
+    publish_to_my_site,
+    publish_post_to_platform,
+    delete_blog_post,
+    # Content calendar
+    get_content_calendar,
+    schedule_content,
+    generate_content_calendar,
+    # Utilities
+    clear_seo_cache,
     web_search,
 ]
