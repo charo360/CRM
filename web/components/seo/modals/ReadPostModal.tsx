@@ -91,7 +91,25 @@ export function ReadPostModal({
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <div className="prose prose-sm prose-slate max-w-none prose-headings:font-semibold prose-h1:text-xl prose-h2:text-base prose-h2:mt-6 prose-p:leading-relaxed prose-li:text-sm prose-p:text-sm">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{post.content}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                table: ({ children }) => (
+                  <div className="my-4 overflow-x-auto rounded-xl border border-slate-200 shadow-sm not-prose">
+                    <table className="w-full text-sm border-collapse">{children}</table>
+                  </div>
+                ),
+                th: ({ children }) => (
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide bg-slate-800 text-white whitespace-nowrap">{children}</th>
+                ),
+                td: ({ children }) => (
+                  <td className="px-4 py-2.5 text-slate-700 border-t border-slate-100">{children}</td>
+                ),
+                tr: ({ children, ...props }) => (
+                  <tr className="even:bg-slate-50 odd:bg-white" {...(props as React.HTMLAttributes<HTMLTableRowElement>)}>{children}</tr>
+                ),
+              }}
+            >{post.content}</ReactMarkdown>
           </div>
         </div>
 

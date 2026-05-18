@@ -644,7 +644,26 @@ function SeoHubWorkspace({
                   }`}>
                     {m.role === "assistant" ? (
                       <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:my-1.5 prose-ul:my-1 prose-li:my-0">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            table: ({ children }) => (
+                              <div className="my-3 overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
+                                <table className="w-full text-xs border-collapse">{children}</table>
+                              </div>
+                            ),
+                            thead: ({ children }) => <thead>{children}</thead>,
+                            th: ({ children }) => (
+                              <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide bg-slate-800 text-white whitespace-nowrap">{children}</th>
+                            ),
+                            td: ({ children }) => (
+                              <td className="px-3 py-2 text-slate-700 border-t border-slate-100">{children}</td>
+                            ),
+                            tr: ({ children, ...props }) => (
+                              <tr className="even:bg-slate-50 odd:bg-white" {...(props as React.HTMLAttributes<HTMLTableRowElement>)}>{children}</tr>
+                            ),
+                          }}
+                        >{m.content}</ReactMarkdown>
                       </div>
                     ) : m.content}
                   </div>
