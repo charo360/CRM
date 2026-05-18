@@ -732,7 +732,10 @@ export default function AnalyticsIntegration() {
                           {s.submitted > 0 && (
                             <div className="mt-2">
                               <div className="flex justify-between text-[10px] text-slate-500 mb-1">
-                                <span>{s.indexed.toLocaleString()} / {s.submitted.toLocaleString()} URLs indexed</span>
+                                <span>
+                                  <strong>{s.submitted.toLocaleString()}</strong> URLs in sitemap ·{" "}
+                                  <strong className={s.indexed > 0 ? "text-green-700" : "text-red-600"}>{s.indexed.toLocaleString()} indexed via sitemap</strong>
+                                </span>
                                 <span>{indexRatio}%</span>
                               </div>
                               <div className="h-1.5 bg-white rounded-full overflow-hidden border border-slate-200">
@@ -747,9 +750,14 @@ export default function AnalyticsIntegration() {
                           )}
                           {/* Explain zero-indexed state so user knows what to fix */}
                           {zeroIndexed && (
-                            <div className="mt-2 text-[10px] text-amber-800 bg-amber-100 rounded px-2 py-1.5 space-y-0.5">
-                              <p className="font-semibold">⚠️ Google hasn&apos;t indexed any of these pages yet.</p>
-                              <p>Common causes: pages blocked by robots.txt, noindex meta tags, crawl errors, or the site is brand-new. Click <strong>View in GSC ↗</strong> above to see the exact warning and fix it.</p>
+                            <div className="mt-2 text-[10px] text-amber-800 bg-amber-100 rounded px-2 py-1.5 space-y-1">
+                              <p className="font-semibold">⚠️ None of the sitemap URLs are indexed yet.</p>
+                              <p>
+                                Note: Google may have indexed other pages it discovered via links — check the full count
+                                in <strong>Page Indexing</strong> inside GSC. For sitemap URLs specifically, common causes
+                                are: <strong>noindex tags</strong>, <strong>robots.txt blocking</strong>, or Google needs
+                                more time. Click <strong>View in GSC ↗</strong> → Not Indexed → see the 4 reasons.
+                              </p>
                             </div>
                           )}
                         </div>
