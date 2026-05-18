@@ -1989,6 +1989,714 @@ async def get_saved_keywords(config: RunnableConfig) -> str:
         return f"Error fetching saved keywords: {e}"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MARKETING SKILLS — benchmarked against coreyhaines31/marketingskills
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tool
+async def write_marketing_copy(
+    page_type: str,
+    business_description: str = "",
+    target_audience: str = "",
+    unique_value: str = "",
+    tone: str = "professional",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Write or improve marketing copy for any page using proven copywriting frameworks.
+    Use when the user asks to write homepage copy, landing page, about page, ad copy,
+    product descriptions, headlines, CTAs, or any marketing text.
+
+    Args:
+        page_type: Type of page/copy — 'homepage', 'landing_page', 'pricing', 'about',
+                   'ad', 'email', 'product_description', 'cta', 'headline'.
+        business_description: What the business does and its core offer.
+        target_audience: Who the customer is, their pain points and goals.
+        unique_value: What makes this business different from competitors.
+        tone: Writing tone — 'professional', 'friendly', 'bold', 'empathetic'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Type: {bk.get('business_type', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                    f"Location: {bk.get('business_location', '')}",
+                ]))
+        except Exception:
+            pass
+
+    prompt = f"""You are an expert direct-response copywriter. Write compelling {page_type} copy.
+
+BUSINESS CONTEXT:
+{biz_ctx or business_description or "Use the page type and audience to infer context."}
+
+TARGET AUDIENCE: {target_audience or "Infer from business context"}
+UNIQUE VALUE: {unique_value or "Infer from business context"}
+TONE: {tone}
+
+COPYWRITING PRINCIPLES TO APPLY:
+- Clarity over cleverness — every word must be immediately understood
+- Benefits over features — outcomes, not functionality
+- Specificity over vagueness — real numbers, real results, real language
+- Customer language — use their words, not corporate speak
+- One idea per section — clear logical flow
+
+FRAMEWORKS TO USE:
+- Headlines: "{{Achieve outcome}} without {{pain point}}" OR outcome-focused specifics
+- CTA formula: [Action Verb] + [What They Get] + [Qualifier]
+- Page structure: Hook → Problem → Solution → Proof → CTA
+
+QUALITY CHECKS — AVOID:
+- Jargon, passive voice, exclamation points without substance
+- "We are dedicated to...", "World-class", "Cutting-edge", "Seamlessly"
+- Long sentences (max 20 words each)
+
+OUTPUT FORMAT:
+## {page_type.replace('_', ' ').title()} Copy
+
+### Headline Options (pick the strongest)
+[3 headline variations with rationale]
+
+### Main Copy
+[Full page/section copy organized by section]
+
+### CTA Options
+[2-3 CTA variations]
+
+### Why This Works
+[Brief annotation of key choices]
+
+Write the copy now — make it specific, human, and compelling:"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not generate copy — please try again."
+
+
+@tool
+async def audit_conversion_rate(
+    url: str = "",
+    page_description: str = "",
+    conversion_goal: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Audit a page for conversion rate optimization (CRO) issues.
+    Use when the user says their page isn't converting, wants to improve signups,
+    sales, or leads, or asks about CRO, conversion optimization, or why people leave.
+
+    Args:
+        url: URL of the page to audit (optional — can describe instead).
+        page_description: Description of the page if URL not available.
+        conversion_goal: What action you want visitors to take (e.g. 'sign up', 'buy', 'book a call').
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = f"Business: {u.get('business_name','')} | {bk.get('business_description','')}"
+        except Exception:
+            pass
+
+    prompt = f"""You are a senior conversion rate optimization (CRO) specialist.
+Audit this page and provide specific, actionable recommendations.
+
+BUSINESS: {biz_ctx}
+PAGE: {url or page_description or "General audit"}
+CONVERSION GOAL: {conversion_goal or "Increase conversions"}
+
+AUDIT FRAMEWORK — analyse all 7 dimensions:
+
+1. VALUE PROPOSITION CLARITY
+   - Can a visitor understand what this is and why it matters in 5 seconds?
+   - Are benefits customer-focused (not feature lists)?
+
+2. HEADLINE EFFECTIVENESS
+   - Does it communicate core value immediately?
+   - Does it match what the visitor expected when they clicked?
+
+3. CTA PLACEMENT & COPY
+   - Is the primary CTA visible above the fold?
+   - Does button copy communicate value (not just "Submit" or "Click here")?
+   - Is there a clear primary action hierarchy?
+
+4. VISUAL HIERARCHY
+   - Can the page be scanned in 10 seconds?
+   - Do images reinforce the message?
+
+5. TRUST SIGNALS & SOCIAL PROOF
+   - Are there testimonials, logos, reviews, case studies near CTAs?
+   - Are security/trust badges visible on conversion points?
+
+6. OBJECTION HANDLING
+   - Does the page address price concerns, "is this for me?", implementation fears?
+   - Is there a FAQ or guarantee?
+
+7. FRICTION POINTS
+   - Too many form fields? Unnecessary steps?
+   - Mobile issues? Slow load time?
+
+OUTPUT FORMAT:
+
+## CRO Audit: {url or "Page"}
+
+### 🔴 Quick Wins (Fix This Week)
+[Top 3 highest-impact, easiest changes with specific copy suggestions]
+
+### 🟡 High-Impact Changes (This Month)
+[Structural improvements that require more effort but big return]
+
+### 🧪 Test Ideas (A/B Tests to Run)
+[3-5 specific hypotheses using: "Because [observation], we believe [change] will cause [outcome]"]
+
+### Copy Rewrites
+[Specific before/after examples for headlines, CTAs, key sections]
+
+### Priority Score
+Overall conversion readiness: X/10
+Top 3 blockers to fix first:"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not complete CRO audit — please try again."
+
+
+@tool
+async def write_social_posts(
+    topic: str,
+    platforms: str = "linkedin,twitter",
+    post_count: int = 5,
+    content_type: str = "educational",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Write social media posts for any platform. Applies hook formulas, content pillars,
+    and platform-specific best practices.
+    Use when the user asks to write posts for LinkedIn, Twitter/X, Instagram, Facebook,
+    TikTok, or wants a social media content calendar.
+
+    Args:
+        topic: The topic, theme, or content to post about.
+        platforms: Comma-separated platforms — 'linkedin', 'twitter', 'instagram',
+                   'facebook', 'tiktok'. Default: 'linkedin,twitter'.
+        post_count: Number of posts to create per platform (1-10).
+        content_type: Type of content — 'educational', 'story', 'promotion',
+                      'behind_scenes', 'social_proof', 'contrarian'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                ]))
+        except Exception:
+            pass
+
+    platform_list = [p.strip().lower() for p in platforms.split(",")]
+    count = min(max(int(post_count), 1), 10)
+
+    platform_guides = {
+        "linkedin": "Professional tone. 150-300 words. Line breaks every 1-2 sentences. End with a question or insight. No hashtag spam (max 3).",
+        "twitter": "Under 280 chars. Punchy opener. One clear idea. 1-2 hashtags max.",
+        "instagram": "Visual-first caption. Strong hook first line (shown before 'more'). 5-10 relevant hashtags at end.",
+        "facebook": "Conversational. Can be longer. Ask a question to drive comments.",
+        "tiktok": "Script format: 3-second hook + value + CTA. Under 60 seconds spoken.",
+    }
+
+    prompt = f"""You are a social media strategist and content creator.
+Write {count} {content_type} post(s) for each platform requested.
+
+BUSINESS CONTEXT:
+{biz_ctx or f"Topic: {topic}"}
+
+TOPIC: {topic}
+CONTENT TYPE: {content_type}
+
+HOOK FORMULAS TO USE (pick best per post):
+- Curiosity: "Most people don't know that..."
+- Story: "Last week, [specific thing happened]..."
+- Value: "Here are X ways to [achieve outcome]:"
+- Contrarian: "Unpopular opinion: [bold claim]"
+- Question: "[Question the audience is asking themselves]"
+
+CONTENT REPURPOSING — extract multiple angles from one topic:
+- The main insight
+- A counter-intuitive take
+- A practical how-to step
+- A behind-the-scenes angle
+- A customer story angle
+
+{"".join(f"""
+---
+## {p.upper()} POSTS ({count} posts)
+Platform rules: {platform_guides.get(p, "Match platform conventions.")}
+""" for p in platform_list)}
+
+Write {count} ready-to-post piece(s) for each platform above.
+Make each one distinct — different hook, different angle, same topic.
+Include relevant emojis where appropriate. No filler. Every word earns its place."""
+
+    result = await _ai(prompt, max_tokens=3000)
+    return result or "Could not generate social posts — please try again."
+
+
+@tool
+async def write_cold_email(
+    prospect_role: str = "",
+    prospect_company: str = "",
+    pain_point: str = "",
+    sequence_length: int = 3,
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Write a B2B cold email sequence designed to get replies.
+    Use when the user asks to write cold emails, outreach emails, sales emails,
+    or follow-up sequences to potential customers or partners.
+
+    Args:
+        prospect_role: Job title/role of the person being emailed (e.g. 'Marketing Director').
+        prospect_company: Type or name of company being targeted.
+        pain_point: The specific problem your product/service solves for them.
+        sequence_length: Number of emails in the sequence (1-5). Default: 3.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Sender business: {u.get('business_name', '')}",
+                    f"What we do: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                ]))
+        except Exception:
+            pass
+
+    count = min(max(int(sequence_length), 1), 5)
+
+    prompt = f"""You are an expert B2B copywriter specialising in cold email outreach.
+Write a {count}-email sequence that gets real replies.
+
+SENDER CONTEXT:
+{biz_ctx}
+
+TARGET:
+- Role: {prospect_role or "Decision maker"}
+- Company type: {prospect_company or "Target company"}
+- Pain point we solve: {pain_point or "Infer from business context"}
+
+CORE PRINCIPLES:
+1. Write like a colleague, not a vendor — no corporate speak
+2. Ruthless brevity — every sentence must earn its place
+3. Lead with THEIR world, not your company
+4. One low-friction ask per email (reply, not "book a 30-min call")
+5. Personalization must connect naturally to the outreach reason
+
+EMAIL FRAMEWORKS:
+- Email 1: Observation → relevance → soft ask (under 100 words)
+- Email 2: Different angle / add value (share insight, case study, stat)
+- Email 3: Honest breakup ("Is this timing off?")
+- Email 4-5: Re-engage with new trigger or valuable content
+
+QUALITY CHECK — REJECT if:
+- Starts with "I hope this email finds you well"
+- Mentions "synergy", "leverage", "circle back", "touch base"
+- Talks about your company before their problem
+- CTA is "schedule a 30-minute call" in email 1
+
+Write the full sequence now. For each email include:
+- Subject line (+ 2 alternatives)
+- Body (ready to send)
+- Sending timing (e.g. "Send day 1", "Wait 3 days")
+- Why it works (1 sentence)"""
+
+    result = await _ai(prompt, max_tokens=2500)
+    return result or "Could not generate email sequence — please try again."
+
+
+@tool
+async def apply_marketing_psychology(
+    context: str,
+    goal: str = "increase conversions",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Apply marketing psychology and behavioural science principles to copy, pages,
+    pricing, or strategy. Use when the user asks how to make their marketing more
+    persuasive, why people aren't buying, or wants psychology-based improvements.
+
+    Args:
+        context: What you're trying to improve — page URL, copy snippet, pricing,
+                 email, or strategy description.
+        goal: What outcome you want — 'increase conversions', 'reduce churn',
+              'improve pricing perception', 'build trust', 'increase urgency'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = f"{u.get('business_name','')} — {bk.get('business_description','')}"
+        except Exception:
+            pass
+
+    prompt = f"""You are a behavioural science expert and marketing psychologist.
+Apply psychological principles to improve marketing effectiveness.
+
+BUSINESS: {biz_ctx}
+CONTEXT TO IMPROVE: {context}
+GOAL: {goal}
+
+PSYCHOLOGICAL FRAMEWORKS TO APPLY (use the most relevant):
+
+PERSUASION PRINCIPLES:
+- Reciprocity: Give value first (free tool, insight, template)
+- Social proof: Specific numbers > vague claims ("127 businesses" not "many businesses")
+- Authority: Credentials, data, expert quotes, awards
+- Scarcity/Urgency: Real limits only — manufactured urgency destroys trust
+- Loss aversion: "Don't miss X" > "Get X" (losses feel 2x stronger than gains)
+- Liking: Shared identity, common enemy, genuine personality
+
+COGNITIVE BIASES TO LEVERAGE:
+- Anchoring: Show higher price first, then actual price
+- Decoy effect: Add a third option to make target option look like best value
+- Mere exposure: Repeated consistent brand touchpoints build trust
+- Peak-end rule: Memorable start AND end of experience matters most
+- Endowment effect: "Your free trial" feels more owned than "a free trial"
+
+PRICING PSYCHOLOGY:
+- Charm pricing ($97 vs $100) works for impulse; round numbers ($100) work for luxury
+- Per-day framing ($0.33/day) reduces perceived cost
+- Feature anchoring: Lead with premium, justify value before revealing price
+
+DESIGN PSYCHOLOGY:
+- Hick's Law: More choices = less action (reduce options)
+- Fogg Behavior Model: Motivation × Ability × Trigger — increase all three
+- AIDA: Attention → Interest → Desire → Action
+
+OUTPUT FORMAT:
+
+## Psychology Audit: {goal}
+
+### 🧠 Top 3 Psychological Levers to Pull
+[Specific principles with exact implementation for this context]
+
+### ✏️ Copy Rewrites Using Psychology
+[Before/after examples with the principle used]
+
+### 🏗️ Structural Changes
+[Layout, flow, or design changes based on cognitive science]
+
+### ⚠️ Psychological Mistakes to Fix
+[Current elements that are working against you]
+
+### Quick Wins
+[3 changes to make today, ranked by impact]"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not apply psychology analysis — please try again."
+
+
+@tool
+async def create_lead_magnet(
+    business_goal: str = "grow email list",
+    target_audience: str = "",
+    format_preference: str = "any",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Create a lead magnet strategy and content outline to grow your email list or generate leads.
+    Use when the user asks about lead magnets, free offers, content upgrades, email capture,
+    or growing their list.
+
+    Args:
+        business_goal: What you want to achieve — 'grow email list', 'generate leads',
+                       'qualify prospects', 'build authority'.
+        target_audience: Who you're trying to attract and what they need.
+        format_preference: Preferred format — 'checklist', 'template', 'ebook', 'quiz',
+                           'webinar', 'calculator', 'cheatsheet', 'video', 'any'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Type: {bk.get('business_type', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                    f"Location: {bk.get('business_location', '')}",
+                ]))
+        except Exception:
+            pass
+
+    prompt = f"""You are a lead generation and content marketing strategist.
+Create a complete lead magnet strategy and ready-to-use content outline.
+
+BUSINESS CONTEXT:
+{biz_ctx}
+
+GOAL: {business_goal}
+TARGET AUDIENCE: {target_audience or "Infer from business context"}
+FORMAT PREFERENCE: {format_preference}
+
+LEAD MAGNET PRINCIPLES:
+1. Solve ONE specific problem (not everything)
+2. Match buyer stage — awareness (educational) vs decision (tool/template)
+3. High perceived value, low time to consume
+4. Creates a natural pathway to your product
+5. Easy to deliver instantly
+
+LEAD MAGNET FORMATS WITH BEST USE CASES:
+- Checklist: Quick win, actionable, high perceived value, low effort to create
+- Template: Saves time (swipe file, email template, spreadsheet)
+- Calculator/Quiz: Interactive, personalized result → high completion
+- Cheatsheet: Reference guide, keeps them coming back
+- Mini-course (3-5 emails): Positions you as expert, builds relationship
+- Webinar/Workshop: High-ticket qualifier, best for complex products
+- Free tool: Highest value, stickiest, but requires development
+
+OUTPUT FORMAT:
+
+## Lead Magnet Strategy
+
+### Recommended Lead Magnet
+**Title:** [Specific, outcome-focused title]
+**Format:** [Type and why]
+**Value proposition:** [What they get and why they'd give their email for it]
+
+### Content Outline
+[Full structured outline with all sections/pages/items]
+
+### Landing Page Headlines
+[3 headline options for the opt-in page]
+
+### Delivery Sequence
+[What happens after they sign up — day 0, day 1, day 3]
+
+### Promotion Channels
+[Where and how to promote this lead magnet]
+
+### Success Metrics
+[What to track — conversion rate benchmarks, list growth targets]"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not create lead magnet strategy — please try again."
+
+
+@tool
+async def design_ab_test(
+    what_to_test: str,
+    current_version: str = "",
+    conversion_goal: str = "",
+    monthly_visitors: int = 0,
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Design a proper A/B test with hypothesis, variants, sample size, and success metrics.
+    Use when the user wants to test something, asks about A/B testing, split testing,
+    or wants to know if a change will improve conversions.
+
+    Args:
+        what_to_test: What element to test — headline, CTA, pricing, page layout, email subject.
+        current_version: The current version (control) — what it says/looks like now.
+        conversion_goal: What you're measuring — signups, purchases, clicks, replies.
+        monthly_visitors: Approximate monthly visitors/recipients (for sample size calc).
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = f"{u.get('business_name','')} — {bk.get('business_description','')}"
+        except Exception:
+            pass
+
+    prompt = f"""You are a conversion optimisation expert who designs rigorous A/B tests.
+Design a complete, statistically sound A/B test.
+
+BUSINESS: {biz_ctx}
+ELEMENT TO TEST: {what_to_test}
+CURRENT VERSION (Control): {current_version or "Not specified — suggest a common control"}
+CONVERSION GOAL: {conversion_goal or "Improve conversions"}
+MONTHLY VISITORS/RECIPIENTS: {monthly_visitors or "Unknown — estimate based on typical SMB"}
+
+A/B TEST DESIGN FRAMEWORK:
+
+1. HYPOTHESIS (structured format):
+   "Because [observation/insight], we believe [specific change] will cause [expected outcome],
+    which we'll measure by [metric]."
+
+2. VARIANTS:
+   - Control (A): Current version
+   - Variant B: Single change only (never change multiple elements)
+   - Optional Variant C: If testing two distinct approaches
+
+3. SAMPLE SIZE:
+   - Minimum detectable effect: 10-20% improvement
+   - Statistical significance: 95% confidence
+   - Estimated sample needed per variant
+   - Estimated time to reach significance
+
+4. SUCCESS METRICS:
+   - Primary: [conversion rate metric]
+   - Guardrail: [metric that shouldn't get worse]
+   - Don't peek at results before sample size is reached
+
+5. IMPLEMENTATION:
+   - What to build/change
+   - How to split traffic (50/50 or weight toward control if risky)
+   - How to track results
+
+OUTPUT FORMAT:
+
+## A/B Test Design: {what_to_test}
+
+### Hypothesis
+[Structured hypothesis statement]
+
+### Test Variants
+**Control (A):** [Description]
+**Variant (B):** [Specific change with exact copy/design]
+[**Variant (C):** if applicable]
+
+### Sample Size Calculator
+- Estimated baseline conversion rate: X%
+- Minimum detectable effect: X%
+- Sample needed per variant: ~X visitors
+- Estimated time to significance: ~X weeks at {monthly_visitors or "your"} visitors/month
+
+### Success Criteria
+- Primary metric: [What to measure]
+- Win condition: Variant beats control by X% with 95% confidence
+- Guardrail metrics: [What must not get worse]
+
+### ICE Score (Prioritization)
+- Impact (1-10): X — [reasoning]
+- Confidence (1-10): X — [reasoning]
+- Ease (1-10): X — [reasoning]
+- **ICE Total: X/30**
+
+### What to Watch For
+[Common pitfalls for this specific test]"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not design A/B test — please try again."
+
+
+@tool
+async def plan_programmatic_seo(
+    pattern_type: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Create a programmatic SEO strategy to generate hundreds of optimized pages at scale.
+    Use when the user asks about programmatic SEO, generating pages at scale, location pages,
+    comparison pages, integration pages, or any repeating SEO page pattern.
+
+    Args:
+        pattern_type: The type of pages to generate — 'location', 'comparison',
+                      'integration', 'glossary', 'template', 'directory', 'persona',
+                      'examples', or leave blank to find the best pattern for the business.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Type: {bk.get('business_type', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                    f"Location: {bk.get('business_location', '')}",
+                ]))
+        except Exception:
+            pass
+
+    prompt = f"""You are a programmatic SEO strategist. Design a scalable page generation strategy.
+
+BUSINESS CONTEXT:
+{biz_ctx}
+
+REQUESTED PATTERN TYPE: {pattern_type or "Recommend the best pattern for this business"}
+
+PROGRAMMATIC SEO PATTERNS:
+1. Location pages: "[Service] in [City]" — great for local businesses
+2. Comparison pages: "[Product A] vs [Product B]" — intercepts decision-stage searches
+3. Integration pages: "[Tool] + [Integration]" — SaaS/B2B growth play
+4. Glossary/definition: "What is [term]" — builds topical authority
+5. Template pages: "[Type] template/examples" — high-intent educational traffic
+6. Directory: "[Category] in [Location]" — marketplace/aggregator model
+7. Persona pages: "[Job title] [use case]" — targets specific buyer segments
+8. Examples pages: "[Topic] examples" — attracts researchers and buyers
+
+DELIVERABLES NEEDED:
+
+### Pattern Recommendation
+[Best 1-2 patterns for this specific business and why]
+
+### Keyword Pattern
+- Repeating structure: "[Variable A] + [Fixed keyword] + [Variable B]"
+- Example pages: [5 real page title examples]
+- Estimated search volume per page: [range]
+- Total pages possible: [estimate]
+
+### Page Template
+**URL structure:** /[pattern]/[variable]
+**Title formula:** [Template with variables]
+**Meta description formula:** [Template]
+**H1 formula:** [Template]
+
+**Page sections:**
+1. [Section name] — [content description, what makes each page unique]
+2. [Section name] — [data-driven content]
+3. [Section name] — [internal linking to related pages]
+4. CTA — [conversion element]
+
+### Data Sources
+[Where to get the data to populate these pages — public APIs, scraping, manual lists]
+
+### Internal Linking Strategy
+[Hub page + spoke page architecture, how pages link to each other]
+
+### Quality Checks
+[How to ensure pages aren't thin content / avoid Google penalties]
+
+### Implementation Roadmap
+Phase 1 (Week 1-2): [Pilot with 10-20 pages, validate with Google]
+Phase 2 (Month 2): [Scale to 100+ pages]
+Phase 3 (Month 3+): [Full automation + monitoring]"""
+
+    result = await _ai(prompt, max_tokens=2500)
+    return result or "Could not create programmatic SEO plan — please try again."
+
+
 # ── Tool registry exported to graph ──────────────────────────────────────────
 
 SEO_TOOLS = [
@@ -2040,4 +2748,13 @@ SEO_TOOLS = [
     # Utilities
     clear_seo_cache,
     web_search,
+    # ── Marketing Skills (benchmarked vs coreyhaines31/marketingskills) ────────
+    write_marketing_copy,
+    audit_conversion_rate,
+    write_social_posts,
+    write_cold_email,
+    apply_marketing_psychology,
+    create_lead_magnet,
+    design_ab_test,
+    plan_programmatic_seo,
 ]
