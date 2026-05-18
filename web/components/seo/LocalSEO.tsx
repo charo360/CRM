@@ -47,6 +47,9 @@ export default function LocalSEO() {
     phone: "",
     website: ""
   });
+  const [editingListing, setEditingListing] = useState<LocalListing | null>(null);
+  const [editForm, setEditForm] = useState<Partial<LocalListing>>({});
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,6 +127,32 @@ export default function LocalSEO() {
         phone: "",
         website: "",
       });
+    }
+  };
+
+  const handleUpdateListing = async () => {
+    if (!editingListing?.id) return;
+    try {
+      await seoApi.updateLocalListing(editingListing.id, editForm);
+      setListings(prev => prev.map(l => l.id === editingListing.id ? { ...l, ...editForm } : l));
+    } catch (e) {
+      console.error("Error updating listing:", e);
+    } finally {
+      setEditingListing(null);
+      setEditForm({});
+    }
+  };
+
+  const handleDeleteListing = async (listing: LocalListing) => {
+    if (!listing.id) return;
+    setDeletingId(listing.id);
+    try {
+      await seoApi.deleteLocalListing(listing.id);
+      setListings(prev => prev.filter(l => l.id !== listing.id));
+    } catch (e) {
+      console.error("Error deleting listing:", e);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -245,11 +274,18 @@ export default function LocalSEO() {
                 </div>
 
                 <div className="flex gap-2 ml-4">
-                  <button className="px-3 py-1.5 bg-blue-100 text-blue-700 text-xs rounded-lg hover:bg-blue-200 font-medium">
+                  <button
+                    onClick={() => { setEditingListing(listing); setEditForm({ name: listing.name, address: listing.address, phone: listing.phone, website: listing.website, status: listing.status, rating: listing.rating, reviews: listing.reviews }); }}
+                    className="px-3 py-1.5 bg-blue-100 text-blue-700 text-xs rounded-lg hover:bg-blue-200 font-medium"
+                  >
                     Edit
                   </button>
-                  <button className="px-3 py-1.5 bg-slate-100 text-slate-700 text-xs rounded-lg hover:bg-slate-200 font-medium">
-                    Sync
+                  <button
+                    onClick={() => handleDeleteListing(listing)}
+                    disabled={deletingId === listing.id}
+                    className="px-3 py-1.5 bg-red-50 text-red-600 text-xs rounded-lg hover:bg-red-100 font-medium disabled:opacity-50"
+                  >
+                    {deletingId === listing.id ? "…" : "Delete"}
                   </button>
                 </div>
               </div>
@@ -511,6 +547,82 @@ export default function LocalSEO() {
                 </button>
                 <button
                   onClick={() => setShowAddListing(false)}
+                  className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Listing Modal */}
+      {editingListing && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-slate-800">Edit Listing</h3>
+              <button onClick={() => setEditingListing(null)} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Business Name</label>
+                <input
+                  type="text"
+                  value={editForm.name ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Address</label>
+                <input
+                  type="text"
+                  value={editForm.address ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, address: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Phone</label>
+                <input
+                  type="tel"
+                  value={editForm.phone ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, phone: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Website</label>
+                <input
+                  type="url"
+                  value={editForm.website ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, website: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Status</label>
+                <select
+                  value={editForm.status ?? "pending"}
+                  onChange={(e) => setEditForm(f => ({ ...f, status: e.target.value as LocalListing["status"] }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="pending">Pending</option>
+                  <option value="verified">Verified</option>
+                  <option value="not-listed">Not Listed</option>
+                </select>
+              </div>
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={handleUpdateListing}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 font-medium"
+                >
+                  Save Changes
+                </button>
+                <button
+                  onClick={() => setEditingListing(null)}
                   className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
                 >
                   Cancel

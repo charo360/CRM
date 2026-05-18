@@ -2776,7 +2776,10 @@ Return ONLY a JSON array, no explanation:
 
         listings_score = min(100, listing_count * 25)
         verified_score = min(100, verified_count * 34)
-        overall = round((listings_score + verified_score) / 2) if listing_count > 0 else 0
+        citations_score = min(100, len(saved_platforms) * 25)
+        rankings_score = min(100, listing_count * 20)
+        all_scores = [listings_score, verified_score, citations_score, rankings_score]
+        overall = round(sum(all_scores) / len(all_scores)) if listing_count > 0 else 0
 
         if overall >= 80:
             grade = "Excellent"
@@ -2822,7 +2825,9 @@ Return ONLY a JSON array, no explanation:
             "verified_count": verified_count,
             "breakdown": {
                 "business_listings": listings_score,
-                "verified_listings": verified_score,
+                "reviews_ratings": verified_score,
+                "local_rankings": rankings_score,
+                "citations": citations_score,
             },
             "recommendations": recommendations,
         }
@@ -3656,57 +3661,6 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
         except Exception as e:
             logger.warning("[seo/analytics/ga4] %s", e)
             return {"connected": True, "error": str(e)}
-
-    # ── Local SEO endpoints ───────────────────────────────────────────────────
-
-    @router.get("/local/listings")
-    async def get_local_listings(user=user_dep):
-        tid = _tid(user)
-        docs = await db.seo_local_listings.find({"user_id": tid}).sort("created_at", -1).to_list(100)
-        for d in docs:
-            d["id"] = str(d.pop("_id"))
-        return {"listings": docs}
-
-    @router.post("/local/listings")
-    async def add_local_listing(body: dict, user=user_dep):
-        tid = _tid(user)
-        doc = {**body, "user_id": tid, "status": "pending", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()}
-        result = await db.seo_local_listings.insert_one(doc)
-        doc["id"] = str(result.inserted_id)
-        return {"success": True, "listing": doc}
-
-    @router.patch("/local/listings/{listing_id}")
-    async def update_local_listing(listing_id: str, body: dict, user=user_dep):
-        tid = _tid(user)
-        from bson import ObjectId
-        await db.seo_local_listings.update_one(
-            {"_id": ObjectId(listing_id), "user_id": tid},
-            {"$set": {**body, "updated_at": datetime.utcnow()}}
-        )
-        return {"success": True, "listing": {"id": listing_id, **body}}
-
-    @router.delete("/local/listings/{listing_id}")
-    async def delete_local_listing(listing_id: str, user=user_dep):
-        tid = _tid(user)
-        from bson import ObjectId
-        await db.seo_local_listings.delete_one({"_id": ObjectId(listing_id), "user_id": tid})
-        return {"ok": True}
-
-    @router.get("/local/keywords")
-    async def get_local_keywords(user=user_dep):
-        return {"keywords": []}
-
-    @router.get("/local/competitors")
-    async def get_local_competitors(user=user_dep):
-        return {"competitors": []}
-
-    @router.get("/local/score")
-    async def get_local_score(user=user_dep):
-        tid = _tid(user)
-        listings = await db.seo_local_listings.count_documents({"user_id": tid})
-        verified = await db.seo_local_listings.count_documents({"user_id": tid, "status": "verified"})
-        score = min(100, verified * 25 + listings * 10)
-        return {"score": score, "listings_total": listings, "listings_verified": verified}
 
     # ── AI Visibility Audit endpoints ─────────────────────────────────────────
 
