@@ -695,6 +695,11 @@ export default function AnalyticsIntegration() {
                     {sitemaps!.map((s, i) => {
                       const indexRatio = s.submitted > 0 ? Math.round((s.indexed / s.submitted) * 100) : 0;
                       const hasIssues = s.errors > 0 || s.warnings > 0;
+                      const zeroIndexed = s.submitted > 0 && s.indexed === 0;
+                      // Build a GSC deep-link for this sitemap
+                      const gscSitemapLink = gscActiveUrl
+                        ? `https://search.google.com/search-console/sitemaps?resource_id=${encodeURIComponent(gscActiveUrl)}`
+                        : "https://search.google.com/search-console/sitemaps";
                       return (
                         <div key={i} className={`rounded-lg border p-3 ${
                           s.errors > 0 ? "border-red-200 bg-red-50" :
@@ -708,11 +713,20 @@ export default function AnalyticsIntegration() {
                                 Submitted {s.last_submitted ? new Date(s.last_submitted).toLocaleDateString() : "—"} · Last fetched {s.last_downloaded ? new Date(s.last_downloaded).toLocaleDateString() : "—"}
                               </p>
                             </div>
-                            <div className="flex gap-1.5 flex-shrink-0">
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
                               {s.errors > 0 && <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium">{s.errors} error{s.errors > 1 ? "s" : ""}</span>}
                               {s.warnings > 0 && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">{s.warnings} warning{s.warnings > 1 ? "s" : ""}</span>}
                               {s.is_pending && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">Pending</span>}
                               {!hasIssues && !s.is_pending && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">✓ OK</span>}
+                              <a
+                                href={gscSitemapLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] text-blue-600 hover:underline whitespace-nowrap ml-1"
+                                title="Open in Google Search Console"
+                              >
+                                View in GSC ↗
+                              </a>
                             </div>
                           </div>
                           {s.submitted > 0 && (
@@ -726,9 +740,16 @@ export default function AnalyticsIntegration() {
                                   className={`h-full rounded-full ${
                                     indexRatio >= 80 ? "bg-green-500" : indexRatio >= 50 ? "bg-amber-400" : "bg-red-400"
                                   }`}
-                                  style={{ width: `${indexRatio}%` }}
+                                  style={{ width: `${Math.max(indexRatio, indexRatio === 0 ? 0 : 4)}%` }}
                                 />
                               </div>
+                            </div>
+                          )}
+                          {/* Explain zero-indexed state so user knows what to fix */}
+                          {zeroIndexed && (
+                            <div className="mt-2 text-[10px] text-amber-800 bg-amber-100 rounded px-2 py-1.5 space-y-0.5">
+                              <p className="font-semibold">⚠️ Google hasn&apos;t indexed any of these pages yet.</p>
+                              <p>Common causes: pages blocked by robots.txt, noindex meta tags, crawl errors, or the site is brand-new. Click <strong>View in GSC ↗</strong> above to see the exact warning and fix it.</p>
                             </div>
                           )}
                         </div>
