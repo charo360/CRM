@@ -1247,15 +1247,17 @@ Only return the JSON array, no other text."""
 
                     # ── SUPPLEMENT: replace zero-volume AI keywords with real DataForSEO ideas ──
                     # AI-invented keywords that got 0 global volume aren't real searches.
-                    # Swap them out for actual keyword ideas from DataForSEO's keyword database.
+                    # Use the zero-vol keyword phrases themselves as seeds (2-3 word extracts)
+                    # so the replacements stay strictly on-topic with the business.
                     zero_vol_kws = [k for k in keywords if not k.get("global_search_volume") and not k.get("search_volume")]
                     if len(zero_vol_kws) >= 3:
                         try:
-                            seeds = await _ai_keyword_seeds(snippet, bt)
-                            if seeds:
+                            # Extract 2-3 word seeds from the zero-vol keyword phrases
+                            zv_seeds = list({" ".join(k["keyword"].split()[:3]) for k in zero_vol_kws})[:10]
+                            if zv_seeds:
                                 already_in = {k["keyword"].lower() for k in keywords}
                                 real_kws = await dfs.fetch_keywords_for_seeds(
-                                    seeds,
+                                    zv_seeds,
                                     location_code=dfs_lc,
                                     language_code=dfs_lang,
                                     limit=len(zero_vol_kws) + 5,
@@ -1264,13 +1266,13 @@ Only return the JSON array, no other text."""
                                 if real_kws:
                                     # Remove zero-vol AI keywords, add real DataForSEO ones
                                     keywords = [k for k in keywords if k.get("global_search_volume") or k.get("search_volume")]
-                                    # Enrich real_kws with local volume from what we already fetched
+                                    # Set local_country on supplement keywords — they were fetched with dfs_lc (Kenya)
                                     for rk in real_kws:
                                         rkey = rk["keyword"].lower().strip()
                                         lmeta = local_meta.get(rkey, {})
+                                        rk["local_country"] = dfs_country_label if dfs_country_label else None
                                         if lmeta.get("volume"):
                                             rk["search_volume"] = lmeta["volume"]
-                                            rk["local_country"] = dfs_country_label if dfs_country_label else None
                                             rk["cpc"] = rk.get("cpc") or lmeta.get("cpc")
                                     keywords.extend(real_kws[:len(zero_vol_kws)])
                                     keywords = keywords[:25]
