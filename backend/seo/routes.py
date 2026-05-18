@@ -1225,9 +1225,11 @@ Only return the JSON array, no other text."""
 
                         ref_vol = global_vol or local_vol
                         pri = 5 if ref_vol >= 10000 else 4 if ref_vol >= 2000 else 3 if ref_vol >= 500 else 2 if ref_vol >= 50 else 1
+                        # search_volume: prefer local, fall back to global so badge always shows
+                        display_vol = local_vol if local_vol else global_vol
                         keywords.append({
                             "keyword": kw_text,
-                            "search_volume": local_vol if local_vol else None,
+                            "search_volume": display_vol if display_vol else None,
                             "local_country": dfs_country_label if local_vol else None,
                             "global_search_volume": global_vol if global_vol else None,
                             "top_region": top_region,
