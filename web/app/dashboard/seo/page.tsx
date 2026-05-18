@@ -2058,7 +2058,7 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
                         )}
                         {kw.cpc != null && kw.cpc > 0 && (
                           <span className="text-[10px] bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded-full font-medium">
-                            💰 CPC ${kw.cpc.toFixed(2)}
+                            💰 CPC ${Number(kw.cpc).toFixed(2)}
                           </span>
                         )}
                       </div>
