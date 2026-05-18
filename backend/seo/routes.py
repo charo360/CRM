@@ -2742,6 +2742,56 @@ Return ONLY a JSON array, no explanation:
                 {"keyword": f"{business_type} {city} reviews", "location": location, "difficulty": "low", "content_idea": f"What Customers Say About Our {business_type} in {city}", "note": "suggested"},
                 {"keyword": f"how to find {business_type} in {city}", "location": location, "difficulty": "low", "content_idea": f"How to Find the Right {business_type} in {city}", "note": "suggested"},
             ]
+        # ── Enrich with real search volumes (DataForSEO) ─────────────────────
+        import os as _os
+        from seo.dataforseo import (
+            dfs_enabled, fetch_search_volumes_batch,
+            resolve_location_code, language_code_from_settings,
+        )
+
+        settings = user.get("settings") or {}
+        country = str(settings.get("country") or "")
+        country_code = str(settings.get("country_code") or user.get("country_code") or "")
+        primary_language = str(settings.get("primary_language") or "English")
+        loc_code = resolve_location_code(country, country_code)
+        lang_code = language_code_from_settings(primary_language)
+
+        if dfs_enabled():
+            try:
+                kw_list = [k["keyword"] for k in keywords]
+                vol_map = await fetch_search_volumes_batch(kw_list, location_code=loc_code, language_code=lang_code)
+                for k in keywords:
+                    k["search_volume"] = vol_map.get(k["keyword"].lower().strip(), 0)
+            except Exception as _ve:
+                logger.warning("[local/keywords] DataForSEO volume fetch failed: %s", _ve)
+
+        # ── Enrich with tracked SERP positions ───────────────────────────────
+        serp_rows = await db.seo_serp_rankings.find(
+            {"user_id": tid}
+        ).sort("checked_at", -1).to_list(2000)
+
+        # Build: keyword_lower → [positions sorted newest-first]
+        pos_history: dict[str, list[int | None]] = {}
+        for row in serp_rows:
+            kw_key = (row.get("keyword") or "").lower().strip()
+            pos = row.get("position")
+            if kw_key:
+                pos_history.setdefault(kw_key, []).append(pos)
+
+        for k in keywords:
+            kw_key = k["keyword"].lower().strip()
+            history = pos_history.get(kw_key, [])
+            latest = next((p for p in history if p is not None), None)
+            k["position"] = latest  # None = not tracked yet
+
+            # Trend: compare latest vs previous non-null position
+            non_null = [p for p in history if p is not None]
+            if len(non_null) >= 2:
+                diff = non_null[0] - non_null[1]  # negative = moved up (improved)
+                k["trend"] = "up" if diff < 0 else ("down" if diff > 0 else "stable")
+            else:
+                k["trend"] = "new" if latest is not None else "untracked"
+
         return {"keywords": keywords, "source": "ai_generated"}
 
     @router.get("/local/competitors")
@@ -3660,6 +3710,90 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
             }
         except Exception as e:
             logger.warning("[seo/analytics/ga4] %s", e)
+            return {"connected": True, "error": str(e)}
+
+    @router.get("/analytics/google-ads")
+    async def get_google_ads_data(customer_id: str = "", days: int = 30, user=user_dep):
+        """Fetch Google Ads campaign data via Composio connection."""
+        from composio_service import composio_proxy, get_connection_status
+        tid = _tid(user)
+
+        status = await get_connection_status(tid, "googleads")
+        if not status.get("connected"):
+            return {"connected": False, "error": "Google Ads not connected"}
+
+        if not customer_id.strip():
+            return {"connected": True, "error": "No Customer ID provided. Find it in Google Ads → top-right corner (format: 123-456-7890)."}
+
+        cid = customer_id.strip().replace("-", "").replace(" ", "")
+
+        from datetime import timedelta, date as _date
+        end_dt = datetime.utcnow().date()
+        start_dt = end_dt - timedelta(days=days)
+
+        gaql = (
+            f"SELECT campaign.id, campaign.name, campaign.status, "
+            f"metrics.impressions, metrics.clicks, metrics.cost_micros, "
+            f"metrics.ctr, metrics.average_cpc "
+            f"FROM campaign "
+            f"WHERE segments.date BETWEEN '{start_dt.isoformat()}' AND '{end_dt.isoformat()}' "
+            f"AND campaign.status = 'ENABLED' "
+            f"ORDER BY metrics.cost_micros DESC "
+            f"LIMIT 20"
+        )
+
+        try:
+            data = await composio_proxy(
+                tid, "googleads",
+                "POST",
+                f"https://googleads.googleapis.com/v17/customers/{cid}/googleAds:search",
+                json={"query": gaql},
+            )
+            results = data.get("results") or []
+            total_impressions = 0
+            total_clicks = 0
+            total_cost_micros = 0
+            campaigns = []
+            for r in results:
+                m = r.get("metrics") or {}
+                c = r.get("campaign") or {}
+                impressions = int(m.get("impressions") or 0)
+                clicks = int(m.get("clicks") or 0)
+                cost_micros = int(m.get("costMicros") or m.get("cost_micros") or 0)
+                cost = round(cost_micros / 1_000_000, 2)
+                ctr = round(float(m.get("ctr") or 0) * 100, 2)
+                avg_cpc = round(int(m.get("averageCpc") or m.get("average_cpc") or 0) / 1_000_000, 2)
+                total_impressions += impressions
+                total_clicks += clicks
+                total_cost_micros += cost_micros
+                campaigns.append({
+                    "id": str(c.get("id") or ""),
+                    "name": c.get("name") or "—",
+                    "status": c.get("status") or "",
+                    "impressions": impressions,
+                    "clicks": clicks,
+                    "cost": cost,
+                    "ctr": ctr,
+                    "avg_cpc": avg_cpc,
+                })
+            total_cost = round(total_cost_micros / 1_000_000, 2)
+            overall_ctr = round(total_clicks / total_impressions * 100, 2) if total_impressions else 0
+            avg_cpc_overall = round(total_cost / total_clicks, 2) if total_clicks else 0
+            return {
+                "connected": True,
+                "customer_id": cid,
+                "period_days": days,
+                "summary": {
+                    "total_spend": total_cost,
+                    "total_clicks": total_clicks,
+                    "total_impressions": total_impressions,
+                    "avg_ctr": overall_ctr,
+                    "avg_cpc": avg_cpc_overall,
+                },
+                "campaigns": campaigns,
+            }
+        except Exception as e:
+            logger.warning("[seo/analytics/google-ads] %s", e)
             return {"connected": True, "error": str(e)}
 
     # ── AI Visibility Audit endpoints ─────────────────────────────────────────

@@ -18,10 +18,12 @@ interface LocalListing {
 interface LocalKeyword {
   keyword: string;
   location: string;
-  position: number;
-  searchVolume: number;
+  position: number | null;
+  search_volume?: number;
+  searchVolume?: number;
   difficulty: "low" | "medium" | "high";
-  trend: "up" | "down" | "stable";
+  trend: "up" | "down" | "stable" | "new" | "untracked";
+  content_idea?: string;
 }
 
 interface CompetitorListing {
@@ -197,6 +199,8 @@ export default function LocalSEO() {
     switch (trend) {
       case "up": return "↑";
       case "down": return "↓";
+      case "new": return "★";
+      case "untracked": return "–";
       default: return "→";
     }
   };
@@ -320,16 +324,25 @@ export default function LocalSEO() {
                     <span className="text-sm text-slate-600">{keyword.location}</span>
                   </td>
                   <td className="text-center py-3">
-                    <div className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
-                      keyword.position <= 3 ? "bg-green-100 text-green-700" :
-                      keyword.position <= 10 ? "bg-yellow-100 text-yellow-700" :
-                      "bg-red-100 text-red-700"
-                    }`}>
-                      #{keyword.position}
-                    </div>
+                    {keyword.position != null ? (
+                      <div className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
+                        keyword.position <= 3 ? "bg-green-100 text-green-700" :
+                        keyword.position <= 10 ? "bg-yellow-100 text-yellow-700" :
+                        "bg-red-100 text-red-700"
+                      }`}>
+                        #{keyword.position}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">Not tracked</span>
+                    )}
                   </td>
                   <td className="text-center py-3">
-                    <span className="font-medium text-slate-800">{(keyword.searchVolume ?? 0).toLocaleString()}</span>
+                    {(() => {
+                      const vol = keyword.search_volume ?? keyword.searchVolume ?? null;
+                      return vol != null && vol > 0
+                        ? <span className="font-medium text-slate-800">{vol.toLocaleString()}</span>
+                        : <span className="text-xs text-slate-400 italic">–</span>;
+                    })()}
                   </td>
                   <td className="text-center py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${getDifficultyColor(keyword.difficulty)}`}>
@@ -340,7 +353,8 @@ export default function LocalSEO() {
                     <span className={`font-medium ${
                       keyword.trend === "up" ? "text-green-600" :
                       keyword.trend === "down" ? "text-red-600" :
-                      "text-slate-500"
+                      keyword.trend === "new" ? "text-blue-500" :
+                      "text-slate-400"
                     }`}>
                       {getTrendIcon(keyword.trend)}
                     </span>

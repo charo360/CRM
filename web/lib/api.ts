@@ -2239,6 +2239,14 @@ export const seoApi = {
       daily?: { date: string; sessions: number; users: number; views: number; bounce_rate: number; avg_session_duration: number }[];
     }>(`/seo/analytics/ga4${propertyId ? `?property_id=${encodeURIComponent(propertyId)}&days=${days}` : `?days=${days}`}`),
 
+  // Google Ads (via Composio)
+  getGoogleAdsData: (customerId?: string, days = 30) =>
+    api.get<{
+      connected: boolean; error?: string; customer_id?: string; period_days?: number;
+      summary?: { total_spend: number; total_clicks: number; total_impressions: number; avg_ctr: number; avg_cpc: number };
+      campaigns?: { id: string; name: string; status: string; impressions: number; clicks: number; cost: number; ctr: number; avg_cpc: number }[];
+    }>(`/seo/analytics/google-ads${customerId ? `?customer_id=${encodeURIComponent(customerId)}&days=${days}` : `?days=${days}`}`),
+
   // Scheduled posts queue
   scheduledPosts: () =>
     api.get<{ id: string; title: string; scheduled_at: string; platform: string; status: string; content_preview: string }[]>("/seo/blog/scheduled"),

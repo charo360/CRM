@@ -19,11 +19,18 @@ interface GscData {
 }
 interface Ga4Data {
   summary?: { total_sessions: number; total_users: number; total_views: number };
-  daily?: { date: string; sessions: number; users: number; views: number }[];
+  daily?: { date: string; sessions: number; users: number; views: number; bounce_rate: number; avg_session_duration: number }[];
+  error?: string;
+}
+interface AdsData {
+  summary?: { total_spend: number; total_clicks: number; total_impressions: number; avg_ctr: number; avg_cpc: number };
+  campaigns?: { id: string; name: string; status: string; impressions: number; clicks: number; cost: number; ctr: number; avg_cpc: number }[];
   error?: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api")
   .replace(/\/+$/, "")
   .replace(/\/api$/, "");
@@ -133,6 +140,11 @@ export default function AnalyticsIntegration() {
   const [ga4Data, setGa4Data] = useState<Ga4Data | null>(null);
   const [ga4Loading, setGa4Loading] = useState(false);
   const [ga4PropertyId, setGa4PropertyId] = useState("");
+  const [ga4Days, setGa4Days] = useState(28);
+  const [adsData, setAdsData] = useState<AdsData | null>(null);
+  const [adsLoading, setAdsLoading] = useState(false);
+  const [adsCustomerId, setAdsCustomerId] = useState("");
+  const [adsDays, setAdsDays] = useState(30);
   const [busy, setBusy] = useState<string | null>(null);
 
   const refreshStatuses = useCallback(async () => {
@@ -207,15 +219,25 @@ export default function AnalyticsIntegration() {
     setGscLoading(false);
   }, [gscSiteUrl, gscDays, gscSearchType]);
 
-  const fetchGa4Data = useCallback(async () => {
+  const fetchGa4Data = useCallback(async (days?: number) => {
     if (!ga4PropertyId.trim()) return;
     setGa4Loading(true);
     try {
-      const d = await seoApi.getGa4Data(ga4PropertyId.trim());
+      const d = await seoApi.getGa4Data(ga4PropertyId.trim(), days ?? ga4Days);
       setGa4Data(d);
     } catch { setGa4Data(null); }
     setGa4Loading(false);
-  }, [ga4PropertyId]);
+  }, [ga4PropertyId, ga4Days]);
+
+  const fetchAdsData = useCallback(async (days?: number) => {
+    if (!adsCustomerId.trim()) return;
+    setAdsLoading(true);
+    try {
+      const d = await seoApi.getGoogleAdsData(adsCustomerId.trim(), days ?? adsDays);
+      setAdsData(d);
+    } catch { setAdsData(null); }
+    setAdsLoading(false);
+  }, [adsCustomerId, adsDays]);
 
   useEffect(() => {
     refreshStatuses();
@@ -734,35 +756,165 @@ export default function AnalyticsIntegration() {
       {/* GA4 Data */}
       {statuses.googleanalytics === "connected" && (
         <div className="bg-white rounded-xl border border-slate-200 p-6">
-          <h3 className="text-lg font-semibold text-slate-800 mb-4">Google Analytics 4 — Last 28 Days</h3>
-          <div className="flex gap-3 mb-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-slate-800">Google Analytics 4 — Last {ga4Days} Days</h3>
+            <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+              {[7, 28, 90].map(d => (
+                <button key={d} onClick={() => { setGa4Days(d); fetchGa4Data(d); }}
+                  className={`px-3 py-1.5 font-medium transition-colors ${
+                    ga4Days === d ? "bg-orange-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
+                  }`}>{d}d</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-3 mb-3">
             <input
               type="text"
               placeholder="GA4 Property ID (e.g. 123456789)"
               value={ga4PropertyId}
               onChange={e => setGa4PropertyId(e.target.value)}
-              className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onKeyDown={e => { if (e.key === "Enter") fetchGa4Data(); }}
+              className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
             />
             <button
-              onClick={fetchGa4Data}
+              onClick={() => fetchGa4Data()}
               disabled={ga4Loading || !ga4PropertyId.trim()}
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50"
+              className="px-4 py-2 bg-orange-500 text-white text-sm rounded-lg hover:bg-orange-600 font-medium disabled:opacity-50"
             >
               {ga4Loading ? "Loading…" : "Fetch Data"}
             </button>
           </div>
           <p className="text-xs text-slate-400 mb-4">Find your Property ID in GA4 → Admin → Property Settings.</p>
 
+          {ga4Loading && <div className="animate-pulse space-y-3">{[1,2].map(i=><div key={i} className="h-10 bg-slate-100 rounded"/>)}</div>}
+
           {!ga4Loading && ga4Data?.error && (
             <div className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-4 py-3">{ga4Data.error}</div>
           )}
 
-          {!ga4Loading && ga4Data?.summary && (
-            <div className="grid grid-cols-3 gap-3">
-              <MetricCard label="Sessions" value={ga4Data.summary.total_sessions.toLocaleString()} />
-              <MetricCard label="Users" value={ga4Data.summary.total_users.toLocaleString()} />
-              <MetricCard label="Page Views" value={ga4Data.summary.total_views.toLocaleString()} />
+          {!ga4Loading && ga4Data?.summary && (() => {
+            const daily = ga4Data.daily ?? [];
+            const avgBounce = daily.length ? round1(daily.reduce((s, d) => s + d.bounce_rate, 0) / daily.length) : 0;
+            const avgDur = daily.length ? Math.round(daily.reduce((s, d) => s + d.avg_session_duration, 0) / daily.length) : 0;
+            const durMin = Math.floor(avgDur / 60);
+            const durSec = avgDur % 60;
+            return (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+                  <MetricCard label="Sessions" value={ga4Data.summary!.total_sessions.toLocaleString()} />
+                  <MetricCard label="Users" value={ga4Data.summary!.total_users.toLocaleString()} />
+                  <MetricCard label="Page Views" value={ga4Data.summary!.total_views.toLocaleString()} />
+                  <MetricCard label="Avg Bounce" value={`${avgBounce}%`} sub="lower = better" />
+                  <MetricCard label="Avg Session" value={`${durMin}m ${durSec}s`} sub="time on site" />
+                </div>
+
+                {daily.length > 1 && (
+                  <div className="mb-2">
+                    <h4 className="text-sm font-semibold text-slate-700 mb-2">Daily Sessions Trend</h4>
+                    <div className="flex items-end gap-0.5 h-16 bg-slate-50 rounded-lg px-3 py-2">
+                      {(() => {
+                        const max = Math.max(...daily.map(d => d.sessions), 1);
+                        return daily.map((d, i) => (
+                          <div key={i} title={`${d.date}: ${d.sessions} sessions`}
+                            className="flex-1 bg-orange-400 rounded-sm hover:bg-orange-600 transition-colors cursor-pointer min-w-[2px]"
+                            style={{ height: `${Math.max((d.sessions / max) * 100, 4)}%` }}
+                          />
+                        ));
+                      })()}
+                    </div>
+                    <div className="flex justify-between text-[10px] text-slate-400 mt-1 px-1">
+                      <span>{daily[0]?.date?.replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3")}</span>
+                      <span>{daily[daily.length - 1]?.date?.replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3")}</span>
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Google Ads Data */}
+      {statuses.googleads === "connected" && (
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-slate-800">Google Ads — Last {adsDays} Days</h3>
+            <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+              {[7, 30, 90].map(d => (
+                <button key={d} onClick={() => { setAdsDays(d); fetchAdsData(d); }}
+                  className={`px-3 py-1.5 font-medium transition-colors ${
+                    adsDays === d ? "bg-blue-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50"
+                  }`}>{d}d</button>
+              ))}
             </div>
+          </div>
+
+          <div className="flex gap-3 mb-3">
+            <input
+              type="text"
+              placeholder="Customer ID (e.g. 123-456-7890)"
+              value={adsCustomerId}
+              onChange={e => setAdsCustomerId(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") fetchAdsData(); }}
+              className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={() => fetchAdsData()}
+              disabled={adsLoading || !adsCustomerId.trim()}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50"
+            >
+              {adsLoading ? "Loading…" : "Fetch Data"}
+            </button>
+          </div>
+          <p className="text-xs text-slate-400 mb-4">Find your Customer ID in Google Ads → top-right corner (format: 123-456-7890).</p>
+
+          {adsLoading && <div className="animate-pulse space-y-3">{[1,2].map(i=><div key={i} className="h-10 bg-slate-100 rounded"/>)}</div>}
+
+          {!adsLoading && adsData?.error && (
+            <div className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-4 py-3">{adsData.error}</div>
+          )}
+
+          {!adsLoading && adsData?.summary && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+                <MetricCard label="Total Spend" value={`$${adsData.summary.total_spend.toLocaleString()}`} />
+                <MetricCard label="Clicks" value={adsData.summary.total_clicks.toLocaleString()} />
+                <MetricCard label="Impressions" value={adsData.summary.total_impressions.toLocaleString()} />
+                <MetricCard label="Avg CTR" value={`${adsData.summary.avg_ctr}%`} />
+                <MetricCard label="Avg CPC" value={`$${adsData.summary.avg_cpc}`} />
+              </div>
+
+              {(adsData.campaigns ?? []).length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-700 mb-2">Top Campaigns</h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-slate-600">
+                      <thead><tr className="text-left border-b border-slate-100">
+                        <th className="pb-2 font-medium">Campaign</th>
+                        <th className="pb-2 font-medium text-right">Spend</th>
+                        <th className="pb-2 font-medium text-right">Clicks</th>
+                        <th className="pb-2 font-medium text-right">Impr.</th>
+                        <th className="pb-2 font-medium text-right">CTR</th>
+                        <th className="pb-2 font-medium text-right">CPC</th>
+                      </tr></thead>
+                      <tbody>
+                        {adsData.campaigns!.map((c, i) => (
+                          <tr key={i} className="border-b border-slate-50 hover:bg-slate-50">
+                            <td className="py-1.5 font-medium text-slate-800 max-w-[180px] truncate">{c.name}</td>
+                            <td className="py-1.5 text-right">${c.cost.toLocaleString()}</td>
+                            <td className="py-1.5 text-right">{c.clicks.toLocaleString()}</td>
+                            <td className="py-1.5 text-right">{c.impressions.toLocaleString()}</td>
+                            <td className="py-1.5 text-right">{c.ctr}%</td>
+                            <td className="py-1.5 text-right">${c.avg_cpc}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
