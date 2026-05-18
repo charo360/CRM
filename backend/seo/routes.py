@@ -245,12 +245,13 @@ def _seo_business_context(user: dict) -> Dict[str, str]:
         or str(user.get("business_type") or "").strip()
         or "general"
     )
+    _PLACEHOLDER_VALUES = {"not specified", "not set", "n/a", "none", "unspecified", "-", "–"}
     loc_parts: List[str] = []
     bl = str(bk.get("business_location") or "").strip()
-    if bl:
+    if bl and bl.lower() not in _PLACEHOLDER_VALUES:
         loc_parts.append(bl)
     country = str(settings.get("country") or "").strip()
-    if country:
+    if country and country.lower() not in _PLACEHOLDER_VALUES:
         loc_parts.append(country)
     location = ", ".join(loc_parts)
     language = str(settings.get("primary_language") or "English").strip() or "English"

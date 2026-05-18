@@ -52,23 +52,34 @@ export default function LocalSEO() {
   const [editingListing, setEditingListing] = useState<LocalListing | null>(null);
   const [editForm, setEditForm] = useState<Partial<LocalListing>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [trackingKeyword, setTrackingKeyword] = useState<string | null>(null);
+  const [trackDomain, setTrackDomain] = useState("");
+  const [showTrackModal, setShowTrackModal] = useState(false);
+  const [trackingInProgress, setTrackingInProgress] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoadErr("");
       try {
-        const [listingsData, keywordsData, competitorsData, scoreData] = await Promise.all([
+        const [listingsData, keywordsData, competitorsData, scoreData, ctxData] = await Promise.all([
           seoApi.getLocalListings(),
           seoApi.getLocalKeywords(),
           seoApi.getLocalCompetitors(),
           seoApi.getLocalScore(),
+          seoApi.businessContext().catch(() => null),
         ]);
         if (cancelled) return;
         setListings((listingsData.listings || []) as unknown as LocalListing[]);
         setLocalKeywords((keywordsData.keywords || []) as unknown as LocalKeyword[]);
         setCompetitors((competitorsData.competitors || []) as unknown as CompetitorListing[]);
         setLocalScore(scoreData);
+        if (ctxData?.website_url) {
+          const raw = ctxData.website_url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+          setWebsiteUrl(raw);
+          setTrackDomain(raw);
+        }
       } catch (error) {
         console.error("Error fetching local SEO data:", error);
         if (!cancelled) {
@@ -129,6 +140,33 @@ export default function LocalSEO() {
         phone: "",
         website: "",
       });
+    }
+  };
+
+  const openTrackModal = (keyword: string) => {
+    setTrackingKeyword(keyword);
+    setTrackDomain(websiteUrl || "");
+    setShowTrackModal(true);
+  };
+
+  const handleTrackKeyword = async () => {
+    if (!trackingKeyword || !trackDomain.trim()) return;
+    const domain = trackDomain.trim().replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+    setTrackingInProgress(trackingKeyword);
+    setShowTrackModal(false);
+    try {
+      const result = await seoApi.checkRanking(trackingKeyword, domain);
+      const pos = result.position ?? null;
+      setLocalKeywords(prev => prev.map(k =>
+        k.keyword === trackingKeyword
+          ? { ...k, position: pos, trend: pos != null ? "new" : "untracked" }
+          : k
+      ));
+    } catch (e) {
+      console.error("Track keyword failed:", e);
+    } finally {
+      setTrackingInProgress(null);
+      setTrackingKeyword(null);
     }
   };
 
@@ -312,6 +350,7 @@ export default function LocalSEO() {
                 <th className="text-center py-3 px-2 font-medium text-slate-700">Search Volume</th>
                 <th className="text-center py-3 px-2 font-medium text-slate-700">Difficulty</th>
                 <th className="text-center py-3 px-2 font-medium text-slate-700">Trend</th>
+                <th className="text-center py-3 px-2 font-medium text-slate-700">Track</th>
               </tr>
             </thead>
             <tbody>
@@ -358,6 +397,22 @@ export default function LocalSEO() {
                     }`}>
                       {getTrendIcon(keyword.trend)}
                     </span>
+                  </td>
+                  <td className="text-center py-3">
+                    {trackingInProgress === keyword.keyword ? (
+                      <span className="text-xs text-slate-400 italic">Checking…</span>
+                    ) : (
+                      <button
+                        onClick={() => openTrackModal(keyword.keyword)}
+                        className={`px-2.5 py-1 text-xs rounded-lg font-medium transition ${
+                          keyword.position != null
+                            ? "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                            : "bg-blue-600 text-white hover:bg-blue-700"
+                        }`}
+                      >
+                        {keyword.position != null ? "Refresh" : "Track"}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -566,6 +621,46 @@ export default function LocalSEO() {
                   Cancel
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Track Keyword Modal */}
+      {showTrackModal && trackingKeyword && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-slate-800">Track Keyword Position</h3>
+              <button onClick={() => setShowTrackModal(false)} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
+            </div>
+            <p className="text-sm text-slate-600 mb-1 font-medium truncate">{trackingKeyword}</p>
+            <p className="text-xs text-slate-400 mb-4">We'll check where your site ranks on Google for this keyword.</p>
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-slate-700 mb-1.5">Your website domain</label>
+              <input
+                type="text"
+                value={trackDomain}
+                onChange={(e) => setTrackDomain(e.target.value)}
+                placeholder="yourdomain.com"
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">Without http:// or www</p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleTrackKeyword}
+                disabled={!trackDomain.trim()}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+              >
+                Check Position
+              </button>
+              <button
+                onClick={() => setShowTrackModal(false)}
+                className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
