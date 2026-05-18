@@ -780,6 +780,15 @@ export const adminApi = {
     if (!res.ok) throw new Error(formatErrorBody(res, raw));
     return (raw ? JSON.parse(raw) : {}) as { ok: boolean };
   },
+  refreshFavicon: async (id: string) => {
+    const res = await fetch(`/api/admin/users/${id}/refresh-favicon`, {
+      method: "POST",
+      headers: adminHeaders(),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as { status: string; site: string };
+  },
 };
 
 export interface CollaborationWorkspace {

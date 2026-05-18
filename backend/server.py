@@ -12433,6 +12433,30 @@ async def admin_delete_user(target_user_id: str, actor=Depends(get_admin_actor))
     return {"ok": True}
 
 
+@api_router.post("/admin/users/{target_user_id}/refresh-favicon")
+async def admin_refresh_favicon(target_user_id: str, _actor=Depends(get_admin_actor)):
+    """Admin: re-upload the Zilo logo as the site favicon for a specific user's blog."""
+    from blog.routes import make_blog_router
+    from blog.blog_service import BlogService, _blog_url_for_response
+
+    blog = await db.blogs.find_one({"client_id": target_user_id})
+    if not blog:
+        raise HTTPException(status_code=404, detail="Blog not found for this user")
+
+    blog_service = BlogService()
+    site_url = await _blog_url_for_response(db, blog)
+    if not site_url:
+        raise HTTPException(status_code=400, detail="Site URL unavailable")
+
+    await blog_service._generate_and_set_favicon(
+        subsite_url=site_url,
+        slug=blog.get("wp_slug", ""),
+        business_name=blog.get("business_name", ""),
+        industry=blog.get("industry", ""),
+    )
+    return {"status": "ok", "site": site_url}
+
+
 def _composio_oauth_frontend_base(optional_client_origin: Optional[str]) -> str:
     """Absolute origin for OAuth return URL. Composio rejects relative redirect_uri."""
     from urllib.parse import urlparse
