@@ -61,6 +61,9 @@ function parseMarkdown(md: string): React.ReactNode[] {
     const line = lines[i];
     const k = `ln-${i}`;
 
+    // META lines — strip from visible output (SEO metadata, not reader content)
+    if (/^\*{0,2}(META_TITLE|META_DESC|TAGS)\*{0,2}:/.test(line.trim())) { i++; continue; }
+
     // H1 — skip (shown as article title above)
     if (/^# /.test(line)) { i++; continue; }
 
@@ -146,6 +149,49 @@ function parseMarkdown(md: string): React.ReactNode[] {
       i++; continue;
     }
 
+    // Markdown table — lines starting with |
+    if (/^\|/.test(line)) {
+      const tableLines: string[] = [];
+      while (i < lines.length && /^\|/.test(lines[i].trim())) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      if (tableLines.length >= 2) {
+        const parseRow = (row: string) =>
+          row.split("|").map(c => c.trim()).filter((_, ci, arr) => ci > 0 && ci < arr.length - 1);
+        const headerCells = parseRow(tableLines[0]);
+        // tableLines[1] is the separator row — skip it
+        const bodyRows = tableLines.slice(2).map(parseRow);
+        nodes.push(
+          <div key={k} className="my-6 overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-slate-800 text-white">
+                  {headerCells.map((cell, ci) => (
+                    <th key={ci} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                      {renderInline(cell, `${k}-th-${ci}`)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {bodyRows.map((row, ri) => (
+                  <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                    {row.map((cell, ci) => (
+                      <td key={ci} className="px-4 py-2.5 text-slate-700 border-t border-slate-100">
+                        {renderInline(cell, `${k}-td-${ri}-${ci}`)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+      continue;
+    }
+
     // Blank line — skip
     if (line.trim() === "") { i++; continue; }
 
@@ -158,7 +204,8 @@ function parseMarkdown(md: string): React.ReactNode[] {
       !/^[*\-] /.test(lines[i]) &&
       !/^\d+\. /.test(lines[i]) &&
       !/^> /.test(lines[i]) &&
-      !/^---+$/.test(lines[i].trim())
+      !/^---+$/.test(lines[i].trim()) &&
+      !/^\|/.test(lines[i].trim())
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -234,7 +281,7 @@ function HeroBanner({
           {(tags ?? []).slice(0, 3).map(t => (
             <span key={t} className="text-[10px] px-2.5 py-1 rounded-full font-medium text-white/80"
               style={{ background: "rgba(255,255,255,0.15)" }}>
-              {t}
+              {t.replace(/\*+/g, "").trim()}
             </span>
           ))}
         </div>
@@ -251,7 +298,6 @@ export interface BlogRendererProps {
   templateId?: string;
   wordCount?: number;
   tags?: string[];
-  keywords?: string[];
   metaTitle?: string;
   metaDescription?: string;
   /** If provided, show as "Published at" link */
@@ -264,7 +310,6 @@ export default function BlogRenderer({
   templateId,
   wordCount,
   tags,
-  keywords,
   metaTitle,
   metaDescription,
   publishedUrl,
@@ -280,38 +325,25 @@ export default function BlogRenderer({
         tags={tags}
       />
 
-      {/* Meta bar */}
-      {(metaTitle || metaDescription || publishedUrl) && (
-        <div className="px-6 py-3 bg-slate-50 border-b border-slate-100 space-y-1">
-          {metaTitle && (
-            <p className="text-xs text-slate-600">
-              <span className="font-semibold">SEO title:</span> {metaTitle}
-            </p>
-          )}
-          {metaDescription && (
-            <p className="text-xs text-slate-500">{metaDescription}</p>
-          )}
-          {publishedUrl && (
-            <a href={publishedUrl} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-emerald-600 font-medium flex items-center gap-1 hover:underline">
-              ✓ Live on your website →
-            </a>
-          )}
-        </div>
-      )}
-
-      {/* Keywords */}
-      {(keywords ?? []).length > 0 && (
-        <div className="px-6 pt-4 flex flex-wrap gap-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 self-center">Keywords:</span>
-          {(keywords ?? []).map(kw => (
-            <span key={kw} className="text-[11px] px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
-          ))}
+      {/* Published link only — SEO title/description are backend metadata, not shown to readers */}
+      {publishedUrl && (
+        <div className="px-6 py-3 bg-slate-50 border-b border-slate-100">
+          <a href={publishedUrl} target="_blank" rel="noopener noreferrer"
+            className="text-xs text-emerald-600 font-medium flex items-center gap-1 hover:underline">
+            ✓ Live on your website →
+          </a>
         </div>
       )}
 
       {/* Article body */}
       <div className="px-6 sm:px-8 py-6 max-w-3xl">
+        {/* Hidden SEO metadata — invisible to users, readable by Google */}
+        {(metaTitle || metaDescription) && (
+          <div aria-hidden="true" style={{ display: "none" }}>
+            {metaTitle && <span itemProp="name">{metaTitle.replace(/\*+/g, "").trim()}</span>}
+            {metaDescription && <span itemProp="description">{metaDescription.replace(/\*+/g, "").trim()}</span>}
+          </div>
+        )}
         {nodes}
       </div>
     </article>

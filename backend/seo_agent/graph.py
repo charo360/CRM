@@ -84,6 +84,7 @@ Step 4  — Speed check           (veb_speed_check — Core Web Vitals and perfo
 Step 5  — AI bot access         (veb_ai_crawler_check — which AI bots can crawl your site)
 Step 6  — Fix biggest issues    (fix_seo_issues — generate an action plan)
 Step 7  — Find real keywords    (get_keyword_ideas via DataForSEO, fallback veb_keyword_research)
+Step 7b — Global/geo analysis   (get_keyword_geo_breakdown — volumes by country, top markets worldwide)
 Step 8  — Check search volumes  (get_keyword_search_volume — real monthly numbers)
 Step 9  — Check current rankings (veb_top_search_keywords for overview, check_serp_ranking per keyword)
 Step 10 — Spy on competitors    (get_competitor_keywords — DataForSEO; veb_google_serp for live SERP)
@@ -122,6 +123,9 @@ TOOL RULES:
 - For ANY keyword question: try get_keyword_ideas or get_keyword_search_volume (DataForSEO) first. \
   If those return a DataForSEO error or mention "no credits", try veb_keyword_research next, \
   then fall back to research_keywords (AI-generated) as a last resort — do NOT give up.
+- When the user asks about GLOBAL volume, WORLDWIDE searches, or WHERE a keyword is popular, \
+  call get_keyword_geo_breakdown. This returns volume for 12+ countries in one call. \
+  Always run this alongside get_keyword_ideas when the user wants international data.
 - For website audits: prefer veb_page_analysis over audit_website — it gives deeper data. \
   Use veb_ai_visibility_audit as a second audit to cover AI search readiness.
 - For SERP / live rankings: use check_serp_ranking (DataForSEO) for a specific keyword. \

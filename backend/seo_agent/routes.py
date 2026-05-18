@@ -62,8 +62,15 @@ async def _generate_seo_brief(db, user_id: str) -> dict:
     days_since_audit = None
     audit_score = None
     if audit:
-        delta = now - audit["created_at"]
-        days_since_audit = delta.days
+        try:
+            ca = audit["created_at"]
+            if isinstance(ca, str):
+                from datetime import datetime as _dt
+                ca = _dt.fromisoformat(ca.replace("Z", "+00:00").split("+")[0])
+            delta = now - ca
+            days_since_audit = delta.days
+        except Exception:
+            days_since_audit = None
         audit_score = audit.get("score")
 
     # Top keywords by volume (no content yet)
@@ -372,7 +379,12 @@ def make_seo_agent_router(db, user_dep):
             if cached:
                 generated_at = cached.get("generated_at")
                 if generated_at:
-                    age = datetime.utcnow() - generated_at
+                    if isinstance(generated_at, str):
+                        try:
+                            generated_at = datetime.fromisoformat(generated_at.replace("Z", "+00:00").split("+")[0])
+                        except Exception:
+                            generated_at = None
+                    age = datetime.utcnow() - generated_at if generated_at else timedelta(hours=BRIEF_CACHE_HOURS + 1)
                     if age.total_seconds() < BRIEF_CACHE_HOURS * 3600:
                         doc = dict(cached)
                         doc.pop("_id", None)
@@ -389,9 +401,13 @@ def make_seo_agent_router(db, user_dep):
 
         # Cache it
         try:
+            cache_doc = {k: v for k, v in brief.items() if k != "generated_at"}
+            cache_doc["_id"] = f"brief:{tid}"
+            cache_doc["user_id"] = tid
+            cache_doc["generated_at"] = datetime.utcnow()
             await db.seo_memory.replace_one(
                 {"_id": f"brief:{tid}"},
-                {"_id": f"brief:{tid}", "user_id": tid, "generated_at": datetime.utcnow(), **brief},
+                cache_doc,
                 upsert=True,
             )
         except Exception as e:

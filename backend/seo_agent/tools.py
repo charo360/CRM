@@ -953,6 +953,103 @@ async def get_keyword_ideas(seed_keyword: str, location_code: int = 2404, langua
 
 
 @tool
+async def get_keyword_geo_breakdown(keyword: str, home_location_code: int = 2404) -> str:
+    """
+    Get keyword search volume broken down by country — shows local volume, top global markets,
+    and which countries search this keyword most. Run this when the user wants to know:
+    - worldwide/global volume for a keyword
+    - which countries drive the most searches
+    - how their local market compares to the world
+
+    Args:
+        keyword: The keyword to analyze.
+        home_location_code: The user's home market location code (default 2404=Kenya).
+    """
+    MARKETS = [
+        (2840, "USA"),
+        (2356, "India"),
+        (2826, "UK"),
+        (2036, "Australia"),
+        (2124, "Canada"),
+        (2710, "South Africa"),
+        (2566, "Nigeria"),
+        (2404, "Kenya"),
+        (2276, "Germany"),
+        (2250, "France"),
+        (2076, "Brazil"),
+        (2484, "Mexico"),
+    ]
+    known_codes = {m[0] for m in MARKETS}
+    if home_location_code not in known_codes:
+        MARKETS.append((home_location_code, f"Your Market ({home_location_code})"))
+
+    try:
+        _cp = {"keyword": keyword, "home_location_code": home_location_code}
+        _cached = await _cache_get("get_keyword_geo_breakdown", _cp, 30)
+        if _cached:
+            return _cached
+
+        # Sequential calls — one per location (account plan restriction)
+        rows = []
+        for loc_code, country_name in MARKETS:
+            try:
+                data = await _dfs_post(
+                    "keywords_data/google_ads/search_volume/live",
+                    [{"keywords": [keyword], "location_code": loc_code, "language_code": "en"}],
+                )
+                task = (data.get("tasks") or [{}])[0]
+                vol = 0
+                if task.get("status_code") == 20000:
+                    for r in (task.get("result") or []):
+                        if r.get("keyword", "").lower() == keyword.lower():
+                            vol = r.get("search_volume") or 0
+                            break
+                rows.append((vol, country_name, loc_code))
+            except Exception:
+                rows.append((0, country_name, loc_code))
+
+        if not rows:
+            return f"No geo data found for '{keyword}'. Try a more common keyword."
+
+        rows.sort(key=lambda x: x[0], reverse=True)
+        total = sum(r[0] for r in rows)
+        home_row = next((r for r in rows if r[2] == home_location_code), None)
+        home_vol = home_row[0] if home_row else 0
+        home_name = home_row[1] if home_row else "Your market"
+        top = rows[0]
+
+        lines = [
+            f'Global Keyword Volume Breakdown: "{keyword}"',
+            f"({len([r for r in rows if r[0] > 0])} of {len(rows)} markets have data)",
+            "",
+            f"{'Country':<22} {'Searches/mo':>13} {'Share':>8}",
+            "-" * 46,
+        ]
+        for vol, name, code in rows:
+            pct = f"{vol/total*100:.1f}%" if total > 0 else "0%"
+            marker = " << your market" if code == home_location_code else ""
+            lines.append(f"{name:<22} {vol:>13,} {pct:>8}{marker}")
+
+        lines += [
+            "",
+            f"Top market: {top[1]} — {top[0]:,}/mo",
+            f"Your market ({home_name}): {home_vol:,}/mo",
+            f"Combined (shown markets): ~{total:,}/mo",
+            "",
+            "Note: These are individual country volumes. Global total is higher.",
+        ]
+
+        result_text = "\n".join(lines)
+        await _cache_set("get_keyword_geo_breakdown", _cp, result_text, 30)
+        return result_text
+
+    except RuntimeError as e:
+        return f"DataForSEO unavailable: {e}"
+    except Exception as e:
+        return f"Geo breakdown failed: {e}"
+
+
+@tool
 async def check_serp_ranking(keyword: str, domain: str, location_code: int = 2404, language_code: str = "en", config: RunnableConfig = None) -> str:
     """
     Check where a website ranks on Google for a specific keyword right now.
@@ -2127,6 +2224,7 @@ SEO_TOOLS = [
     get_business_context,
     # ── DataForSEO: SERP + Keywords + Competitor Analysis ──
     get_keyword_ideas,
+    get_keyword_geo_breakdown,
     get_keyword_search_volume,
     check_serp_ranking,
     get_competitor_keywords,

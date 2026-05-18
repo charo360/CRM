@@ -649,7 +649,7 @@ async def _backfill_all_users_names():
             if updated:
                 logging.info(f"[NameBackfill] Updated {updated} names for user {uid}")
         except Exception as e:
-            logging.warning(f"[NameBackfill] Error for user {u.get('_id')}: {e}")
+            logging.debug(f"[NameBackfill] Error for user {u.get('_id')}: {e}")
 
 async def execute_broadcast_automations():
     """Find and execute all due broadcast automations"""

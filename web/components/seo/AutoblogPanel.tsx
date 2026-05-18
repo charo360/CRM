@@ -65,6 +65,7 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
   const [activating, setActivating] = useState(false);
+  const [refreshingFavicon, setRefreshingFavicon] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -173,6 +174,20 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
       setError(err instanceof Error ? err.message : "Failed to publish post.");
     } finally {
       setPublishing(false);
+    }
+  }
+
+  async function handleRefreshFavicon() {
+    setRefreshingFavicon(true);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await blogApi.refreshFavicon();
+      setSuccess(result.message || "Favicon updated successfully.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update favicon.");
+    } finally {
+      setRefreshingFavicon(false);
     }
   }
 
@@ -400,6 +415,18 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
                     <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Publishing…</>
                   ) : (
                     <><PenLine className="w-3.5 h-3.5" /> Publish Now</>
+                  )}
+                </button>
+                <button
+                  onClick={handleRefreshFavicon}
+                  disabled={refreshingFavicon}
+                  title="Generate a custom favicon/tab icon for your site"
+                  className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium px-3 py-1.5 rounded-lg transition disabled:opacity-60"
+                >
+                  {refreshingFavicon ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Updating icon…</>
+                  ) : (
+                    <><Globe className="w-3.5 h-3.5" /> Refresh Site Icon</>
                   )}
                 </button>
               </div>
