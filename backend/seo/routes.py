@@ -1693,6 +1693,67 @@ List (briefly, 3-5 bullets) what still reads as obviously AI-generated — speci
         if result.deleted_count == 0: raise HTTPException(404, "Post not found")
         return {"ok": True}
 
+    @router.post("/blog/posts/{post_id}/share-social")
+    async def share_blog_to_social(post_id: str, payload: dict, user=user_dep):
+        """Share a blog post to a connected social account via Zernio and record the share."""
+        tid = _tid(user)
+        doc = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": tid})
+        if not doc:
+            raise HTTPException(404, "Post not found")
+
+        platform   = (payload.get("platform") or "").strip()
+        account_id = (payload.get("account_id") or "").strip()
+        caption    = (payload.get("caption") or "").strip()
+        link_url   = (payload.get("link_url") or "").strip()
+        image_url  = (payload.get("image_url") or "").strip()
+
+        if not (platform and account_id and caption):
+            raise HTTPException(400, "platform, account_id, and caption are required")
+
+        user_doc = await db.users.find_one({"_id": tid}, {"zernio_profile_id": 1})
+        profile_id = (user_doc or {}).get("zernio_profile_id") if user_doc else None
+        if not profile_id:
+            raise HTTPException(400, "No Zernio profile found — connect a social account first in Integrations")
+
+        try:
+            from zernio.routes import _post as _zpost
+            post_body: Dict[str, Any] = {
+                "profileId": profile_id,
+                "platform": platform,
+                "accountId": account_id,
+                "message": caption,
+            }
+            if link_url:
+                post_body["link"] = link_url
+            if image_url:
+                post_body["imageUrl"] = image_url
+            result = await _zpost("/posts", post_body)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Failed to post to {platform}: {e}")
+
+        social_post_id = str(
+            result.get("post_id") or result.get("id") or result.get("_id") or ""
+        )
+        share_ref = {
+            "platform": platform,
+            "account_id": account_id,
+            "social_post_id": social_post_id,
+            "caption": caption,
+            "link_url": link_url,
+            "shared_at": datetime.utcnow().isoformat(),
+        }
+        await db.seo_blog_posts.update_one(
+            {"_id": post_id, "user_id": tid},
+            {"$push": {"social_shares": share_ref}, "$set": {"updated_at": datetime.utcnow()}}
+        )
+        try:
+            await _record_event("blog_shared_social", {"post_id": post_id, "platform": platform}, user)
+        except Exception:
+            pass
+        return {"ok": True, "social_post_id": social_post_id, "platform": platform}
+
     @router.get("/blog/scheduled")
     async def list_scheduled_posts(user=user_dep):
         """Return all posts with status='scheduled', ordered by scheduled_at ascending."""
@@ -1766,6 +1827,81 @@ List (briefly, 3-5 bullets) what still reads as obviously AI-generated — speci
                 results.append({"post_id": doc["_id"], "title": title, "action": "created"})
 
         return {"ok": True, "scheduled": len(results), "results": results}
+
+    # ── Auto-Share helper ────────────────────────────────────────────────────
+
+    async def _auto_share_if_enabled(db, user, post_id: str, doc: dict, live_url: str, trigger: str):
+        """Post to all configured social accounts if auto-share is enabled for this trigger."""
+        tid = _tid(user)
+        user_doc = await db.users.find_one({"_id": tid}, {"seo_auto_share": 1, "zernio_profile_id": 1})
+        if not user_doc:
+            return
+        settings = user_doc.get("seo_auto_share") or {}
+        if not settings.get("enabled"):
+            return
+        setting_trigger = settings.get("trigger", "published")
+        if setting_trigger != "both" and setting_trigger != trigger:
+            return
+        account_ids: List[str] = settings.get("account_ids") or []
+        account_platforms: Dict[str, str] = settings.get("account_platforms") or {}
+        if not account_ids:
+            return
+        profile_id = user_doc.get("zernio_profile_id")
+        if not profile_id:
+            return
+
+        # Build caption from post content
+        title = doc.get("title", "")
+        content = doc.get("content", "")
+        clean = re.sub(r"<[^>]+>", "", content).strip()
+        intro = clean[:240].strip()
+        if len(clean) > 240:
+            intro += "…"
+        link_str = f"\n\n🔗 {live_url}" if live_url else ""
+        caption = f"{title}\n\n{intro}{link_str}"
+
+        try:
+            from zernio.routes import _post as _zpost
+        except Exception as _e:
+            logger.warning("[seo/auto-share] Could not import zernio._post: %s", _e)
+            return
+
+        share_refs = []
+        for acc_id in account_ids:
+            platform = account_platforms.get(acc_id, "")
+            if not platform:
+                continue
+            try:
+                body: Dict[str, Any] = {
+                    "profileId": profile_id,
+                    "platform": platform,
+                    "accountId": acc_id,
+                    "message": caption,
+                }
+                if live_url:
+                    body["link"] = live_url
+                if doc.get("image_url"):
+                    body["imageUrl"] = doc["image_url"]
+                result_z = await _zpost("/posts", body)
+                social_post_id = str(result_z.get("post_id") or result_z.get("id") or result_z.get("_id") or "")
+                share_refs.append({
+                    "platform": platform,
+                    "account_id": acc_id,
+                    "social_post_id": social_post_id,
+                    "caption": caption,
+                    "link_url": live_url,
+                    "shared_at": datetime.utcnow().isoformat(),
+                    "auto": True,
+                })
+                logger.info("[seo/auto-share] Posted to %s account %s for post %s", platform, acc_id, post_id)
+            except Exception as _e:
+                logger.warning("[seo/auto-share] Failed to post to %s/%s: %s", platform, acc_id, _e)
+
+        if share_refs:
+            await db.seo_blog_posts.update_one(
+                {"_id": post_id},
+                {"$push": {"social_shares": {"$each": share_refs}}}
+            )
 
     # ── Auto-Publish ────────────────────────────────────────────────────────
 
@@ -1859,14 +1995,41 @@ List (briefly, 3-5 bullets) what still reads as obviously AI-generated — speci
             raise HTTPException(400, f"Unsupported platform: {payload.platform}. Use 'wordpress' or 'shopify'.")
 
         if result["ok"]:
+            live_url = result.get("post_url") or result.get("article_url") or ""
             await db.seo_blog_posts.update_one(
                 {"_id": payload.post_id},
-                {"$set": {"status": "published", "published_at": datetime.utcnow(), "publish_result": result}},
+                {"$set": {"status": "published", "published_at": datetime.utcnow(), "publish_result": result,
+                           "site_post_url": live_url or None}},
             )
-            # Analytics: record publish event
             await _record_event("post_published", {"post_id": payload.post_id, "platform": payload.platform, "publish_result": result}, user)
 
+            # ── Auto-share to social if enabled ──────────────────────────────
+            try:
+                await _auto_share_if_enabled(db, user, payload.post_id, doc, live_url, trigger="published")
+            except Exception as _as_exc:
+                logger.warning("[seo/auto-share] Error during auto-share: %s", _as_exc)
+
         return result
+
+    # ── Auto-Share Settings ──────────────────────────────────────────────────
+
+    @router.get("/social-auto-share/settings")
+    async def get_auto_share_settings(user=user_dep):
+        """Return the user's social auto-share settings."""
+        tid = _tid(user)
+        user_doc = await db.users.find_one({"_id": tid}, {"seo_auto_share": 1})
+        defaults = {"enabled": False, "trigger": "published", "account_ids": [], "account_platforms": {}}
+        saved = (user_doc or {}).get("seo_auto_share") or {}
+        return {**defaults, **saved}
+
+    @router.put("/social-auto-share/settings")
+    async def update_auto_share_settings(payload: dict, user=user_dep):
+        """Save the user's social auto-share settings."""
+        tid = _tid(user)
+        allowed = {"enabled", "trigger", "account_ids", "account_platforms"}
+        clean = {k: v for k, v in (payload or {}).items() if k in allowed}
+        await db.users.update_one({"_id": tid}, {"$set": {"seo_auto_share": clean}}, upsert=True)
+        return {"ok": True, "settings": clean}
 
     # ── Content Calendar ────────────────────────────────────────────────────
 

@@ -1995,6 +1995,15 @@ export interface BlogPost {
   calendar_week?: number;
   calendar_day?: string;
   word_count?: number;
+  /** Social shares tracking */
+  social_shares?: {
+    platform: string;
+    account_id: string;
+    social_post_id: string;
+    caption: string;
+    link_url: string;
+    shared_at: string;
+  }[];
 }
 
 export interface BlogGenerateResult {
@@ -2090,6 +2099,14 @@ export const seoApi = {
   createPost: (body: Partial<BlogPost>) => api.post<BlogPost>("/seo/blog/posts", body),
   updatePost: (id: string, body: Partial<BlogPost>) => api.patch<BlogPost>(`/seo/blog/posts/${id}`, body),
   deletePost: (id: string) => api.delete<{ ok: boolean }>(`/seo/blog/posts/${id}`),
+  shareBlogToSocial: (post_id: string, body: { platform: string; account_id: string; caption: string; link_url?: string; image_url?: string }) =>
+    api.post<{ ok: boolean; social_post_id: string; platform: string }>(`/seo/blog/posts/${post_id}/share-social`, body),
+
+  // Auto-share settings
+  getAutoShareSettings: () =>
+    api.get<{ enabled: boolean; trigger: string; account_ids: string[]; account_platforms: Record<string, string> }>("/seo/social-auto-share/settings"),
+  updateAutoShareSettings: (body: { enabled: boolean; trigger: string; account_ids: string[]; account_platforms: Record<string, string> }) =>
+    api.put<{ ok: boolean; settings: Record<string, unknown> }>("/seo/social-auto-share/settings", body),
 
   // Publish
   publishPost: (body: {

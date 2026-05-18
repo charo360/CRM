@@ -58,6 +58,8 @@ import {
   Square,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
+import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 
@@ -2282,6 +2284,70 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
   // Read modal
   const [readPost, setReadPost] = useState<BlogPost | null>(null);
 
+  // Social share modal
+  const { accounts: rawZernioAccounts } = useZernioAccounts();
+  const zernioAccounts = rawZernioAccounts as { id: string; platform: string; displayName?: string; username?: string }[];
+  const [sharePost, setSharePost] = useState<BlogPost | null>(null);
+  const [shareCaption, setShareCaption] = useState("");
+  const [shareAccId, setShareAccId] = useState("");
+  const [sharePlatform, setSharePlatform] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [shareResult, setShareResult] = useState<string>("");
+  const [sharedPosts, setSharedPosts] = useState<Record<string, string[]>>({}); // postId → platform[]
+
+  function openShareModal(post: BlogPost) {
+    const firstAcc = zernioAccounts[0];
+    const caption = buildCaption(post);
+    setSharePost(post);
+    setShareCaption(caption);
+    setShareAccId(firstAcc?.id ?? "");
+    setSharePlatform(firstAcc?.platform ?? "");
+    setShareResult("");
+  }
+
+  function buildCaption(post: BlogPost): string {
+    const clean = post.content.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+    const intro = clean.slice(0, 240).trim();
+    const truncated = clean.length > 240 ? intro + "…" : intro;
+    const link = post.site_post_url ? `\n\n🔗 ${post.site_post_url}` : "";
+    return `${post.title}\n\n${truncated}${link}`;
+  }
+
+  async function doShare() {
+    if (!sharePost || !shareAccId || !sharePlatform || !shareCaption.trim()) return;
+    setSharing(true); setShareResult("");
+    try {
+      await seoApi.shareBlogToSocial(sharePost.id, {
+        platform: sharePlatform,
+        account_id: shareAccId,
+        caption: shareCaption.trim(),
+        link_url: sharePost.site_post_url ?? publishedUrls[sharePost.id] ?? "",
+        image_url: sharePost.image_url ?? "",
+      });
+      setShareResult("✓ Posted to " + (SOCIAL_PLATFORMS.find(p => p.id === sharePlatform)?.label ?? sharePlatform));
+      setSharedPosts(prev => ({
+        ...prev,
+        [sharePost.id]: [...new Set([...(prev[sharePost.id] ?? []), sharePlatform])],
+      }));
+      setPosts(prev => prev.map(p => p.id === sharePost.id ? {
+        ...p,
+        social_shares: [...(p.social_shares ?? []), {
+          platform: sharePlatform,
+          account_id: shareAccId,
+          social_post_id: "",
+          caption: shareCaption.trim(),
+          link_url: sharePost.site_post_url ?? "",
+          shared_at: new Date().toISOString(),
+        }],
+      } : p));
+      setTimeout(() => setSharePost(null), 1800);
+    } catch (e) {
+      setShareResult("Error: " + (e instanceof Error ? e.message : "Share failed"));
+    } finally {
+      setSharing(false);
+    }
+  }
+
   // Publish modal
   const [publishPost, setPublishPost] = useState<BlogPost | null>(null);
   const [publishPlatform, setPublishPlatform] = useState("wordpress");
@@ -3093,6 +3159,23 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                     </div>
                   )}
                   <p className="text-[10px] text-slate-300 mt-1">Click to read →</p>
+                  {/* Social share badges */}
+                  {((post.social_shares ?? []).length > 0 || (sharedPosts[post.id] ?? []).length > 0) && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {[...new Set([
+                        ...(post.social_shares ?? []).map(s => s.platform),
+                        ...(sharedPosts[post.id] ?? []),
+                      ])].map(plat => {
+                        const pDef = SOCIAL_PLATFORMS.find(p => p.id === plat);
+                        return (
+                          <span key={plat} className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${pDef?.bg ?? "bg-slate-100"} ${pDef?.text ?? "text-slate-600"} ${pDef?.border ?? "border-slate-200"}`}>
+                            {pDef?.logo}
+                            {pDef?.label ?? plat}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-1.5 shrink-0">
                   <div className="flex items-center gap-2">
@@ -3139,6 +3222,15 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                         className="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 font-medium whitespace-nowrap"
                       >
                         📅 Schedule
+                      </button>
+                    )}
+                    {zernioAccounts.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => openShareModal(post)}
+                        className="text-xs px-2 py-1 bg-violet-50 text-violet-600 rounded-lg hover:bg-violet-100 font-medium whitespace-nowrap"
+                      >
+                        📤 Share
                       </button>
                     )}
                     <button
@@ -3475,6 +3567,95 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                 </button>
               </div>
             </details>
+          </div>
+        </div>
+      )}
+
+      {/* ── Share to Social Modal ── */}
+      {sharePost && (
+        <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <p className="text-base font-bold text-slate-800">📤 Share to Social</p>
+              <button onClick={() => setSharePost(null)} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
+            </div>
+
+            <p className="text-sm text-slate-600 font-medium truncate">{sharePost.title}</p>
+
+            {/* Account selector */}
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-2 block">Post from account</label>
+              <div className="flex flex-col gap-2 max-h-36 overflow-y-auto">
+                {zernioAccounts.map(acc => {
+                  const pDef = SOCIAL_PLATFORMS.find(p => p.id === acc.platform.toLowerCase());
+                  const selected = shareAccId === acc.id;
+                  return (
+                    <button
+                      key={acc.id}
+                      type="button"
+                      onClick={() => { setShareAccId(acc.id); setSharePlatform(acc.platform.toLowerCase()); }}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${selected ? "border-violet-500 bg-violet-50 ring-2 ring-violet-200" : "border-slate-200 hover:border-slate-300 bg-white"}`}
+                    >
+                      <span className={`w-7 h-7 flex items-center justify-center rounded-full ${pDef?.bg ?? "bg-slate-100"}`}>
+                        {pDef?.logo}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-xs font-semibold ${pDef?.text ?? "text-slate-700"}`}>{pDef?.label ?? acc.platform}</p>
+                        <p className="text-[10px] text-slate-400 truncate">{acc.displayName ?? acc.username ?? acc.id}</p>
+                      </div>
+                      {selected && <span className="text-violet-600 text-sm">✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Caption editor */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold text-slate-500">Caption</label>
+                <span className={`text-[10px] font-medium ${shareCaption.length > 2200 ? "text-red-500" : "text-slate-400"}`}>{shareCaption.length} chars</span>
+              </div>
+              <textarea
+                value={shareCaption}
+                onChange={e => setShareCaption(e.target.value)}
+                rows={6}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                placeholder="Write a caption for this post…"
+              />
+              <p className="text-[10px] text-slate-400 mt-1">Twitter/X caps at 280 chars · LinkedIn/Facebook up to 2,200</p>
+            </div>
+
+            {shareResult && (
+              <p className={`text-sm font-medium ${shareResult.startsWith("Error") ? "text-red-600" : "text-emerald-600"}`}>
+                {shareResult}
+              </p>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void doShare()}
+                disabled={sharing || !shareAccId || !shareCaption.trim()}
+                className="flex-1 py-2.5 bg-violet-600 text-white text-sm rounded-xl font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
+              >
+                {sharing ? "Posting…" : "Post now"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSharePost(null)}
+                className="px-4 py-2.5 bg-slate-100 text-slate-700 text-sm rounded-xl font-medium hover:bg-slate-200"
+              >
+                Cancel
+              </button>
+            </div>
+
+            {zernioAccounts.length === 0 && (
+              <p className="text-xs text-slate-500 text-center">
+                No social accounts connected.{" "}
+                <a href="/dashboard/integrations" className="text-violet-600 hover:underline font-medium">Connect one in Integrations →</a>
+              </p>
+            )}
           </div>
         </div>
       )}
