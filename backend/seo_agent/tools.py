@@ -669,10 +669,26 @@ async def get_business_context(config: RunnableConfig) -> str:
         business_name = (user or {}).get("business_name", "your business")
         settings = (user or {}).get("settings", {})
         bk = (user or {}).get("business_knowledge", {})
-        business_type = settings.get("business_type") or bk.get("business_type") or (user or {}).get("business_type", "general")
-        location = settings.get("location") or bk.get("location") or (user or {}).get("location", "")
-        website = settings.get("website_url") or bk.get("website_url") or bk.get("website") or ""
+        business_type = (
+            str(bk.get("business_type") or "").strip()
+            or str(settings.get("business_type") or "").strip()
+            or str((user or {}).get("business_type") or "").strip()
+            or "general"
+        )
+        # Location: bk.business_location + settings.country (matches _seo_business_context)
+        loc_parts = []
+        bl = str(bk.get("business_location") or "").strip()
+        if bl:
+            loc_parts.append(bl)
+        country = str(settings.get("country") or "").strip()
+        if country and country not in loc_parts:
+            loc_parts.append(country)
+        location = ", ".join(loc_parts) if loc_parts else str((user or {}).get("location") or "")
+        website = str(bk.get("website_url") or settings.get("website_url") or bk.get("website") or "").strip()
         country_code = (user or {}).get("country_code", "")
+        # Business description for richer context
+        description = str(bk.get("business_description") or "").strip()
+        products_services = str(bk.get("products_services") or "").strip()
 
         product_names = [p.get("name", "") for p in products if p.get("name")]
         published_posts = [p for p in posts if p.get("status") == "published"]
@@ -700,6 +716,10 @@ async def get_business_context(config: RunnableConfig) -> str:
             f"Country/Region: {country_code or 'Not set'}",
             f"Total Products/Services: {product_count}",
         ]
+        if description:
+            lines.append(f"Business Description: {description[:400]}")
+        if products_services:
+            lines.append(f"Products/Services: {products_services[:400]}")
         if product_names:
             lines.append(f"Sample Products/Services: {', '.join(product_names[:6])}")
         lines.append(f"Total Customers in CRM: {customer_count}")

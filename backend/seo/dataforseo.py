@@ -441,3 +441,67 @@ async def fetch_keyword_meta_batch(
     except Exception as e:
         logger.warning("[dataforseo] fetch_keyword_meta_batch failed: %s", e)
     return out
+
+
+async def check_serp_position_dfs(
+    keyword: str,
+    domain: str,
+    *,
+    location_code: int = 2404,
+    language_code: str = "en",
+    depth: int = 20,
+) -> dict:
+    """Check the SERP position of a domain for a keyword using DataForSEO.
+    Returns {"position": int|None, "global_position": int|None, "top_results": list}
+    """
+    keyword = (keyword or "").strip()
+    domain = (domain or "").strip().lower().replace("www.", "")
+    if not keyword or not domain:
+        return {"position": None, "global_position": None, "top_results": []}
+
+    try:
+        data = await dfs_post(
+            "serp/google/organic/live/regular",
+            [{
+                "keyword": keyword,
+                "location_code": location_code,
+                "language_code": language_code,
+                "depth": max(10, min(int(depth), 100)),
+                "se_domain": "google.com",
+            }],
+        )
+        tasks = data.get("tasks") or []
+        if not tasks or tasks[0].get("status_code") != 20000:
+            msg = tasks[0].get("status_message", "unknown") if tasks else "no response"
+            logger.warning("[dataforseo] check_serp_position_dfs status: %s", msg)
+            return {"position": None, "global_position": None, "top_results": []}
+
+        result = tasks[0].get("result") or []
+        items = (result[0].get("items") or []) if result else []
+
+        found_pos: int | None = None
+        global_pos: int | None = None
+        top_results = []
+
+        for item in items:
+            if item.get("type") != "organic":
+                continue
+            item_domain = (item.get("domain") or "").lower().replace("www.", "")
+            pos = item.get("rank_absolute")
+            rank_group = item.get("rank_group")
+            top_results.append({
+                "position": pos,
+                "domain": item_domain,
+                "url": item.get("url", ""),
+                "title": item.get("title", ""),
+            })
+            if found_pos is None and domain in item_domain:
+                found_pos = rank_group
+                global_pos = pos
+
+        logger.info("[dataforseo] check_serp_position_dfs: kw=%r domain=%r pos=%s", keyword, domain, found_pos)
+        return {"position": found_pos, "global_position": global_pos, "top_results": top_results[:10]}
+
+    except Exception as e:
+        logger.warning("[dataforseo] check_serp_position_dfs failed: %s", e)
+        return {"position": None, "global_position": None, "top_results": []}
