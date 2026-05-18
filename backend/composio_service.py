@@ -244,16 +244,22 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
 
                 items = items.get("items") or []
 
+            import re as _re_i
+            def _inorm(s: str) -> str:
+                return _re_i.sub(r"[_\-\s]+", "", s.lower())
+            app_name_in = _inorm(app_name)
             for item in items:
 
                 name = str(item.get("appName") or item.get("name") or "").lower()
+                name_norm = _inorm(name)
 
-                if name == app_name.lower() or app_name.lower() in name:
+                if name_norm == app_name_in or app_name_in in name_norm or name_norm in app_name_in:
 
                     iid = item.get("id")
 
                     if iid:
 
+                        print(f"[composio] found integration {app_name} → {iid}", flush=True)
                         logger.info("[composio] found integration %s → %s", app_name, iid)
 
                         return str(iid)
@@ -281,10 +287,13 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
         except Exception as e:
             logger.warning("[composio] GET /v1/apps/%s error: %s", slug, e)
 
-    # Fallback: search full app list by name keywords
+    # Fallback: search full app list by name keywords (normalized)
     if not app_id:
         try:
-            keywords = [w for w in app_name.lower().split("google") if w] or [app_name.lower()]
+            import re as _re_a
+            def _anorm(s: str) -> str:
+                return _re_a.sub(r"[_\-\s]+", "", s.lower())
+            app_name_norm = _anorm(app_name)
             for page in (1, 2):
                 r = await client.get(
                     f"{_BASE}/v1/apps",
@@ -292,15 +301,18 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
                     params={"limit": 100, "page": page},
                 )
                 if r.status_code != 200:
+                    print(f"[composio] GET /v1/apps page={page} → {r.status_code}", flush=True)
                     break
                 items = r.json().get("items") or r.json().get("data") or []
                 for item in items:
-                    aname = str(item.get("name") or item.get("appName") or item.get("key") or "").lower()
-                    if all(kw in aname for kw in keywords if kw):
+                    raw = str(item.get("name") or item.get("appName") or item.get("key") or "")
+                    aname_norm = _anorm(raw)
+                    if app_name_norm in aname_norm or aname_norm in app_name_norm:
                         candidate = str(item.get("appId") or item.get("id") or "").strip()
                         if candidate:
                             app_id = candidate
-                            logger.info("[composio] found app via list search: %s → id=%s", aname, app_id)
+                            print(f"[composio] found app via list: {raw} → id={app_id}", flush=True)
+                            logger.info("[composio] found app via list search: %s → id=%s", raw, app_id)
                             break
                 if app_id:
                     break
@@ -308,6 +320,7 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
             logger.warning("[composio] app list search error: %s", e)
 
     if not app_id:
+        print(f"[composio] could not resolve appId for {app_name}", flush=True)
         logger.warning("[composio] could not resolve appId for %s", app_name)
         return None
 
@@ -800,6 +813,8 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
                 "userUuid": user_id,
 
+                "entityId": user_id,
+
                 "data": {},
 
                 "labels": [],
@@ -808,6 +823,7 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
             }
 
+            print(f"[composio] POST /v1/connectedAccounts integrationId={integration_id} user={user_id}", flush=True)
             logger.info("[composio] POST /v1/connectedAccounts payload=%s", payload)
 
             resp = await client.post(
@@ -828,8 +844,7 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
                 data = {"raw": resp.text[:500]}
 
-
-
+            print(f"[composio] POST /v1/connectedAccounts → {resp.status_code} {str(data)[:400]}", flush=True)
             logger.info("[composio] POST /v1/connectedAccounts → %d body=%s", resp.status_code, str(data)[:500])
 
 
