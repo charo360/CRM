@@ -44,6 +44,11 @@ _BASE = "https://backend.composio.dev/api"
 
 _COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo", "shopify", "klaviyo"})
 
+# Try v3.1 auth_configs FIRST for these toolkits (managed OAuth works but custom apps are common)
+_COMPOSIO_TRY_V31_FIRST: frozenset[str] = frozenset({
+    "googlesearchconsole", "googleanalytics", "googleads",
+})
+
 
 
 # Composio app name (lowercase slug, as stored in appName field)
@@ -741,13 +746,40 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
                 return out
 
+            # For Google analytics toolkits: try v3.1 auth_configs first (users often set
+            # up custom OAuth credentials in Composio dashboard for these).
+            if app_name.lower() in _COMPOSIO_TRY_V31_FIRST:
 
+                auth_cid = await _resolve_auth_config_nanoid(client, app_name)
+
+                if auth_cid:
+
+                    out = await _init_connected_account_v31(client, auth_cid, user_id, redirect_url)
+
+                    if "redirect_url" in out:
+
+                        return out
+
+                    logger.info("[composio] v3.1 attempt failed for %s, falling through to v1", app_name)
 
             integration_id = await _get_or_create_integration_id(client, app_name)
 
             if not integration_id:
 
-                return {"error": f"Could not find or create Composio integration for {app_name}"}
+                # Final fallback: try v3.1 auth_configs even for non-priority toolkits
+                auth_cid = await _resolve_auth_config_nanoid(client, app_name)
+
+                if auth_cid:
+
+                    return await _init_connected_account_v31(client, auth_cid, user_id, redirect_url)
+
+                return {
+                    "error": (
+                        f"Could not connect {app_name} via Composio. "
+                        f"Please open your Composio dashboard, create an auth config for '{app_name}', "
+                        f"then try again. Docs: https://docs.composio.dev/toolkits/{app_name}"
+                    )
+                }
 
 
 
