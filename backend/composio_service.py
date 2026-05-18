@@ -836,17 +836,7 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
             if resp.status_code not in (200, 201):
 
-                return {
-
-                    "error": (
-
-                        data.get("message") or data.get("error")
-
-                        or f"Composio HTTP {resp.status_code}: {str(data)[:300]}"
-
-                    )
-
-                }
+                return {"error": _composio_err_text(data, resp.status_code)}
 
 
 
