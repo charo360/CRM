@@ -393,7 +393,7 @@ async def _ai_generate_keywords(
             if kw and len(kw) >= 3 and kw.lower() not in {e.lower() for e in exclude}:
                 results.append({"keyword": kw, "angle": angle or f"Write about '{kw}'"})
         logger.info("[seo] AI generated %d keyword+angle pairs", len(results))
-        return results[:30]
+        return results[:25]
     except Exception as e:
         logger.warning("[seo] _ai_generate_keywords failed: %s", e)
     return []
@@ -1244,6 +1244,40 @@ Only return the JSON array, no other text."""
                     keyword_source = "ai+dataforseo"
                     with_vol = sum(1 for k in keywords if k.get("global_search_volume"))
                     logger.info("[seo] AI+DataForSEO: %d keywords, %d with global volume", len(keywords), with_vol)
+
+                    # ── SUPPLEMENT: replace zero-volume AI keywords with real DataForSEO ideas ──
+                    # AI-invented keywords that got 0 global volume aren't real searches.
+                    # Swap them out for actual keyword ideas from DataForSEO's keyword database.
+                    zero_vol_kws = [k for k in keywords if not k.get("global_search_volume") and not k.get("search_volume")]
+                    if len(zero_vol_kws) >= 3:
+                        try:
+                            seeds = await _ai_keyword_seeds(snippet, bt)
+                            if seeds:
+                                already_in = {k["keyword"].lower() for k in keywords}
+                                real_kws = await dfs.fetch_keywords_for_seeds(
+                                    seeds,
+                                    location_code=dfs_lc,
+                                    language_code=dfs_lang,
+                                    limit=len(zero_vol_kws) + 5,
+                                    exclude_phrases=already_saved | already_in,
+                                )
+                                if real_kws:
+                                    # Remove zero-vol AI keywords, add real DataForSEO ones
+                                    keywords = [k for k in keywords if k.get("global_search_volume") or k.get("search_volume")]
+                                    # Enrich real_kws with local volume from what we already fetched
+                                    for rk in real_kws:
+                                        rkey = rk["keyword"].lower().strip()
+                                        lmeta = local_meta.get(rkey, {})
+                                        if lmeta.get("volume"):
+                                            rk["search_volume"] = lmeta["volume"]
+                                            rk["local_country"] = dfs_country_label if dfs_country_label else None
+                                            rk["cpc"] = rk.get("cpc") or lmeta.get("cpc")
+                                    keywords.extend(real_kws[:len(zero_vol_kws)])
+                                    keywords = keywords[:25]
+                                    logger.info("[seo] Supplemented %d zero-vol AI keywords with %d real DataForSEO ideas", len(zero_vol_kws), len(real_kws))
+                        except Exception as sup_e:
+                            logger.warning("[seo] Keyword supplement skipped: %s", sup_e)
+
             except Exception as e:
                 logger.warning("[seo] AI+DataForSEO primary flow failed: %s", e)
                 keywords = []
