@@ -2335,12 +2335,15 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
     if (profile.language?.trim()) setBlogLanguage(profile.language.trim());
   }, [profile]);
 
-  // Pre-fill from calendar "Write post" click
+  // Pre-fill from calendar "Write post" click — auto-generate immediately
   useEffect(() => {
     if (!prefillTopic) return;
     setTopic(prefillTopic.title);
     setKeywords(prefillTopic.keywords.join(", "));
     setTab("write");
+    // Auto-generate using prefill values directly (can't wait for state update)
+    void generateFromCalendar(prefillTopic.title, prefillTopic.keywords);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefillTopic]);
 
   // Load saved publish credentials when platform changes
@@ -2394,6 +2397,27 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
       toast.error(e instanceof Error ? e.message : "Publish failed — is Autoblog activated?");
     } finally {
       setPublishingSiteId(null);
+    }
+  }
+
+  async function generateFromCalendar(topicStr: string, kws: string[]) {
+    if (!topicStr.trim()) return;
+    setGenerating(true); setErr(""); setGenerated(null);
+    try {
+      const res = await seoApi.generateBlog({
+        topic: topicStr.trim(),
+        keywords: kws,
+        tone,
+        length,
+        business_name: businessName,
+        language: blogLanguage,
+        include_faq: includeFaq,
+      });
+      setGenerated(res);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Generation failed");
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -3078,7 +3102,7 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                       </button>
                       {(() => {
                         const liveUrl = publishedUrls[post.id] || post.site_post_url;
-                        if (post.status === "published" && liveUrl) {
+                        if (liveUrl) {
                           return (
                             <a
                               href={liveUrl}
