@@ -265,39 +265,50 @@ async def _get_or_create_integration_id(client: httpx.AsyncClient, app_name: str
 
 
     # 2. Get the Composio app metadata to find appId
+    # Try direct slug first (lower + upper), then search the full app list by name.
 
-    try:
+    app_id: Optional[str] = None
 
-        resp = await client.get(f"{_BASE}/v1/apps/{app_name}", headers=_headers())
+    for slug in (app_name, app_name.upper(), app_name.lower()):
+        try:
+            resp = await client.get(f"{_BASE}/v1/apps/{slug}", headers=_headers())
+            logger.info("[composio] GET /v1/apps/%s → %d", slug, resp.status_code)
+            if resp.status_code == 200:
+                app_data = resp.json()
+                app_id = str(app_data.get("appId") or app_data.get("id") or "").strip() or None
+                if app_id:
+                    break
+        except Exception as e:
+            logger.warning("[composio] GET /v1/apps/%s error: %s", slug, e)
 
-        if resp.status_code != 200 and app_name == app_name.lower():
+    # Fallback: search full app list by name keywords
+    if not app_id:
+        try:
+            keywords = [w for w in app_name.lower().split("google") if w] or [app_name.lower()]
+            for page in (1, 2):
+                r = await client.get(
+                    f"{_BASE}/v1/apps",
+                    headers=_headers(),
+                    params={"limit": 100, "page": page},
+                )
+                if r.status_code != 200:
+                    break
+                items = r.json().get("items") or r.json().get("data") or []
+                for item in items:
+                    aname = str(item.get("name") or item.get("appName") or item.get("key") or "").lower()
+                    if all(kw in aname for kw in keywords if kw):
+                        candidate = str(item.get("appId") or item.get("id") or "").strip()
+                        if candidate:
+                            app_id = candidate
+                            logger.info("[composio] found app via list search: %s → id=%s", aname, app_id)
+                            break
+                if app_id:
+                    break
+        except Exception as e:
+            logger.warning("[composio] app list search error: %s", e)
 
-            resp = await client.get(
-
-                f"{_BASE}/v1/apps/{app_name.upper()}",
-
-                headers=_headers(),
-
-            )
-
-        logger.info("[composio] GET /v1/apps/%s → %d %s", app_name, resp.status_code, resp.text[:200])
-
-        if resp.status_code != 200:
-
-            return None
-
-        app_data = resp.json()
-
-        app_id = app_data.get("appId") or app_data.get("id")
-
-        if not app_id:
-
-            return None
-
-    except Exception as e:
-
-        logger.warning("[composio] get app metadata error: %s", e)
-
+    if not app_id:
+        logger.warning("[composio] could not resolve appId for %s", app_name)
         return None
 
 
