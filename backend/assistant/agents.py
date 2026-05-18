@@ -305,8 +305,18 @@ SEO_TOOLS: FrozenSet[str] = frozenset({
     "create_business_document",
     # Keyword research (DataForSEO)
     "get_keyword_metrics", "get_keyword_suggestions",
+    # SERP ranking check (DataForSEO)
+    "check_serp_position",
     # Autoblogging tools
     "list_client_sites", "generate_blog_post", "publish_blog_post",
+    # VebAPI — Website audits
+    "veb_page_analysis", "veb_ai_visibility_audit", "veb_speed_check", "veb_ai_crawler_check",
+    # VebAPI — Backlinks & domain
+    "veb_backlinks", "veb_domain_data",
+    # VebAPI — SERP & rankings
+    "veb_top_search_keywords", "veb_google_serp", "veb_google_ai_serp",
+    # VebAPI — Social & video
+    "veb_instagram_hashtags", "veb_youtube_research",
 }) | _WEB_TOOLS
 
 # General agent: everything EXCEPT design-specific tools.
@@ -2129,13 +2139,39 @@ When the user wants to create and publish blog content:
    - The first keyword becomes the Yoast SEO focus keyword.
 
 ## Tools
+
+### Business context
 - `get_owner_info` — business context, industry, location.
 - `list_products`, `get_product_images` — catalog for product page optimization.
 - `get_analytics_summary` — traffic and conversion context.
 - `web_search` — SEO trends, competitor analysis, best practices research.
-- `get_keyword_metrics` — **DataForSEO API** — get exact search volume, competition, CPC for keywords.
-- `get_keyword_suggestions` — **DataForSEO API** — discover related keywords with metrics.
-- `generate_document`, `create_business_document` — SEO audit reports, content calendars, keyword research docs.
+
+### Keyword research (DataForSEO — primary)
+- `get_keyword_metrics` — exact search volume, competition, CPC for a list of keywords.
+- `get_keyword_suggestions` — discover related keywords with full metrics from a seed keyword.
+- `check_serp_position` — check where a website ranks for a specific keyword right now (position 1-100).
+
+### Website audit (VebAPI)
+- `veb_page_analysis` — full on-page SEO audit: score, category breakdown, issues list.
+- `veb_ai_visibility_audit` — AI search readiness: llms.txt, indexability, AI score.
+- `veb_speed_check` — Core Web Vitals: FCP, LCP, CLS, TBT, performance score.
+- `veb_ai_crawler_check` — which AI bots (GPTBot, ClaudeBot, PerplexityBot) can crawl the site.
+
+### Backlinks & domain (VebAPI)
+- `veb_backlinks` — backlink analysis; analysis_type: 'all', 'new', 'poor', 'referral'.
+- `veb_domain_data` — WHOIS, expiry date, registrar, DNS, domain age.
+
+### SERP & rankings (VebAPI)
+- `veb_top_search_keywords` — all keywords a domain currently ranks for with positions.
+- `veb_google_serp` — live Google top-10 results for a keyword with domain authority.
+- `veb_google_ai_serp` — Google AI Mode answer + sources for a query.
+
+### Social & video (VebAPI)
+- `veb_instagram_hashtags` — generate optimized Instagram hashtags for a topic.
+- `veb_youtube_research` — YouTube keyword volumes or video tag generator.
+
+### Content & publishing
+- `generate_document`, `create_business_document` — SEO audit reports, content calendars, keyword docs.
 - `list_client_sites` — see all WordPress sites for this business.
 - `generate_blog_post` — AI-generate SEO-optimized blog content (does not publish).
 - `publish_blog_post` — publish to WordPress with auto-generated featured image.

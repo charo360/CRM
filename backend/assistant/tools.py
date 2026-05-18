@@ -11724,3 +11724,409 @@ async def publish_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str,
         category=args.get("category", "Business"),
     )
     return result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# VEBAPI SEO TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+_VEBAPI_BASE = "https://vebapi.com/api"
+
+
+def _veb_key() -> str:
+    key = os.environ.get("VEBAPI_KEY", "").strip()
+    if not key:
+        raise RuntimeError("VEBAPI_KEY not set.")
+    return key
+
+
+async def _veb_get_call(endpoint: str, params: dict) -> dict:
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as hc:
+        resp = await hc.get(
+            f"{_VEBAPI_BASE}{endpoint}",
+            headers={"X-API-KEY": _veb_key()},
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _parse_veb_vol(v) -> int:
+    if v is None:
+        return 0
+    s = str(v).replace(",", "").replace("K", "000").strip()
+    try:
+        return int(float(s))
+    except Exception:
+        return 0
+
+
+@tool(
+    name="veb_page_analysis",
+    description=(
+        "Comprehensive on-page SEO analysis of a website via VebAPI. Returns overall score, "
+        "category breakdowns (SEO, speed, UX), and a full list of issues to fix. "
+        "Use for website audits and technical SEO reviews."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def veb_page_analysis(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/page-analysis-version-2", {"url": args["url"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Page analysis failed: {e}"}
+
+
+@tool(
+    name="veb_ai_visibility_audit",
+    description=(
+        "Check how visible a website is to AI search engines (ChatGPT, Perplexity, Gemini). "
+        "Checks llms.txt, AI indexability, and AI search readiness score."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def veb_ai_visibility_audit(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/ai-visibility-analyzer", {"url": args["url"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"AI visibility audit failed: {e}"}
+
+
+@tool(
+    name="veb_speed_check",
+    description=(
+        "Check website loading speed and Core Web Vitals (FCP, LCP, CLS, TBT). "
+        "Returns performance score and suggestions to improve speed."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def veb_speed_check(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/loading-speed-data-v2", {"url": args["url"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Speed check failed: {e}"}
+
+
+@tool(
+    name="veb_ai_crawler_check",
+    description=(
+        "Check whether a website allows AI bots to crawl it — GPTBot, Google-Extended, "
+        "PerplexityBot, ClaudeBot. Use when asked about AI crawler access."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https:// (e.g. example.com)"},
+        },
+    },
+)
+async def veb_ai_crawler_check(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/ai-seo-crawler", {"domain": args["domain"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"AI crawler check failed: {e}"}
+
+
+@tool(
+    name="veb_backlinks",
+    description=(
+        "Analyze backlinks for a domain. analysis_type options: "
+        "'all' (overview), 'new' (recent), 'poor' (toxic/low quality), 'referral' (referring domains)."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https://"},
+            "analysis_type": {
+                "type": "string",
+                "enum": ["all", "new", "poor", "referral"],
+                "description": "Type of backlink analysis",
+            },
+        },
+    },
+)
+async def veb_backlinks(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    endpoint_map = {
+        "all": "/backlink-data",
+        "new": "/new-backlinks",
+        "poor": "/poorbacklinks",
+        "referral": "/referral-domains",
+    }
+    endpoint = endpoint_map.get(args.get("analysis_type", "all"), "/backlink-data")
+    try:
+        data = await _veb_get_call(endpoint, {"domain": args["domain"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Backlink analysis failed: {e}"}
+
+
+@tool(
+    name="veb_domain_data",
+    description=(
+        "Get domain WHOIS data including registration date, expiry, registrar, DNS records, and name servers."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https://"},
+        },
+    },
+)
+async def veb_domain_data(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/domain-name-data-v2", {"domain": args["domain"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Domain data lookup failed: {e}"}
+
+
+@tool(
+    name="veb_top_search_keywords",
+    description=(
+        "Get all keywords a domain currently ranks for on Google, with positions and volumes. "
+        "Great for seeing your full ranking profile or analyzing competitors."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https://"},
+            "country": {"type": "string", "description": "2-letter ISO country code (KE, NG, US, GB)"},
+        },
+    },
+)
+async def veb_top_search_keywords(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        params = {"domain": args["domain"]}
+        if args.get("country"):
+            params["country"] = args["country"]
+        data = await _veb_get_call("/topsearch-keywords", params)
+        return data if isinstance(data, dict) else {"keywords": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Top keyword lookup failed: {e}"}
+
+
+@tool(
+    name="veb_google_serp",
+    description=(
+        "Get live Google search results for a keyword. Shows who ranks in the top 10 "
+        "with domain authority. Use to see competition for any keyword."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword to check in Google"},
+            "country": {"type": "string", "description": "2-letter ISO country code (default: KE)"},
+        },
+    },
+)
+async def veb_google_serp(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/seo/google-serp", {
+            "keyword": args["keyword"],
+            "country": args.get("country", "KE"),
+        })
+        return data if isinstance(data, dict) else {"results": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"SERP lookup failed: {e}"}
+
+
+@tool(
+    name="veb_google_ai_serp",
+    description=(
+        "Access Google AI Mode search results for a query — the AI-generated answer panel "
+        "with sources. Use when asked what Google AI says about a topic."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": {"type": "string", "description": "Search query for Google AI Mode"},
+            "country": {"type": "string", "description": "2-letter ISO country code (default: KE)"},
+        },
+    },
+)
+async def veb_google_ai_serp(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/google-ai-mode-serp", {
+            "keyword": args["query"],
+            "country": args.get("country", "KE"),
+        })
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Google AI SERP lookup failed: {e}"}
+
+
+@tool(
+    name="veb_instagram_hashtags",
+    description="Generate high-quality Instagram hashtags for a keyword or topic.",
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Topic or keyword for hashtag generation"},
+        },
+    },
+)
+async def veb_instagram_hashtags(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/instagramhashtags", {"keyword": args["keyword"]})
+        return data if isinstance(data, dict) else {"hashtags": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Hashtag generation failed: {e}"}
+
+
+@tool(
+    name="veb_youtube_research",
+    description=(
+        "YouTube SEO research — get keyword volumes or generate video tags. "
+        "research_type: 'keywords' for YouTube search volume data, 'tags' for video tag suggestions."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword or video topic to research"},
+            "research_type": {
+                "type": "string",
+                "enum": ["keywords", "tags"],
+                "description": "'keywords' for search volume, 'tags' for video tags",
+            },
+        },
+    },
+)
+async def veb_youtube_research(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        if args.get("research_type") == "tags":
+            data = await _veb_get_call("/youtube-tag-generator", {"keyword": args["keyword"]})
+        else:
+            data = await _veb_get_call("/youtube-keyword-research", {"keyword": args["keyword"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"YouTube research failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DATAFORSEO SERP RANKING CHECK
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="check_serp_position",
+    description=(
+        "Check where a website currently ranks on Google for a specific keyword using DataForSEO. "
+        "Returns position (1-100) or 'not ranked'. Use when asked about current Google rankings."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword", "domain"],
+        "properties": {
+            "keyword": {"type": "string", "description": "The keyword to check ranking for"},
+            "domain": {"type": "string", "description": "Domain to check (no https://, no www)"},
+            "location": {"type": "string", "description": "Country for SERP check (e.g. Kenya, Nigeria, USA)"},
+        },
+    },
+)
+async def check_serp_position(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx
+
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+
+    location_map = {
+        "kenya": 2404, "nigeria": 2566, "usa": 2710, "united states": 2710,
+        "uk": 2826, "united kingdom": 2826, "india": 2356, "australia": 2036,
+        "south africa": 2713, "ghana": 2288,
+    }
+    loc = (args.get("location") or "kenya").lower()
+    loc_code = location_map.get(loc, 2404)
+    domain = args["domain"].replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.post(
+                "https://api.dataforseo.com/v3/serp/google/organic/live/advanced",
+                headers={"Authorization": f"Basic {token}", "Content-Type": "application/json"},
+                json=[{"keyword": args["keyword"], "location_code": loc_code, "language_code": "en",
+                       "device": "desktop", "depth": 100}],
+            )
+        data = resp.json()
+        tasks = data.get("tasks") or []
+        if not tasks or tasks[0].get("status_code") != 20000:
+            return {"error": tasks[0].get("status_message", "DataForSEO error") if tasks else "No response"}
+
+        items = (tasks[0].get("result") or [{}])[0].get("items") or []
+        found_pos = None
+        found_url = None
+        top10 = []
+
+        for item in items:
+            if item.get("type") != "organic":
+                continue
+            pos = item.get("rank_absolute")
+            item_domain = (item.get("domain") or "").replace("www.", "")
+            if pos and pos <= 10:
+                top10.append({"position": pos, "domain": item_domain, "title": item.get("title", "")})
+            if found_pos is None and domain in item_domain:
+                found_pos = pos
+                found_url = item.get("url", "")
+
+        return {
+            "keyword": args["keyword"],
+            "domain": domain,
+            "position": found_pos,
+            "url": found_url,
+            "ranked": found_pos is not None,
+            "top_10": top10[:10],
+        }
+    except Exception as e:
+        return {"error": f"SERP check failed: {e}"}
