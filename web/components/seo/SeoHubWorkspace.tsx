@@ -13,7 +13,7 @@ import {
   type SeoBrief,
   type SeoBriefAction,
 } from "@/lib/api";
-import { ArrowRight, CalendarDays, Clock, PenLine, RefreshCw, Rss, Search, Zap } from "lucide-react";
+import { ArrowRight, CalendarDays, Clock, PenLine, RefreshCw, Rss, Search, Trash2, Zap } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -24,8 +24,33 @@ type ChatMsg = {
 };
 
 type PublishState = "idle" | "generating" | "publishing" | "done" | "error";
+type TrackerFilter = "all" | "ranked" | "easy" | "unpublished";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function positionBadge(pos: number | null | undefined) {
+  if (pos == null) return <span className="text-[10px] text-slate-300 italic">—</span>;
+  if (pos <= 3) return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+      🏆 #{pos}
+    </span>
+  );
+  if (pos <= 10) return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+      ✓ #{pos}
+    </span>
+  );
+  if (pos <= 30) return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-50 text-yellow-800 border border-yellow-200">
+      p.{pos}
+    </span>
+  );
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+      p.{pos}
+    </span>
+  );
+}
 
 function difficultyBadge(d: string) {
   if (!d) return null;
@@ -82,15 +107,18 @@ const QUICK_ACTIONS = [
 function TrackerRow({
   row,
   onPublish,
+  onDelete,
   publishState,
   publishUrl,
 }: {
   row: KeywordTrackerRow;
   onPublish: (row: KeywordTrackerRow) => void;
+  onDelete: (keyword: string) => void;
   publishState: PublishState;
   publishUrl: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const hasPosts = (row.posts ?? []).length > 0;
 
   return (
@@ -108,9 +136,20 @@ function TrackerRow({
           )}
         </div>
 
+        {/* Google Rank */}
+        <div className="shrink-0 w-24 text-center">
+          <p className="text-[10px] text-slate-400 mb-0.5">Google rank</p>
+          {positionBadge(row.position)}
+          {row.position_checked_at && (
+            <p className="text-[9px] text-slate-300 mt-0.5">
+              {new Date(row.position_checked_at).toLocaleDateString()}
+            </p>
+          )}
+        </div>
+
         {/* Volume */}
-        <div className="text-right shrink-0 w-16">
-          <p className="text-[10px] text-slate-400 mb-0.5">searches/mo</p>
+        <div className="text-right shrink-0 w-14">
+          <p className="text-[10px] text-slate-400 mb-0.5">vol/mo</p>
           {formatVolume(row.search_volume)}
         </div>
 
@@ -124,12 +163,12 @@ function TrackerRow({
               {row.posts.length} post{row.posts.length !== 1 ? "s" : ""} {expanded ? "▲" : "▼"}
             </button>
           ) : (
-            <span className="text-[11px] text-slate-400">No posts yet</span>
+            <span className="text-[11px] text-slate-400">No posts</span>
           )}
         </div>
 
         {/* Publish action */}
-        <div className="shrink-0 w-36 flex justify-end">
+        <div className="shrink-0 w-32 flex justify-end">
           {publishState === "done" ? (
             <a
               href={publishUrl}
@@ -152,8 +191,36 @@ function TrackerRow({
               ) : publishState === "error" ? (
                 "↺ Retry"
               ) : (
-                "→ Publish to Blog"
+                "→ Publish"
               )}
+            </button>
+          )}
+        </div>
+
+        {/* Delete */}
+        <div className="shrink-0">
+          {confirmDelete ? (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => onDelete(row.keyword)}
+                className="text-[10px] px-2 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 font-semibold"
+              >
+                Yes, remove
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="text-[10px] px-2 py-1 border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+              title="Remove keyword"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
@@ -229,6 +296,9 @@ function SeoHubWorkspace({
   const [quickGenLoading, setQuickGenLoading] = useState(false);
   const [quickGenDone, setQuickGenDone] = useState(false);
 
+  // Tracker filter
+  const [trackerFilter, setTrackerFilter] = useState<TrackerFilter>("all");
+
   const loadTracker = useCallback(async (silent = false) => {
     if (!silent) setTrackerLoading(true);
     try {
@@ -252,6 +322,15 @@ function SeoHubWorkspace({
       setBriefLoading(false);
     }
   }, []);
+
+  async function deleteKeyword(keyword: string) {
+    try {
+      await blogApi.deleteKeyword(keyword);
+      setTrackerRows(prev => prev.filter(r => r.keyword !== keyword));
+    } catch (e) {
+      setTrackerError(e instanceof Error ? e.message : "Failed to remove keyword");
+    }
+  }
 
   async function enrichVolumes() {
     setEnriching(true);
@@ -666,10 +745,16 @@ function SeoHubWorkspace({
 
             {/* Stats row */}
             {trackerRows.length > 0 && (
-              <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 gap-3">
+              <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
                   <p className="text-2xl font-bold text-slate-800">{trackerRows.length}</p>
                   <p className="text-[11px] text-slate-500 mt-0.5">Keywords tracked</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
+                  <p className="text-2xl font-bold text-blue-700">
+                    {trackerRows.filter(r => r.position != null && r.position <= 100).length}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Ranked on Google</p>
                 </div>
                 <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
                   <p className="text-2xl font-bold text-emerald-700">
@@ -678,18 +763,10 @@ function SeoHubWorkspace({
                   <p className="text-[11px] text-slate-500 mt-0.5">Posts published</p>
                 </div>
                 <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
-                  <p className="text-2xl font-bold text-blue-700">
+                  <p className="text-2xl font-bold text-indigo-700">
                     {trackerRows.filter(r => r.difficulty?.toLowerCase() === "low" || r.difficulty?.toLowerCase() === "easy").length}
                   </p>
                   <p className="text-[11px] text-slate-500 mt-0.5">Easy wins</p>
-                </div>
-                <div className="hidden sm:block bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
-                  <p className="text-2xl font-bold text-slate-800">
-                    {trackerRows.filter(r => r.search_volume > 0).length > 0
-                      ? Math.round(trackerRows.filter(r => r.search_volume > 0).reduce((s, r) => s + r.search_volume, 0) / trackerRows.filter(r => r.search_volume > 0).length).toLocaleString()
-                      : "—"}
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">Avg vol/mo</p>
                 </div>
               </div>
             )}
@@ -706,12 +783,38 @@ function SeoHubWorkspace({
 
           {/* Tracker table */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex-1">
+            {/* Filter tabs */}
+            {trackerRows.length > 0 && (
+              <div className="flex items-center gap-1 px-4 py-2 border-b border-slate-100 bg-slate-50/70 flex-wrap">
+                {([
+                  { key: "all", label: `All (${trackerRows.length})` },
+                  { key: "ranked", label: `Ranked (${trackerRows.filter(r => r.position != null).length})` },
+                  { key: "easy", label: `Easy wins (${trackerRows.filter(r => ["low","easy"].includes(r.difficulty?.toLowerCase())).length})` },
+                  { key: "unpublished", label: `No posts (${trackerRows.filter(r => !r.posts?.length).length})` },
+                ] as { key: TrackerFilter; label: string }[]).map(f => (
+                  <button
+                    key={f.key}
+                    onClick={() => setTrackerFilter(f.key)}
+                    className={`text-[11px] px-3 py-1 rounded-full font-semibold transition-colors ${
+                      trackerFilter === f.key
+                        ? "bg-emerald-600 text-white"
+                        : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Table header */}
             <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50 border-b border-slate-100">
               <div className="flex-1 text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Keyword</div>
-              <div className="w-16 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Volume</div>
+              <div className="w-24 text-center text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Google Rank</div>
+              <div className="w-14 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Vol/mo</div>
               <div className="w-20 text-center text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Posts</div>
-              <div className="w-36 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Action</div>
+              <div className="w-32 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Action</div>
+              <div className="w-6" />
             </div>
 
             {trackerLoading ? (
@@ -738,19 +841,34 @@ function SeoHubWorkspace({
                   </button>
                 )}
               </div>
-            ) : (
-              <div className="divide-y divide-slate-50">
-                {trackerRows.map(row => (
-                  <TrackerRow
-                    key={row.keyword}
-                    row={row}
-                    onPublish={publishKeyword}
-                    publishState={publishStates[row.keyword] ?? "idle"}
-                    publishUrl={publishUrls[row.keyword] ?? ""}
-                  />
-                ))}
-              </div>
-            )}
+            ) : (() => {
+                const filtered = trackerRows.filter(r => {
+                  if (trackerFilter === "ranked") return r.position != null;
+                  if (trackerFilter === "easy") return ["low","easy"].includes(r.difficulty?.toLowerCase());
+                  if (trackerFilter === "unpublished") return !r.posts?.length;
+                  return true;
+                });
+                return filtered.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 gap-2 text-center px-6">
+                    <p className="text-slate-500 text-sm">No keywords match this filter.</p>
+                    <button onClick={() => setTrackerFilter("all")} className="text-xs text-emerald-600 hover:underline">Show all</button>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-50">
+                    {filtered.map(row => (
+                      <TrackerRow
+                        key={row.keyword}
+                        row={row}
+                        onPublish={publishKeyword}
+                        onDelete={deleteKeyword}
+                        publishState={publishStates[row.keyword] ?? "idle"}
+                        publishUrl={publishUrls[row.keyword] ?? ""}
+                      />
+                    ))}
+                  </div>
+                );
+              })()
+            }
           </div>
 
           {/* Bottom hint */}

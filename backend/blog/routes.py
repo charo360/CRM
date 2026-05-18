@@ -779,20 +779,51 @@ def make_blog_router(db, get_current_user):
 
     @router.get("/keyword-tracker")
     async def get_keyword_tracker(user=Depends(get_current_user)):
-        """Returns all tracked keywords with their linked blog posts."""
+        """Returns all tracked keywords with their linked blog posts and latest Google ranking position."""
         user_id = str(user.get("_id") or user.get("id", ""))
         entries = await db.keyword_tracker.find(
             {"user_id": user_id},
             {"_id": 0, "user_id": 0},
         ).sort("search_volume", -1).to_list(None)
 
+        # Build a position map from seo_serp_rankings (latest entry per keyword)
+        ranking_rows = await db.seo_serp_rankings.find(
+            {"user_id": user_id},
+        ).sort("checked_at", -1).to_list(2000)
+        # Deduplicate: keep latest per keyword (case-insensitive)
+        position_map: dict = {}
+        for r in ranking_rows:
+            kw = (r.get("keyword") or "").lower()
+            if kw not in position_map:
+                position_map[kw] = {
+                    "position": r.get("position"),
+                    "checked_at": r.get("checked_at").isoformat() if r.get("checked_at") else None,
+                    "domain": r.get("domain"),
+                }
+
         for e in entries:
             if isinstance(e.get("updated_at"), datetime):
                 e["updated_at"] = e["updated_at"].isoformat()
             if isinstance(e.get("created_at"), datetime):
                 e["created_at"] = e["created_at"].isoformat()
+            # Attach latest ranking data
+            rank_data = position_map.get((e.get("keyword") or "").lower(), {})
+            e["position"] = rank_data.get("position")
+            e["position_checked_at"] = rank_data.get("checked_at")
+            e["ranked_domain"] = rank_data.get("domain")
 
         return {"keywords": entries}
+
+    @router.delete("/keyword-tracker/{keyword}")
+    async def delete_keyword_from_tracker(keyword: str, user=Depends(get_current_user)):
+        """Remove a keyword from the tracker permanently."""
+        from urllib.parse import unquote
+        user_id = str(user.get("_id") or user.get("id", ""))
+        kw = unquote(keyword)
+        result = await db.keyword_tracker.delete_one({"user_id": user_id, "keyword": kw})
+        if result.deleted_count:
+            return {"ok": True, "message": f"'{kw}' removed from tracker"}
+        raise HTTPException(404, f"Keyword '{kw}' not found in tracker")
 
     @router.post("/keyword-tracker/enrich-volumes")
     async def enrich_keyword_volumes(user=Depends(get_current_user)):

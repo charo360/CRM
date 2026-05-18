@@ -2499,6 +2499,9 @@ export interface KeywordTrackerRow {
   posts: { title: string; url: string; published_at: string }[];
   created_at: string;
   updated_at: string;
+  position: number | null;
+  position_checked_at: string | null;
+  ranked_domain: string | null;
 }
 
 export const blogApi = {
@@ -2532,6 +2535,9 @@ export const blogApi = {
   /** Batch-fetch real search volumes from DataForSEO for keywords missing volumes. */
   enrichVolumes: () =>
     api.post<{ ok: boolean; updated: number; checked: number; message?: string }>("/blog/keyword-tracker/enrich-volumes", {}),
+  /** Delete a keyword from the tracker permanently. */
+  deleteKeyword: (keyword: string) =>
+    request<{ ok: boolean; message: string }>(`/blog/keyword-tracker/${encodeURIComponent(keyword)}`, { method: "DELETE" }),
   /** Regenerate and upload a custom favicon for the user's WordPress subsite. */
   refreshFavicon: () =>
     api.post<{ status: string; message: string }>("/blog/refresh-favicon", {}),
