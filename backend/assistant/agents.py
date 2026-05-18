@@ -303,20 +303,34 @@ SEO_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "get_product_images",
     "get_analytics_summary", "generate_document",
     "create_business_document",
-    # Keyword research (DataForSEO)
+    # Keyword research — DataForSEO (primary)
     "get_keyword_metrics", "get_keyword_suggestions",
+    "get_keyword_geo_breakdown", "get_competitor_keywords",
+    # Keyword research — VebAPI (fallback)
+    "veb_keyword_research",
+    # Keyword tracker (DB)
+    "add_keywords_to_tracker", "get_saved_keywords",
     # SERP ranking check (DataForSEO)
     "check_serp_position",
-    # Autoblogging tools
-    "list_client_sites", "generate_blog_post", "publish_blog_post",
-    # VebAPI — Website audits
+    # Rankings tracker (DB)
+    "get_rankings", "refresh_all_rankings", "delete_ranking",
+    # Website audit
     "veb_page_analysis", "veb_ai_visibility_audit", "veb_speed_check", "veb_ai_crawler_check",
-    # VebAPI — Backlinks & domain
+    "audit_website", "fix_seo_issues",
+    # Backlinks & domain (VebAPI)
     "veb_backlinks", "veb_domain_data",
-    # VebAPI — SERP & rankings
+    # SERP & rankings (VebAPI)
     "veb_top_search_keywords", "veb_google_serp", "veb_google_ai_serp",
-    # VebAPI — Social & video
+    # Social & video (VebAPI)
     "veb_instagram_hashtags", "veb_youtube_research",
+    # Blog post management (DB)
+    "list_saved_posts", "publish_to_my_site", "delete_blog_post",
+    # Autoblogging (WordPress)
+    "list_client_sites", "generate_blog_post", "publish_blog_post",
+    # Content calendar (DB + AI)
+    "get_content_calendar", "schedule_content", "generate_content_calendar",
+    # SEO overview (DB)
+    "get_seo_summary",
 }) | _WEB_TOOLS
 
 # General agent: everything EXCEPT design-specific tools.
@@ -2148,33 +2162,58 @@ When the user wants to create and publish blog content:
 
 ### Keyword research (DataForSEO — primary)
 - `get_keyword_metrics` — exact search volume, competition, CPC for a list of keywords.
-- `get_keyword_suggestions` — discover related keywords with full metrics from a seed keyword.
-- `check_serp_position` — check where a website ranks for a specific keyword right now (position 1-100).
+- `get_keyword_suggestions` — discover related keywords with metrics from a seed keyword.
+- `get_keyword_geo_breakdown` — search volume for a keyword across 12 countries simultaneously.
+- `get_competitor_keywords` — keywords a competitor domain ranks for on Google.
+- `veb_keyword_research` — VebAPI keyword ideas fallback when DataForSEO is unavailable.
 
-### Website audit (VebAPI)
-- `veb_page_analysis` — full on-page SEO audit: score, category breakdown, issues list.
+### Keyword tracker (DB)
+- `add_keywords_to_tracker` — save researched keywords to the user's tracker. ALWAYS call after research.
+- `get_saved_keywords` — view all keywords saved in the tracker with volumes and intent.
+
+### SERP & rankings
+- `check_serp_position` — check where a website ranks for a keyword right now (DataForSEO).
+- `get_rankings` — view all tracked keyword rankings from the DB.
+- `refresh_all_rankings` — re-check live Google positions for all tracked keywords.
+- `delete_ranking` — remove a keyword from the rankings tracker.
+- `veb_top_search_keywords` — all keywords a domain ranks for (VebAPI).
+- `veb_google_serp` — live Google top-10 for a keyword with domain authority.
+- `veb_google_ai_serp` — Google AI Mode answer panel + sources.
+
+### Website audit
+- `veb_page_analysis` — full on-page SEO audit: score, categories, issues list (VebAPI).
 - `veb_ai_visibility_audit` — AI search readiness: llms.txt, indexability, AI score.
 - `veb_speed_check` — Core Web Vitals: FCP, LCP, CLS, TBT, performance score.
-- `veb_ai_crawler_check` — which AI bots (GPTBot, ClaudeBot, PerplexityBot) can crawl the site.
+- `veb_ai_crawler_check` — which AI bots can crawl the site (GPTBot, ClaudeBot, etc.).
+- `audit_website` — HTML-based audit with no API key needed (fallback).
+- `fix_seo_issues` — AI-written fixes for every on-page issue found.
 
 ### Backlinks & domain (VebAPI)
 - `veb_backlinks` — backlink analysis; analysis_type: 'all', 'new', 'poor', 'referral'.
 - `veb_domain_data` — WHOIS, expiry date, registrar, DNS, domain age.
 
-### SERP & rankings (VebAPI)
-- `veb_top_search_keywords` — all keywords a domain currently ranks for with positions.
-- `veb_google_serp` — live Google top-10 results for a keyword with domain authority.
-- `veb_google_ai_serp` — Google AI Mode answer + sources for a query.
-
 ### Social & video (VebAPI)
 - `veb_instagram_hashtags` — generate optimized Instagram hashtags for a topic.
 - `veb_youtube_research` — YouTube keyword volumes or video tag generator.
 
-### Content & publishing
-- `generate_document`, `create_business_document` — SEO audit reports, content calendars, keyword docs.
-- `list_client_sites` — see all WordPress sites for this business.
+### Blog post management (DB — SEO Hub posts)
+- `list_saved_posts` — list all saved SEO blog posts (drafts + published).
+- `publish_to_my_site` — publish a saved post to the user's Zilo site (one click, no credentials).
+- `delete_blog_post` — permanently delete a saved post.
+
+### WordPress autoblogging
+- `list_client_sites` — see all WordPress sites linked to this business.
 - `generate_blog_post` — AI-generate SEO-optimized blog content (does not publish).
 - `publish_blog_post` — publish to WordPress with auto-generated featured image.
+
+### Content calendar (DB)
+- `get_content_calendar` — view all scheduled content by week.
+- `schedule_content` — add a blog topic to the content calendar for a specific week.
+- `generate_content_calendar` — AI-generate a full multi-week content plan.
+
+### SEO overview & documents
+- `get_seo_summary` — blog counts, latest audit score, rankings count, saved keywords.
+- `generate_document`, `create_business_document` — SEO reports, keyword docs, audits.
 
 ## Intelligence rules
 - Always research before recommending — use `web_search` for current best practices.

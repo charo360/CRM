@@ -12130,3 +12130,801 @@ async def check_serp_position(ctx: ToolContext, args: Dict[str, Any]) -> Dict[st
         }
     except Exception as e:
         return {"error": f"SERP check failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# VEBAPI KEYWORD RESEARCH + GEO BREAKDOWN
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="veb_keyword_research",
+    description=(
+        "Get keyword ideas and search volumes from VebAPI. "
+        "Use as a fallback when DataForSEO is unavailable, or for a second opinion on keyword volume."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Seed keyword to research"},
+            "country": {"type": "string", "description": "2-letter ISO country code (KE, NG, US, GB). Default: KE"},
+        },
+    },
+)
+async def veb_keyword_research(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/seo/keywordresearch", {
+            "keyword": args["keyword"],
+            "country": args.get("country", "KE"),
+        })
+        return data if isinstance(data, dict) else {"keywords": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Keyword research failed: {e}"}
+
+
+@tool(
+    name="get_keyword_geo_breakdown",
+    description=(
+        "Get search volume for a keyword across 12 countries simultaneously. "
+        "Use when asked 'where is this keyword popular', 'global volume', or for international SEO."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword to check globally"},
+        },
+    },
+)
+async def get_keyword_geo_breakdown(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+    markets = [
+        (2710, "USA"), (2826, "UK"), (2124, "Canada"), (2036, "Australia"),
+        (2356, "India"), (2566, "Nigeria"), (2404, "Kenya"), (2713, "South Africa"),
+        (2076, "Brazil"), (2840, "Germany"), (2682, "Saudi Arabia"), (2784, "UAE"),
+    ]
+    headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+    results = {}
+    try:
+        async with _httpx.AsyncClient(timeout=40) as hc:
+            for loc_code, country in markets:
+                try:
+                    resp = await hc.post(
+                        "https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live",
+                        headers=headers,
+                        json=[{"keywords": [args["keyword"]], "location_code": loc_code, "language_code": "en"}],
+                    )
+                    tasks = resp.json().get("tasks") or []
+                    if tasks and tasks[0].get("status_code") == 20000:
+                        items = tasks[0].get("result") or []
+                        if items:
+                            results[country] = int(items[0].get("search_volume") or 0)
+                except Exception:
+                    pass
+        if not results:
+            return {"error": f"No global data found for '{args['keyword']}'"}
+        sorted_res = sorted(results.items(), key=lambda x: x[1], reverse=True)
+        return {
+            "keyword": args["keyword"],
+            "markets": [{"country": c, "volume": v} for c, v in sorted_res],
+            "total_volume": sum(results.values()),
+            "strongest_market": sorted_res[0][0] if sorted_res else None,
+        }
+    except Exception as e:
+        return {"error": f"Geo breakdown failed: {e}"}
+
+
+@tool(
+    name="get_competitor_keywords",
+    description=(
+        "Find what keywords a competitor's website ranks for on Google using DataForSEO. "
+        "Use when asked about competitor rankings or to discover new keyword opportunities."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["competitor_domain"],
+        "properties": {
+            "competitor_domain": {"type": "string", "description": "Competitor domain (no https://)"},
+            "location": {"type": "string", "description": "Country (e.g. Kenya, Nigeria, USA). Default: Kenya"},
+            "limit": {"type": "integer", "description": "Number of keywords to return (default 15)"},
+        },
+    },
+)
+async def get_competitor_keywords(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+    loc_map = {
+        "kenya": 2404, "nigeria": 2566, "usa": 2710, "united states": 2710,
+        "uk": 2826, "united kingdom": 2826, "india": 2356, "australia": 2036,
+        "south africa": 2713, "ghana": 2288,
+    }
+    loc = (args.get("location") or "kenya").lower()
+    loc_code = loc_map.get(loc, 2404)
+    limit = min(int(args.get("limit") or 15), 50)
+    domain = args["competitor_domain"].replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.post(
+                "https://api.dataforseo.com/v3/dataforseo_labs/google/ranked_keywords/live",
+                headers={"Authorization": f"Basic {token}", "Content-Type": "application/json"},
+                json=[{"target": domain, "location_code": loc_code, "language_code": "en", "limit": limit}],
+            )
+        data = resp.json()
+        tasks = data.get("tasks") or []
+        if not tasks or tasks[0].get("status_code") != 20000:
+            return {"error": tasks[0].get("status_message", "DataForSEO error") if tasks else "No response"}
+        items = (tasks[0].get("result") or [{}])[0].get("items") or []
+        keywords = []
+        for item in items:
+            kd = item.get("keyword_data") or {}
+            ki = kd.get("keyword_info") or {}
+            se = item.get("ranked_serp_element") or {}
+            sr = se.get("serp_item") or {}
+            keywords.append({
+                "keyword": kd.get("keyword", ""),
+                "position": sr.get("rank_absolute"),
+                "volume": ki.get("search_volume", 0),
+                "url": sr.get("url", ""),
+            })
+        return {"domain": domain, "keywords": keywords, "total": len(keywords)}
+    except Exception as e:
+        return {"error": f"Competitor keyword lookup failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO KEYWORD TRACKER (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="add_keywords_to_tracker",
+    description=(
+        "Save keywords to the user's SEO keyword tracker. "
+        "ALWAYS call this after keyword research so the user can track and manage their keywords."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keywords_csv"],
+        "properties": {
+            "keywords_csv": {
+                "type": "string",
+                "description": (
+                    "Pipe-separated rows: keyword|search_volume|difficulty|intent|content_idea. "
+                    "One keyword per line. search_volume is an integer (0 if unknown). "
+                    "difficulty: low/medium/high. intent: informational/transactional/local."
+                ),
+            },
+        },
+    },
+)
+async def add_keywords_to_tracker(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    saved, skipped = 0, 0
+    for line in (args.get("keywords_csv") or "").strip().splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if not parts or not parts[0]:
+            continue
+        keyword = parts[0]
+        try:
+            vol = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        except Exception:
+            vol = 0
+        difficulty = parts[2] if len(parts) > 2 else ""
+        intent = parts[3] if len(parts) > 3 else ""
+        content_idea = parts[4] if len(parts) > 4 else ""
+        try:
+            await ctx.db.keyword_tracker.update_one(
+                {"user_id": uid, "keyword": keyword},
+                {"$set": {
+                    "user_id": uid, "keyword": keyword, "search_volume": vol,
+                    "difficulty": difficulty, "intent": intent,
+                    "content_idea": content_idea, "updated_at": datetime.utcnow(),
+                }, "$setOnInsert": {"created_at": datetime.utcnow(), "posts": []}},
+                upsert=True,
+            )
+            saved += 1
+        except Exception:
+            skipped += 1
+    return {"saved": saved, "skipped": skipped, "message": f"Saved {saved} keywords to tracker."}
+
+
+@tool(
+    name="get_saved_keywords",
+    description="Get all keywords saved in the user's SEO keyword tracker with volumes, difficulty, and intent.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_saved_keywords(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    docs = await ctx.db.keyword_tracker.find({"user_id": uid}).sort("search_volume", -1).to_list(200)
+    if not docs:
+        return {"count": 0, "keywords": [], "message": "No keywords saved yet. Try researching keywords first."}
+    keywords = [
+        {
+            "keyword": d.get("keyword"),
+            "search_volume": d.get("search_volume", 0),
+            "difficulty": d.get("difficulty", ""),
+            "intent": d.get("intent", ""),
+            "content_idea": d.get("content_idea", ""),
+            "posts_count": len(d.get("posts") or []),
+        }
+        for d in docs
+    ]
+    return {"count": len(keywords), "keywords": keywords}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO RANKINGS TRACKER (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_rankings",
+    description=(
+        "Get all tracked keyword rankings from the SEO rankings tracker. "
+        "Shows current position, domain, and when it was last checked."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_rankings(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    rows = await ctx.db.seo_serp_rankings.find({"user_id": uid}).sort("checked_at", -1).to_list(500)
+    if not rows:
+        return {"count": 0, "rankings": [], "message": "No rankings tracked yet. Use check_serp_position to start tracking."}
+    seen: dict = {}
+    for r in rows:
+        key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+        if key not in seen:
+            seen[key] = r
+    rankings = [
+        {
+            "keyword": r.get("keyword"),
+            "domain": r.get("domain"),
+            "position": r.get("position"),
+            "checked_at": r.get("checked_at").isoformat() if r.get("checked_at") else None,
+        }
+        for r in seen.values()
+    ]
+    return {"count": len(rankings), "rankings": rankings}
+
+
+@tool(
+    name="refresh_all_rankings",
+    description=(
+        "Re-check Google positions for ALL tracked keywords using live DataForSEO data. "
+        "Use when the user asks to refresh or update their rankings."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def refresh_all_rankings(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+    uid = ctx.business_id
+    rows = await ctx.db.seo_serp_rankings.find({"user_id": uid}).sort("checked_at", -1).to_list(500)
+    if not rows:
+        return {"message": "No keywords being tracked yet."}
+    seen: dict = {}
+    for r in rows:
+        key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+        if key not in seen:
+            seen[key] = r
+    headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+    updated, failed = 0, 0
+    async with _httpx.AsyncClient(timeout=30) as hc:
+        for r in list(seen.values())[:20]:
+            kw = r.get("keyword", "")
+            domain = r.get("domain", "")
+            loc = r.get("location_code", 2404)
+            lang = r.get("language_code", "en")
+            try:
+                resp = await hc.post(
+                    "https://api.dataforseo.com/v3/serp/google/organic/live/regular",
+                    headers=headers,
+                    json=[{"keyword": kw, "location_code": loc, "language_code": lang, "depth": 100}],
+                )
+                tasks = resp.json().get("tasks") or []
+                if tasks and tasks[0].get("status_code") == 20000:
+                    items = (tasks[0].get("result") or [{}])[0].get("items") or []
+                    pos = None
+                    for item in items:
+                        if item.get("type") == "organic" and domain in (item.get("domain") or "").replace("www.", ""):
+                            pos = item.get("rank_absolute")
+                            break
+                    await ctx.db.seo_serp_rankings.insert_one({
+                        "_id": str(uuid.uuid4()),
+                        "user_id": uid, "keyword": kw, "domain": domain,
+                        "position": pos, "location_code": loc, "language_code": lang,
+                        "checked_at": datetime.utcnow(),
+                    })
+                    updated += 1
+            except Exception:
+                failed += 1
+    return {"updated": updated, "failed": failed, "message": f"Refreshed {updated} rankings."}
+
+
+@tool(
+    name="delete_ranking",
+    description="Remove a keyword from the SEO rankings tracker.",
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword to stop tracking"},
+            "domain": {"type": "string", "description": "Domain for the keyword (optional, removes all if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def delete_ranking(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    query: dict = {"user_id": uid, "keyword": args["keyword"]}
+    if args.get("domain"):
+        query["domain"] = args["domain"]
+    result = await ctx.db.seo_serp_rankings.delete_many(query)
+    return {"deleted": result.deleted_count, "message": f"Removed '{args['keyword']}' from rankings tracker."}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AI-POWERED WEBSITE AUDIT & FIX
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="audit_website",
+    description=(
+        "Crawl and audit a website URL for SEO issues without needing an API key. "
+        "Returns a score, grade, and list of on-page issues. "
+        "Use as fallback if veb_page_analysis is unavailable."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def audit_website(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    from html.parser import HTMLParser
+
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.title = ""; self.meta: dict = {}
+            self.h1s: list = []; self.h2s: list = []
+            self.imgs_no_alt = 0; self.total_imgs = 0
+            self._in_title = False
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "title": self._in_title = True
+            if tag == "meta":
+                name = a.get("name", "").lower()
+                content = a.get("content", "")
+                if name in ("description", "keywords"): self.meta[name] = content
+            if tag == "h1": self.h1s.append("")
+            if tag == "h2": self.h2s.append("")
+            if tag == "img":
+                self.total_imgs += 1
+                if not a.get("alt"): self.imgs_no_alt += 1
+        def handle_endtag(self, tag):
+            if tag == "title": self._in_title = False
+        def handle_data(self, data):
+            if self._in_title: self.title += data
+            if self.h1s and data.strip(): self.h1s[-1] += data
+            if self.h2s and data.strip(): self.h2s[-1] += data
+
+    url = args["url"]
+    try:
+        async with _httpx.AsyncClient(timeout=15, follow_redirects=True) as hc:
+            resp = await hc.get(url, headers={"User-Agent": "ZiloSEOBot/1.0"})
+        p = _P(); p.feed(resp.text)
+        issues = []
+        score = 100
+        if not p.title: issues.append({"severity": "critical", "message": "Missing <title> tag"}); score -= 20
+        elif len(p.title) > 60: issues.append({"severity": "warning", "message": f"Title too long ({len(p.title)} chars, max 60)"}); score -= 5
+        desc = p.meta.get("description", "")
+        if not desc: issues.append({"severity": "critical", "message": "Missing meta description"}); score -= 15
+        elif len(desc) > 160: issues.append({"severity": "warning", "message": f"Meta description too long ({len(desc)} chars)"}); score -= 5
+        if len(p.h1s) == 0: issues.append({"severity": "critical", "message": "No H1 tag found"}); score -= 15
+        elif len(p.h1s) > 1: issues.append({"severity": "warning", "message": f"Multiple H1 tags ({len(p.h1s)}) — use only one"}); score -= 5
+        if p.imgs_no_alt > 0: issues.append({"severity": "warning", "message": f"{p.imgs_no_alt}/{p.total_imgs} images missing alt text"}); score -= min(p.imgs_no_alt * 2, 10)
+        if len(p.h2s) == 0: issues.append({"severity": "info", "message": "No H2 tags — add subheadings for better structure"}); score -= 5
+        score = max(0, score)
+        grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
+        try:
+            await ctx.db.seo_audits.insert_one({
+                "_id": str(uuid.uuid4()), "user_id": ctx.business_id, "url": url,
+                "score": score, "grade": grade, "issues_count": len(issues),
+                "created_at": datetime.utcnow(),
+            })
+        except Exception:
+            pass
+        return {"url": url, "score": score, "grade": grade, "title": p.title, "meta_description": desc,
+                "h1_count": len(p.h1s), "h2_count": len(p.h2s),
+                "images_missing_alt": p.imgs_no_alt, "total_images": p.total_imgs,
+                "issues": issues}
+    except Exception as e:
+        return {"error": f"Audit failed: {e}"}
+
+
+@tool(
+    name="fix_seo_issues",
+    description=(
+        "Get AI-written fixes for every SEO issue on a website. "
+        "Returns ready-to-use replacement copy for titles, meta descriptions, etc."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Website URL to audit and fix"},
+        },
+    },
+)
+async def fix_seo_issues(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    from html.parser import HTMLParser
+
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.title = ""; self.meta: dict = {}; self.h1s: list = []
+            self._in_title = False
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "title": self._in_title = True
+            if tag == "meta":
+                n = a.get("name", "").lower()
+                if n in ("description", "keywords"): self.meta[n] = a.get("content", "")
+            if tag == "h1": self.h1s.append("")
+        def handle_endtag(self, tag):
+            if tag == "title": self._in_title = False
+        def handle_data(self, d):
+            if self._in_title: self.title += d
+            if self.h1s and d.strip(): self.h1s[-1] += d
+
+    url = args["url"]
+    try:
+        async with _httpx.AsyncClient(timeout=15, follow_redirects=True) as hc:
+            resp = await hc.get(url, headers={"User-Agent": "ZiloSEOBot/1.0"})
+        p = _P(); p.feed(resp.text)
+        issues_text = []
+        if not p.title: issues_text.append("MISSING TITLE TAG")
+        elif len(p.title) > 60: issues_text.append(f"TITLE TOO LONG: '{p.title}' ({len(p.title)} chars)")
+        desc = p.meta.get("description", "")
+        if not desc: issues_text.append("MISSING META DESCRIPTION")
+        elif len(desc) > 160: issues_text.append(f"META DESCRIPTION TOO LONG: '{desc}' ({len(desc)} chars)")
+        if not p.h1s: issues_text.append("MISSING H1 TAG")
+        elif len(p.h1s) > 1: issues_text.append(f"MULTIPLE H1 TAGS: {p.h1s}")
+        if not issues_text:
+            return {"message": "No critical SEO issues found on this page.", "url": url}
+        prompt = f"""You are an SEO expert. Fix these SEO issues for the website: {url}
+
+Issues:
+{chr(10).join(f'- {i}' for i in issues_text)}
+
+Provide specific replacement copy:
+1. Optimized title tag (max 60 chars, include primary keyword)
+2. Meta description (max 160 chars, include keyword + CTA)
+3. H1 tag recommendation
+4. Brief explanation of each fix
+
+Be specific and actionable."""
+        # Try Anthropic/OpenAI
+        claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if claude_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": claude_key, "anthropic-version": "2023-06-01"},
+                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 1000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            fix_text = r.json()["content"][0]["text"]
+        elif openai_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    json={"model": "gpt-4o-mini", "max_tokens": 1000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            fix_text = r.json()["choices"][0]["message"]["content"]
+        else:
+            fix_text = "No AI provider configured."
+        return {"url": url, "issues_found": issues_text, "fixes": fix_text}
+    except Exception as e:
+        return {"error": f"Fix generation failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO BLOG POST MANAGEMENT (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="list_saved_posts",
+    description=(
+        "List all blog posts saved in the SEO hub (drafts and published). "
+        "Use when the user asks to see their blog posts, drafts, or content."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Filter by status: 'draft', 'published', or omit for all"},
+        },
+    },
+)
+async def list_saved_posts(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    query: dict = {"user_id": uid}
+    if args.get("status"):
+        query["status"] = args["status"]
+    docs = await ctx.db.seo_blog_posts.find(query).sort("created_at", -1).limit(30).to_list(30)
+    if not docs:
+        return {"count": 0, "posts": [], "message": "No blog posts saved yet."}
+    posts = [
+        {
+            "id": str(d.get("_id")),
+            "title": d.get("title", "Untitled"),
+            "status": d.get("status", "draft"),
+            "keywords": d.get("keywords") or d.get("tags") or [],
+            "created_at": d.get("created_at").isoformat() if d.get("created_at") else None,
+            "published_at": d.get("published_at").isoformat() if d.get("published_at") else None,
+        }
+        for d in docs
+    ]
+    return {"count": len(posts), "posts": posts}
+
+
+@tool(
+    name="publish_to_my_site",
+    description=(
+        "Publish a saved SEO blog post to the user's Zilo website with one click. "
+        "No credentials needed — uses the user's linked Zilo site automatically."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["post_id"],
+        "properties": {
+            "post_id": {"type": "string", "description": "ID of the saved post (from list_saved_posts)"},
+        },
+    },
+    destructive=True,
+)
+async def publish_to_my_site(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    uid = ctx.business_id
+    post_id = args["post_id"]
+    try:
+        doc = await ctx.db.seo_blog_posts.find_one({"_id": post_id, "user_id": uid})
+        if not doc:
+            return {"error": f"Post '{post_id}' not found. Use list_saved_posts to see your posts."}
+        blog = await ctx.db.blogs.find_one({"client_id": uid})
+        if not blog:
+            return {"error": "No Zilo site found. Set up your website first."}
+        wp_slug = blog.get("wp_slug", "")
+        wp_base = os.environ.get("WP_BASE_URL", "https://zilo.pro").rstrip("/")
+        site_url = f"https://{wp_slug}.zilo.pro" if wp_slug else wp_base
+        wp_user = os.environ.get("WP_ADMIN_USER", "")
+        wp_pass = os.environ.get("WP_ADMIN_APP_PASSWORD", "")
+        import base64
+        creds = base64.b64encode(f"{wp_user}:{wp_pass}".encode()).decode()
+        payload = {
+            "title": doc.get("title", ""),
+            "content": doc.get("content", ""),
+            "excerpt": doc.get("meta_description", ""),
+            "status": "publish",
+        }
+        if doc.get("tags"):
+            payload["tags"] = doc["tags"][:5]
+        async with _httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.post(
+                f"{site_url}/wp-json/wp/v2/posts",
+                headers={"Authorization": f"Basic {creds}"},
+                json=payload,
+            )
+        if resp.status_code in (200, 201):
+            await ctx.db.seo_blog_posts.update_one(
+                {"_id": post_id},
+                {"$set": {"status": "published", "published_at": datetime.utcnow(),
+                          "published_url": resp.json().get("link", "")}},
+            )
+            return {"success": True, "url": resp.json().get("link", site_url),
+                    "message": f"Published '{doc.get('title')}' to your Zilo site."}
+        return {"error": f"WordPress returned {resp.status_code}: {resp.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Publish failed: {e}"}
+
+
+@tool(
+    name="delete_blog_post",
+    description="Delete a saved SEO blog post permanently.",
+    parameters={
+        "type": "object",
+        "required": ["post_id"],
+        "properties": {
+            "post_id": {"type": "string", "description": "ID of the post to delete (from list_saved_posts)"},
+        },
+    },
+    destructive=True,
+)
+async def delete_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    result = await ctx.db.seo_blog_posts.delete_one({"_id": args["post_id"], "user_id": uid})
+    if result.deleted_count:
+        return {"success": True, "message": "Blog post deleted."}
+    return {"error": "Post not found or you don't have permission to delete it."}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO CONTENT CALENDAR (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_content_calendar",
+    description="View the user's SEO content calendar — all scheduled posts by week with keywords.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_content_calendar(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    items = await ctx.db.seo_content_calendar.find({"user_id": uid}).sort("week", 1).to_list(100)
+    if not items:
+        return {"count": 0, "items": [], "message": "No content scheduled yet. Use schedule_content to add posts."}
+    calendar = [
+        {
+            "id": str(d.get("_id")),
+            "week": d.get("week"),
+            "title": d.get("title", ""),
+            "keywords": d.get("keywords") or [],
+            "status": d.get("status", "planned"),
+            "post_id": d.get("post_id"),
+        }
+        for d in items
+    ]
+    return {"count": len(calendar), "items": calendar}
+
+
+@tool(
+    name="schedule_content",
+    description=(
+        "Add a blog post idea to the SEO content calendar for a specific week. "
+        "Use when the user wants to plan upcoming content."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "week"],
+        "properties": {
+            "title": {"type": "string", "description": "Blog post title or topic"},
+            "week": {"type": "string", "description": "Week identifier (e.g. '2025-W22' or 'Week 1')"},
+            "keywords": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Target keywords for this post",
+            },
+        },
+    },
+)
+async def schedule_content(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    item_id = str(uuid.uuid4())
+    await ctx.db.seo_content_calendar.insert_one({
+        "_id": item_id, "user_id": uid,
+        "title": args["title"], "week": args["week"],
+        "keywords": args.get("keywords") or [],
+        "status": "planned", "created_at": datetime.utcnow(),
+    })
+    return {"id": item_id, "message": f"Scheduled '{args['title']}' for {args['week']}."}
+
+
+@tool(
+    name="generate_content_calendar",
+    description=(
+        "Generate an AI-powered SEO content calendar with blog post ideas, "
+        "target keywords, and a publishing schedule. "
+        "Use when the user wants a content plan for the coming weeks."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "weeks": {"type": "integer", "description": "Number of weeks to plan (default 4)"},
+            "posts_per_week": {"type": "integer", "description": "Posts per week (default 2)"},
+            "focus": {"type": "string", "description": "Topic focus or niche (optional)"},
+        },
+    },
+)
+async def generate_content_calendar(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    user = await ctx.db.users.find_one({"_id": ctx.business_id}) or {}
+    bk = user.get("business_knowledge") or {}
+    biz_name = user.get("business_name", "the business")
+    biz_type = bk.get("business_type") or user.get("business_type", "business")
+    description = bk.get("business_description") or bk.get("products_services") or ""
+    weeks = min(int(args.get("weeks") or 4), 12)
+    posts_per_week = min(int(args.get("posts_per_week") or 2), 5)
+    focus = args.get("focus") or ""
+    prompt = f"""Create a {weeks}-week SEO content calendar for {biz_name} ({biz_type}).
+Business description: {description}
+{f'Focus area: {focus}' if focus else ''}
+{posts_per_week} posts per week.
+
+For each post include:
+- Week number
+- Blog post title (SEO optimized)
+- Target keyword (1 primary keyword)
+- Search intent (informational/transactional/local)
+- Brief content outline (2-3 bullet points)
+
+Format as a clear week-by-week plan."""
+    claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    try:
+        if claude_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": claude_key, "anthropic-version": "2023-06-01"},
+                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 2000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            calendar_text = r.json()["content"][0]["text"]
+        elif openai_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    json={"model": "gpt-4o-mini", "max_tokens": 2000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            calendar_text = r.json()["choices"][0]["message"]["content"]
+        else:
+            return {"error": "No AI provider configured."}
+        return {"weeks": weeks, "posts_per_week": posts_per_week, "calendar": calendar_text}
+    except Exception as e:
+        return {"error": f"Calendar generation failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO SUMMARY / OVERVIEW (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_seo_summary",
+    description=(
+        "Get a complete overview of the user's SEO activity — "
+        "blog post counts, latest audit score, tracked rankings, and saved keywords. "
+        "Use when asked for an SEO status update or overview."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_seo_summary(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import asyncio as _asyncio
+    uid = ctx.business_id
+    try:
+        total_posts, published_posts, drafts, total_audits, latest_audit, total_rankings, total_keywords = await _asyncio.gather(
+            ctx.db.seo_blog_posts.count_documents({"user_id": uid}),
+            ctx.db.seo_blog_posts.count_documents({"user_id": uid, "status": "published"}),
+            ctx.db.seo_blog_posts.count_documents({"user_id": uid, "status": "draft"}),
+            ctx.db.seo_audits.count_documents({"user_id": uid}),
+            ctx.db.seo_audits.find_one({"user_id": uid}, sort=[("created_at", -1)]),
+            ctx.db.seo_serp_rankings.count_documents({"user_id": uid}),
+            ctx.db.keyword_tracker.count_documents({"user_id": uid}),
+        )
+        return {
+            "blog_posts": {"total": total_posts, "published": published_posts, "drafts": drafts},
+            "audits": {
+                "total": total_audits,
+                "latest_score": latest_audit.get("score") if latest_audit else None,
+                "latest_grade": latest_audit.get("grade") if latest_audit else None,
+                "latest_url": latest_audit.get("url") if latest_audit else None,
+            },
+            "rankings_tracked": total_rankings,
+            "keywords_saved": total_keywords,
+        }
+    except Exception as e:
+        return {"error": f"SEO summary failed: {e}"}
