@@ -289,7 +289,7 @@ def make_seo_agent_router(db, user_dep):
                 if biz_name: parts.append(f"Business Name: {biz_name}")
                 if biz_type: parts.append(f"Business Type: {biz_type}")
                 if location: parts.append(f"Location: {location}")
-                if website: parts.append(f"Website: {website}")
+                parts.append(f"Website: {website if website else 'not set — ask the user for their website URL before running any audit'}")
                 if country_code: parts.append(f"Country Code: {country_code}")
                 if description: parts.append(f"Business Description: {description[:500]}")
                 if products_services: parts.append(f"Products/Services: {products_services[:500]}")
