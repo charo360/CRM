@@ -423,10 +423,15 @@ async def fetch_keyword_meta_batch(
                     if older > 0:
                         trend = "up" if recent > older * 1.1 else "down" if recent < older * 0.9 else "stable"
                 cpc_raw = item.get("cpc")
+                comp_raw = item.get("competition")
+                try:
+                    comp_val = float(comp_raw) if comp_raw is not None and not isinstance(comp_raw, str) else None
+                except (ValueError, TypeError):
+                    comp_val = None
                 out[kw] = {
                     "volume": int(item.get("search_volume") or 0),
                     "cpc": float(cpc_raw) if cpc_raw is not None else None,
-                    "competition": float(item.get("competition") or 0),
+                    "competition": comp_val,
                     "competition_index": item.get("competition_index"),
                     "trend": trend,
                     "monthly_searches": monthly[:12],
