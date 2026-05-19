@@ -2759,10 +2759,47 @@ Return ONLY a JSON array, no explanation:
 
         if dfs_enabled():
             try:
+                import re as _re_vol
                 kw_list = [k["keyword"] for k in keywords]
+
+                # First pass: look up exact keywords
                 vol_map = await fetch_search_volumes_batch(kw_list, location_code=loc_code, language_code=lang_code)
+
+                # For keywords that returned 0, also try global (no location filter) —
+                # local phrases often have 0 in regional data but non-zero globally
+                zero_kws = [k for k in kw_list if not vol_map.get(k.lower().strip())]
+                if zero_kws:
+                    global_map = await fetch_search_volumes_batch(zero_kws, location_code=None, language_code=lang_code)
+                    for kw in zero_kws:
+                        gv = global_map.get(kw.lower().strip(), 0)
+                        if gv:
+                            vol_map[kw.lower().strip()] = gv
+
+                # For still-zero keywords, strip location modifiers and look up the base phrase —
+                # "best dentist near me in nairobi" → "dentist" → real volume
+                _loc_patterns = _re_vol.compile(
+                    r'\b(near me|in \w+|best|top|affordable|cheap|local|'
+                    r'services?|provider|near|around|close to)\b', _re_vol.I
+                )
+                still_zero = [k for k in kw_list if not vol_map.get(k.lower().strip())]
+                if still_zero:
+                    base_map: dict[str, str] = {}  # base_kw → original_kw
+                    for kw in still_zero:
+                        base = _loc_patterns.sub("", kw).strip()
+                        base = _re_vol.sub(r'\s{2,}', ' ', base).strip()
+                        if base and base.lower() != kw.lower():
+                            base_map[base] = kw
+                    if base_map:
+                        base_vol = await fetch_search_volumes_batch(list(base_map.keys()), location_code=loc_code, language_code=lang_code)
+                        for base, orig in base_map.items():
+                            bv = base_vol.get(base.lower().strip(), 0)
+                            if bv:
+                                vol_map[orig.lower().strip()] = bv
+
                 for k in keywords:
-                    k["search_volume"] = vol_map.get(k["keyword"].lower().strip(), 0)
+                    k["search_volume"] = vol_map.get(k["keyword"].lower().strip()) or 0
+                logger.info("[local/keywords] volumes: %d/%d keywords have data",
+                            sum(1 for k in keywords if k.get("search_volume")), len(keywords))
             except Exception as _ve:
                 logger.warning("[local/keywords] DataForSEO volume fetch failed: %s", _ve)
 
