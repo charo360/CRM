@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   ShoppingBag, TrendingUp, Users, Package, RefreshCw, Loader2,
@@ -1628,6 +1628,18 @@ function DiscountsTab() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ShopifyPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex-1 flex items-center justify-center bg-slate-950">
+        <Loader2 size={24} className="animate-spin text-slate-600" />
+      </div>
+    }>
+      <ShopifyPageInner />
+    </Suspense>
+  );
+}
+
+function ShopifyPageInner() {
   const [tab, setTab] = useState<Tab>("overview");
   const [connected, setConnected] = useState<boolean | null>(null);
   const [period, setPeriod] = useState<Period>("month");
@@ -1804,3 +1816,4 @@ export default function ShopifyPage() {
     </div>
   );
 }
+
