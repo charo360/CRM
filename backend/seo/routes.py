@@ -4103,6 +4103,171 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
             logger.warning("[seo/analytics/google-ads] %s", e)
             return {"connected": True, "error": str(e)}
 
+    # ── Google Ads: Launch campaign ───────────────────────────────────────────
+
+    def _gads_parse_kw_ops(ad_group_rn: str, raw: str) -> list:
+        import re as _re
+        ops = []
+        for line in _re.split(r"[,\n]", raw):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                mt, text = "EXACT", line[1:-1].strip()
+            elif line.startswith('"') and line.endswith('"'):
+                mt, text = "PHRASE", line[1:-1].strip()
+            else:
+                mt, text = "BROAD", line
+            if text:
+                ops.append({"create": {"adGroup": ad_group_rn, "keyword": {"text": text[:80], "matchType": mt}}})
+        return ops[:20]
+
+    def _gads_parse_neg_ops(campaign_rn: str, raw: str) -> list:
+        import re as _re
+        ops = []
+        for kw in _re.split(r"[,\n]", raw):
+            kw = kw.strip()
+            if kw:
+                ops.append({"create": {"campaign": campaign_rn, "keyword": {"text": kw[:80], "matchType": "BROAD"}, "negative": True}})
+        return ops[:20]
+
+    @router.post("/google-ads/campaigns/launch")
+    async def launch_google_ads_campaign(payload: dict, user=user_dep):
+        """Create a real Google Ads campaign (budget → campaign → ad group → keywords → RSA)."""
+        from composio_service import composio_proxy, get_connection_status
+        tid = _tid(user)
+
+        status = await get_connection_status(tid, "googleads")
+        if not status.get("connected"):
+            return {"ok": False, "error": "Google Ads not connected. Connect it in Integrations first."}
+
+        cid = str(payload.get("customer_id") or "").strip().replace("-", "").replace(" ", "")
+        if not cid:
+            return {"ok": False, "error": "customer_id is required"}
+
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "Campaign name is required"}
+
+        daily_budget = float(payload.get("daily_budget") or 500)
+        channel_map = {
+            "search": "SEARCH", "performance_max": "PERFORMANCE_MAX",
+            "display": "DISPLAY", "video": "VIDEO",
+            "shopping": "SHOPPING", "demand_gen": "DEMAND_GEN",
+        }
+        channel = channel_map.get(str(payload.get("objective") or "search").lower(), "SEARCH")
+        bidding = str(payload.get("bidding_strategy") or "Maximize Clicks").lower()
+        target_cpa = float(payload.get("target_cpa") or 500)
+        keywords_raw = str(payload.get("keywords") or "")
+        neg_keywords_raw = str(payload.get("negative_keywords") or "")
+        headlines_raw: list = payload.get("headlines") or []
+        descriptions_raw: list = payload.get("descriptions") or []
+        gads_status = "PAUSED" if payload.get("launch_paused", True) else "ENABLED"
+
+        base = f"https://googleads.googleapis.com/v17/customers/{cid}"
+        results: dict = {}
+
+        try:
+            # 1. Campaign budget
+            br = await composio_proxy(tid, "googleads", "POST", f"{base}/campaignBudgets:mutate", json={
+                "operations": [{"create": {"name": f"{name} Budget", "amountMicros": int(daily_budget * 1_000_000), "deliveryMethod": "STANDARD"}}]
+            })
+            budget_rn = (br.get("results") or [{}])[0].get("resourceName", "")
+            if not budget_rn:
+                return {"ok": False, "error": f"Budget creation failed: {br}", "step": "budget"}
+            results["budget_resource_name"] = budget_rn
+
+            # 2. Campaign
+            campaign_body: dict = {
+                "name": name,
+                "campaignBudget": budget_rn,
+                "advertisingChannelType": channel,
+                "status": gads_status,
+            }
+            if "maximize clicks" in bidding:
+                campaign_body["maximizeClicks"] = {}
+            elif "maximize conversion value" in bidding:
+                campaign_body["maximizeConversionValue"] = {}
+            elif "maximize conversions" in bidding:
+                campaign_body["maximizeConversions"] = {}
+            elif "target cpa" in bidding:
+                campaign_body["targetCpa"] = {"targetCpaMicros": int(target_cpa * 1_000_000)}
+            elif "target roas" in bidding:
+                campaign_body["targetRoas"] = {"targetRoas": target_cpa}
+            elif "target impression share" in bidding:
+                campaign_body["targetImpressionShare"] = {"location": "ANYWHERE_ON_PAGE", "locationFractionMicros": 1_000_000}
+            elif "manual cpc" in bidding:
+                campaign_body["manualCpc"] = {"enhancedCpcEnabled": True}
+            else:
+                campaign_body["maximizeClicks"] = {}
+            if channel == "SEARCH":
+                campaign_body["networkSettings"] = {"targetGoogleSearch": True, "targetSearchNetwork": True, "targetContentNetwork": False}
+
+            cr = await composio_proxy(tid, "googleads", "POST", f"{base}/campaigns:mutate", json={"operations": [{"create": campaign_body}]})
+            campaign_rn = (cr.get("results") or [{}])[0].get("resourceName", "")
+            if not campaign_rn:
+                return {"ok": False, "error": f"Campaign creation failed: {cr}", "step": "campaign"}
+            campaign_id = campaign_rn.split("/")[-1]
+            results["campaign_resource_name"] = campaign_rn
+            results["campaign_id"] = campaign_id
+
+            # Non-search: budget + campaign only — user adds creatives in Google Ads UI
+            if channel != "SEARCH":
+                return {"ok": True, "campaign_id": campaign_id, "campaign_resource_name": campaign_rn,
+                        "note": f"{channel} campaign created. Add ad groups and creatives in Google Ads UI.", "results": results}
+
+            # 3. Ad group
+            agr = await composio_proxy(tid, "googleads", "POST", f"{base}/adGroups:mutate", json={
+                "operations": [{"create": {"name": f"{name} Ad Group 1", "campaign": campaign_rn, "status": "ENABLED", "type": "SEARCH_STANDARD"}}]
+            })
+            ag_rn = (agr.get("results") or [{}])[0].get("resourceName", "")
+            if not ag_rn:
+                return {"ok": True, "campaign_id": campaign_id, "warning": "Ad group creation failed — add manually in Google Ads", "results": results}
+            results["ad_group_resource_name"] = ag_rn
+
+            # 4. Keywords
+            if keywords_raw.strip():
+                kw_ops = _gads_parse_kw_ops(ag_rn, keywords_raw)
+                if kw_ops:
+                    try:
+                        await composio_proxy(tid, "googleads", "POST", f"{base}/adGroupCriteria:mutate", json={"operations": kw_ops})
+                    except Exception as e:
+                        logger.warning("[google-ads/launch] keywords: %s", e)
+
+            # 4b. Negative keywords
+            if neg_keywords_raw.strip():
+                neg_ops = _gads_parse_neg_ops(campaign_rn, neg_keywords_raw)
+                if neg_ops:
+                    try:
+                        await composio_proxy(tid, "googleads", "POST", f"{base}/campaignCriteria:mutate", json={"operations": neg_ops})
+                    except Exception as e:
+                        logger.warning("[google-ads/launch] neg keywords: %s", e)
+
+            # 5. Responsive Search Ad (requires ≥3 headlines, ≥2 descriptions)
+            headlines = [{"text": h[:30]} for h in headlines_raw if str(h).strip()][:15]
+            descriptions = [{"text": d[:90]} for d in descriptions_raw if str(d).strip()][:4]
+            if len(headlines) >= 3 and len(descriptions) >= 2:
+                try:
+                    await composio_proxy(tid, "googleads", "POST", f"{base}/adGroupAds:mutate", json={
+                        "operations": [{"create": {
+                            "adGroup": ag_rn,
+                            "status": "ENABLED",
+                            "ad": {"responsiveSearchAd": {"headlines": headlines, "descriptions": descriptions}},
+                        }}]
+                    })
+                    results["ad_created"] = True
+                except Exception as e:
+                    logger.warning("[google-ads/launch] RSA creation: %s", e)
+                    results["ad_warning"] = str(e)
+            else:
+                results["ad_warning"] = "Skipped RSA — need ≥3 headlines and ≥2 descriptions"
+
+            return {"ok": True, "campaign_id": campaign_id, "campaign_resource_name": campaign_rn, "results": results}
+
+        except Exception as e:
+            logger.error("[google-ads/launch] %s", e)
+            return {"ok": False, "error": str(e)}
+
     # ── AI Visibility Audit endpoints ─────────────────────────────────────────
 
     @router.get("/ai-audits")
@@ -4112,5 +4277,410 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
         for d in docs:
             d["id"] = str(d.pop("_id", ""))
         return {"audits": docs}
+
+    # ── AI-Powered Analysis Endpoints ─────────────────────────────────────────
+
+    @router.get("/analytics/search-console/ai-analysis")
+    async def get_gsc_ai_analysis(site_url: str = "", days: int = 28, user=user_dep):
+        """AI reads your raw GSC data and returns plain-English insights, wins, concerns, and priority actions."""
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+        business_name = ctx.get("business_name", "") or ctx.get("business_type", "your business")
+
+        # Re-use the existing GSC data fetch inline (forward the request internally)
+        from composio_service import composio_proxy, get_connection_status
+        status = await get_connection_status(tid, "googlesearchconsole")
+        if not status.get("connected"):
+            raise HTTPException(400, "Google Search Console not connected")
+
+        raw_input = (site_url or ctx.get("website_url", "")).strip()
+        if not raw_input:
+            raise HTTPException(400, "No site URL provided")
+
+        _clean = raw_input.strip().rstrip("/")
+        if _clean.startswith("sc-domain:"):
+            _bare = _clean[len("sc-domain:"):].lstrip("www.")
+        elif "://" in _clean:
+            _bare = _clean.split("://", 1)[1].lstrip("www.").rstrip("/")
+        else:
+            _bare = _clean.lstrip("www.").rstrip("/")
+
+        candidates = [f"sc-domain:{_bare}", f"https://www.{_bare}/", f"https://{_bare}/"]
+        from datetime import timedelta
+        from urllib.parse import quote as _q
+        end_date = datetime.utcnow().date() - timedelta(days=2)
+        start_date = end_date - timedelta(days=days)
+
+        gsc_data = None
+        for website in candidates:
+            try:
+                encoded = _q(website, safe="")
+                base_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded}/searchAnalytics/query"
+                query_body = {"startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "rowLimit": 20, "type": "web"}
+                queries_data = await composio_proxy(tid, "googlesearchconsole", "POST", base_url, json={**query_body, "dimensions": ["query"]})
+                pages_data = await composio_proxy(tid, "googlesearchconsole", "POST", base_url, json={**query_body, "dimensions": ["page"]})
+                if not queries_data.get("rows") and not pages_data.get("rows"):
+                    continue
+                totals_data = await composio_proxy(tid, "googlesearchconsole", "POST", base_url,
+                    json={"startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "type": "web"})
+                totals_row = (totals_data.get("rows") or [{}])[0]
+                gsc_data = {
+                    "total_clicks": int(totals_row.get("clicks") or 0),
+                    "total_impressions": int(totals_row.get("impressions") or 0),
+                    "avg_ctr": round((totals_row.get("ctr") or 0) * 100, 1),
+                    "avg_position": round(totals_row.get("position") or 0, 1),
+                    "top_queries": [{"query": (r.get("keys") or [""])[0], "clicks": r.get("clicks",0), "impressions": r.get("impressions",0), "position": round(r.get("position") or 0, 1)} for r in (queries_data.get("rows") or [])[:15]],
+                    "top_pages": [{"page": (r.get("keys") or [""])[0], "clicks": r.get("clicks",0), "impressions": r.get("impressions",0)} for r in (pages_data.get("rows") or [])[:10]],
+                }
+                break
+            except Exception:
+                continue
+
+        if not gsc_data:
+            raise HTTPException(400, "Could not fetch GSC data — check site URL and connection")
+
+        import json as _json
+        prompt = f"""You are an expert SEO analyst. Analyze this Google Search Console data for {business_name} and give clear, actionable insights.
+
+Period: Last {days} days
+Total Clicks: {gsc_data['total_clicks']:,}
+Total Impressions: {gsc_data['total_impressions']:,}
+Average CTR: {gsc_data['avg_ctr']}%
+Average Position: {gsc_data['avg_position']}
+
+Top Search Queries (what people search to find the site):
+{_json.dumps(gsc_data['top_queries'][:10], indent=2)}
+
+Top Pages (which pages get the most traffic):
+{_json.dumps(gsc_data['top_pages'][:8], indent=2)}
+
+Analyze this data and return ONLY valid JSON (no markdown, no explanation):
+{{
+  "overall_health": "good|warning|critical",
+  "health_reason": "one sentence on overall health",
+  "summary": "2-3 sentences explaining what this data means in plain English for a business owner",
+  "wins": [
+    {{"title": "what's working well", "detail": "specific explanation with numbers", "metric": "the key number"}}
+  ],
+  "concerns": [
+    {{"title": "what needs attention", "detail": "why this is a problem", "action": "what to do about it"}}
+  ],
+  "opportunities": [
+    {{"title": "growth opportunity", "action": "specific action to take", "estimated_impact": "low|medium|high"}}
+  ],
+  "priority_actions": ["most important action", "second action", "third action"]
+}}
+
+Focus on: CTR below 2% = problem, position 11-20 = quick win opportunity, high impressions + low clicks = title/meta fix needed."""
+
+        try:
+            raw = await _call_ai(prompt, max_tokens=1200)
+            raw = raw.strip()
+            if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+            analysis = _json.loads(raw)
+        except Exception as _ae:
+            logger.warning("[gsc/ai-analysis] AI parse failed: %s", _ae)
+            analysis = {
+                "overall_health": "warning",
+                "summary": f"Your site has {gsc_data['total_clicks']:,} clicks from {gsc_data['total_impressions']:,} impressions over {days} days.",
+                "wins": [], "concerns": [], "opportunities": [],
+                "priority_actions": ["Review your top performing pages", "Check CTR for high-impression queries", "Update meta descriptions for better click rates"]
+            }
+
+        return {"analysis": analysis, "raw_data": gsc_data, "period_days": days}
+
+    @router.get("/serp/ai-diagnosis")
+    async def get_rank_ai_diagnosis(user=user_dep):
+        """AI detects significant rank changes in the last 30 days and explains why + what to do."""
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+        business_name = ctx.get("business_name", "") or ctx.get("business_type", "your business")
+
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=45)
+
+        # Get all ranking rows for this user in the last 45 days
+        rows = await db.seo_serp_rankings.find(
+            {"user_id": tid, "checked_at": {"$gte": cutoff}}
+        ).sort("checked_at", -1).to_list(2000)
+
+        # Build per-keyword position history (newest first)
+        kw_history: dict[str, list[dict]] = {}
+        for row in rows:
+            kw = (row.get("keyword") or "").strip()
+            if kw:
+                kw_history.setdefault(kw, []).append({
+                    "position": row.get("position"),
+                    "checked_at": row.get("checked_at"),
+                })
+
+        # Find keywords with at least 2 data points and significant change
+        movers = []
+        stable = []
+        for kw, history in kw_history.items():
+            non_null = [(h["position"], h["checked_at"]) for h in history if h["position"] is not None]
+            if len(non_null) < 2:
+                continue
+            latest_pos, latest_date = non_null[0]
+            prev_pos, _ = non_null[1]
+            change = prev_pos - latest_pos  # positive = improved (moved up), negative = dropped
+            entry = {
+                "keyword": kw,
+                "current_position": latest_pos,
+                "previous_position": prev_pos,
+                "change": change,
+                "direction": "improved" if change > 0 else ("declined" if change < 0 else "stable"),
+                "last_checked": latest_date.isoformat() if hasattr(latest_date, "isoformat") else str(latest_date),
+            }
+            if abs(change) >= 3:
+                movers.append(entry)
+            else:
+                stable.append(entry)
+
+        movers.sort(key=lambda x: abs(x["change"]), reverse=True)
+
+        if not movers:
+            return {
+                "movers": [],
+                "stable_count": len(stable),
+                "diagnosis": None,
+                "summary": "No significant ranking changes detected. All tracked keywords are stable (less than 3 position change).",
+                "overall_trend": "stable",
+            }
+
+        import json as _json
+        improved = [m for m in movers if m["direction"] == "improved"]
+        declined = [m for m in movers if m["direction"] == "declined"]
+
+        prompt = f"""You are an expert SEO analyst for {business_name}. These keywords had significant ranking changes recently:
+
+IMPROVED (moved up in Google):
+{_json.dumps(improved[:8], indent=2) if improved else "None"}
+
+DECLINED (dropped in Google):
+{_json.dumps(declined[:8], indent=2) if declined else "None"}
+
+For each significant change, give a realistic diagnosis (why this likely happened) and a specific action.
+Also give an overall trend assessment.
+
+Return ONLY valid JSON:
+{{
+  "overall_trend": "improving|declining|mixed|stable",
+  "overall_summary": "1-2 sentences on what the data shows overall",
+  "diagnoses": [
+    {{
+      "keyword": "the keyword",
+      "direction": "improved|declined",
+      "change": 5,
+      "diagnosis": "why this likely happened (algorithm update, new content, competitor moved, seasonal, etc.)",
+      "action": "specific thing to do — e.g. 'Refresh the article with updated statistics and add 3 internal links'"
+    }}
+  ],
+  "top_priority": "the single most important action to take right now based on all the data"
+}}"""
+
+        try:
+            raw = await _call_ai(prompt, max_tokens=1000)
+            raw = raw.strip()
+            if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+            ai_result = _json.loads(raw)
+        except Exception as _ae:
+            logger.warning("[serp/ai-diagnosis] AI parse failed: %s", _ae)
+            ai_result = {
+                "overall_trend": "mixed",
+                "overall_summary": f"{len(improved)} keywords improved, {len(declined)} declined.",
+                "diagnoses": [{"keyword": m["keyword"], "direction": m["direction"], "change": m["change"], "diagnosis": "Ranking shift detected", "action": "Review and refresh this keyword's page"} for m in movers[:5]],
+                "top_priority": "Review the most declined keywords and refresh their content"
+            }
+
+        return {
+            "movers": movers[:20],
+            "stable_count": len(stable),
+            "improved_count": len(improved),
+            "declined_count": len(declined),
+            "diagnosis": ai_result,
+            "overall_trend": ai_result.get("overall_trend", "mixed"),
+        }
+
+    @router.post("/blog/schema")
+    async def generate_blog_schema(payload: dict, user=user_dep):
+        """AI generates JSON-LD structured data (Schema.org) for a blog post — ready to embed in <head>."""
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+        business_name = ctx.get("business_name", "") or ctx.get("business_type", "")
+        website_url = ctx.get("website_url", "")
+
+        post_id = payload.get("post_id", "").strip()
+        title = payload.get("title", "").strip()
+        content = payload.get("content", "")
+        keywords = payload.get("keywords", [])
+        author = payload.get("author", business_name or "Author")
+        post_url = payload.get("url", "").strip()
+
+        # Load from DB if post_id provided
+        if post_id and not title:
+            doc = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": tid})
+            if doc:
+                title = doc.get("title", "")
+                content = doc.get("content", "")
+                keywords = doc.get("keywords", [])
+                post_url = post_url or doc.get("site_post_url", "")
+
+        if not title:
+            raise HTTPException(400, "title or post_id required")
+
+        excerpt = content[:800] if content else ""
+        kw_list = ", ".join(keywords[:5]) if keywords else title
+        import json as _json
+
+        prompt = f"""You are a Schema.org structured data expert. Generate the best JSON-LD for this blog post.
+
+Business: {business_name or "the website"}
+Website: {website_url or "https://example.com"}
+Post Title: {title}
+Keywords: {kw_list}
+Content excerpt: {excerpt[:500]}
+Post URL: {post_url or (website_url.rstrip("/") + "/blog/" + title.lower().replace(" ", "-")[:50]) if website_url else ""}
+Author: {author}
+
+Choose the most appropriate schema type(s) based on the content:
+- If it answers questions → include FAQPage with 3-5 FAQs extracted from the content
+- If it's a how-to guide → include HowTo with steps
+- Always include Article/BlogPosting as the base schema
+
+Return ONLY a JSON array of schema objects (no markdown, no explanation). Each object is a separate JSON-LD block.
+Example structure:
+[
+  {{
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "...",
+    "author": {{"@type": "Person", "name": "..."}},
+    "publisher": {{"@type": "Organization", "name": "..."}},
+    "datePublished": "{datetime.utcnow().strftime('%Y-%m-%d')}",
+    "keywords": "...",
+    "url": "..."
+  }},
+  {{
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [...]
+  }}
+]"""
+
+        try:
+            raw = await _call_ai(prompt, max_tokens=1500)
+            raw = raw.strip()
+            if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+            schemas = _json.loads(raw)
+            if isinstance(schemas, dict):
+                schemas = [schemas]
+        except Exception as _se:
+            logger.warning("[blog/schema] AI generation failed: %s", _se)
+            schemas = [{
+                "@context": "https://schema.org",
+                "@type": "BlogPosting",
+                "headline": title,
+                "author": {"@type": "Person", "name": author},
+                "publisher": {"@type": "Organization", "name": business_name or "Publisher"},
+                "datePublished": datetime.utcnow().strftime("%Y-%m-%d"),
+                "keywords": kw_list,
+                "url": post_url or "",
+            }]
+
+        # Save schema to post if post_id provided
+        if post_id:
+            await db.seo_blog_posts.update_one(
+                {"_id": post_id, "user_id": tid},
+                {"$set": {"schema_json_ld": schemas, "updated_at": datetime.utcnow()}}
+            )
+
+        # Generate the <script> embed tag
+        script_tags = "\n".join(
+            f'<script type="application/ld+json">\n{_json.dumps(s, indent=2)}\n</script>'
+            for s in schemas
+        )
+
+        return {"schemas": schemas, "script_tags": script_tags, "count": len(schemas)}
+
+    @router.get("/blog/internal-links")
+    async def get_internal_link_suggestions(user=user_dep):
+        """AI scans all blog posts and suggests which ones should link to which others, with anchor text."""
+        tid = _tid(user)
+        ctx = _seo_business_context(user)
+        business_name = ctx.get("business_name", "") or ctx.get("business_type", "the business")
+
+        # Fetch all posts with enough data for analysis
+        posts = await db.seo_blog_posts.find(
+            {"user_id": tid},
+            {"title": 1, "keywords": 1, "content": 1, "status": 1, "site_post_url": 1}
+        ).sort("created_at", -1).limit(50).to_list(50)
+
+        if len(posts) < 2:
+            return {"suggestions": [], "note": "You need at least 2 blog posts for internal linking suggestions."}
+
+        # Build a compact post list for the AI (title + keywords + first 150 chars of content)
+        post_summaries = []
+        for p in posts:
+            pid = str(p.get("_id", ""))
+            content_snippet = (p.get("content") or "")[:150].strip()
+            post_summaries.append({
+                "id": pid,
+                "title": p.get("title", ""),
+                "keywords": p.get("keywords", [])[:5],
+                "excerpt": content_snippet,
+                "status": p.get("status", "draft"),
+                "url": p.get("site_post_url", ""),
+            })
+
+        import json as _json
+        prompt = f"""You are an internal linking SEO expert for {business_name}.
+
+Here are all the blog posts to analyze:
+{_json.dumps(post_summaries, indent=2)}
+
+Find the most valuable internal linking opportunities. Internal links help users navigate to related content and tell Google which pages are most important.
+
+Rules:
+- Only suggest links between posts that are genuinely topically related
+- Each link must have a specific anchor text (the words the reader would click)
+- Prioritize: published posts linking to other published posts
+- Don't suggest every post linking to every other post — only the most natural, valuable connections
+- Maximum 12 suggestions total
+
+Return ONLY valid JSON:
+{{
+  "suggestions": [
+    {{
+      "from_post_id": "mongodb id of the source post",
+      "from_post_title": "title of post where the link goes IN",
+      "to_post_id": "mongodb id of the target post",
+      "to_post_title": "title of post being linked TO",
+      "anchor_text": "the exact words to hyperlink",
+      "reason": "why this link makes sense (1 sentence)",
+      "priority": "high|medium|low",
+      "where_to_add": "brief description of where in the source post to add the link"
+    }}
+  ],
+  "summary": "1-2 sentences on the overall internal linking strategy for this site"
+}}"""
+
+        try:
+            raw = await _call_ai(prompt, max_tokens=1800)
+            raw = raw.strip()
+            if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+            result = _json.loads(raw)
+            suggestions = result.get("suggestions", [])
+            summary = result.get("summary", "")
+        except Exception as _ile:
+            logger.warning("[blog/internal-links] AI parse failed: %s", _ile)
+            suggestions = []
+            summary = "Could not generate suggestions at this time."
+
+        return {
+            "suggestions": suggestions,
+            "summary": summary,
+            "posts_analyzed": len(posts),
+        }
 
     return router

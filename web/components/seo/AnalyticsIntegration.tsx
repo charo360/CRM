@@ -138,6 +138,14 @@ export default function AnalyticsIntegration() {
 
   const [gscData, setGscData] = useState<GscData | null>(null);
   const [gscLoading, setGscLoading] = useState(false);
+  const [gscAiAnalysis, setGscAiAnalysis] = useState<null | {
+    overall_health: string; health_reason: string; summary: string;
+    wins: { title: string; detail: string; metric: string }[];
+    concerns: { title: string; detail: string; action: string }[];
+    opportunities: { title: string; action: string; estimated_impact: string }[];
+    priority_actions: string[];
+  }>(null);
+  const [gscAiLoading, setGscAiLoading] = useState(false);
   const [gscSiteUrl, setGscSiteUrl] = useState("");
   const [gscActiveUrl, setGscActiveUrl] = useState("");
   const [savedSites, setSavedSites] = useState<string[]>(() => {
@@ -256,6 +264,17 @@ export default function AnalyticsIntegration() {
     } catch { setGscData(null); }
     setGscLoading(false);
   }, [gscSiteUrl, gscDays, gscSearchType]);
+
+  const fetchGscAiAnalysis = useCallback(async () => {
+    const url = gscSiteUrl || gscActiveUrl;
+    if (!url) return;
+    setGscAiLoading(true);
+    try {
+      const d = await seoApi.getGscAiAnalysis(url, gscDays);
+      setGscAiAnalysis(d.analysis);
+    } catch { /* silent */ }
+    setGscAiLoading(false);
+  }, [gscSiteUrl, gscActiveUrl, gscDays]);
 
   const fetchGa4Data = useCallback(async (days?: number) => {
     if (!ga4PropertyId.trim()) return;
@@ -426,8 +445,82 @@ export default function AnalyticsIntegration() {
                 className="text-xs px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 font-medium disabled:opacity-50">
                 {gscLoading ? "Loading…" : "↻ Refresh"}
               </button>
+              {gscData?.summary && (
+                <button onClick={fetchGscAiAnalysis} disabled={gscAiLoading}
+                  className="text-xs px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium disabled:opacity-50 flex items-center gap-1">
+                  {gscAiLoading ? "Analysing…" : "✦ AI Insights"}
+                </button>
+              )}
             </div>
           </div>
+
+          {/* AI Analysis Panel */}
+          {gscAiAnalysis && (
+            <div className="mb-5 rounded-xl border border-purple-200 bg-purple-50 p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-purple-700 font-semibold text-sm">✦ AI Analysis</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                  gscAiAnalysis.overall_health === "good" ? "bg-green-100 text-green-700" :
+                  gscAiAnalysis.overall_health === "critical" ? "bg-red-100 text-red-700" :
+                  "bg-yellow-100 text-yellow-700"
+                }`}>{gscAiAnalysis.overall_health}</span>
+                <span className="text-xs text-purple-500">{gscAiAnalysis.health_reason}</span>
+                <button onClick={() => setGscAiAnalysis(null)} className="ml-auto text-purple-400 hover:text-purple-600 text-lg leading-none">×</button>
+              </div>
+              <p className="text-sm text-slate-700 mb-4">{gscAiAnalysis.summary}</p>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                {gscAiAnalysis.wins.length > 0 && (
+                  <div className="bg-green-50 rounded-lg p-3 border border-green-100">
+                    <p className="text-xs font-semibold text-green-700 mb-2">What's Working</p>
+                    {gscAiAnalysis.wins.map((w, i) => (
+                      <div key={i} className="mb-2">
+                        <p className="text-xs font-medium text-green-800">{w.title}</p>
+                        <p className="text-xs text-green-600">{w.metric}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {gscAiAnalysis.concerns.length > 0 && (
+                  <div className="bg-red-50 rounded-lg p-3 border border-red-100">
+                    <p className="text-xs font-semibold text-red-700 mb-2">Needs Attention</p>
+                    {gscAiAnalysis.concerns.map((c, i) => (
+                      <div key={i} className="mb-2">
+                        <p className="text-xs font-medium text-red-800">{c.title}</p>
+                        <p className="text-xs text-red-600">{c.action}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {gscAiAnalysis.opportunities.length > 0 && (
+                  <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                    <p className="text-xs font-semibold text-blue-700 mb-2">Growth Opportunities</p>
+                    {gscAiAnalysis.opportunities.map((o, i) => (
+                      <div key={i} className="mb-2">
+                        <p className="text-xs font-medium text-blue-800">{o.title}</p>
+                        <p className="text-xs text-blue-600">{o.action}</p>
+                        <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded mt-0.5 ${
+                          o.estimated_impact === "high" ? "bg-blue-200 text-blue-800" : "bg-blue-100 text-blue-600"
+                        }`}>{o.estimated_impact} impact</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white rounded-lg p-3 border border-purple-100">
+                <p className="text-xs font-semibold text-purple-700 mb-2">Priority Actions</p>
+                <ol className="space-y-1">
+                  {gscAiAnalysis.priority_actions.map((a, i) => (
+                    <li key={i} className="flex gap-2 text-xs text-slate-700">
+                      <span className="font-bold text-purple-600 flex-shrink-0">{i + 1}.</span>
+                      <span>{a}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+          )}
 
           {/* Saved sites + add new */}
           <div className="mb-4 space-y-3">

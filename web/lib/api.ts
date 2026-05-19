@@ -2323,6 +2323,57 @@ export const seoApi = {
   // AI Visibility Audit History
   getAiAudits: (limit = 30) =>
     api.get<{ audits: AiVisibilityAudit[] }>(`/seo/ai-audits?limit=${limit}`),
+
+  // AI-Powered Analysis
+  getGscAiAnalysis: (site_url: string, days = 28) =>
+    api.get<{
+      analysis: {
+        overall_health: "good" | "warning" | "critical";
+        health_reason: string;
+        summary: string;
+        wins: { title: string; detail: string; metric: string }[];
+        concerns: { title: string; detail: string; action: string }[];
+        opportunities: { title: string; action: string; estimated_impact: "low" | "medium" | "high" }[];
+        priority_actions: string[];
+      };
+      raw_data: { total_clicks: number; total_impressions: number; avg_ctr: number; avg_position: number };
+      period_days: number;
+    }>(`/seo/analytics/search-console/ai-analysis?site_url=${encodeURIComponent(site_url)}&days=${days}`),
+
+  getRankAiDiagnosis: () =>
+    api.get<{
+      movers: { keyword: string; current_position: number; previous_position: number; change: number; direction: string; last_checked: string }[];
+      stable_count: number;
+      improved_count: number;
+      declined_count: number;
+      diagnosis: {
+        overall_trend: string;
+        overall_summary: string;
+        diagnoses: { keyword: string; direction: string; change: number; diagnosis: string; action: string }[];
+        top_priority: string;
+      } | null;
+      overall_trend: string;
+      summary?: string;
+    }>("/seo/serp/ai-diagnosis"),
+
+  generateBlogSchema: (payload: { post_id?: string; title?: string; content?: string; keywords?: string[]; url?: string; author?: string }) =>
+    api.post<{ schemas: object[]; script_tags: string; count: number }>("/seo/blog/schema", payload),
+
+  getInternalLinkSuggestions: () =>
+    api.get<{
+      suggestions: {
+        from_post_id: string;
+        from_post_title: string;
+        to_post_id: string;
+        to_post_title: string;
+        anchor_text: string;
+        reason: string;
+        priority: "high" | "medium" | "low";
+        where_to_add: string;
+      }[];
+      summary: string;
+      posts_analyzed: number;
+    }>("/seo/blog/internal-links"),
 };
 
 // ── Zernio Live Ads ───────────────────────────────────────────────────────────

@@ -736,6 +736,27 @@ function RankingsTab() {
   const [expandedPosts, setExpandedPosts] = useState<Set<string>>(new Set());
   const [bizCtx, setBizCtx] = useState<{ business_name?: string; language?: string } | null>(null);
 
+  // AI Rank Diagnosis
+  const [aiDiagnosis, setAiDiagnosis] = useState<null | {
+    overall_trend: string; overall_summary: string; top_priority: string;
+    diagnoses: { keyword: string; direction: string; change: number; diagnosis: string; action: string }[];
+  }>(null);
+  const [aiDiagnosisLoading, setAiDiagnosisLoading] = useState(false);
+  const [aiDiagnosisMovers, setAiDiagnosisMovers] = useState<{ keyword: string; current_position: number; previous_position: number; change: number; direction: string }[]>([]);
+
+  const runAiDiagnosis = async () => {
+    setAiDiagnosisLoading(true);
+    try {
+      const r = await seoApi.getRankAiDiagnosis();
+      setAiDiagnosisMovers(r.movers ?? []);
+      setAiDiagnosis(r.diagnosis ?? null);
+      if (!r.diagnosis && r.summary) {
+        setAiDiagnosis({ overall_trend: r.overall_trend, overall_summary: r.summary ?? "", top_priority: "", diagnoses: [] });
+      }
+    } catch { /* silent */ }
+    setAiDiagnosisLoading(false);
+  };
+
   const load = () => {
     setLoading(true);
     seoApi.getRankings(undefined, undefined, 300)
@@ -971,8 +992,60 @@ function RankingsTab() {
                 ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Checking all…</>
                 : <><RefreshCw className="w-3.5 h-3.5" />Refresh All Positions</>}
             </button>
+            {latest.length >= 2 && (
+              <button
+                type="button"
+                onClick={runAiDiagnosis}
+                disabled={aiDiagnosisLoading}
+                className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap"
+              >
+                {aiDiagnosisLoading
+                  ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Analysing…</>
+                  : <>✦ AI Diagnosis</>}
+              </button>
+            )}
           </div>
         </div>
+
+        {/* AI Diagnosis Panel */}
+        {aiDiagnosis && (
+          <div className="mt-4 rounded-xl border border-purple-200 bg-purple-50 p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="font-semibold text-purple-700 text-sm">✦ AI Rank Diagnosis</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                aiDiagnosis.overall_trend === "improving" ? "bg-green-100 text-green-700" :
+                aiDiagnosis.overall_trend === "declining" ? "bg-red-100 text-red-700" :
+                "bg-yellow-100 text-yellow-700"
+              }`}>{aiDiagnosis.overall_trend}</span>
+              <button onClick={() => setAiDiagnosis(null)} className="ml-auto text-purple-400 hover:text-purple-600 text-lg leading-none">×</button>
+            </div>
+            <p className="text-sm text-slate-700 mb-3">{aiDiagnosis.overall_summary}</p>
+            {aiDiagnosis.top_priority && (
+              <div className="bg-purple-100 rounded-lg px-3 py-2 mb-3">
+                <p className="text-xs font-semibold text-purple-800">Top Priority</p>
+                <p className="text-xs text-purple-700 mt-0.5">{aiDiagnosis.top_priority}</p>
+              </div>
+            )}
+            {aiDiagnosis.diagnoses.length > 0 && (
+              <div className="space-y-2">
+                {aiDiagnosis.diagnoses.map((d, i) => (
+                  <div key={i} className="bg-white rounded-lg p-3 border border-purple-100 flex gap-3 items-start">
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 mt-0.5 ${
+                      d.direction === "improved" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                    }`}>
+                      {d.direction === "improved" ? `↑ +${Math.abs(d.change)}` : `↓ -${Math.abs(d.change)}`}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-slate-800 truncate">{d.keyword}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{d.diagnosis}</p>
+                      <p className="text-xs text-blue-600 mt-1 font-medium">→ {d.action}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Refresh result feedback */}
         {refreshResult && (
@@ -2281,6 +2354,38 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
   const [schedulePostDate, setSchedulePostDate] = useState<Record<string, string>>({});
   const [schedulePostPosting, setSchedulePostPosting] = useState<string | null>(null);
 
+  // Internal link suggestions
+  const [internalLinks, setInternalLinks] = useState<null | {
+    suggestions: { from_post_id: string; from_post_title: string; to_post_id: string; to_post_title: string; anchor_text: string; reason: string; priority: string; where_to_add: string }[];
+    summary: string; posts_analyzed: number;
+  }>(null);
+  const [internalLinksLoading, setInternalLinksLoading] = useState(false);
+
+  const runInternalLinks = async () => {
+    setInternalLinksLoading(true);
+    try { setInternalLinks(await seoApi.getInternalLinkSuggestions()); }
+    catch { /* silent */ }
+    setInternalLinksLoading(false);
+  };
+
+  // Schema generator
+  const [schemaPost, setSchemaPost] = useState<BlogPost | null>(null);
+  const [schemaResult, setSchemaResult] = useState<{ script_tags: string; count: number } | null>(null);
+  const [schemaLoading, setSchemaLoading] = useState(false);
+  const [schemaCopied, setSchemaCopied] = useState(false);
+
+  const generateSchema = async (post: BlogPost) => {
+    setSchemaPost(post);
+    setSchemaResult(null);
+    setSchemaLoading(true);
+    setSchemaCopied(false);
+    try {
+      const r = await seoApi.generateBlogSchema({ post_id: post.id, title: post.title, content: post.content, keywords: post.keywords ?? [] });
+      setSchemaResult(r);
+    } catch { /* silent */ }
+    setSchemaLoading(false);
+  };
+
   // Read modal
   const [readPost, setReadPost] = useState<BlogPost | null>(null);
 
@@ -2679,11 +2784,6 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
     }
   }
 
-  const statusColor = (s: string) =>
-    s === "published" ? "bg-green-100 text-green-700"
-    : s === "scheduled" ? "bg-blue-100 text-blue-700"
-    : "bg-slate-100 text-slate-600";
-
   const topicStarters = useMemo(() => {
     if (!profile) return [];
     const bn = profile.business_name?.trim();
@@ -2700,7 +2800,7 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
 
   return (
     <div className="space-y-5">
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex gap-2 flex-wrap items-center">
         {([
           { id: "posts" as const, label: "My posts" },
           { id: "write" as const, label: "Write post" },
@@ -2715,7 +2815,48 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
             {label}
           </button>
         ))}
+        {posts.length >= 2 && (
+          <button
+            type="button"
+            onClick={runInternalLinks}
+            disabled={internalLinksLoading}
+            className="ml-auto px-3 py-1.5 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+          >
+            {internalLinksLoading ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Analysing…</> : <>✦ Internal Links AI</>}
+          </button>
+        )}
       </div>
+
+      {/* Internal Links Panel */}
+      {internalLinks && (
+        <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <span className="font-semibold text-purple-700 text-sm">✦ Internal Link Suggestions</span>
+              <span className="text-xs text-purple-500 ml-2">{internalLinks.posts_analyzed} posts analysed</span>
+            </div>
+            <button onClick={() => setInternalLinks(null)} className="text-purple-400 hover:text-purple-600 text-lg leading-none">×</button>
+          </div>
+          {internalLinks.summary && <p className="text-xs text-slate-600 mb-3">{internalLinks.summary}</p>}
+          <div className="space-y-2">
+            {internalLinks.suggestions.map((s, i) => (
+              <div key={i} className="bg-white rounded-lg p-3 border border-purple-100">
+                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${s.priority === "high" ? "bg-purple-100 text-purple-700" : "bg-slate-100 text-slate-600"}`}>{s.priority}</span>
+                  <span className="text-xs text-slate-700 font-medium truncate max-w-[200px]">{s.from_post_title}</span>
+                  <span className="text-xs text-slate-400">→</span>
+                  <span className="text-xs text-slate-700 font-medium truncate max-w-[200px]">{s.to_post_title}</span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Link text: <span className="font-semibold text-blue-600">"{s.anchor_text}"</span>
+                </p>
+                <p className="text-xs text-slate-400 mt-0.5">{s.where_to_add}</p>
+                <p className="text-xs text-slate-500 mt-0.5 italic">{s.reason}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tab === "suggested" && (
         <div className="space-y-3">
@@ -3234,6 +3375,13 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                       </button>
                     )}
                     <button
+                      onClick={() => generateSchema(post)}
+                      className="text-xs px-2 py-1 bg-purple-50 text-purple-600 rounded-lg hover:bg-purple-100 font-medium whitespace-nowrap"
+                      title="Generate Schema.org JSON-LD for SEO"
+                    >
+                      {} Schema
+                    </button>
+                    <button
                       onClick={() => deletePost(post.id)}
                       className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"
                     >
@@ -3567,6 +3715,52 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                 </button>
               </div>
             </details>
+          </div>
+        </div>
+      )}
+
+      {/* ── Schema.org Modal ── */}
+      {schemaPost && (
+        <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-base font-semibold text-slate-800">Schema.org JSON-LD</h3>
+                <p className="text-xs text-slate-500 mt-0.5 truncate max-w-md">{schemaPost.title}</p>
+              </div>
+              <button onClick={() => { setSchemaPost(null); setSchemaResult(null); setSchemaCopied(false); }} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
+            </div>
+
+            {schemaLoading && (
+              <div className="flex items-center gap-2 py-8 justify-center">
+                <span className="w-5 h-5 rounded-full border-2 border-purple-600 border-t-transparent animate-spin" />
+                <span className="text-sm text-slate-500">Generating structured data…</span>
+              </div>
+            )}
+
+            {schemaResult && (
+              <>
+                <div className="bg-slate-900 rounded-xl p-4 mb-4 max-h-64 overflow-y-auto">
+                  <pre className="text-xs text-green-400 whitespace-pre-wrap font-mono">{schemaResult.script_tags}</pre>
+                </div>
+                <p className="text-xs text-slate-500 mb-3">
+                  Copy this code and paste it inside the <code className="bg-slate-100 px-1 rounded">&lt;head&gt;</code> section of your blog post page.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(schemaResult.script_tags); setSchemaCopied(true); setTimeout(() => setSchemaCopied(false), 2000); }}
+                    className="flex-1 px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 font-medium"
+                  >
+                    {schemaCopied ? "✓ Copied!" : "Copy to Clipboard"}
+                  </button>
+                  <button onClick={() => { setSchemaPost(null); setSchemaResult(null); setSchemaCopied(false); }} className="px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium">Close</button>
+                </div>
+              </>
+            )}
+
+            {!schemaLoading && !schemaResult && (
+              <div className="py-6 text-center text-sm text-slate-400">Failed to generate schema. Try again.</div>
+            )}
           </div>
         </div>
       )}
