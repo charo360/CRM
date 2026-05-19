@@ -4045,7 +4045,6 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
             f"metrics.ctr, metrics.average_cpc "
             f"FROM campaign "
             f"WHERE segments.date BETWEEN '{start_dt.isoformat()}' AND '{end_dt.isoformat()}' "
-            f"AND campaign.status = 'ENABLED' "
             f"ORDER BY metrics.cost_micros DESC "
             f"LIMIT 20"
         )
