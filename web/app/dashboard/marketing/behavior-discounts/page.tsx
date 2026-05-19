@@ -1,499 +1,534 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
-import { Plus, Trash2, Edit2, BarChart3, Power, PowerOff, Loader2, TrendingUp, Users, DollarSign } from "lucide-react";
+import { getBusinessId } from "@/lib/auth";
+import {
+  Zap, Copy, Check, Code2, BarChart2, Loader2, TrendingUp,
+  Gift, Plus, Play, Pause, Trash2, RefreshCw, Save,
+  Layout, X,
+} from "lucide-react";
 
+// ── Types ─────────────────────────────────────────────────────────────────────
 interface Campaign {
-  _id: string;
+  id: string;
   name: string;
   trigger_event: string;
   discount_type: string;
   discount_value: number;
   delivery_method: string;
   message_template: string;
-  conditions: Record<string, any>;
-  active: boolean;
-  sent_count: number;
-  conversion_count: number;
+  status: string;
+  times_triggered: number;
+  times_converted: number;
 }
 
 interface Analytics {
-  campaign_id: string;
-  campaign_name: string;
-  trigger_event: string;
-  sent_count: number;
-  conversion_count: number;
+  total_sent: number;
+  total_conversions: number;
   conversion_rate: number;
-  revenue: number;
-  active: boolean;
 }
 
-const TRIGGER_EVENTS = [
-  { value: "cart_abandoned", label: "🛒 Cart Abandoned", description: "When someone adds items but doesn't checkout" },
-  { value: "browsed_product", label: "👀 Product Browsing", description: "Views product multiple times without buying" },
-  { value: "visited_multiple_times", label: "🔄 Returning Visitor", description: "Comes back to your site" },
-  { value: "exit_intent", label: "🚪 Exit Intent", description: "About to leave the site" },
-  { value: "time_on_site", label: "⏱️ Time on Site", description: "Spends significant time browsing" },
-  { value: "page_views_threshold", label: "📄 Page Views", description: "Views multiple pages" },
-  { value: "first_time_visitor", label: "🆕 First-Time Visitor", description: "New to your site" },
-  { value: "high_value_visitor", label: "💎 High-Value Visitor", description: "Viewing expensive products" },
+// ── Campaign Templates ─────────────────────────────────────────────────────────
+const TEMPLATES = [
+  { id: "exit_intent", name: "Exit Intent Saver", description: "Catch visitors before they leave", trigger_event: "exit_intent", discount_value: 15, delivery_method: "popup", icon: "🚪", badge: "Most Popular", badgeColor: "bg-red-100 text-red-700", color: "bg-red-50 border-red-200", message_template: "Wait! Don't leave yet 👋\n\nUse code {discount_code} for {discount_value}% off!\nLimited time offer." },
+  { id: "cart_abandon", name: "Cart Recovery", description: "Recover abandoned carts automatically", trigger_event: "cart_abandoned", discount_value: 10, delivery_method: "popup", icon: "🛒", badge: "High ROI", badgeColor: "bg-orange-100 text-orange-700", color: "bg-orange-50 border-orange-200", message_template: "You left something behind! 🛒\n\nUse code {discount_code} for {discount_value}% off your order." },
+  { id: "first_visit", name: "First Visit Welcome", description: "Welcome new visitors with an exclusive offer", trigger_event: "first_visit", discount_value: 20, delivery_method: "popup", icon: "👋", badge: "New Visitors", badgeColor: "bg-green-100 text-green-700", color: "bg-green-50 border-green-200", message_template: "Welcome! 🎉 First visit special!\n\nGet {discount_value}% off with code {discount_code}." },
+  { id: "time_on_site", name: "Engaged Visitor", description: "Reward visitors who spend time browsing", trigger_event: "time_on_site", discount_value: 12, delivery_method: "popup", icon: "⏱️", badge: "Engaged", badgeColor: "bg-blue-100 text-blue-700", color: "bg-blue-50 border-blue-200", message_template: "Thanks for browsing! 🎁\n\nHere's {discount_value}% off with code {discount_code}." },
+  { id: "product_view", name: "Product Interest", description: "Convert visitors viewing the same product twice", trigger_event: "product_viewed", discount_value: 8, delivery_method: "popup", icon: "👁️", badge: "Smart", badgeColor: "bg-purple-100 text-purple-700", color: "bg-purple-50 border-purple-200", message_template: "Still thinking? 🤔\n\nGet {discount_value}% off now with code {discount_code}. Don't miss out!" },
+  { id: "returning", name: "Returning Customer", description: "Reward loyal visitors who come back", trigger_event: "returning_visitor", discount_value: 5, delivery_method: "banner", icon: "🌟", badge: "Loyalty", badgeColor: "bg-yellow-100 text-yellow-700", color: "bg-yellow-50 border-yellow-200", message_template: "Welcome back! 🌟\n\nEnjoy $5 off with code {discount_code}." },
 ];
 
-const DELIVERY_METHODS = [
-  { value: "email", label: "📧 Email", description: "Requires email address" },
-  { value: "sms", label: "📱 SMS", description: "Requires phone number" },
-  { value: "whatsapp", label: "💬 WhatsApp", description: "Requires phone number" },
-  { value: "popup", label: "🎯 Popup", description: "Shows on website (no contact needed)" },
-  { value: "banner", label: "🎨 Banner", description: "Top banner (no contact needed)" },
-];
+const TRIGGER_LABELS: Record<string, string> = {
+  exit_intent: "Exit Intent", cart_abandoned: "Cart Abandoned", first_visit: "First Visit",
+  time_on_site: "Time on Site", product_viewed: "Product Viewed", returning_visitor: "Returning Visitor",
+  high_value_product: "High Value Product", page_scroll: "Page Scroll",
+};
 
-export default function BehaviorDiscountsPage() {
+const DELIVERY_ICONS: Record<string, string> = {
+  popup: "🎯", banner: "📢", email: "📧", sms: "💬", whatsapp: "📱",
+};
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
+export default function BehaviorTrackerPage() {
+  const [activeTab, setActiveTab] = useState<"overview" | "install" | "campaigns" | "analytics">("overview");
+  const [enabled, setEnabled] = useState(false);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [analytics, setAnalytics] = useState<Analytics[]>([]);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
+  const [businessId, setBusinessId] = useState<string | null>(null);
+  const [ga4Id, setGa4Id] = useState("");
+  const [snippetCopied, setSnippetCopied] = useState(false);
+  const [activatingTemplate, setActivatingTemplate] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [togglingEnabled, setTogglingEnabled] = useState(false);
+  const [newCampaign, setNewCampaign] = useState({
+    name: "", trigger_event: "exit_intent", discount_type: "percentage",
+    discount_value: 10, delivery_method: "popup",
+    message_template: "Use code {discount_code} for {discount_value}% off!",
+  });
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    setLoading(true);
     try {
-      const [campaignsRes, analyticsRes] = await Promise.all([
-        api.get<{ campaigns: Campaign[] }>("/marketing/behavior-discounts/campaigns"),
-        api.get<{ analytics: Analytics[] }>("/marketing/behavior-discounts/analytics"),
+      const [settings, camps] = await Promise.all([
+        api.get<{ behavior_discounts_enabled?: boolean; ga4_measurement_id?: string }>("/settings"),
+        api.get<Campaign[]>("/marketing/behavior-discounts/campaigns").catch(() => [] as Campaign[]),
       ]);
-      setCampaigns(campaignsRes.campaigns);
-      setAnalytics(analyticsRes.analytics);
-    } catch (error) {
-      console.error("Failed to load campaigns:", error);
+      setEnabled(settings.behavior_discounts_enabled || false);
+      setGa4Id(settings.ga4_measurement_id || "");
+      setCampaigns(Array.isArray(camps) ? camps : []);
+      if (settings.behavior_discounts_enabled) {
+        const a = await api.get<Analytics>("/marketing/behavior-discounts/analytics").catch(() => null);
+        setAnalytics(a);
+      }
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    setBusinessId(getBusinessId());
+    loadData();
+  }, [loadData]);
+
+  const toggleEnabled = async (val: boolean) => {
+    setTogglingEnabled(true);
+    try {
+      await api.put("/settings", { behavior_discounts_enabled: val });
+      setEnabled(val);
+    } finally {
+      setTogglingEnabled(false);
+    }
   };
 
-  const toggleCampaign = async (campaignId: string, currentActive: boolean) => {
+  const saveGa4Id = async () => {
+    setSavingSettings(true);
+    try { await api.put("/settings", { ga4_measurement_id: ga4Id }); }
+    finally { setSavingSettings(false); }
+  };
+
+  const activateTemplate = async (tpl: typeof TEMPLATES[0]) => {
+    setActivatingTemplate(tpl.id);
     try {
-      await api.put(`/marketing/behavior-discounts/campaigns/${campaignId}`, {
-        active: !currentActive,
+      const created = await api.post<Campaign>("/marketing/behavior-discounts/campaigns", {
+        name: tpl.name, trigger_event: tpl.trigger_event, discount_type: "percentage",
+        discount_value: tpl.discount_value, delivery_method: tpl.delivery_method,
+        message_template: tpl.message_template, status: "active",
       });
-      await loadData();
-    } catch (error) {
-      console.error("Failed to toggle campaign:", error);
+      setCampaigns(p => [...p, created]);
+      setActiveTab("campaigns");
+    } finally {
+      setActivatingTemplate(null);
     }
   };
 
-  const deleteCampaign = async (campaignId: string) => {
-    if (!confirm("Are you sure you want to delete this campaign?")) return;
-
-    try {
-      await api.delete(`/marketing/behavior-discounts/campaigns/${campaignId}`);
-      await loadData();
-    } catch (error) {
-      console.error("Failed to delete campaign:", error);
-    }
+  const createCampaign = async () => {
+    const created = await api.post<Campaign>("/marketing/behavior-discounts/campaigns", { ...newCampaign, status: "active" });
+    setCampaigns(p => [...p, created]);
+    setShowModal(false);
+    setNewCampaign({ name: "", trigger_event: "exit_intent", discount_type: "percentage", discount_value: 10, delivery_method: "popup", message_template: "Use code {discount_code} for {discount_value}% off!" });
   };
 
-  const totalSent = analytics.reduce((sum, a) => sum + a.sent_count, 0);
-  const totalConverted = analytics.reduce((sum, a) => sum + a.conversion_count, 0);
-  const totalRevenue = analytics.reduce((sum, a) => sum + a.revenue, 0);
-  const avgConversionRate = analytics.length > 0
-    ? analytics.reduce((sum, a) => sum + a.conversion_rate, 0) / analytics.length
-    : 0;
+  const toggleCampaign = async (id: string, status: string) => {
+    const next = status === "active" ? "paused" : "active";
+    await api.put(`/marketing/behavior-discounts/campaigns/${id}`, { status: next });
+    setCampaigns(p => p.map(c => c.id === id ? { ...c, status: next } : c));
+  };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-      </div>
-    );
-  }
+  const deleteCampaign = async (id: string) => {
+    await api.delete(`/marketing/behavior-discounts/campaigns/${id}`);
+    setCampaigns(p => p.filter(c => c.id !== id));
+  };
+
+  const copySnippet = () => {
+    const text = `<!-- GA4 Tracking -->\n<script async src="https://www.googletagmanager.com/gtag/js?id=${ga4Id || "G-XXXXXXXXXX"}"></script>\n<script>\n  window.dataLayer = window.dataLayer || [];\n  function gtag(){dataLayer.push(arguments);}\n  gtag('js', new Date());\n  gtag('config', '${ga4Id || "G-XXXXXXXXXX"}');\n</script>\n\n<!-- Zilo Behavior Tracker -->\n<script src="https://crm.zilo.pro/tracking/zilo-behavior-tracker.js"></script>\n<script>\n  ZiloBehaviorTracker.init({\n    businessId: '${businessId || "YOUR_BUSINESS_ID"}',\n    apiUrl: 'https://crm.zilo.pro/api'\n  });\n</script>`;
+    navigator.clipboard.writeText(text).then(() => {
+      setSnippetCopied(true);
+      setTimeout(() => setSnippetCopied(false), 2000);
+    });
+  };
+
+  const activeCampaigns = campaigns.filter(c => c.status === "active").length;
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <Loader2 className="w-8 h-8 animate-spin text-green-600" />
+    </div>
+  );
 
   return (
-    <div className="max-w-7xl mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+
+      {/* ── Header ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900">Behavior-Triggered Discounts</h1>
-          <p className="text-slate-600 mt-1">Automatically send discounts based on visitor behavior</p>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">⚡ Behavior Tracker</h1>
+          <p className="text-slate-500 text-sm mt-1">Send automatic discount offers based on how visitors interact with your website</p>
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-          Create Campaign
-        </button>
-      </div>
-
-      {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
-              <Users className="w-5 h-5 text-blue-600" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600">Discounts Sent</p>
-              <p className="text-2xl font-bold text-slate-900">{totalSent.toLocaleString()}</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
-              <TrendingUp className="w-5 h-5 text-green-600" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600">Conversions</p>
-              <p className="text-2xl font-bold text-slate-900">{totalConverted.toLocaleString()}</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center">
-              <BarChart3 className="w-5 h-5 text-purple-600" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600">Avg Conversion Rate</p>
-              <p className="text-2xl font-bold text-slate-900">{avgConversionRate.toFixed(1)}%</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center">
-              <DollarSign className="w-5 h-5 text-emerald-600" />
-            </div>
-            <div>
-              <p className="text-sm text-slate-600">Revenue Generated</p>
-              <p className="text-2xl font-bold text-slate-900">${totalRevenue.toLocaleString()}</p>
-            </div>
-          </div>
+        <div className="flex items-center gap-3">
+          <span className={`text-sm font-medium ${enabled ? "text-green-700" : "text-slate-400"}`}>
+            {enabled ? "Active" : "Off"}
+          </span>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" checked={enabled} onChange={e => toggleEnabled(e.target.checked)} disabled={togglingEnabled} className="sr-only peer" />
+            <div className="w-12 h-6 bg-slate-200 rounded-full peer peer-checked:bg-green-600 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all after:border after:border-slate-300"></div>
+          </label>
+          {togglingEnabled && <Loader2 className="w-4 h-4 animate-spin text-slate-400" />}
         </div>
       </div>
 
-      {/* Campaigns List */}
-      <div className="bg-white rounded-xl border border-slate-200">
-        <div className="p-6 border-b border-slate-200">
-          <h2 className="text-xl font-semibold text-slate-900">Active Campaigns</h2>
-        </div>
-
-        {campaigns.length === 0 ? (
-          <div className="p-12 text-center">
-            <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-4">
-              <BarChart3 className="w-8 h-8 text-slate-400" />
-            </div>
-            <h3 className="text-lg font-medium text-slate-900 mb-2">No campaigns yet</h3>
-            <p className="text-slate-600 mb-4">Create your first behavior-triggered discount campaign</p>
-            <button
-              onClick={() => setShowCreateModal(true)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Create Campaign
-            </button>
+      {!enabled && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+          <span className="text-2xl">💡</span>
+          <div>
+            <p className="text-sm font-semibold text-amber-900">Behavior Tracker is off</p>
+            <p className="text-xs text-amber-700 mt-0.5">Enable it above to start sending automatic discount offers to your website visitors.</p>
           </div>
-        ) : (
-          <div className="divide-y divide-slate-200">
-            {campaigns.map((campaign) => {
-              const stats = analytics.find(a => a.campaign_id === campaign._id);
-              const triggerEvent = TRIGGER_EVENTS.find(t => t.value === campaign.trigger_event);
-              const deliveryMethod = DELIVERY_METHODS.find(d => d.value === campaign.delivery_method);
+        </div>
+      )}
 
-              return (
-                <div key={campaign._id} className="p-6 hover:bg-slate-50 transition-colors">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="text-lg font-semibold text-slate-900">{campaign.name}</h3>
-                        {campaign.active ? (
-                          <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-medium">
-                            Active
-                          </span>
-                        ) : (
-                          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-full font-medium">
-                            Paused
-                          </span>
-                        )}
-                      </div>
+      {/* ── Stats ── */}
+      {enabled && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            { label: "Active Campaigns", value: activeCampaigns, icon: Zap, color: "text-green-600", bg: "bg-green-50" },
+            { label: "Discounts Sent", value: analytics?.total_sent ?? 0, icon: Gift, color: "text-blue-600", bg: "bg-blue-50" },
+            { label: "Conversions", value: analytics?.total_conversions ?? 0, icon: TrendingUp, color: "text-purple-600", bg: "bg-purple-50" },
+            { label: "Conv. Rate", value: `${(analytics?.conversion_rate ?? 0).toFixed(1)}%`, icon: BarChart2, color: "text-orange-600", bg: "bg-orange-50" },
+          ].map(({ label, value, icon: Icon, color, bg }) => (
+            <div key={label} className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className={`w-8 h-8 ${bg} rounded-lg flex items-center justify-center mb-3`}>
+                <Icon className={`w-4 h-4 ${color}`} />
+              </div>
+              <p className="text-2xl font-bold text-slate-900">{value}</p>
+              <p className="text-xs text-slate-500 mt-0.5">{label}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
-                      <div className="flex items-center gap-4 text-sm text-slate-600 mb-3">
-                        <span>{triggerEvent?.label || campaign.trigger_event}</span>
-                        <span>•</span>
-                        <span>{deliveryMethod?.label || campaign.delivery_method}</span>
-                        <span>•</span>
-                        <span className="font-medium text-green-600">
-                          {campaign.discount_type === "percentage" 
-                            ? `${campaign.discount_value}% OFF` 
-                            : `$${campaign.discount_value} OFF`}
-                        </span>
-                      </div>
+      {/* ── Tabs ── */}
+      <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
+        {([
+          { id: "overview", label: "Overview", icon: Layout },
+          { id: "install", label: "Install Code", icon: Code2 },
+          { id: "campaigns", label: `Campaigns${campaigns.length > 0 ? ` (${campaigns.length})` : ""}`, icon: Zap },
+          { id: "analytics", label: "Analytics", icon: BarChart2 },
+        ] as const).map(({ id, label, icon: Icon }) => (
+          <button key={id} onClick={() => setActiveTab(id)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === id ? "border-green-600 text-green-700" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+            <Icon className="w-4 h-4" />{label}
+          </button>
+        ))}
+      </div>
 
-                      {stats && (
-                        <div className="flex items-center gap-6 text-sm">
-                          <div>
-                            <span className="text-slate-600">Sent: </span>
-                            <span className="font-medium text-slate-900">{stats.sent_count}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-600">Converted: </span>
-                            <span className="font-medium text-slate-900">{stats.conversion_count}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-600">Rate: </span>
-                            <span className="font-medium text-green-600">{stats.conversion_rate.toFixed(1)}%</span>
-                          </div>
-                          {stats.revenue > 0 && (
-                            <div>
-                              <span className="text-slate-600">Revenue: </span>
-                              <span className="font-medium text-emerald-600">${stats.revenue.toLocaleString()}</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
+      {/* ── OVERVIEW TAB ── */}
+      {activeTab === "overview" && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl border border-slate-200 p-6">
+            <h2 className="text-base font-semibold text-slate-900 mb-4">Setup Checklist</h2>
+            <div className="space-y-3">
+              {[
+                { label: "Enable Behavior Tracker", done: enabled, action: () => toggleEnabled(true), actionLabel: "Enable Now" },
+                { label: "Add your GA4 Measurement ID (G-XXXXXXXXXX)", done: !!ga4Id && ga4Id.startsWith("G-"), action: () => setActiveTab("install"), actionLabel: "Add ID" },
+                { label: "Install tracking code on your website", done: false, action: () => setActiveTab("install"), actionLabel: "Get Code" },
+                { label: "Create your first campaign", done: campaigns.length > 0, action: () => setActiveTab("campaigns"), actionLabel: "Create Campaign" },
+              ].map(({ label, done, action, actionLabel }) => (
+                <div key={label} className="flex items-center justify-between p-3 rounded-lg bg-slate-50">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${done ? "bg-green-500" : "bg-slate-200"}`}>
+                      {done && <Check className="w-3 h-3 text-white" />}
                     </div>
+                    <span className={`text-sm ${done ? "text-slate-400 line-through" : "text-slate-800 font-medium"}`}>{label}</span>
+                  </div>
+                  {!done && <button onClick={action} className="text-xs font-medium text-green-700 hover:underline">{actionLabel}</button>}
+                </div>
+              ))}
+            </div>
+          </div>
 
+          <div className="bg-white rounded-xl border border-slate-200 p-6">
+            <h2 className="text-base font-semibold text-slate-900 mb-4">How It Works</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              {[
+                { icon: "🔍", step: "1", title: "Visitor browses", desc: "Tracker monitors behavior — pages viewed, time spent, exit intent, cart actions" },
+                { icon: "⚡", step: "2", title: "Trigger fires", desc: "When visitor matches your campaign rules (e.g. tries to leave), system activates" },
+                { icon: "🎁", step: "3", title: "Offer appears", desc: "A personalized popup shows with a unique discount code — automatically generated" },
+              ].map(({ icon, step, title, desc }) => (
+                <div key={step} className="text-center">
+                  <div className="text-3xl mb-2">{icon}</div>
+                  <div className="w-6 h-6 bg-green-100 text-green-700 rounded-full text-xs font-bold flex items-center justify-center mx-auto mb-2">{step}</div>
+                  <p className="text-sm font-semibold text-slate-800 mb-1">{title}</p>
+                  <p className="text-xs text-slate-500 leading-relaxed">{desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── INSTALL TAB ── */}
+      {activeTab === "install" && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl border border-slate-200 p-6">
+            <h2 className="text-base font-semibold text-slate-900 mb-1">GA4 Measurement ID</h2>
+            <p className="text-xs text-slate-500 mb-4">GA4 → Admin → Data Streams → your stream → Measurement ID (starts with G-)</p>
+            <div className="flex gap-2">
+              <input type="text" value={ga4Id} onChange={e => setGa4Id(e.target.value)} placeholder="G-XXXXXXXXXX"
+                className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 font-mono" />
+              <button onClick={saveGa4Id} disabled={savingSettings}
+                className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 font-medium disabled:opacity-50 flex items-center gap-2">
+                {savingSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save
+              </button>
+            </div>
+            {ga4Id && !ga4Id.startsWith("G-") && <p className="text-xs text-red-500 mt-2">⚠️ Should start with G-</p>}
+            {ga4Id && ga4Id.startsWith("G-") && <p className="text-xs text-green-600 mt-2">✅ Valid Measurement ID</p>}
+          </div>
+
+          <div className="bg-white rounded-xl border border-slate-200 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">Your Install Code</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Business ID pre-filled automatically — just copy and paste</p>
+              </div>
+              <button onClick={copySnippet}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 font-medium">
+                {snippetCopied ? <><Check className="w-4 h-4" /> Copied!</> : <><Copy className="w-4 h-4" /> Copy Code</>}
+              </button>
+            </div>
+            <pre className="bg-slate-900 text-green-400 text-[11px] rounded-xl p-4 overflow-x-auto leading-relaxed">{`<!-- GA4 Tracking -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=${ga4Id || "G-XXXXXXXXXX"}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', '${ga4Id || "G-XXXXXXXXXX"}');
+</script>
+
+<!-- Zilo Behavior Tracker -->
+<script src="https://crm.zilo.pro/tracking/zilo-behavior-tracker.js"></script>
+<script>
+  ZiloBehaviorTracker.init({
+    businessId: '${businessId || "YOUR_BUSINESS_ID"}',
+    apiUrl: 'https://crm.zilo.pro/api'
+  });
+</script>`}</pre>
+            <p className="text-xs text-slate-500 mt-3">📌 Paste inside your website&apos;s <code className="bg-slate-100 px-1 rounded">&lt;head&gt;</code> section.</p>
+          </div>
+
+          <div className="bg-white rounded-xl border border-slate-200 p-6">
+            <h2 className="text-base font-semibold text-slate-900 mb-4">Platform Installation Guides</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[
+                { platform: "Shopify", icon: "🛒", steps: ["Go to Online Store → Themes", "Actions → Edit Code", "Open theme.liquid", "Paste before </head>"] },
+                { platform: "WordPress", icon: "🔷", steps: ["Install 'Insert Headers and Footers' plugin", "Settings → Insert Headers", "Paste in Header section", "Save changes"] },
+                { platform: "Wix", icon: "🌐", steps: ["Settings → Custom Code", "Add Custom Code", "Select Head section", "Paste and Save"] },
+                { platform: "Squarespace", icon: "⬛", steps: ["Settings → Advanced", "Code Injection", "Paste in Header field", "Save"] },
+              ].map(({ platform, icon, steps }) => (
+                <div key={platform} className="bg-slate-50 rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-xl">{icon}</span>
+                    <span className="font-semibold text-slate-800 text-sm">{platform}</span>
+                  </div>
+                  <ol className="space-y-1.5">
+                    {steps.map((step, i) => (
+                      <li key={i} className="text-xs text-slate-600 flex gap-2">
+                        <span className="text-green-600 font-bold flex-shrink-0">{i + 1}.</span>{step}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── CAMPAIGNS TAB ── */}
+      {activeTab === "campaigns" && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl border border-slate-200 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">Campaign Templates</h2>
+                <p className="text-xs text-slate-500 mt-0.5">One-click activation — works immediately</p>
+              </div>
+              <button onClick={() => setShowModal(true)}
+                className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 font-medium">
+                <Plus className="w-4 h-4" /> Custom
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {TEMPLATES.map((tpl) => {
+                const isActive = campaigns.some(c => c.name === tpl.name);
+                return (
+                  <div key={tpl.id} className={`border rounded-xl p-4 ${tpl.color}`}>
+                    <div className="flex items-start justify-between mb-2">
+                      <span className="text-2xl">{tpl.icon}</span>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${tpl.badgeColor}`}>{tpl.badge}</span>
+                    </div>
+                    <h3 className="text-sm font-semibold text-slate-900 mb-1">{tpl.name}</h3>
+                    <p className="text-xs text-slate-600 mb-3 leading-relaxed">{tpl.description}</p>
+                    <div className="flex items-center gap-3 mb-3 text-xs text-slate-500">
+                      <span>🎯 {TRIGGER_LABELS[tpl.trigger_event]}</span>
+                      <span>💰 {tpl.discount_value}% off</span>
+                    </div>
+                    <button onClick={() => !isActive && activateTemplate(tpl)} disabled={isActive || activatingTemplate === tpl.id}
+                      className={`w-full py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
+                        isActive ? "bg-green-100 text-green-700 cursor-default" : "bg-slate-900 text-white hover:bg-slate-700"
+                      }`}>
+                      {activatingTemplate === tpl.id ? <Loader2 className="w-3 h-3 animate-spin" /> :
+                        isActive ? <><Check className="w-3 h-3" /> Active</> : <><Play className="w-3 h-3" /> Activate</>}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {campaigns.length > 0 && (
+            <div className="bg-white rounded-xl border border-slate-200 p-6">
+              <h2 className="text-base font-semibold text-slate-900 mb-4">Your Campaigns ({campaigns.length})</h2>
+              <div className="space-y-3">
+                {campaigns.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                    <div className="flex items-center gap-3">
+                      <span className="text-xl">{DELIVERY_ICONS[c.delivery_method] || "🎯"}</span>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{c.name}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {TRIGGER_LABELS[c.trigger_event] || c.trigger_event} · {c.discount_type === "percentage" ? `${c.discount_value}%` : `$${c.discount_value}`} off · {c.times_triggered || 0} triggered · {c.times_converted || 0} converted
+                        </p>
+                      </div>
+                    </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => toggleCampaign(campaign._id, campaign.active)}
-                        className="p-2 hover:bg-slate-200 rounded-lg transition-colors"
-                        title={campaign.active ? "Pause campaign" : "Activate campaign"}
-                      >
-                        {campaign.active ? (
-                          <PowerOff className="w-5 h-5 text-slate-600" />
-                        ) : (
-                          <Power className="w-5 h-5 text-slate-600" />
-                        )}
+                      <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>
+                        {c.status === "active" ? "Active" : "Paused"}
+                      </span>
+                      <button onClick={() => toggleCampaign(c.id, c.status)} className="p-1.5 text-slate-400 hover:text-slate-700 rounded">
+                        {c.status === "active" ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                       </button>
-                      <button
-                        onClick={() => setEditingCampaign(campaign)}
-                        className="p-2 hover:bg-slate-200 rounded-lg transition-colors"
-                        title="Edit campaign"
-                      >
-                        <Edit2 className="w-5 h-5 text-slate-600" />
-                      </button>
-                      <button
-                        onClick={() => deleteCampaign(campaign._id)}
-                        className="p-2 hover:bg-red-100 rounded-lg transition-colors"
-                        title="Delete campaign"
-                      >
-                        <Trash2 className="w-5 h-5 text-red-600" />
+                      <button onClick={() => deleteCampaign(c.id)} className="p-1.5 text-slate-400 hover:text-red-600 rounded">
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Help Section */}
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200 p-6">
-        <h3 className="text-lg font-semibold text-blue-900 mb-2">💡 How It Works</h3>
-        <ul className="text-sm text-blue-800 space-y-2">
-          <li>• <strong>Choose a trigger:</strong> Cart abandoned, exit intent, product browsing, etc.</li>
-          <li>• <strong>Set conditions:</strong> Minimum cart value, page views, time on site</li>
-          <li>• <strong>Create discount:</strong> Percentage off, fixed amount, or free shipping</li>
-          <li>• <strong>Pick delivery:</strong> Email, SMS, WhatsApp, popup, or banner</li>
-          <li>• <strong>Watch conversions:</strong> Track performance in real-time</li>
-        </ul>
-        <a
-          href="/docs/behavior-discount-guide.md"
-          target="_blank"
-          className="inline-block mt-4 text-sm text-blue-700 hover:text-blue-800 font-medium underline"
-        >
-          Read the complete guide →
-        </a>
-      </div>
-
-      {/* Create/Edit Modal */}
-      {(showCreateModal || editingCampaign) && (
-        <CampaignModal
-          campaign={editingCampaign}
-          onClose={() => {
-            setShowCreateModal(false);
-            setEditingCampaign(null);
-          }}
-          onSave={async () => {
-            setShowCreateModal(false);
-            setEditingCampaign(null);
-            await loadData();
-          }}
-        />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       )}
-    </div>
-  );
-}
 
-// Campaign Create/Edit Modal Component
-function CampaignModal({
-  campaign,
-  onClose,
-  onSave,
-}: {
-  campaign: Campaign | null;
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  const [formData, setFormData] = useState({
-    name: campaign?.name || "",
-    trigger_event: campaign?.trigger_event || "cart_abandoned",
-    discount_type: campaign?.discount_type || "percentage",
-    discount_value: campaign?.discount_value || 10,
-    delivery_method: campaign?.delivery_method || "popup",
-    message_template: campaign?.message_template || "Special offer! Use code {discount_code} for {discount_value}% off!",
-    conditions: campaign?.conditions || {},
-    active: campaign?.active ?? true,
-  });
-  const [saving, setSaving] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-
-    try {
-      if (campaign) {
-        await api.put(`/marketing/behavior-discounts/campaigns/${campaign._id}`, formData);
-      } else {
-        await api.post("/marketing/behavior-discounts/campaigns", formData);
-      }
-      onSave();
-    } catch (error) {
-      console.error("Failed to save campaign:", error);
-      alert("Failed to save campaign");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <form onSubmit={handleSubmit}>
-          <div className="p-6 border-b border-slate-200">
-            <h2 className="text-2xl font-bold text-slate-900">
-              {campaign ? "Edit Campaign" : "Create Campaign"}
-            </h2>
+      {/* ── ANALYTICS TAB ── */}
+      {activeTab === "analytics" && (
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-base font-semibold text-slate-900">Campaign Performance</h2>
+            <button onClick={loadData} className="p-2 text-slate-400 hover:text-slate-700 rounded-lg"><RefreshCw className="w-4 h-4" /></button>
           </div>
-
-          <div className="p-6 space-y-4">
-            {/* Campaign Name */}
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Campaign Name</label>
-              <input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="e.g., Cart Recovery 15% Off"
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              />
+          {!enabled ? (
+            <div className="text-center py-12"><BarChart2 className="w-12 h-12 text-slate-200 mx-auto mb-3" /><p className="text-slate-500 text-sm">Enable Behavior Tracker to see analytics</p></div>
+          ) : campaigns.length === 0 ? (
+            <div className="text-center py-12">
+              <BarChart2 className="w-12 h-12 text-slate-200 mx-auto mb-3" />
+              <p className="text-slate-500 text-sm">Create campaigns to see performance</p>
+              <button onClick={() => setActiveTab("campaigns")} className="mt-3 text-sm text-green-700 font-medium hover:underline">Create Campaign →</button>
             </div>
-
-            {/* Trigger Event */}
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Trigger Event</label>
-              <select
-                value={formData.trigger_event}
-                onChange={(e) => setFormData({ ...formData, trigger_event: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {TRIGGER_EVENTS.map((event) => (
-                  <option key={event.value} value={event.value}>
-                    {event.label} - {event.description}
-                  </option>
-                ))}
-              </select>
+          ) : (
+            <div className="space-y-4">
+              {campaigns.map((c) => {
+                const rate = c.times_triggered > 0 ? ((c.times_converted / c.times_triggered) * 100).toFixed(1) : "0.0";
+                return (
+                  <div key={c.id} className="p-4 bg-slate-50 rounded-xl">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-sm font-semibold text-slate-900">{c.name}</p>
+                      <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>{c.status}</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4 text-center mb-3">
+                      <div><p className="text-xl font-bold text-slate-900">{c.times_triggered || 0}</p><p className="text-xs text-slate-500">Triggered</p></div>
+                      <div><p className="text-xl font-bold text-blue-600">{c.times_converted || 0}</p><p className="text-xs text-slate-500">Converted</p></div>
+                      <div><p className="text-xl font-bold text-green-600">{rate}%</p><p className="text-xs text-slate-500">Conv. Rate</p></div>
+                    </div>
+                    <div className="bg-slate-200 rounded-full h-1.5">
+                      <div className="bg-green-500 h-1.5 rounded-full" style={{ width: `${Math.min(parseFloat(rate), 100)}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+          )}
+        </div>
+      )}
 
-            {/* Discount Type & Value */}
-            <div className="grid grid-cols-2 gap-4">
+      {/* ── Create Campaign Modal ── */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-lg font-bold text-slate-900">Custom Campaign</h3>
+              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-700"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Discount Type</label>
-                <select
-                  value={formData.discount_type}
-                  onChange={(e) => setFormData({ ...formData, discount_type: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="percentage">Percentage Off</option>
-                  <option value="fixed_amount">Fixed Amount Off</option>
-                  <option value="free_shipping">Free Shipping</option>
-                </select>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Campaign Name</label>
+                <input type="text" value={newCampaign.name} onChange={e => setNewCampaign(p => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Weekend Flash Sale"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Trigger</label>
+                  <select value={newCampaign.trigger_event} onChange={e => setNewCampaign(p => ({ ...p, trigger_event: e.target.value }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500">
+                    {Object.entries(TRIGGER_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Delivery</label>
+                  <select value={newCampaign.delivery_method} onChange={e => setNewCampaign(p => ({ ...p, delivery_method: e.target.value }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500">
+                    <option value="popup">🎯 Popup</option>
+                    <option value="banner">📢 Banner</option>
+                    <option value="email">📧 Email</option>
+                    <option value="sms">💬 SMS</option>
+                    <option value="whatsapp">📱 WhatsApp</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Discount Type</label>
+                  <select value={newCampaign.discount_type} onChange={e => setNewCampaign(p => ({ ...p, discount_type: e.target.value }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500">
+                    <option value="percentage">Percentage %</option>
+                    <option value="fixed">Fixed Amount $</option>
+                    <option value="free_shipping">Free Shipping</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Value</label>
+                  <input type="number" value={newCampaign.discount_value} min={1} max={100}
+                    onChange={e => setNewCampaign(p => ({ ...p, discount_value: Number(e.target.value) }))}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
+                </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  {formData.discount_type === "percentage" ? "Percentage (%)" : "Amount ($)"}
-                </label>
-                <input
-                  type="number"
-                  value={formData.discount_value}
-                  onChange={(e) => setFormData({ ...formData, discount_value: parseFloat(e.target.value) })}
-                  min="0"
-                  step={formData.discount_type === "percentage" ? "1" : "0.01"}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                />
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Message Template</label>
+                <textarea value={newCampaign.message_template} rows={3} onChange={e => setNewCampaign(p => ({ ...p, message_template: e.target.value }))}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 resize-none" />
+                <p className="text-[10px] text-slate-400 mt-1">Use {"{discount_code}"} and {"{discount_value}"} as placeholders</p>
               </div>
             </div>
-
-            {/* Delivery Method */}
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Delivery Method</label>
-              <select
-                value={formData.delivery_method}
-                onChange={(e) => setFormData({ ...formData, delivery_method: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {DELIVERY_METHODS.map((method) => (
-                  <option key={method.value} value={method.value}>
-                    {method.label} - {method.description}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Message Template */}
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Message Template</label>
-              <textarea
-                value={formData.message_template}
-                onChange={(e) => setFormData({ ...formData, message_template: e.target.value })}
-                rows={3}
-                placeholder="Use {discount_code}, {discount_value}, {discount_type}"
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              />
-              <p className="text-xs text-slate-500 mt-1">
-                Variables: {"{discount_code}"}, {"{discount_value}"}, {"{discount_type}"}
-              </p>
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setShowModal(false)} className="flex-1 py-2.5 border border-slate-200 text-slate-700 text-sm rounded-xl font-medium hover:bg-slate-50">Cancel</button>
+              <button onClick={createCampaign} disabled={!newCampaign.name} className="flex-1 py-2.5 bg-green-600 text-white text-sm rounded-xl font-medium hover:bg-green-700 disabled:opacity-50">Create Campaign</button>
             </div>
           </div>
-
-          <div className="p-6 border-t border-slate-200 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
-              {saving ? "Saving..." : campaign ? "Update Campaign" : "Create Campaign"}
-            </button>
-          </div>
-        </form>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
