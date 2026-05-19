@@ -10634,7 +10634,6 @@ def _shopify_validate_hmac(params: dict, secret: str) -> bool:
     filtered = {k: v for k, v in params.items() if k != "hmac"}
     msg = "&".join(f"{k}={v}" for k, v in sorted(filtered.items()))
     expected = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
-    logging.info(f"[shopify-hmac] msg={msg[:120]}... received={hmac_val[:12]}... expected={expected[:12]}... secret_len={len(secret)}")
     return _hmac.compare_digest(expected, hmac_val)
 
 
