@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MarketingApiBanner } from "@/components/marketing/MarketingApiBanner";
-import { assistantApi } from "@/lib/api";
+import { assistantApi, api } from "@/lib/api";
 import {
   type AdsCampaign,
   listGoogleCampaigns,
@@ -32,6 +32,9 @@ import {
   Wand2,
   MousePointerClick,
   Tag,
+  Wifi,
+  WifiOff,
+  AlertCircle,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -470,71 +473,189 @@ function CampaignModal({
   );
 }
 
+// ── Types for live ads data ────────────────────────────────────────────────────
+
+interface LiveAdsCampaign {
+  id: string;
+  name: string;
+  status: string;
+  impressions: number;
+  clicks: number;
+  cost: number;
+  ctr: number;
+  avg_cpc: number;
+}
+
+interface LiveAdsSummary {
+  total_spend: number;
+  total_clicks: number;
+  total_impressions: number;
+  avg_ctr: number;
+  avg_cpc: number;
+}
+
+interface AdsApiResponse {
+  connected: boolean;
+  error?: string;
+  customer_id?: string;
+  period_days?: number;
+  summary?: LiveAdsSummary;
+  campaigns?: LiveAdsCampaign[];
+}
+
 // ── Reporting tab ──────────────────────────────────────────────────────────────
 
 function ReportingTab({ rows }: { rows: GoogleCampaignExt[] }) {
-  const active = rows.filter((r) => r.status === "active");
-  const totals = rows.reduce((a, r) => ({ spend: a.spend + r.spend, impressions: a.impressions + r.impressions, clicks: a.clicks + r.clicks }), { spend: 0, impressions: 0, clicks: 0 });
-  const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : "0.00";
   const currency = getCurrency();
+  const [customerId, setCustomerId] = useState(() => localStorage.getItem("zilo_gads_cid") || "");
+  const [days, setDays] = useState(30);
+  const [liveData, setLiveData] = useState<AdsApiResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchLive = async () => {
+    const cid = customerId.trim();
+    if (!cid) return;
+    localStorage.setItem("zilo_gads_cid", cid);
+    setLoading(true);
+    try {
+      const res = await api.get<AdsApiResponse>(`/analytics/google-ads?customer_id=${encodeURIComponent(cid)}&days=${days}`);
+      setLiveData(res);
+    } catch (e) {
+      setLiveData({ connected: false, error: e instanceof Error ? e.message : "Request failed" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const s = liveData?.summary;
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-4">
-        {[
-          { label: "Cost", value: `${currency} ${totals.spend.toFixed(2)}` },
-          { label: "Impressions", value: totals.impressions.toLocaleString() },
-          { label: "Clicks", value: totals.clicks.toLocaleString() },
-          { label: "CTR", value: `${ctr}%` },
-        ].map((c) => (
-          <div key={c.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{c.label}</p>
-            <p className="mt-1 text-2xl font-bold text-slate-900">{c.value}</p>
-          </div>
-        ))}
-      </div>
+    <div className="space-y-5">
 
-      {active.length > 0 && (
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-100 px-4 py-3">
-            <p className="text-sm font-semibold text-slate-700">Active campaigns breakdown</p>
+      {/* ── Live data panel ── */}
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">Live Analytics</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Pulled directly from Google Ads API via your connected account</p>
           </div>
-          <table className="w-full text-sm">
-            <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-2.5 text-left">Campaign</th>
-                <th className="px-4 py-2.5 text-left">Type</th>
-                <th className="px-4 py-2.5 text-right">Budget/day</th>
-                <th className="px-4 py-2.5 text-right">Cost</th>
-                <th className="px-4 py-2.5 text-right">Clicks</th>
-                <th className="px-4 py-2.5 text-right">CTR</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {active.map((r) => {
-                const ctr = r.impressions > 0 ? ((r.clicks / r.impressions) * 100).toFixed(1) : "0.0";
-                return (
-                  <tr key={r.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{r.name}</td>
-                    <td className="px-4 py-2.5">
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${typeMeta(r.objective).color}`}>{typeMeta(r.objective).label}</span>
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{r.currency} {r.daily_budget.toFixed(0)}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">${r.spend.toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{r.clicks}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{ctr}%</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {liveData?.connected === true && (
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
+              <Wifi size={11} /> Connected
+            </span>
+          )}
+          {liveData?.connected === false && (
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-red-600 bg-red-50 px-2.5 py-1 rounded-full">
+              <WifiOff size={11} /> Not connected
+            </span>
+          )}
         </div>
-      )}
 
-      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
-        <BarChart3 className="mx-auto mb-2 h-8 w-8 text-slate-300" />
-        <p className="font-medium">Live metrics pending Google Ads API connection</p>
-        <p className="text-xs mt-1 text-slate-400">Connect via OAuth to pull real spend, impressions, conversions, and ROAS from the Google Ads query layer.</p>
+        {/* Customer ID + controls */}
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            placeholder="Google Ads Customer ID (e.g. 123-456-7890)"
+            value={customerId}
+            onChange={(e) => setCustomerId(e.target.value)}
+            className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-400/30 font-mono"
+          />
+          <select
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 w-32">
+            <option value={7}>Last 7 days</option>
+            <option value={14}>Last 14 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+          </select>
+          <button
+            onClick={fetchLive}
+            disabled={loading || !customerId.trim()}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            {loading ? "Fetching…" : "Fetch Data"}
+          </button>
+        </div>
+
+        {/* Error state */}
+        {liveData?.error && (
+          <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <AlertCircle size={15} className="text-amber-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs font-semibold text-amber-800">Could not fetch data</p>
+              <p className="text-xs text-amber-700 mt-0.5">{liveData.error}</p>
+              {!liveData.connected && (
+                <p className="text-xs text-amber-600 mt-1">Connect Google Ads via <strong>Integrations → Google Ads</strong> first.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Summary metrics */}
+        {s && (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {[
+              { label: "Total Spend", value: `${currency} ${s.total_spend.toFixed(2)}`, color: "text-blue-600" },
+              { label: "Clicks", value: s.total_clicks.toLocaleString(), color: "text-emerald-600" },
+              { label: "Impressions", value: s.total_impressions.toLocaleString(), color: "text-slate-700" },
+              { label: "Avg CTR", value: `${s.avg_ctr.toFixed(2)}%`, color: "text-purple-600" },
+              { label: "Avg CPC", value: `${currency} ${s.avg_cpc.toFixed(2)}`, color: "text-orange-600" },
+            ].map((m) => (
+              <div key={m.label} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-center">
+                <p className={`text-lg font-bold ${m.color}`}>{m.value}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">{m.label}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Campaign breakdown table */}
+        {liveData?.campaigns && liveData.campaigns.length > 0 && (
+          <div className="overflow-hidden rounded-xl border border-slate-200">
+            <div className="border-b border-slate-100 px-4 py-3 flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-700">Campaign Breakdown</p>
+              <span className="text-xs text-slate-400">Last {liveData.period_days} days</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[600px] text-sm">
+                <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left">Campaign</th>
+                    <th className="px-4 py-2.5 text-right">Spend</th>
+                    <th className="px-4 py-2.5 text-right">Clicks</th>
+                    <th className="px-4 py-2.5 text-right">Impressions</th>
+                    <th className="px-4 py-2.5 text-right">CTR</th>
+                    <th className="px-4 py-2.5 text-right">Avg CPC</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {liveData.campaigns.map((c) => (
+                    <tr key={c.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5">
+                        <p className="font-medium text-slate-900">{c.name}</p>
+                        <span className="text-[10px] text-slate-400 capitalize">{c.status.toLowerCase()}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-slate-700 font-medium">{currency} {c.cost.toFixed(2)}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{c.clicks.toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{c.impressions.toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{c.ctr.toFixed(2)}%</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{currency} {c.avg_cpc.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {!liveData && !loading && (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
+            <BarChart3 className="mx-auto mb-2 h-8 w-8 text-slate-300" />
+            <p className="text-sm font-medium text-slate-500">Enter your Customer ID and click Fetch Data</p>
+            <p className="text-xs text-slate-400 mt-1">Find it in Google Ads → top-right corner (format: 123-456-7890)</p>
+          </div>
+        )}
       </div>
     </div>
   );
