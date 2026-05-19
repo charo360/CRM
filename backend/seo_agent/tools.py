@@ -2697,6 +2697,373 @@ Phase 3 (Month 3+): [Full automation + monitoring]"""
     return result or "Could not create programmatic SEO plan — please try again."
 
 
+# ── AI-Powered Analysis Tools ─────────────────────────────────────────────────
+
+@tool
+async def diagnose_rank_changes(config: RunnableConfig) -> str:
+    """
+    Analyse recent keyword ranking changes using AI.
+    Detects which keywords improved or dropped significantly (3+ positions)
+    in the last 30 days and explains why, with a specific action for each.
+    Use when the user asks: why did my ranking drop, what moved, rank changes, position diagnosis.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "Cannot diagnose — no database connection."
+
+        cutoff = datetime.utcnow() - timedelta(days=45)
+        rows = await db.seo_serp_rankings.find(
+            {"user_id": user_id, "checked_at": {"$gte": cutoff}}
+        ).sort("checked_at", -1).to_list(2000)
+
+        if not rows:
+            return "No ranking data in the last 45 days. Add keywords to track first, then check back."
+
+        # Build per-keyword position history
+        kw_history: dict[str, list] = {}
+        for row in rows:
+            kw = (row.get("keyword") or "").strip()
+            pos = row.get("position")
+            if kw:
+                kw_history.setdefault(kw, []).append(pos)
+
+        improved, declined = [], []
+        for kw, history in kw_history.items():
+            non_null = [p for p in history if p is not None]
+            if len(non_null) < 2:
+                continue
+            change = non_null[1] - non_null[0]  # positive = improved
+            if change >= 3:
+                improved.append({"keyword": kw, "change": change, "now": non_null[0], "was": non_null[1]})
+            elif change <= -3:
+                declined.append({"keyword": kw, "change": change, "now": non_null[0], "was": non_null[1]})
+
+        improved.sort(key=lambda x: x["change"], reverse=True)
+        declined.sort(key=lambda x: x["change"])
+
+        if not improved and not declined:
+            return f"Checked {len(kw_history)} keywords — no significant moves (3+ positions) detected. All rankings are stable."
+
+        prompt = f"""SEO rank change analysis. Diagnose these keyword movements and give a specific action for each.
+
+IMPROVED (moved UP in Google):
+{_json.dumps(improved[:8], indent=2) if improved else "None"}
+
+DECLINED (dropped in Google):
+{_json.dumps(declined[:8], indent=2) if declined else "None"}
+
+For each keyword, explain in 1 sentence why this likely happened and give 1 specific action.
+Return JSON only:
+{{
+  "overall_trend": "improving|declining|mixed|stable",
+  "overall_summary": "1 sentence",
+  "diagnoses": [
+    {{"keyword": "...", "direction": "improved|declined", "change": 5, "diagnosis": "...", "action": "..."}}
+  ],
+  "top_priority": "single most important action right now"
+}}"""
+
+        raw = await _ai(prompt, max_tokens=900)
+        raw = raw.strip()
+        if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+        result = _json.loads(raw)
+
+        lines = [
+            f"🔍 AI Rank Diagnosis — {result.get('overall_trend', 'mixed').upper()}",
+            f"{result.get('overall_summary', '')}",
+            "",
+            f"🎯 Top Priority: {result.get('top_priority', '')}",
+            "",
+        ]
+        for d in result.get("diagnoses", []):
+            arrow = "↑" if d["direction"] == "improved" else "↓"
+            lines.append(f"{arrow} {d['keyword']} ({abs(d['change'])} positions)")
+            lines.append(f"   Why: {d['diagnosis']}")
+            lines.append(f"   Do: {d['action']}")
+            lines.append("")
+        return "\n".join(lines)
+    except _json.JSONDecodeError:
+        return "AI returned an unexpected format — try again."
+    except Exception as e:
+        return f"Diagnosis failed: {e}"
+
+
+@tool
+async def suggest_internal_links(config: RunnableConfig) -> str:
+    """
+    Scan all blog posts and suggest internal linking opportunities.
+    Tells you which post should link to which other post, with the exact anchor text to use.
+    Use when the user asks: internal links, link my posts, which posts should link to each other, internal linking strategy.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "Cannot analyse — no database connection."
+
+        posts = await db.seo_blog_posts.find(
+            {"user_id": user_id},
+            {"title": 1, "keywords": 1, "content": 1, "status": 1}
+        ).sort("created_at", -1).limit(40).to_list(40)
+
+        if len(posts) < 2:
+            return "You need at least 2 blog posts before I can suggest internal links. Write more posts first!"
+
+        summaries = [
+            {
+                "id": str(p.get("_id", "")),
+                "title": p.get("title", ""),
+                "keywords": (p.get("keywords") or [])[:4],
+                "excerpt": (p.get("content") or "")[:120],
+                "status": p.get("status", "draft"),
+            }
+            for p in posts
+        ]
+
+        prompt = f"""Internal SEO linking expert. Analyse these {len(summaries)} blog posts and find the best internal link opportunities.
+
+Posts:
+{_json.dumps(summaries, indent=2)}
+
+Rules: only link topically related posts, use natural anchor text, prioritise published posts.
+Suggest up to 10 links. Return JSON only:
+{{
+  "suggestions": [
+    {{
+      "from_title": "source post title",
+      "to_title": "target post title",
+      "anchor_text": "exact words to hyperlink",
+      "reason": "why (1 sentence)",
+      "priority": "high|medium|low"
+    }}
+  ],
+  "strategy": "1-2 sentence overall internal linking strategy"
+}}"""
+
+        raw = await _ai(prompt, max_tokens=1200)
+        raw = raw.strip()
+        if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+        result = _json.loads(raw)
+
+        lines = [
+            f"🔗 Internal Link Suggestions ({len(posts)} posts analysed)",
+            f"{result.get('strategy', '')}",
+            "",
+        ]
+        for i, s in enumerate(result.get("suggestions", [])[:10], 1):
+            priority = s.get("priority", "medium").upper()
+            lines.append(f"{i}. [{priority}] From: \"{s.get('from_title', '')}\"")
+            lines.append(f"   To: \"{s.get('to_title', '')}\"")
+            lines.append(f"   Anchor text: \"{s.get('anchor_text', '')}\"")
+            lines.append(f"   Why: {s.get('reason', '')}")
+            lines.append("")
+        return "\n".join(lines)
+    except _json.JSONDecodeError:
+        return "AI returned an unexpected format — try again."
+    except Exception as e:
+        return f"Internal link analysis failed: {e}"
+
+
+@tool
+async def generate_schema_markup(post_id: str = "", title: str = "", keywords: str = "", config: RunnableConfig = None) -> str:
+    """
+    Generate Schema.org JSON-LD structured data for a blog post.
+    Helps Google understand your content and can unlock rich results (star ratings, FAQs, etc.).
+    Use when the user asks: schema markup, structured data, JSON-LD, rich results, schema.org.
+
+    Args:
+        post_id: ID of a saved blog post (use list_saved_posts to find IDs). OR
+        title: Blog post title if no post_id.
+        keywords: Comma-separated keywords the post targets.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        post_title, content, kw_list = title, "", []
+
+        if post_id and db and user_id:
+            doc = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": user_id})
+            if doc:
+                post_title = doc.get("title", title)
+                content = (doc.get("content") or "")[:800]
+                kw_list = (doc.get("keywords") or [])[:5]
+            else:
+                return f"Post {post_id} not found. Use list_saved_posts to find post IDs."
+
+        if not post_title:
+            return "Provide a post_id or title to generate schema markup."
+
+        if keywords:
+            kw_list = [k.strip() for k in keywords.split(",")][:5]
+
+        prompt = f"""Generate Schema.org JSON-LD structured data for this blog post.
+
+Title: {post_title}
+Keywords: {", ".join(kw_list) if kw_list else post_title}
+Excerpt: {content[:400] if content else "(no content provided)"}
+
+Choose the best schema type(s): BlogPosting is always included. If the post answers questions, add FAQPage. If it's a guide, add HowTo.
+
+Return a JSON array of schema objects (no markdown):
+[
+  {{
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "...",
+    "keywords": "...",
+    "author": {{"@type": "Person", "name": "Author"}},
+    "datePublished": "{datetime.utcnow().strftime('%Y-%m-%d')}"
+  }}
+]"""
+
+        raw = await _ai(prompt, max_tokens=1200)
+        raw = raw.strip()
+        if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+        schemas = _json.loads(raw)
+        if isinstance(schemas, dict):
+            schemas = [schemas]
+
+        # Save to post if post_id given
+        if post_id and db and user_id:
+            await db.seo_blog_posts.update_one(
+                {"_id": post_id, "user_id": user_id},
+                {"$set": {"schema_json_ld": schemas, "updated_at": datetime.utcnow()}}
+            )
+
+        script_tags = "\n\n".join(
+            f'<script type="application/ld+json">\n{_json.dumps(s, indent=2)}\n</script>'
+            for s in schemas
+        )
+        lines = [
+            f"✅ Schema.org markup generated for: \"{post_title}\"",
+            f"Schema type(s): {', '.join(s.get('@type', '?') for s in schemas)}",
+            "",
+            "Paste this in your page's <head> section:",
+            "",
+            script_tags,
+            "",
+            "Tip: Test your schema at: https://search.google.com/test/rich-results",
+        ]
+        return "\n".join(lines)
+    except _json.JSONDecodeError:
+        return "AI returned an unexpected format — try again."
+    except Exception as e:
+        return f"Schema generation failed: {e}"
+
+
+@tool
+async def analyze_search_console(site_url: str = "", days: int = 28, config: RunnableConfig = None) -> str:
+    """
+    Fetch Google Search Console data and get AI-powered insights about what's working, what's declining, and what to do next.
+    Requires Google Search Console to be connected in the Analytics tab.
+    Use when the user asks: GSC analysis, search console insights, how is my SEO traffic, what queries bring traffic, clicks analysis.
+
+    Args:
+        site_url: Your website URL (e.g. https://yoursite.com or sc-domain:yoursite.com). Leave blank to use the URL from your profile.
+        days: Number of days to analyse (7, 28, or 90). Default 28.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "Cannot analyse — no database connection."
+
+        # Get site URL from business context if not provided
+        raw_site = site_url.strip()
+        if not raw_site:
+            ctx_doc = await db.users.find_one({"_id": user_id}, {"settings": 1})
+            raw_site = ((ctx_doc or {}).get("settings") or {}).get("website_url", "")
+        if not raw_site:
+            return "No site URL provided. Specify site_url or add your website to Settings."
+
+        # Try to call composio proxy
+        try:
+            from composio_service import composio_proxy, get_connection_status
+        except ImportError:
+            return "Google Search Console integration is not available. Connect it in the Analytics tab first."
+
+        status = await get_connection_status(user_id, "googlesearchconsole")
+        if not status.get("connected"):
+            return "Google Search Console is not connected. Go to Analytics tab → connect Google Search Console first."
+
+        # Normalise site URL
+        _clean = raw_site.strip().rstrip("/")
+        if _clean.startswith("sc-domain:"):
+            _bare = _clean[len("sc-domain:"):].lstrip("www.")
+        elif "://" in _clean:
+            _bare = _clean.split("://", 1)[1].lstrip("www.").rstrip("/")
+        else:
+            _bare = _clean.lstrip("www.").rstrip("/")
+
+        from urllib.parse import quote as _q
+        from datetime import timedelta as _td
+        end_date = datetime.utcnow().date() - _td(days=2)
+        start_date = end_date - _td(days=days)
+
+        candidates = [f"sc-domain:{_bare}", f"https://www.{_bare}/", f"https://{_bare}/", f"https://{_bare}"]
+        gsc_data = None
+        for website in candidates:
+            try:
+                encoded = _q(website, safe="")
+                base_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded}/searchAnalytics/query"
+                body = {"startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "rowLimit": 15, "type": "web"}
+                q_data = await composio_proxy(user_id, "googlesearchconsole", "POST", base_url, json={**body, "dimensions": ["query"]})
+                p_data = await composio_proxy(user_id, "googlesearchconsole", "POST", base_url, json={**body, "dimensions": ["page"]})
+                if not q_data.get("rows") and not p_data.get("rows"):
+                    continue
+                totals = await composio_proxy(user_id, "googlesearchconsole", "POST", base_url,
+                    json={"startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "type": "web"})
+                tr = (totals.get("rows") or [{}])[0]
+                gsc_data = {
+                    "clicks": int(tr.get("clicks") or 0),
+                    "impressions": int(tr.get("impressions") or 0),
+                    "avg_ctr": round((tr.get("ctr") or 0) * 100, 1),
+                    "avg_position": round(tr.get("position") or 0, 1),
+                    "top_queries": [{"q": (r.get("keys") or [""])[0], "clicks": r.get("clicks", 0), "impressions": r.get("impressions", 0), "pos": round(r.get("position") or 0, 1)} for r in (q_data.get("rows") or [])[:10]],
+                    "top_pages": [{"page": (r.get("keys") or [""])[0].replace(f"https://{_bare}", ""), "clicks": r.get("clicks", 0)} for r in (p_data.get("rows") or [])[:8]],
+                }
+                break
+            except Exception:
+                continue
+
+        if not gsc_data:
+            return (f"Could not fetch data for {raw_site}. Make sure the site URL matches what's registered in "
+                    "Google Search Console. Go to Analytics tab → click 'List my sites' to find the exact format.")
+
+        prompt = f"""Expert SEO analyst. Give clear, actionable insights from this Google Search Console data.
+
+Period: last {days} days for {raw_site}
+Clicks: {gsc_data['clicks']:,}
+Impressions: {gsc_data['impressions']:,}
+Avg CTR: {gsc_data['avg_ctr']}%
+Avg Position: {gsc_data['avg_position']}
+
+Top queries: {_json.dumps(gsc_data['top_queries'], indent=2)}
+Top pages: {_json.dumps(gsc_data['top_pages'], indent=2)}
+
+Give a structured analysis:
+1. Overall health (1 sentence)
+2. Top 3 wins (what's working)
+3. Top 3 concerns (what needs fixing)
+4. Top 3 opportunities (quick wins to pursue)
+5. The single most important action to take this week
+
+Be specific — use the actual numbers. Talk like an expert friend, not a textbook."""
+
+        analysis = await _ai(prompt, max_tokens=900)
+        return (
+            f"📊 Google Search Console Analysis — Last {days} days\n"
+            f"Site: {raw_site}\n\n"
+            f"📈 Summary: {gsc_data['clicks']:,} clicks | {gsc_data['impressions']:,} impressions | "
+            f"{gsc_data['avg_ctr']}% CTR | Position {gsc_data['avg_position']}\n\n"
+            f"{analysis}"
+        )
+    except Exception as e:
+        return f"GSC analysis failed: {e}"
+
+
 # ── Tool registry exported to graph ──────────────────────────────────────────
 
 SEO_TOOLS = [
@@ -2757,4 +3124,9 @@ SEO_TOOLS = [
     create_lead_magnet,
     design_ab_test,
     plan_programmatic_seo,
+    # ── AI Analysis & Intelligence ────────────────────────────────────────────
+    diagnose_rank_changes,
+    suggest_internal_links,
+    generate_schema_markup,
+    analyze_search_console,
 ]
