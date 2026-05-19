@@ -142,7 +142,7 @@ export default function BehaviorTrackerPage() {
     const res = await api.post("/marketing/behavior-discounts/campaigns", { ...newCampaign });
     setCampaigns(p => [...p, unwrapCampaign(res)]);
     setShowModal(false);
-    setNewCampaign({ name: "", trigger_event: "exit_intent", discount_type: "percentage", discount_value: 10, delivery_method: "popup", message_template: "Use code {discount_code} for {discount_value}% off!" });
+    setNewCampaign({ name: "", trigger_event: "exit_intent", discount_type: "percentage", discount_value: 10, delivery_method: "popup", active: true, message_template: "Use code {discount_code} for {discount_value}% off!" });
   };
 
   const getCid = (c: Campaign) => c._id || c.id || "";
