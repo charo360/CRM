@@ -50,6 +50,7 @@ import {
   FileInput,
   Globe,
   Globe2,
+  Activity,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -126,6 +127,7 @@ export default function Sidebar() {
     { href: "/dashboard/google-business", label: "Google Business", icon: MapPinned },
     { href: "/dashboard/social-inbox", label: "Social Inbox", icon: Inbox },
     { href: "/dashboard/seo", label: "SEOhub", icon: Search },
+    { href: "/dashboard/marketing/behavior-discounts", label: "Behavior Tracker", icon: Activity },
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const businessNavFiltered = [
