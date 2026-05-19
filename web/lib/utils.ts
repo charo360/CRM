@@ -56,8 +56,15 @@ export function formatDateSafe(dateStr: string | undefined | null) {
 }
 
 /** Date + time for reminders, messages, etc. */
+/** Normalise a server datetime string: if it has no timezone indicator treat it as UTC. */
+function asUtc(dateStr: string): string {
+  return dateStr && !dateStr.includes("+") && !dateStr.endsWith("Z")
+    ? dateStr + "Z"
+    : dateStr;
+}
+
 export function formatDateTime(dateStr: string) {
-  return new Date(dateStr).toLocaleString("en-KE", {
+  return new Date(asUtc(dateStr)).toLocaleString("en-KE", {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -76,7 +83,7 @@ export function toDatetimeLocalValue(isoOrDate: string | Date | undefined | null
 }
 
 export function timeAgo(dateStr: string) {
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff = Date.now() - new Date(asUtc(dateStr)).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
@@ -86,7 +93,7 @@ export function timeAgo(dateStr: string) {
 }
 
 export function elapsedMinutes(dateStr: string) {
-  return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
+  return Math.floor((Date.now() - new Date(asUtc(dateStr)).getTime()) / 60000);
 }
 
 /**
