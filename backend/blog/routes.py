@@ -2240,4 +2240,121 @@ def make_blog_router(db, get_current_user):
 
         return {"status": "ok", "stats": stats, "errors": errors}
 
+    # ── GA4 Tracking Management ────────────────────────────────────────────────
+
+    @router.post("/ga4/activate")
+    async def activate_ga4_tracking(user=Depends(get_current_user)):
+        """
+        Activates GA4 tracking for the user's WordPress subsite.
+        Reads ga4_measurement_id from user settings and injects tracking code.
+        """
+        from blog.ga4_injector import inject_ga4_tracking
+        
+        user_id = _user_id(user)
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+        
+        # Get user's GA4 measurement ID from settings
+        settings = user.get("settings", {})
+        measurement_id = settings.get("ga4_measurement_id", "").strip()
+        
+        if not measurement_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No GA4 Measurement ID found. Please add your GA4 ID in Settings first."
+            )
+        
+        # Get user's blog
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(
+                status_code=404,
+                detail="No blog found. Please activate your blog first."
+            )
+        
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(status_code=500, detail="Could not determine blog URL")
+        
+        # Inject GA4 tracking
+        result = await inject_ga4_tracking(site_url, measurement_id)
+        
+        if result.get("success"):
+            # Update blog record with GA4 status
+            await db.blogs.update_one(
+                {"client_id": user_id},
+                {"$set": {
+                    "ga4_measurement_id": measurement_id,
+                    "ga4_activated_at": datetime.utcnow(),
+                }}
+            )
+        
+        return result
+
+    @router.post("/ga4/deactivate")
+    async def deactivate_ga4_tracking(user=Depends(get_current_user)):
+        """
+        Removes GA4 tracking from the user's WordPress subsite.
+        """
+        from blog.ga4_injector import remove_ga4_tracking
+        
+        user_id = _user_id(user)
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+        
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="No blog found")
+        
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(status_code=500, detail="Could not determine blog URL")
+        
+        result = await remove_ga4_tracking(site_url)
+        
+        if result.get("success"):
+            await db.blogs.update_one(
+                {"client_id": user_id},
+                {"$unset": {"ga4_measurement_id": "", "ga4_activated_at": ""}}
+            )
+        
+        return result
+
+    @router.get("/ga4/status")
+    async def get_ga4_status(user=Depends(get_current_user)):
+        """
+        Returns GA4 tracking status for the user's blog.
+        """
+        user_id = _user_id(user)
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+        
+        # Get GA4 ID from user settings
+        settings = user.get("settings", {})
+        measurement_id = settings.get("ga4_measurement_id", "").strip()
+        
+        # Get blog GA4 status
+        blog = await db.blogs.find_one({"client_id": user_id})
+        
+        if not blog:
+            return {
+                "blog_exists": False,
+                "ga4_configured": bool(measurement_id),
+                "ga4_active": False,
+                "measurement_id": measurement_id if measurement_id else None,
+            }
+        
+        blog_ga4_id = blog.get("ga4_measurement_id", "")
+        ga4_activated_at = blog.get("ga4_activated_at")
+        
+        return {
+            "blog_exists": True,
+            "ga4_configured": bool(measurement_id),
+            "ga4_active": bool(blog_ga4_id),
+            "measurement_id": measurement_id if measurement_id else None,
+            "blog_measurement_id": blog_ga4_id if blog_ga4_id else None,
+            "activated_at": ga4_activated_at.isoformat() if ga4_activated_at else None,
+            "needs_update": measurement_id != blog_ga4_id if (measurement_id and blog_ga4_id) else False,
+        }
+
     return router

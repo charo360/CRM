@@ -1786,6 +1786,8 @@ class UserSettingsUpdate(BaseModel):
     daily_pulse_time: Optional[str] = None  # e.g. '20:00'
     ai_model: Optional[str] = None  # standard, premium, claude-4.7, grok, etc.
     auto_reply_audience: Optional[str] = None  # 'everyone', 'customers_only', 'new_contacts_only'
+    ga4_measurement_id: Optional[str] = None  # Google Analytics 4 Measurement ID (G-XXXXXXXXXX)
+    behavior_discounts_enabled: Optional[bool] = None  # Enable/disable behavior-triggered discount campaigns
 
 # Business Knowledge Model
 class BusinessKnowledge(BaseModel):
@@ -2481,6 +2483,8 @@ async def get_settings(user = Depends(get_current_user)):
         "features": s.get("features"),
         "account_mode": s.get("account_mode", "business"),
         "onboarding_v1_completed": s.get("onboarding_v1_completed"),
+        "ga4_measurement_id": s.get("ga4_measurement_id", ""),
+        "behavior_discounts_enabled": s.get("behavior_discounts_enabled", False),
     }
     await cache_set(cache_key, result, TTL_TENANT_SETTINGS)
     return result
@@ -2504,6 +2508,27 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
         update_doc.update(settings_fields)
     if update_doc:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    
+    # Auto-inject tracking codes to Shopify if GA4 measurement ID is updated and auto_inject_shopify is enabled
+    if "settings.ga4_measurement_id" in settings_fields and body.get("auto_inject_shopify", False):
+        try:
+            from shopify_tracking import inject_tracking_codes, check_shopify_connection
+            user_id = str(user["_id"])
+            
+            # Check if Shopify is connected
+            if await check_shopify_connection(db, user_id):
+                ga4_id = settings_fields["settings.ga4_measurement_id"]
+                if ga4_id and ga4_id.startswith("G-"):
+                    await inject_tracking_codes(
+                        db=db,
+                        user_id=user_id,
+                        ga4_measurement_id=ga4_id,
+                        business_id=user_id
+                    )
+                    logging.info(f"[Settings] Auto-injected tracking codes to Shopify for user {user_id}")
+        except Exception as e:
+            logging.error(f"[Settings] Failed to auto-inject Shopify tracking: {e}")
+    
     await cache_delete(key_tenant_settings(user["_id"]))
     return {"status": "ok"}
 
@@ -12491,6 +12516,7 @@ def _composio_oauth_frontend_base(optional_client_origin: Optional[str]) -> str:
 @api_router.post("/composio/connect/{toolkit}")
 async def composio_connect(toolkit: str, request: Request, user=Depends(get_current_user)):
     """Start Composio OAuth for a toolkit. Returns redirect_url for the OAuth popup/tab."""
+    print(f"[composio_connect] toolkit={toolkit} user={user.get('email') or user.get('_id')}", flush=True)
     from composio_service import get_connect_url
     user_id = str(user.get("business_id") or user["_id"])
     client_origin: Optional[str] = None
@@ -13409,6 +13435,15 @@ try:
     logging.info("[marketing] routes mounted at /api/marketing/*")
 except Exception as _e:
     logging.error(f"[marketing] failed to mount routes: {_e}")
+
+# ── Behavior-Triggered Discounts ──
+try:
+    from marketing.discount_routes import make_discount_routes as _mk_discount_router
+    _discount_router = _mk_discount_router(db, get_current_user)
+    api_router.include_router(_discount_router)
+    logging.info("[behavior-discounts] routes mounted at /api/marketing/behavior-discounts/*")
+except Exception as _e:
+    logging.error(f"[behavior-discounts] failed to mount routes: {_e}")
 
 # ── Workflow engine routes ──
 try:

@@ -57,6 +57,7 @@ export default function LocalSEO() {
   const [trackDomain, setTrackDomain] = useState("");
   const [showTrackModal, setShowTrackModal] = useState(false);
   const [trackingInProgress, setTrackingInProgress] = useState<string | null>(null);
+  const [trackResult, setTrackResult] = useState<{ position: number | null; error?: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,27 +147,35 @@ export default function LocalSEO() {
   const openTrackModal = (keyword: string) => {
     setTrackingKeyword(keyword);
     setTrackDomain(websiteUrl || "");
+    setTrackResult(null);
     setShowTrackModal(true);
+  };
+
+  const closeTrackModal = () => {
+    setShowTrackModal(false);
+    setTrackResult(null);
+    setTrackingKeyword(null);
   };
 
   const handleTrackKeyword = async () => {
     if (!trackingKeyword || !trackDomain.trim()) return;
     const domain = trackDomain.trim().replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
     setTrackingInProgress(trackingKeyword);
-    setShowTrackModal(false);
+    setTrackResult(null);
     try {
       const result = await seoApi.checkRanking(trackingKeyword, domain);
       const pos = result.position ?? null;
+      setTrackResult({ position: pos });
       setLocalKeywords(prev => prev.map(k =>
         k.keyword === trackingKeyword
           ? { ...k, position: pos, trend: pos != null ? "new" : "untracked" }
           : k
       ));
     } catch (e) {
-      console.error("Track keyword failed:", e);
+      const msg = e instanceof Error ? e.message : "Failed to check ranking. Is the backend running?";
+      setTrackResult({ position: null, error: msg });
     } finally {
       setTrackingInProgress(null);
-      setTrackingKeyword(null);
     }
   };
 
@@ -632,36 +641,75 @@ export default function LocalSEO() {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-semibold text-slate-800">Track Keyword Position</h3>
-              <button onClick={() => setShowTrackModal(false)} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
+              <button onClick={closeTrackModal} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
             </div>
             <p className="text-sm text-slate-600 mb-1 font-medium truncate">{trackingKeyword}</p>
             <p className="text-xs text-slate-400 mb-4">We'll check where your site ranks on Google for this keyword.</p>
-            <div className="mb-4">
-              <label className="block text-xs font-medium text-slate-700 mb-1.5">Your website domain</label>
-              <input
-                type="text"
-                value={trackDomain}
-                onChange={(e) => setTrackDomain(e.target.value)}
-                placeholder="yourdomain.com"
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <p className="text-[11px] text-slate-400 mt-1">Without http:// or www</p>
-            </div>
-            <div className="flex gap-3">
+
+            {/* Result / error feedback */}
+            {trackResult && !trackResult.error && (
+              <div className="mb-4 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-center">
+                {trackResult.position != null ? (
+                  <>
+                    <p className="text-2xl font-bold text-green-700">#{trackResult.position}</p>
+                    <p className="text-xs text-green-600 mt-1">Your site ranks position {trackResult.position} for this keyword.</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-semibold text-slate-600">Not found in top results</p>
+                    <p className="text-xs text-slate-400 mt-1">Your site wasn't found in the top 20 results for this keyword.</p>
+                  </>
+                )}
+              </div>
+            )}
+            {trackResult?.error && (
+              <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+                {trackResult.error}
+              </div>
+            )}
+
+            {!trackResult && (
+              <>
+                <div className="mb-4">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Your website domain</label>
+                  <input
+                    type="text"
+                    value={trackDomain}
+                    onChange={(e) => setTrackDomain(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleTrackKeyword(); }}
+                    placeholder="yourdomain.com"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!!trackingInProgress}
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">Without http:// or www</p>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleTrackKeyword}
+                    disabled={!trackDomain.trim() || !!trackingInProgress}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+                  >
+                    {trackingInProgress === trackingKeyword ? "Checking…" : "Check Position"}
+                  </button>
+                  <button
+                    onClick={closeTrackModal}
+                    disabled={!!trackingInProgress}
+                    className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {trackResult && (
               <button
-                onClick={handleTrackKeyword}
-                disabled={!trackDomain.trim()}
-                className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+                onClick={closeTrackModal}
+                className="w-full mt-2 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
               >
-                Check Position
+                Close
               </button>
-              <button
-                onClick={() => setShowTrackModal(false)}
-                className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
-              >
-                Cancel
-              </button>
-            </div>
+            )}
           </div>
         </div>
       )}

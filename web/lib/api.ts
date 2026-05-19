@@ -461,6 +461,10 @@ export interface BusinessSettings {
   account_mode?: string;
   /** Web onboarding wizard; `false` = show wizard for new web signups. */
   onboarding_v1_completed?: boolean | null;
+  /** Google Analytics 4 Measurement ID (G-XXXXXXXXXX) */
+  ga4_measurement_id?: string;
+  /** Enable/disable behavior-triggered discount campaigns */
+  behavior_discounts_enabled?: boolean;
 }
 
 /** Backend `/business-knowledge` payload (journey + AI fields). */
