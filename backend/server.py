@@ -10591,6 +10591,252 @@ async def send_daily_notifications_now(user = Depends(get_current_user)):
 
 # ============ PRODUCT CATALOG ENDPOINTS ============
 
+# ── Shopify OAuth (Partner App) ────────────────────────────────────────────────
+
+_SHOPIFY_SCOPES = (
+    "read_orders,write_orders,"
+    "read_products,write_products,"
+    "read_customers,"
+    "read_script_tags,write_script_tags,"
+    "read_price_rules,write_price_rules,"
+    "read_discounts,write_discounts,"
+    "read_checkouts,"
+    "read_locations"
+)
+
+
+def _shopify_state_encode(user_id: str, secret: str) -> str:
+    import base64, hashlib, hmac as _hmac, json, time
+    payload = json.dumps({"uid": user_id, "ts": int(time.time())})
+    sig = _hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}||{sig}".encode()).decode()
+
+
+def _shopify_state_decode(state: str, secret: str, max_age: int = 600) -> Optional[str]:
+    import base64, hashlib, hmac as _hmac, json, time
+    try:
+        raw = base64.urlsafe_b64decode(state.encode() + b"==").decode()
+        payload_str, sig = raw.rsplit("||", 1)
+        expected = _hmac.new(secret.encode(), payload_str.encode(), hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(sig, expected):
+            return None
+        data = json.loads(payload_str)
+        if int(time.time()) - data.get("ts", 0) > max_age:
+            return None
+        return data.get("uid")
+    except Exception:
+        return None
+
+
+def _shopify_validate_hmac(params: dict, secret: str) -> bool:
+    import hashlib, hmac as _hmac
+    hmac_val = params.get("hmac", "")
+    filtered = {k: v for k, v in params.items() if k != "hmac"}
+    msg = "&".join(f"{k}={v}" for k, v in sorted(filtered.items()))
+    expected = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(expected, hmac_val)
+
+
+def _shopify_redirect_uri(request: Request) -> str:
+    """The registered Shopify OAuth callback URL. Override via SHOPIFY_REDIRECT_URI env var."""
+    override = os.environ.get("SHOPIFY_REDIRECT_URI", "").strip()
+    if override:
+        return override
+    # Derive from NEXT_PUBLIC_API_URL (strip /api suffix and add backend path)
+    api_url = os.environ.get("NEXT_PUBLIC_API_URL", "").strip().rstrip("/")
+    if api_url:
+        # e.g. https://api.zilo.pro/api → https://api.zilo.pro/api/shopify/oauth/callback
+        return f"{api_url}/shopify/oauth/callback"
+    # Fallback: derive from the incoming request
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/shopify/oauth/callback"
+
+
+def _shopify_frontend_url() -> str:
+    return os.environ.get("SHOPIFY_FRONTEND_URL") or os.environ.get("NEXT_PUBLIC_APP_URL") or "http://localhost:3000"
+
+
+@api_router.get("/shopify/oauth/start")
+async def shopify_oauth_start(shop: str, request: Request, user=Depends(get_current_user)):
+    """Return the Shopify OAuth authorization URL for the given store."""
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET are not configured. Create a Shopify Partner app first.",
+        )
+    shop = shop.strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
+    if not shop.endswith(".myshopify.com"):
+        shop = f"{shop}.myshopify.com"
+
+    user_id = str(user.get("business_id") or user["_id"])
+    state = _shopify_state_encode(user_id, client_secret)
+    redirect_uri = _shopify_redirect_uri(request)
+
+    from urllib.parse import urlencode, quote
+    params = {
+        "client_id": client_id,
+        "scope": _SHOPIFY_SCOPES,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    auth_url = f"https://{shop}/admin/oauth/authorize?{urlencode(params)}"
+    logging.info(f"[shopify-oauth] start shop={shop} user={user_id} redirect_uri={redirect_uri}")
+    return {"auth_url": auth_url, "shop": shop}
+
+
+@api_router.get("/shopify/oauth/callback")
+async def shopify_oauth_callback(
+    request: Request,
+    code: str = "",
+    shop: str = "",
+    state: str = "",
+    hmac: str = "",
+):
+    """Public callback — Shopify redirects here after merchant installs the app."""
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    frontend_url = _shopify_frontend_url()
+    error_redirect = f"{frontend_url}/dashboard/shopify?shopify_error="
+
+    if not client_id or not client_secret:
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "app_not_configured")
+
+    # 1. Validate HMAC
+    all_params = dict(request.query_params)
+    if not _shopify_validate_hmac(all_params, client_secret):
+        logging.warning(f"[shopify-oauth] HMAC validation failed shop={shop}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "invalid_hmac")
+
+    # 2. Decode state → user_id
+    user_id = _shopify_state_decode(state, client_secret)
+    if not user_id:
+        logging.warning(f"[shopify-oauth] Invalid or expired state shop={shop}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "invalid_state")
+
+    # 3. Exchange code for access token
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as _c:
+            r = await _c.post(
+                f"https://{shop}/admin/oauth/access_token",
+                json={"client_id": client_id, "client_secret": client_secret, "code": code},
+                headers={"Content-Type": "application/json"},
+            )
+    except Exception as exc:
+        logging.error(f"[shopify-oauth] Token exchange failed: {exc}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "token_exchange_failed")
+
+    if r.status_code != 200:
+        logging.error(f"[shopify-oauth] Token exchange {r.status_code}: {r.text[:300]}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + f"shopify_{r.status_code}")
+
+    try:
+        token_data = r.json()
+    except Exception:
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "bad_response")
+
+    access_token = token_data.get("access_token", "")
+    if not access_token:
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "no_token")
+
+    # 4. Store credentials in MongoDB (same fields as connect-direct)
+    import bson
+    try:
+        oid = bson.ObjectId(user_id)
+    except Exception:
+        oid = None
+    query = {"$or": [{"business_id": user_id}]}
+    if oid:
+        query["$or"].append({"_id": oid})
+
+    await db.users.update_one(
+        query,
+        {"$set": {"shopify_domain": shop, "shopify_token": access_token}},
+    )
+
+    # Refresh composio_service DB reference so calls work immediately
+    try:
+        import composio_service as _cs
+        _cs.set_db(db)
+    except Exception:
+        pass
+
+    logging.info(f"[shopify-oauth] Connected shop={shop} user={user_id}")
+    from starlette.responses import RedirectResponse
+    return RedirectResponse(url=f"{frontend_url}/dashboard/shopify?shopify_connected=1")
+
+
+@api_router.post("/shopify/connect-direct")
+async def shopify_connect_direct(request: Request, user=Depends(get_current_user)):
+    """Store Shopify store domain + Admin API token and validate them."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    domain = str(body.get("domain") or "").strip().lower()
+    token  = str(body.get("token")  or "").strip()
+    if not domain or not token:
+        raise HTTPException(status_code=400, detail="domain and token are required")
+    # Normalise domain — strip protocol / trailing slash
+    domain = domain.replace("https://", "").replace("http://", "").rstrip("/")
+    if not domain.endswith(".myshopify.com") and "." not in domain:
+        domain = f"{domain}.myshopify.com"
+    # Validate credentials by calling Shopify's shop endpoint
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as _c:
+            r = await _c.get(
+                f"https://{domain}/admin/api/2024-01/shop.json",
+                headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach Shopify store: {exc}")
+    if r.status_code == 401:
+        raise HTTPException(status_code=401, detail="Invalid API token — check your Shopify Admin API access token.")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"Store '{domain}' not found — check the domain.")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=f"Shopify responded with {r.status_code}")
+    try:
+        shop_info = r.json().get("shop", {})
+    except Exception:
+        shop_info = {}
+    user_id = str(user.get("business_id") or user["_id"])
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"shopify_domain": domain, "shopify_token": token, "shopify_shop": shop_info}},
+    )
+    # Inject DB immediately so in-process calls see the new creds without restart
+    try:
+        import composio_service as _cs
+        _cs.set_db(db)
+    except Exception:
+        pass
+    logging.info(f"[shopify-direct] Connected store={domain} user={user_id}")
+    return {"ok": True, "domain": domain, "shop_name": shop_info.get("name", domain)}
+
+
+@api_router.delete("/shopify/connect-direct")
+async def shopify_disconnect_direct(user=Depends(get_current_user)):
+    """Remove stored Shopify credentials for this user."""
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$unset": {"shopify_domain": "", "shopify_token": "", "shopify_shop": ""}},
+    )
+    user_id = str(user.get("business_id") or user["_id"])
+    logging.info(f"[shopify-direct] Disconnected user={user_id}")
+    return {"ok": True}
+
+
 @api_router.post("/integrations/shopify/sync-products")
 async def api_sync_shopify_products(user = Depends(get_current_user)):
     """Sync products from Shopify into Zilo CRM."""
@@ -11594,6 +11840,14 @@ app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="stat
 @app.on_event("startup")
 async def startup_tasks():
     """Run startup tasks"""
+
+    # Inject DB into composio_service for direct Shopify credential lookups
+    try:
+        import composio_service as _cs
+        _cs.set_db(db)
+        logging.info("[startup] composio_service DB injected")
+    except Exception as _e:
+        logging.warning(f"[startup] composio_service.set_db failed: {_e}")
 
     # ---- P1: Ensure database indexes ----
     try:

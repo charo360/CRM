@@ -652,6 +652,11 @@ function IntegrationsPageInner() {
   const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [googleAdsCustomerId, setGoogleAdsCustomerId] = useState("");
+  const [shopifyShop, setShopifyShop]     = useState("");
+  const [shopifyDomain, setShopifyDomain] = useState("");
+  const [shopifyToken, setShopifyToken]   = useState("");
+  const [shopifyFormOpen, setShopifyFormOpen] = useState<"none" | "oauth" | "manual">("none");
+  const [shopifyBusy, setShopifyBusy] = useState(false);
   const searchParams = useSearchParams();
 
   const refreshTg = useCallback(() => {
@@ -794,6 +799,90 @@ function IntegrationsPageInner() {
       if (!silent) setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect." });
     } finally {
       setComposioBusy(null);
+    }
+  }
+
+  async function shopifyConnectOAuth() {
+    const storeName = shopifyShop.trim().replace(/\.myshopify\.com.*/, "");
+    if (!storeName) { setBanner({ type: "error", msg: "Enter your store name." }); return; }
+    setShopifyBusy(true);
+    try {
+      const authTok = getToken();
+      const res = await fetch(`/api/shopify/oauth/start?shop=${encodeURIComponent(storeName)}`, {
+        headers: { Authorization: `Bearer ${authTok ?? ""}` },
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>) as { auth_url?: string; detail?: string };
+      if (!res.ok || !data.auth_url) {
+        setBanner({ type: "error", msg: typeof data.detail === "string" ? data.detail : "Couldn't start Shopify OAuth. Is the app configured?" });
+        return;
+      }
+      const popup = window.open(data.auth_url, "shopify-oauth", "width=1024,height=768,noopener,noreferrer");
+      if (!popup) { window.location.href = data.auth_url; return; }
+      setBanner({ type: "success", msg: "Approve access in the Shopify popup." });
+      await new Promise<void>((resolve) => {
+        const poll = window.setInterval(() => { if (popup.closed) { window.clearInterval(poll); resolve(); } }, 800);
+      });
+      await new Promise((r) => setTimeout(r, 1200));
+      const check = await fetch("/api/composio/connections", { headers: { Authorization: `Bearer ${authTok ?? ""}` } })
+        .then((r) => r.json()).catch(() => ({ connected: {} })) as { connected: Record<string, boolean> };
+      if (check.connected?.shopify) {
+        setComposioStatus((prev) => ({ ...prev, shopify: true }));
+        setBanner({ type: "success", msg: "Shopify connected!" });
+        setShopifyFormOpen("none");
+      } else {
+        setBanner({ type: "error", msg: "Didn't detect connection yet — refresh the page after approving." });
+      }
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "OAuth failed" });
+    } finally {
+      setShopifyBusy(false);
+    }
+  }
+
+  async function shopifyConnectDirect() {
+    const domain = shopifyDomain.trim();
+    const token  = shopifyToken.trim();
+    if (!domain || !token) { setBanner({ type: "error", msg: "Enter your store domain and API token." }); return; }
+    setShopifyBusy(true);
+    try {
+      const authTok = getToken();
+      const res = await fetch("/api/shopify/connect-direct", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authTok ?? ""}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ domain, token }),
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>) as Record<string, unknown>;
+      if (!res.ok) {
+        setBanner({ type: "error", msg: typeof data.detail === "string" ? data.detail : "Connection failed — check domain and token." });
+        return;
+      }
+      const shopName = typeof data.shop_name === "string" ? data.shop_name : domain;
+      setBanner({ type: "success", msg: `Shopify connected to ${shopName}!` });
+      setShopifyFormOpen("none");
+      setShopifyDomain(""); setShopifyToken("");
+      setComposioStatus((prev) => ({ ...prev, shopify: true }));
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Connection failed" });
+    } finally {
+      setShopifyBusy(false);
+    }
+  }
+
+  async function shopifyDisconnectDirect() {
+    if (!confirm("Disconnect Shopify?")) return;
+    setShopifyBusy(true);
+    try {
+      const authTok = getToken();
+      await fetch("/api/shopify/connect-direct", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${authTok ?? ""}` },
+      });
+      setComposioStatus((prev) => ({ ...prev, shopify: false }));
+      setBanner({ type: "success", msg: "Shopify disconnected." });
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Disconnect failed" });
+    } finally {
+      setShopifyBusy(false);
     }
   }
 
@@ -1337,14 +1426,63 @@ function IntegrationsPageInner() {
             borderClass="border-[#96BF48]/30 bg-[#96BF48]/10"
             icon={<ShopifyGlyph className="h-5 w-5 text-[#5A8E00]" />}
           >
-            <ComposioTileControls
-              connected={composioStatus.shopify}
-              busy={composioBusy === "shopify"}
-              connectLabel="Connect Shopify"
-              connectClass="bg-[#5A8E00] hover:bg-[#4a7500]"
-              onConnect={() => void composioConnect("shopify")}
-              onDisconnect={() => void composioDisconnect("shopify", "Shopify")}
-            />
+            {composioStatus.shopify === null ? (
+              <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
+                <Loader2 size={11} className="animate-spin" /> Checking…
+              </div>
+            ) : composioStatus.shopify ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+                  <CheckCircle size={12} /> Connected
+                </div>
+                <button type="button" onClick={() => void shopifyDisconnectDirect()} disabled={shopifyBusy}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+                  {shopifyBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+                </button>
+              </div>
+            ) : shopifyFormOpen === "oauth" ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-[#96BF48]">
+                  <input value={shopifyShop} onChange={(e) => setShopifyShop(e.target.value.replace(/\.myshopify\.com.*/, ""))}
+                    placeholder="yourstore" className="flex-1 px-2 py-1.5 text-[11px] outline-none" disabled={shopifyBusy} />
+                  <span className="px-1.5 text-[10px] text-slate-400 select-none">.myshopify.com</span>
+                </div>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={() => void shopifyConnectOAuth()} disabled={shopifyBusy || !shopifyShop.trim()}
+                    className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-[#5A8E00] hover:bg-[#4a7500] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                    {shopifyBusy ? <Loader2 size={11} className="animate-spin" /> : "Connect"}
+                  </button>
+                  <button type="button" onClick={() => setShopifyFormOpen("none")}
+                    className="px-2 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50">Cancel</button>
+                </div>
+                <button type="button" onClick={() => setShopifyFormOpen("manual")}
+                  className="w-full text-[10px] text-slate-400 hover:text-slate-600 text-center">Use API key instead</button>
+              </div>
+            ) : shopifyFormOpen === "manual" ? (
+              <div className="space-y-1.5">
+                <input value={shopifyDomain} onChange={(e) => setShopifyDomain(e.target.value)}
+                  placeholder="mystore.myshopify.com"
+                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-[11px] outline-none focus:ring-1 focus:ring-[#96BF48]"
+                  disabled={shopifyBusy} />
+                <input value={shopifyToken} onChange={(e) => setShopifyToken(e.target.value)}
+                  placeholder="shpat_..." type="password"
+                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-[11px] font-mono outline-none focus:ring-1 focus:ring-[#96BF48]"
+                  disabled={shopifyBusy} />
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={() => void shopifyConnectDirect()} disabled={shopifyBusy || !shopifyDomain.trim() || !shopifyToken.trim()}
+                    className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-[#5A8E00] hover:bg-[#4a7500] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                    {shopifyBusy ? <Loader2 size={11} className="animate-spin" /> : "Connect"}
+                  </button>
+                  <button type="button" onClick={() => setShopifyFormOpen("oauth")}
+                    className="px-2 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50">← Back</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setShopifyFormOpen("oauth")} disabled={shopifyBusy}
+                className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#5A8E00] hover:bg-[#4a7500] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                Connect Shopify
+              </button>
+            )}
           </SmallTile>
         </div>
       </section>
