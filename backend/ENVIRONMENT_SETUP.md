@@ -106,6 +106,42 @@ WP_JWT_SECRET=your-very-long-random-secret-key-here-change-this
 The autoblogging scheduler publishes one post per active client daily at **9 AM EAT**.
 Weekly post limits per plan: `free=2`, `starter=5`, `growth=7`, `premium=7`.
 
+## Shopify OAuth (Partner App)
+
+To enable the one-click "Connect with Shopify" OAuth flow, create a **Shopify Partner App** at [partners.shopify.com](https://partners.shopify.com) and add these to `.env`:
+
+```dotenv
+# Shopify OAuth (from partners.shopify.com → Apps → Create app)
+SHOPIFY_CLIENT_ID=your_client_id_here
+SHOPIFY_CLIENT_SECRET=your_client_secret_here
+
+# The exact callback URL registered in your Shopify Partner app settings:
+SHOPIFY_REDIRECT_URI=https://api.yourbackend.com/api/shopify/oauth/callback
+
+# Where to send merchants after successful OAuth:
+SHOPIFY_FRONTEND_URL=https://app.yourdomain.com
+```
+
+### Partner App Setup Steps
+
+1. Go to [partners.shopify.com](https://partners.shopify.com) → **Apps** → **Create app** → **Custom app**
+2. Under **App setup → URLs**, set:
+   - **App URL**: `https://app.yourdomain.com/dashboard/shopify`
+   - **Allowed redirection URL(s)**: `https://api.yourbackend.com/api/shopify/oauth/callback`
+3. Copy the **Client ID** and **Client secret** from the **API credentials** tab → paste into `.env`
+4. Set `SHOPIFY_REDIRECT_URI` to the exact same URL you registered in step 2
+
+> **Without these vars**: the OAuth button shows a "not configured" error.  
+> The manual API-key fallback ("Use API key instead") works without any Partner app setup.
+
+### Scopes requested
+
+`read_orders`, `write_orders`, `read_products`, `write_products`, `read_customers`,  
+`read_script_tags`, `write_script_tags`, `read_price_rules`, `write_price_rules`,  
+`read_discounts`, `write_discounts`, `read_checkouts`, `read_locations`
+
+---
+
 ## Quick Start
 
 ```bash

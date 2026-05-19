@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ShoppingBag, TrendingUp, Users, Package, RefreshCw, Loader2,
   ShoppingCart, Tag, ChevronDown, ChevronRight, Check, X,
@@ -131,24 +132,91 @@ function StockBadge({ qty }: { qty: number }) {
 
 // ── No connection ─────────────────────────────────────────────────────────────
 
-function NoShopify() {
+function NoShopify({
+  shop, setShop, onOAuth, onManual,
+  manualDomain, setManualDomain, manualToken, setManualToken,
+  connecting,
+}: {
+  shop: string; setShop: (v: string) => void;
+  onOAuth: () => void; onManual: () => void;
+  manualDomain: string; setManualDomain: (v: string) => void;
+  manualToken: string;  setManualToken:  (v: string) => void;
+  connecting: boolean;
+}) {
+  const [showManual, setShowManual] = useState(false);
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-8 py-16">
+    <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-8 py-16">
       <div className="w-16 h-16 rounded-2xl bg-[#96bf48]/10 border border-[#96bf48]/20 flex items-center justify-center">
         <ShoppingBag size={28} className="text-[#96bf48]" />
       </div>
       <div>
         <p className="font-bold text-slate-200 text-base">Connect your Shopify store</p>
-        <p className="text-sm text-slate-500 mt-2 max-w-xs leading-relaxed">
-          Get orders, inventory, customers, abandoned carts, and AI-powered recovery tools — all in one place.
+        <p className="text-sm text-slate-500 mt-1.5 max-w-xs leading-relaxed">
+          Enter your store name and click Connect — you’ll be taken to Shopify to approve access.
         </p>
       </div>
-      <a
-        href="/dashboard/integrations"
-        className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#96bf48] hover:bg-[#7da33a] text-white text-sm font-semibold transition-colors"
-      >
-        <Zap size={14} /> Connect Shopify
-      </a>
+
+      {/* OAuth form */}
+      <div className="w-full max-w-sm space-y-3 text-left">
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5 block">Store name</label>
+          <div className="flex items-center bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-[#96bf48] transition-all">
+            <input
+              value={shop}
+              onChange={(e) => setShop(e.target.value.replace(/\.myshopify\.com.*/, ""))}
+              onKeyDown={(e) => e.key === "Enter" && !connecting && shop.trim() && onOAuth()}
+              placeholder="yourstore"
+              className="flex-1 bg-transparent px-3.5 py-2.5 text-sm text-slate-200 placeholder-slate-500 outline-none"
+              disabled={connecting}
+            />
+            <span className="px-3 text-slate-500 text-sm select-none">.myshopify.com</span>
+          </div>
+        </div>
+        <button
+          onClick={onOAuth}
+          disabled={connecting || !shop.trim()}
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#96bf48] hover:bg-[#7da33a] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
+        >
+          {connecting ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+          {connecting ? "Connecting…" : "Connect with Shopify"}
+        </button>
+
+        {/* Manual fallback */}
+        <button
+          type="button"
+          onClick={() => setShowManual((v) => !v)}
+          className="w-full text-center text-[11px] text-slate-600 hover:text-slate-400 transition-colors pt-1"
+        >
+          {showManual ? "Hide" : "Use API key instead (advanced)"}
+        </button>
+        {showManual && (
+          <div className="space-y-2 pt-1 border-t border-slate-800">
+            <input
+              value={manualDomain}
+              onChange={(e) => setManualDomain(e.target.value)}
+              placeholder="mystore.myshopify.com"
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-[#96bf48]"
+              disabled={connecting}
+            />
+            <input
+              value={manualToken}
+              onChange={(e) => setManualToken(e.target.value)}
+              placeholder="shpat_xxxxxxxxxxxxxxxxxxxx"
+              type="password"
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-[#96bf48] font-mono"
+              disabled={connecting}
+            />
+            <button
+              onClick={onManual}
+              disabled={connecting || !manualDomain.trim() || !manualToken.trim()}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
+            >
+              {connecting ? <Loader2 size={13} className="animate-spin" /> : null}
+              {connecting ? "Connecting…" : "Connect with API key"}
+            </button>
+          </div>
+        )}
+      </div>
       <div className="grid grid-cols-2 gap-3 text-left mt-2 max-w-sm">
         {[
           ["📦", "Order management", "Fulfill, cancel, track every order"],
@@ -1563,12 +1631,106 @@ export default function ShopifyPage() {
   const [tab, setTab] = useState<Tab>("overview");
   const [connected, setConnected] = useState<boolean | null>(null);
   const [period, setPeriod] = useState<Period>("month");
+  const [connecting, setConnecting] = useState(false);
+  const [shop, setShop] = useState("");
+  const [manualDomain, setManualDomain] = useState("");
+  const [manualToken, setManualToken] = useState("");
+  const searchParams = useSearchParams();
 
   useEffect(() => {
     shopGet({ action: "overview", period: "today" })
       .then((d: { connected?: boolean }) => setConnected(d.connected ?? false))
       .catch(() => setConnected(false));
   }, []);
+
+  // Handle OAuth callback redirect params
+  useEffect(() => {
+    const ok  = searchParams.get("shopify_connected");
+    const err = searchParams.get("shopify_error");
+    if (ok === "1") {
+      toast.success("Shopify connected!");
+      setConnected(true);
+      window.history.replaceState({}, "", "/dashboard/shopify");
+    } else if (err) {
+      const msgs: Record<string, string> = {
+        invalid_hmac:       "Security check failed — try connecting again.",
+        invalid_state:      "Session expired — try connecting again.",
+        token_exchange_failed: "Couldn't reach Shopify — check your connection.",
+        no_token:           "Shopify didn't return a token — try again.",
+        app_not_configured: "Shopify app is not configured on the server.",
+      };
+      toast.error(msgs[err] ?? `Shopify error: ${err}`);
+      window.history.replaceState({}, "", "/dashboard/shopify");
+    }
+  }, [searchParams]);
+
+  async function connectViaOAuth() {
+    const storeName = shop.trim().replace(/\.myshopify\.com.*/, "");
+    if (!storeName) { toast.error("Enter your store name."); return; }
+    setConnecting(true);
+    try {
+      const authToken = getToken();
+      const res = await fetch(`/api/shopify/oauth/start?shop=${encodeURIComponent(storeName)}`, {
+        headers: { Authorization: `Bearer ${authToken ?? ""}` },
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>) as { auth_url?: string; detail?: string };
+      if (!res.ok || !data.auth_url) {
+        toast.error(typeof data.detail === "string" ? data.detail : "Couldn't start Shopify OAuth. Is the app configured?");
+        setConnecting(false);
+        return;
+      }
+      // Open OAuth in popup
+      const popup = window.open(data.auth_url, "shopify-oauth", "width=1024,height=768,noopener,noreferrer");
+      if (!popup) { window.location.href = data.auth_url; return; }
+
+      toast.success("Approve access in the Shopify popup, then return here.");
+
+      // Poll until popup closes, then recheck connection
+      await new Promise<void>((resolve) => {
+        const poll = window.setInterval(() => {
+          if (popup.closed) { window.clearInterval(poll); resolve(); }
+        }, 800);
+      });
+      await new Promise((r) => setTimeout(r, 1200));
+      const check = await shopGet({ action: "overview", period: "today" }).catch(() => ({ connected: false })) as { connected?: boolean };
+      if (check.connected) {
+        setConnected(true);
+        toast.success("Shopify connected!");
+      } else {
+        toast.info("Didn't detect a connection yet — refresh the page after approving.");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "OAuth failed");
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function connectViaManual() {
+    const domain = manualDomain.trim();
+    const token  = manualToken.trim();
+    if (!domain || !token) { toast.error("Enter store domain and API token."); return; }
+    setConnecting(true);
+    try {
+      const authToken = getToken();
+      const res = await fetch("/api/shopify/connect-direct", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken ?? ""}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ domain, token }),
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>) as Record<string, unknown>;
+      if (!res.ok) {
+        toast.error(typeof data.detail === "string" ? data.detail : "Connection failed — check domain and token.");
+        return;
+      }
+      toast.success(`Connected to ${typeof data.shop_name === "string" ? data.shop_name : domain}!`);
+      setConnected(true);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Connection failed");
+    } finally {
+      setConnecting(false);
+    }
+  }
 
   if (connected === null) {
     return (
@@ -1581,7 +1743,13 @@ export default function ShopifyPage() {
   if (connected === false) {
     return (
       <div className="flex-1 overflow-y-auto bg-slate-950 text-slate-100">
-        <NoShopify />
+        <NoShopify
+          shop={shop} setShop={setShop}
+          onOAuth={connectViaOAuth} onManual={connectViaManual}
+          manualDomain={manualDomain} setManualDomain={setManualDomain}
+          manualToken={manualToken}   setManualToken={setManualToken}
+          connecting={connecting}
+        />
       </div>
     );
   }
