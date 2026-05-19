@@ -3475,20 +3475,41 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
         import xml.etree.ElementTree as _ET
         from composio_service import composio_proxy, get_connection_status
 
-        tid = _tid(user)
-        status = await get_connection_status(tid, "googlesearchconsole")
+        try:
+            tid = _tid(user)
+            status = await get_connection_status(tid, "googlesearchconsole")
+        except Exception as exc:
+            logger.error("[gsc/indexing] auth error: %s", exc)
+            return {"connected": False, "reasons": [], "error": str(exc)}
+
         if not status.get("connected"):
             return {"connected": False, "reasons": []}
 
-        ctx = _seo_business_context(user)
-        raw_site = (site_url.strip() or ctx.get("website_url", "")).strip().rstrip("/")
-        if not raw_site:
-            return {"connected": True, "reasons": [], "error": "No site URL provided"}
-        if not raw_site.startswith("http"):
-            raw_site = f"https://{raw_site}"
+        try:
+            ctx = _seo_business_context(user)
+        except Exception:
+            ctx = {}
+
+        # gsc_property = exact GSC property URL (used in URL Inspection API siteUrl field)
+        # http_site    = actual https:// URL (used to fetch sitemap)
+        raw_input = (site_url.strip() or ctx.get("website_url", "")).strip().rstrip("/")
+        if not raw_input:
+            return {"connected": True, "reasons": [], "error": "No site URL provided — load your sites with 'List my sites' then run the analysis."}
+
+        if raw_input.startswith("sc-domain:"):
+            # Domain property: e.g. sc-domain:example.com
+            gsc_property = raw_input  # keep as-is for URL Inspection API
+            domain = raw_input[len("sc-domain:"):]
+            http_site = f"https://{domain}"
+        elif raw_input.startswith("http"):
+            gsc_property = raw_input.rstrip("/") + "/"  # GSC URL-prefix props end with /
+            http_site = raw_input
+        else:
+            gsc_property = f"https://{raw_input}/"
+            http_site = f"https://{raw_input}"
 
         # Derive sitemap URL
-        sm_url = sitemap_url.strip() or f"{raw_site}/sitemap.xml"
+        sm_url = sitemap_url.strip() or f"{http_site}/sitemap.xml"
 
         # Fetch and parse sitemap XML for the list of page URLs
         urls_to_inspect: list[str] = []
@@ -3613,7 +3634,7 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
                 result = await composio_proxy(
                     tid, "googlesearchconsole", "POST",
                     "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect",
-                    json={"inspectionUrl": url, "siteUrl": raw_site + "/"},
+                    json={"inspectionUrl": url, "siteUrl": gsc_property},
                     timeout=20.0,
                 )
                 ir = result.get("inspectionResult") or result
@@ -3645,6 +3666,18 @@ Reply with ONLY a valid JSON array of 4 objects — no extra text, no markdown:
                 continue
 
         reasons = sorted(reasons_map.values(), key=lambda r: -r["count"])
+        if not reasons and indexed_count == 0 and not_indexed_count == 0:
+            return {
+                "connected": True,
+                "total_inspected": len(urls_to_inspect),
+                "indexed": 0, "not_indexed": 0,
+                "reasons": [],
+                "sitemap_url": sm_url,
+                "error": (
+                    f"Google's URL Inspection API returned no data for property '{gsc_property}'. "
+                    "Use 'List my sites' to discover your exact GSC property URLs and select one before running analysis."
+                ),
+            }
         return {
             "connected": True,
             "total_inspected": len(urls_to_inspect),

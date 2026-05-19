@@ -205,7 +205,10 @@ export default function AnalyticsIntegration() {
         20,
       );
       setIndexingData(d);
-    } catch { setIndexingData({ error: "Failed to fetch indexing data" }); }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to fetch indexing data";
+      setIndexingData({ error: msg });
+    }
     setIndexingLoading(false);
   }, [gscActiveUrl]);
 
