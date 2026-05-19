@@ -2761,10 +2761,9 @@ Return ONLY a JSON array, no explanation:
                 {"keyword": f"{business_type} {loc_label} reviews", "location": location, "difficulty": "low", "content_idea": f"What Customers Say About Our {business_type} {loc_label.title()}", "note": "suggested"},
                 {"keyword": f"how to find {business_type}{loc_suffix}", "location": location, "difficulty": "low", "content_idea": f"How to Find the Right {business_type} {loc_label.title()}", "note": "suggested"},
             ]
-        # ── Enrich with real search volumes (DataForSEO) ─────────────────────
-        import os as _os
+        # ── Enrich with real search volumes + volume trend (DataForSEO) ─────────
         from seo.dataforseo import (
-            dfs_enabled, fetch_search_volumes_batch,
+            dfs_enabled, fetch_search_volumes_batch, fetch_keyword_meta_batch,
             resolve_location_code, language_code_from_settings,
         )
 
@@ -2780,44 +2779,47 @@ Return ONLY a JSON array, no explanation:
                 import re as _re_vol
                 kw_list = [k["keyword"] for k in keywords]
 
-                # First pass: look up exact keywords
-                vol_map = await fetch_search_volumes_batch(kw_list, location_code=loc_code, language_code=lang_code)
+                # Use fetch_keyword_meta_batch — returns volume + volume trend in one call
+                meta_map = await fetch_keyword_meta_batch(kw_list, location_code=loc_code, language_code=lang_code)
 
-                # For keywords that returned 0, also try global (no location filter) —
-                # local phrases often have 0 in regional data but non-zero globally
-                zero_kws = [k for k in kw_list if not vol_map.get(k.lower().strip())]
+                # For zero-volume keywords try global (no location) — local phrases often
+                # have no regional data but show up globally
+                zero_kws = [k for k in kw_list if not (meta_map.get(k.lower().strip()) or {}).get("volume")]
                 if zero_kws:
-                    global_map = await fetch_search_volumes_batch(zero_kws, location_code=None, language_code=lang_code)
+                    global_meta = await fetch_keyword_meta_batch(zero_kws, location_code=None, language_code=lang_code)
                     for kw in zero_kws:
-                        gv = global_map.get(kw.lower().strip(), 0)
-                        if gv:
-                            vol_map[kw.lower().strip()] = gv
+                        gm = global_meta.get(kw.lower().strip())
+                        if gm and gm.get("volume"):
+                            meta_map[kw.lower().strip()] = gm
 
-                # For still-zero keywords, strip location modifiers and look up the base phrase —
-                # "best dentist near me in nairobi" → "dentist" → real volume
-                _loc_patterns = _re_vol.compile(
+                # For still-zero keywords strip modifiers and look up the base phrase
+                # e.g. "affordable sick leave templates" → "sick leave templates" → 880/mo
+                _loc_re = _re_vol.compile(
                     r'\b(near me|in \w+|best|top|affordable|cheap|local|'
                     r'services?|provider|near|around|close to)\b', _re_vol.I
                 )
-                still_zero = [k for k in kw_list if not vol_map.get(k.lower().strip())]
+                still_zero = [k for k in kw_list if not (meta_map.get(k.lower().strip()) or {}).get("volume")]
                 if still_zero:
-                    base_map: dict[str, str] = {}  # base_kw → original_kw
+                    base_map: dict[str, str] = {}
                     for kw in still_zero:
-                        base = _loc_patterns.sub("", kw).strip()
+                        base = _loc_re.sub("", kw).strip()
                         base = _re_vol.sub(r'\s{2,}', ' ', base).strip()
                         if base and base.lower() != kw.lower():
                             base_map[base] = kw
                     if base_map:
-                        base_vol = await fetch_search_volumes_batch(list(base_map.keys()), location_code=loc_code, language_code=lang_code)
+                        base_meta = await fetch_keyword_meta_batch(list(base_map.keys()), location_code=loc_code, language_code=lang_code)
                         for base, orig in base_map.items():
-                            bv = base_vol.get(base.lower().strip(), 0)
-                            if bv:
-                                vol_map[orig.lower().strip()] = bv
+                            bm = base_meta.get(base.lower().strip())
+                            if bm and bm.get("volume"):
+                                meta_map[orig.lower().strip()] = bm
 
                 for k in keywords:
-                    k["search_volume"] = vol_map.get(k["keyword"].lower().strip()) or 0
-                logger.info("[local/keywords] volumes: %d/%d keywords have data",
-                            sum(1 for k in keywords if k.get("search_volume")), len(keywords))
+                    meta = meta_map.get(k["keyword"].lower().strip()) or {}
+                    k["search_volume"] = meta.get("volume") or 0
+                    k["volume_trend"] = meta.get("trend")  # "up" | "down" | "stable" | None
+
+                with_vol = sum(1 for k in keywords if k.get("search_volume"))
+                logger.info("[local/keywords] volumes: %d/%d keywords have data", with_vol, len(keywords))
             except Exception as _ve:
                 logger.warning("[local/keywords] DataForSEO volume fetch failed: %s", _ve)
 

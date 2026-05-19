@@ -242,13 +242,33 @@ export default function LocalSEO() {
     }
   };
 
-  const getTrendIcon = (trend: string) => {
+  const getTrendBadge = (trend: string, volumeTrend?: string | null) => {
+    // trend = position trend (from SERP history); volumeTrend = search volume trend from DataForSEO
     switch (trend) {
-      case "up": return "↑";
-      case "down": return "↓";
-      case "new": return "★";
-      case "untracked": return "–";
-      default: return "→";
+      case "up":
+        return <span className="inline-flex items-center gap-1 text-green-700 font-semibold text-xs" title="Position improving — your ranking moved up since last check">↑ Rising</span>;
+      case "down":
+        return <span className="inline-flex items-center gap-1 text-red-600 font-semibold text-xs" title="Position dropped since last check">↓ Falling</span>;
+      case "stable":
+        return <span className="inline-flex items-center gap-1 text-slate-500 text-xs" title="Position unchanged since last check">→ Stable</span>;
+      case "new":
+        return (
+          <span className="inline-flex items-center gap-1 text-xs" title="Position just tracked for the first time">
+            <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">New</span>
+            {volumeTrend === "up" && <span className="text-green-600" title="Search volume rising">▲</span>}
+            {volumeTrend === "down" && <span className="text-red-500" title="Search volume declining">▼</span>}
+          </span>
+        );
+      case "untracked":
+        return (
+          <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="Not yet tracked — click Track to check this keyword's ranking">
+            <span>–</span>
+            {volumeTrend === "up" && <span className="text-green-600 font-semibold" title="Search volume is rising — good keyword to target">▲ vol</span>}
+            {volumeTrend === "down" && <span className="text-red-400" title="Search volume declining">▼ vol</span>}
+          </span>
+        );
+      default:
+        return <span className="text-slate-400 text-xs">–</span>;
     }
   };
 
@@ -399,14 +419,7 @@ export default function LocalSEO() {
                     </span>
                   </td>
                   <td className="text-center py-3">
-                    <span className={`font-medium ${
-                      keyword.trend === "up" ? "text-green-600" :
-                      keyword.trend === "down" ? "text-red-600" :
-                      keyword.trend === "new" ? "text-blue-500" :
-                      "text-slate-400"
-                    }`}>
-                      {getTrendIcon(keyword.trend)}
-                    </span>
+                    {getTrendBadge(keyword.trend, (keyword as Record<string, unknown>).volume_trend as string | null)}
                   </td>
                   <td className="text-center py-3">
                     {trackingInProgress === keyword.keyword ? (
