@@ -12520,17 +12520,23 @@ async def composio_connect(toolkit: str, request: Request, user=Depends(get_curr
     from composio_service import get_connect_url
     user_id = str(user.get("business_id") or user["_id"])
     client_origin: Optional[str] = None
+    extra_data: dict = {}
     try:
         body = await request.json()
         if isinstance(body, dict):
             raw = body.get("redirect_base") or body.get("redirectBase")
             if isinstance(raw, str):
                 client_origin = raw
+            # Toolkit-specific required fields
+            if toolkit.lower() == "googleads":
+                cid = str(body.get("customer_id") or "").strip().replace("-", "").replace(" ", "")
+                if cid:
+                    extra_data["customer_id"] = cid
     except Exception:
         pass
     frontend = _composio_oauth_frontend_base(client_origin)
     redirect = f"{frontend}/dashboard/integrations?connected={toolkit}"
-    result = await get_connect_url(user_id, toolkit, redirect)
+    result = await get_connect_url(user_id, toolkit, redirect, extra_data=extra_data or None)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
     return result

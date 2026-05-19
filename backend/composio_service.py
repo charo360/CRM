@@ -734,7 +734,7 @@ def _no_auth_config_help(app_name: str) -> str:
 
 
 
-async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict[str, Any]:
+async def get_connect_url(user_id: str, toolkit: str, redirect_url: str, extra_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     """Initiate OAuth for a toolkit and return the redirect URL."""
 
@@ -815,7 +815,7 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str) -> Dict
 
                 "entityId": user_id,
 
-                "data": {},
+                "data": extra_data or {},
 
                 "labels": [],
 

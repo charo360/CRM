@@ -651,6 +651,7 @@ function IntegrationsPageInner() {
   });
   const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const [googleAdsCustomerId, setGoogleAdsCustomerId] = useState("");
   const searchParams = useSearchParams();
 
   const refreshTg = useCallback(() => {
@@ -733,7 +734,7 @@ function IntegrationsPageInner() {
     }
   }, []);
 
-  async function composioConnect(toolkit: string, silent = false) {
+  async function composioConnect(toolkit: string, silent = false, extraBody: Record<string, string> = {}) {
     setComposioBusy(toolkit);
     try {
       const token = getToken();
@@ -743,7 +744,7 @@ function IntegrationsPageInner() {
           Authorization: `Bearer ${token ?? ""}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ redirect_base: window.location.origin }),
+        body: JSON.stringify({ redirect_base: window.location.origin, ...extraBody }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({} as { detail?: unknown }))) as { detail?: unknown };
@@ -1264,12 +1265,21 @@ function IntegrationsPageInner() {
               </svg>
             }
           >
+            {!composioStatus.googleads && (
+              <input
+                type="text"
+                value={googleAdsCustomerId}
+                onChange={e => setGoogleAdsCustomerId(e.target.value)}
+                placeholder="Customer ID (e.g. 123-456-7890)"
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs font-mono outline-none focus:border-[#4285F4] mb-1"
+              />
+            )}
             <ComposioTileControls
               connected={composioStatus.googleads}
               busy={composioBusy === "googleads"}
               connectLabel="Connect Google Ads"
               connectClass="bg-[#4285F4] hover:bg-[#3367d6]"
-              onConnect={() => void composioConnect("googleads")}
+              onConnect={() => void composioConnect("googleads", false, { customer_id: googleAdsCustomerId })}
               onDisconnect={() => void composioDisconnect("googleads", "Google Ads")}
             />
           </SmallTile>
