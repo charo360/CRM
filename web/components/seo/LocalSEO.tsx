@@ -13,6 +13,7 @@ interface LocalListing {
   status: "verified" | "pending" | "not-listed";
   created_at?: string;
   updated_at?: string;
+  lastUpdated?: string;
 }
 
 interface LocalKeyword {
