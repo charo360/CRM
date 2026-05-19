@@ -12928,3 +12928,313 @@ async def get_seo_summary(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, A
         }
     except Exception as e:
         return {"error": f"SEO summary failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO AI INTELLIGENCE TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def _ai_call(prompt: str, max_tokens: int = 1500) -> str:
+    import httpx as _httpx
+    claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if claude_key:
+        async with _httpx.AsyncClient(timeout=60) as hc:
+            r = await hc.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": claude_key, "anthropic-version": "2023-06-01"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": prompt}]},
+            )
+        return r.json()["content"][0]["text"]
+    elif openai_key:
+        async with _httpx.AsyncClient(timeout=60) as hc:
+            r = await hc.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openai_key}"},
+                json={"model": "gpt-4o-mini", "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": prompt}]},
+            )
+        return r.json()["choices"][0]["message"]["content"]
+    return "No AI provider configured."
+
+
+@tool(
+    name="diagnose_rank_changes",
+    description=(
+        "AI diagnosis of recent keyword ranking changes. "
+        "Detects which keywords moved 3+ positions in the last 45 days and explains WHY "
+        "each change happened (algorithm, content, competition, technical) and what to do. "
+        "Use when the user asks why rankings dropped/rose or wants ranking insights."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def diagnose_rank_changes(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from datetime import datetime, timedelta
+    uid = ctx.business_id
+    cutoff = datetime.utcnow() - timedelta(days=45)
+    try:
+        rows = await ctx.db.seo_serp_rankings.find(
+            {"user_id": uid, "checked_at": {"$gte": cutoff}}
+        ).sort("checked_at", 1).to_list(500)
+        if not rows:
+            return {"message": "No ranking history found. Track some keywords first using check_serp_position."}
+        by_kw: dict = {}
+        for r in rows:
+            k = r.get("keyword", "")
+            by_kw.setdefault(k, []).append(r)
+        movers = []
+        for kw, history in by_kw.items():
+            if len(history) < 2:
+                continue
+            first_pos = history[0].get("position") or 0
+            last_pos = history[-1].get("position") or 0
+            if first_pos and last_pos and abs(last_pos - first_pos) >= 3:
+                movers.append({
+                    "keyword": kw,
+                    "from": first_pos,
+                    "to": last_pos,
+                    "change": last_pos - first_pos,
+                    "domain": history[-1].get("domain", ""),
+                })
+        if not movers:
+            return {"message": "No significant ranking changes detected in the last 45 days (need 3+ position moves)."}
+        movers.sort(key=lambda x: abs(x["change"]), reverse=True)
+        summary_lines = [f"- '{m['keyword']}': #{m['from']} → #{m['to']} ({'+' if m['change'] > 0 else ''}{m['change']})" for m in movers[:10]]
+        prompt = f"""You are an expert SEO strategist. A website has these keyword ranking changes over the last 45 days:
+
+{chr(10).join(summary_lines)}
+
+For each keyword, diagnose:
+1. The most likely reason for the position change (algorithm update, content quality, competition, backlinks, technical issue, or seasonal)
+2. A specific, actionable next step to improve or maintain the ranking
+
+Format as a JSON object with:
+- "overall_summary": one sentence overview
+- "top_priority": the single most important action
+- "keywords": array of {{"keyword": "...", "direction": "up"|"down", "diagnosis": "...", "action": "..."}}
+
+Reply with ONLY valid JSON."""
+        raw = await _ai_call(prompt, max_tokens=1500)
+        try:
+            import json as _json
+            parsed = _json.loads(raw)
+        except Exception:
+            parsed = {"overall_summary": raw, "keywords": [], "top_priority": ""}
+        return {"movers_count": len(movers), "analysis": parsed}
+    except Exception as e:
+        return {"error": f"Rank diagnosis failed: {e}"}
+
+
+@tool(
+    name="suggest_internal_links",
+    description=(
+        "AI-powered internal linking suggestions across your blog posts. "
+        "Analyses all blog posts and recommends which posts should link to which others, "
+        "with the exact anchor text and where to add the link. "
+        "Use when the user asks about internal linking, link structure, or improving SEO through links."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def suggest_internal_links(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    try:
+        posts_raw = await ctx.db.seo_blog_posts.find(
+            {"user_id": uid},
+            {"title": 1, "slug": 1, "keywords": 1, "content": 1, "status": 1}
+        ).sort("created_at", -1).to_list(40)
+        if len(posts_raw) < 2:
+            return {"message": "You need at least 2 blog posts to get internal linking suggestions."}
+        posts_info = []
+        for p in posts_raw:
+            content_preview = (p.get("content") or "")[:300]
+            posts_info.append(
+                f"- ID={str(p['_id'])} | Title: {p.get('title','')} | "
+                f"Keywords: {p.get('keywords','')} | Preview: {content_preview}"
+            )
+        prompt = f"""You are an SEO internal linking expert. Here are {len(posts_raw)} blog posts:
+
+{chr(10).join(posts_info)}
+
+Suggest the top 8 internal link opportunities. For each suggestion:
+- Which post should ADD a link (from_title)
+- Which post it should LINK TO (to_title)
+- The exact anchor text to use (relevant keyword phrase, not 'click here')
+- Why this link helps SEO (brief reason)
+
+Return ONLY a JSON array of objects with fields: from_title, to_title, anchor_text, reason"""
+        raw = await _ai_call(prompt, max_tokens=1200)
+        try:
+            import json as _json
+            start = raw.find("[")
+            end = raw.rfind("]") + 1
+            suggestions = _json.loads(raw[start:end]) if start >= 0 else []
+        except Exception:
+            suggestions = []
+        return {"post_count": len(posts_raw), "suggestions": suggestions}
+    except Exception as e:
+        return {"error": f"Internal link suggestions failed: {e}"}
+
+
+@tool(
+    name="generate_schema_markup",
+    description=(
+        "Generate Schema.org JSON-LD structured data markup for a blog post. "
+        "Produces ready-to-paste <script type='application/ld+json'> tags for rich results "
+        "(Article, FAQPage, HowTo). Pass post_id if you know it, or provide title + keywords. "
+        "Use when the user asks for schema markup, structured data, or rich snippets."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "post_id": {"type": "string", "description": "Blog post ID (optional if title provided)"},
+            "title": {"type": "string", "description": "Post title (used if post_id not given)"},
+            "keywords": {"type": "string", "description": "Target keywords for the post"},
+        },
+    },
+)
+async def generate_schema_markup(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    post_id = (args.get("post_id") or "").strip()
+    title = (args.get("title") or "").strip()
+    keywords = (args.get("keywords") or "").strip()
+    try:
+        post = None
+        if post_id:
+            from bson import ObjectId
+            try:
+                post = await ctx.db.seo_blog_posts.find_one({"_id": ObjectId(post_id), "user_id": uid})
+            except Exception:
+                pass
+        if post:
+            title = post.get("title") or title
+            keywords = post.get("keywords") or keywords
+            content_preview = (post.get("content") or "")[:800]
+        else:
+            content_preview = ""
+        if not title:
+            return {"error": "Provide a post_id or title to generate schema markup."}
+        prompt = f"""Generate Schema.org JSON-LD structured data for this blog post.
+
+Title: {title}
+Keywords: {keywords}
+Content preview: {content_preview}
+
+Generate ALL applicable schemas from: Article/BlogPosting, FAQPage (if FAQs can be inferred), HowTo (if steps can be inferred).
+
+Return ONLY a JSON object with:
+- "schemas": array of complete JSON-LD objects (each with "@context", "@type", and all required fields)
+- "script_tags": a string containing the ready-to-paste <script> tags
+
+Use realistic values. For author/publisher use the blog name if available, otherwise "Zilo Blog".
+datePublished: use today's date {datetime.utcnow().strftime('%Y-%m-%d')}."""
+        raw = await _ai_call(prompt, max_tokens=2000)
+        try:
+            import json as _json
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            parsed = _json.loads(raw[start:end]) if start >= 0 else {}
+        except Exception:
+            parsed = {}
+        script_tags = parsed.get("script_tags") or raw
+        if post_id and post:
+            await ctx.db.seo_blog_posts.update_one(
+                {"_id": post.get("_id")},
+                {"$set": {"schema_markup": script_tags, "schema_updated_at": datetime.utcnow()}}
+            )
+        return {"title": title, "script_tags": script_tags, "schemas": parsed.get("schemas", [])}
+    except Exception as e:
+        return {"error": f"Schema generation failed: {e}"}
+
+
+@tool(
+    name="analyze_search_console",
+    description=(
+        "AI analysis of Google Search Console data. Fetches GSC performance metrics and "
+        "provides plain-English insights: health rating, wins, concerns, opportunities, "
+        "and priority actions. Use when the user asks what their GSC data means, "
+        "wants Search Console insights, or asks about organic search performance."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "site_url": {"type": "string", "description": "Website URL (from GSC). Leave blank to auto-detect from business profile."},
+            "days": {"type": "integer", "default": 28, "description": "Number of days to analyse (default 28)"},
+        },
+    },
+)
+async def analyze_search_console(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    uid = ctx.business_id
+    days = int(args.get("days") or 28)
+    site_url = (args.get("site_url") or "").strip()
+    try:
+        if not site_url:
+            biz = await ctx.db.businesses.find_one({"_id": uid}) or \
+                  await ctx.db.users.find_one({"_id": uid})
+            site_url = (biz or {}).get("website_url") or (biz or {}).get("website") or ""
+        if not site_url:
+            return {"error": "No site URL found. Provide site_url or add your website to your business profile."}
+        from datetime import date, timedelta
+        end_date = date.today().isoformat()
+        start_date = (date.today() - timedelta(days=days)).isoformat()
+        gsc_data: dict = {}
+        try:
+            composio_key = os.environ.get("COMPOSIO_API_KEY", "")
+            if composio_key:
+                async with _httpx.AsyncClient(timeout=30) as hc:
+                    r = await hc.post(
+                        "https://backend.composio.dev/api/v2/actions/GOOGLEWEBSEARCH_QUERY/execute",
+                        headers={"x-api-key": composio_key},
+                        json={
+                            "connectedAccountId": uid,
+                            "input": {
+                                "siteUrl": site_url,
+                                "startDate": start_date,
+                                "endDate": end_date,
+                                "dimensions": ["query"],
+                                "rowLimit": 25,
+                            }
+                        },
+                    )
+                gsc_data = r.json().get("response", {}).get("data", {})
+        except Exception:
+            pass
+        rows = gsc_data.get("rows", [])
+        if rows:
+            data_summary = f"Top queries ({len(rows)} rows):\n"
+            for row in rows[:15]:
+                keys = row.get("keys", [])
+                clicks = row.get("clicks", 0)
+                impressions = row.get("impressions", 0)
+                ctr = row.get("ctr", 0)
+                position = row.get("position", 0)
+                data_summary += f"  '{', '.join(keys)}': {clicks} clicks, {impressions} impr, CTR {ctr:.1%}, pos {position:.1f}\n"
+        else:
+            data_summary = "No GSC data available via API (GSC may not be connected yet)."
+        prompt = f"""You are an expert SEO analyst. Analyse this Google Search Console data for {site_url} over the last {days} days:
+
+{data_summary}
+
+Provide a JSON analysis with:
+- "health": "excellent"|"good"|"needs_attention"|"critical"
+- "health_reason": one sentence why
+- "summary": 2-3 sentence plain-English overview of performance
+- "wins": array of 2-3 positive observations (strings)
+- "concerns": array of 2-3 issues to address (strings)
+- "opportunities": array of 2-3 growth opportunities (strings)
+- "priority_actions": ordered array of 3 specific next steps (strings)
+
+If no data is available, still provide general GSC setup advice.
+Return ONLY valid JSON."""
+        raw = await _ai_call(prompt, max_tokens=1200)
+        try:
+            import json as _json
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            parsed = _json.loads(raw[start:end]) if start >= 0 else {}
+        except Exception:
+            parsed = {"summary": raw}
+        return {"site_url": site_url, "days": days, "analysis": parsed}
+    except Exception as e:
+        return {"error": f"Search Console analysis failed: {e}"}

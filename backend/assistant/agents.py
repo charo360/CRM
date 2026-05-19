@@ -331,6 +331,9 @@ SEO_TOOLS: FrozenSet[str] = frozenset({
     "get_content_calendar", "schedule_content", "generate_content_calendar",
     # SEO overview (DB)
     "get_seo_summary",
+    # AI intelligence
+    "diagnose_rank_changes", "suggest_internal_links",
+    "generate_schema_markup", "analyze_search_console",
 }) | _WEB_TOOLS
 
 # General agent: everything EXCEPT design-specific tools.
@@ -2224,6 +2227,12 @@ When the user wants to create and publish blog content:
 ### SEO overview & documents
 - `get_seo_summary` — blog counts, latest audit score, rankings count, saved keywords.
 - `generate_document`, `create_business_document` — SEO reports, keyword docs, audits.
+
+### AI intelligence (no inputs needed — reads data automatically)
+- `diagnose_rank_changes` — AI explains why keyword positions moved 3+ places in last 45 days; gives per-keyword diagnosis + action. Use when user asks why rankings dropped/rose.
+- `suggest_internal_links` — reads all blog posts and returns top 8 internal linking opportunities with exact anchor text. Use when user asks about internal links or link structure.
+- `generate_schema_markup` — generates Schema.org JSON-LD structured data for a blog post (Article, FAQPage, HowTo). Pass post_id or title+keywords. Use when user asks for schema, structured data, or rich snippets.
+- `analyze_search_console` — fetches GSC data and returns AI analysis: health rating, wins, concerns, opportunities, priority actions. Use when user asks about Search Console or organic performance.
 
 ## Intelligence rules
 - Always research before recommending — use `web_search` for current best practices.
