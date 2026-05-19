@@ -40,6 +40,84 @@ _BASE = "https://backend.composio.dev/api"
 
 
 
+# ── Direct Shopify credential store (DB-backed, bypasses Composio for Shopify) ──
+
+_db = None  # Set by server.py via set_db() after MongoDB init
+
+
+def set_db(db) -> None:
+    """Inject the MongoDB database reference so Shopify direct-creds can be resolved."""
+    global _db
+    _db = db
+
+
+async def _get_shopify_direct_creds(user_id: str) -> Optional[Dict[str, str]]:
+    """Return {domain, token} if the user has stored direct Shopify credentials."""
+    if _db is None:
+        return None
+    try:
+        import bson
+        try:
+            oid = bson.ObjectId(user_id)
+        except Exception:
+            oid = None
+        query = {"$or": [{"business_id": user_id}]}
+        if oid:
+            query["$or"].append({"_id": oid})
+        user = await _db.users.find_one(query, {"shopify_domain": 1, "shopify_token": 1})
+        if not user:
+            return None
+        domain = (user.get("shopify_domain") or "").strip()
+        token  = (user.get("shopify_token")  or "").strip()
+        if domain and token:
+            return {"domain": domain, "token": token}
+        return None
+    except Exception as exc:
+        logger.warning("[shopify-direct] _get_shopify_direct_creds error: %s", exc)
+        return None
+
+
+async def _shopify_direct_proxy(
+    domain: str,
+    token: str,
+    method: str,
+    path: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json: Optional[Dict[str, Any]] = None,
+    timeout: float = 15.0,
+) -> Dict[str, Any]:
+    """Make a direct Shopify Admin REST call without going through Composio."""
+    domain = domain.rstrip("/")
+    if not domain.startswith("http"):
+        domain = f"https://{domain}"
+    url = f"{domain}{path}" if path.startswith("/") else f"{domain}/{path}"
+    headers = {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(
+                method.upper(), url, headers=headers, params=params, json=json
+            )
+    except Exception as exc:
+        raise RuntimeError(f"Shopify direct call failed: {exc}") from exc
+
+    if resp.status_code >= 400:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text[:300]
+        raise RuntimeError(f"Shopify error {resp.status_code}: {body}")
+
+    try:
+        return resp.json()
+    except Exception:
+        return {"raw": resp.text[:2000]}
+
+
 # No Composio-managed OAuth — use v3.1 auth_configs + connected_accounts in get_connect_url.
 
 _COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo", "shopify", "klaviyo"})
@@ -903,6 +981,11 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
 
     """
 
+    # Shopify uses direct credentials stored in DB — bypass Composio entirely
+    if toolkit.lower() == "shopify":
+        creds = await _get_shopify_direct_creds(user_id)
+        return {"connected": bool(creds), "connection_id": None}
+
     if not _get_key():
 
         return {"connected": False, "error": "COMPOSIO_API_KEY not configured"}
@@ -1085,6 +1168,10 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
             for cn in connected_norm
         )
 
+    # Overlay direct Shopify credential status (DB-backed, no Composio account needed)
+    shopify_creds = await _get_shopify_direct_creds(user_id)
+    results["shopify"] = bool(shopify_creds)
+
     return results
 
 
@@ -1211,11 +1298,21 @@ async def composio_proxy(
 
     """
 
+    # Shopify uses direct DB credentials — skip Composio entirely
+    if toolkit.lower() == "shopify":
+        creds = await _get_shopify_direct_creds(user_id)
+        if not creds:
+            raise RuntimeError(
+                "Shopify is not connected. Go to the Shopify page and enter your store domain and Admin API token."
+            )
+        return await _shopify_direct_proxy(
+            creds["domain"], creds["token"], method, path,
+            params=params, json=json, timeout=timeout,
+        )
+
     if not _get_key():
 
         raise RuntimeError("COMPOSIO_API_KEY is not configured")
-
-
 
     # Resolve connectedAccountId
 

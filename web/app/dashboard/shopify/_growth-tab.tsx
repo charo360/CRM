@@ -210,7 +210,7 @@ function ChannelBars({ channels }: { channels: { channel: string; revenue: numbe
     "Google Ads": "bg-amber-500",
     "Email": "bg-brand",
     "WhatsApp": "bg-emerald-500",
-    "Organic": "bg-brand",
+    "Organic": "bg-teal-500",
     "Direct / Other": "bg-slate-600",
   };
 

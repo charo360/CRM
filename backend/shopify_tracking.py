@@ -75,7 +75,7 @@ async def inject_tracking_codes(
             integration_key="shopify",
             method="POST",
             path="/admin/api/2024-01/script_tags.json",
-            json_data={
+            json={
                 "script_tag": {
                     "event": "onload",
                     "src": f"data:text/javascript;base64,{_encode_base64(ga4_script)}",
@@ -90,7 +90,7 @@ async def inject_tracking_codes(
             integration_key="shopify",
             method="POST",
             path="/admin/api/2024-01/script_tags.json",
-            json_data={
+            json={
                 "script_tag": {
                     "event": "onload",
                     "src": f"data:text/javascript;base64,{_encode_base64(behavior_script)}",
