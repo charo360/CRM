@@ -34,16 +34,23 @@ interface Analytics {
 const TEMPLATES = [
   { id: "exit_intent", name: "Exit Intent Saver", description: "Catch visitors before they leave", trigger_event: "exit_intent", discount_value: 15, delivery_method: "popup", icon: "🚪", badge: "Most Popular", badgeColor: "bg-red-100 text-red-700", color: "bg-red-50 border-red-200", message_template: "Wait! Don't leave yet 👋\n\nUse code {discount_code} for {discount_value}% off!\nLimited time offer." },
   { id: "cart_abandon", name: "Cart Recovery", description: "Recover abandoned carts automatically", trigger_event: "cart_abandoned", discount_value: 10, delivery_method: "popup", icon: "🛒", badge: "High ROI", badgeColor: "bg-orange-100 text-orange-700", color: "bg-orange-50 border-orange-200", message_template: "You left something behind! 🛒\n\nUse code {discount_code} for {discount_value}% off your order." },
-  { id: "first_visit", name: "First Visit Welcome", description: "Welcome new visitors with an exclusive offer", trigger_event: "first_visit", discount_value: 20, delivery_method: "popup", icon: "👋", badge: "New Visitors", badgeColor: "bg-green-100 text-green-700", color: "bg-green-50 border-green-200", message_template: "Welcome! 🎉 First visit special!\n\nGet {discount_value}% off with code {discount_code}." },
+  { id: "first_visit", name: "First Visit Welcome", description: "Welcome new visitors with an exclusive offer", trigger_event: "first_time_visitor", discount_value: 20, delivery_method: "popup", icon: "👋", badge: "New Visitors", badgeColor: "bg-green-100 text-green-700", color: "bg-green-50 border-green-200", message_template: "Welcome! 🎉 First visit special!\n\nGet {discount_value}% off with code {discount_code}." },
   { id: "time_on_site", name: "Engaged Visitor", description: "Reward visitors who spend time browsing", trigger_event: "time_on_site", discount_value: 12, delivery_method: "popup", icon: "⏱️", badge: "Engaged", badgeColor: "bg-blue-100 text-blue-700", color: "bg-blue-50 border-blue-200", message_template: "Thanks for browsing! 🎁\n\nHere's {discount_value}% off with code {discount_code}." },
-  { id: "product_view", name: "Product Interest", description: "Convert visitors viewing the same product twice", trigger_event: "product_viewed", discount_value: 8, delivery_method: "popup", icon: "👁️", badge: "Smart", badgeColor: "bg-purple-100 text-purple-700", color: "bg-purple-50 border-purple-200", message_template: "Still thinking? 🤔\n\nGet {discount_value}% off now with code {discount_code}. Don't miss out!" },
+  { id: "product_view", name: "Product Interest", description: "Convert visitors viewing the same product twice", trigger_event: "product_view_no_purchase", discount_value: 8, delivery_method: "popup", icon: "👁️", badge: "Smart", badgeColor: "bg-purple-100 text-purple-700", color: "bg-purple-50 border-purple-200", message_template: "Still thinking? 🤔\n\nGet {discount_value}% off now with code {discount_code}. Don't miss out!" },
   { id: "returning", name: "Returning Customer", description: "Reward loyal visitors who come back", trigger_event: "returning_visitor", discount_value: 5, delivery_method: "banner", icon: "🌟", badge: "Loyalty", badgeColor: "bg-yellow-100 text-yellow-700", color: "bg-yellow-50 border-yellow-200", message_template: "Welcome back! 🌟\n\nEnjoy $5 off with code {discount_code}." },
 ];
 
 const TRIGGER_LABELS: Record<string, string> = {
-  exit_intent: "Exit Intent", cart_abandoned: "Cart Abandoned", first_visit: "First Visit",
-  time_on_site: "Time on Site", product_viewed: "Product Viewed", returning_visitor: "Returning Visitor",
-  high_value_product: "High Value Product", page_scroll: "Page Scroll",
+  exit_intent: "Exit Intent",
+  cart_abandoned: "Cart Abandoned",
+  first_time_visitor: "First Visit",
+  time_on_site: "Time on Site",
+  product_view_no_purchase: "Product Interest",
+  returning_visitor: "Returning Visitor",
+  browsed_product: "Product Browsing",
+  visited_multiple_times: "Returning Visitor",
+  high_value_visitor: "High Value Visitor",
+  page_views_threshold: "Page Views",
 };
 
 const DELIVERY_ICONS: Record<string, string> = {
@@ -73,13 +80,14 @@ export default function BehaviorTrackerPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [settings, camps] = await Promise.all([
+      const [settings, campsRes] = await Promise.all([
         api.get<{ behavior_discounts_enabled?: boolean; ga4_measurement_id?: string }>("/settings"),
-        api.get<Campaign[]>("/marketing/behavior-discounts/campaigns").catch(() => [] as Campaign[]),
+        api.get<{ campaigns?: Campaign[] } | Campaign[]>("/marketing/behavior-discounts/campaigns").catch(() => ({ campaigns: [] })),
       ]);
       setEnabled(settings.behavior_discounts_enabled || false);
       setGa4Id(settings.ga4_measurement_id || "");
-      setCampaigns(Array.isArray(camps) ? camps : []);
+      const camps = Array.isArray(campsRes) ? campsRes : (campsRes as { campaigns?: Campaign[] }).campaigns || [];
+      setCampaigns(camps);
       if (settings.behavior_discounts_enabled) {
         const a = await api.get<Analytics>("/marketing/behavior-discounts/analytics").catch(() => null);
         setAnalytics(a);
@@ -110,15 +118,20 @@ export default function BehaviorTrackerPage() {
     finally { setSavingSettings(false); }
   };
 
+  const unwrapCampaign = (res: unknown): Campaign => {
+    const r = res as Record<string, unknown>;
+    return (r.campaign ?? res) as Campaign;
+  };
+
   const activateTemplate = async (tpl: typeof TEMPLATES[0]) => {
     setActivatingTemplate(tpl.id);
     try {
-      const created = await api.post<Campaign>("/marketing/behavior-discounts/campaigns", {
+      const res = await api.post("/marketing/behavior-discounts/campaigns", {
         name: tpl.name, trigger_event: tpl.trigger_event, discount_type: "percentage",
         discount_value: tpl.discount_value, delivery_method: tpl.delivery_method,
         message_template: tpl.message_template, status: "active",
       });
-      setCampaigns(p => [...p, created]);
+      setCampaigns(p => [...p, unwrapCampaign(res)]);
       setActiveTab("campaigns");
     } finally {
       setActivatingTemplate(null);
@@ -126,8 +139,8 @@ export default function BehaviorTrackerPage() {
   };
 
   const createCampaign = async () => {
-    const created = await api.post<Campaign>("/marketing/behavior-discounts/campaigns", { ...newCampaign, status: "active" });
-    setCampaigns(p => [...p, created]);
+    const res = await api.post("/marketing/behavior-discounts/campaigns", { ...newCampaign, status: "active" });
+    setCampaigns(p => [...p, unwrapCampaign(res)]);
     setShowModal(false);
     setNewCampaign({ name: "", trigger_event: "exit_intent", discount_type: "percentage", discount_value: 10, delivery_method: "popup", message_template: "Use code {discount_code} for {discount_value}% off!" });
   };
