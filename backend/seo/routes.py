@@ -2831,23 +2831,30 @@ Return ONLY a JSON array:
         # Sort by volume descending so highest-opportunity keywords appear first
         keywords.sort(key=lambda k: k.get("search_volume") or 0, reverse=True)
 
-        # ── Enrich with tracked SERP positions ───────────────────────────────
+        # ── Enrich with tracked SERP positions + linked articles ─────────────
         serp_rows = await db.seo_serp_rankings.find(
             {"user_id": tid}
         ).sort("checked_at", -1).to_list(2000)
 
+        # Build per-keyword: latest row (for article info) + position history
+        latest_row: dict[str, dict] = {}
         pos_history: dict[str, list[int | None]] = {}
         for row in serp_rows:
             kw_key = (row.get("keyword") or "").lower().strip()
             pos = row.get("position")
             if kw_key:
+                if kw_key not in latest_row:
+                    latest_row[kw_key] = row
                 pos_history.setdefault(kw_key, []).append(pos)
 
         for k in keywords:
             kw_key = k["keyword"].lower().strip()
             history = pos_history.get(kw_key, [])
+            row = latest_row.get(kw_key, {})
             latest = next((p for p in history if p is not None), None)
             k["position"] = latest
+            k["article_url"] = row.get("article_url") or None
+            k["article_title"] = row.get("article_title") or None
 
             non_null = [p for p in history if p is not None]
             if len(non_null) >= 2:
@@ -3103,6 +3110,8 @@ Return ONLY a JSON array:
         from . import dataforseo as dfs
         keyword = str(payload.get("keyword") or "").strip()
         domain = str(payload.get("domain") or "").strip()
+        article_url = str(payload.get("article_url") or "").strip() or None
+        article_title = str(payload.get("article_title") or "").strip() or None
         if not keyword or not domain:
             raise HTTPException(400, "keyword and domain are required")
 
@@ -3140,6 +3149,10 @@ Return ONLY a JSON array:
             "checked_at": datetime.utcnow(),
             "source": "dataforseo",
         }
+        if article_url:
+            doc["article_url"] = article_url
+        if article_title:
+            doc["article_title"] = article_title
         await db.seo_serp_rankings.insert_one(doc)
 
         return {
@@ -3147,6 +3160,8 @@ Return ONLY a JSON array:
             "domain": clean_domain,
             "position": found_position,
             "global_position": global_position,
+            "article_url": article_url,
+            "article_title": article_title,
             "checked_at": doc["checked_at"].isoformat(),
             "top_results": top_results[:5],
             "total_results": len(top_results),

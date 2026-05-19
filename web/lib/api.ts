@@ -2303,9 +2303,9 @@ export const seoApi = {
     api.get<{ trends: { date: string; position: number | null; checks: number }[]; keyword: string; domain: string }>(
       `/seo/serp/rankings/trends?keyword=${encodeURIComponent(keyword)}&domain=${encodeURIComponent(domain)}&days=${days}`
     ),
-  checkRanking: (keyword: string, domain: string, country?: string) =>
-    api.post<{ keyword: string; domain: string; position: number | null; country: string; checked_at: string; top_results: { pos: number; domain: string; url: string }[]; total_results: number }>(
-      "/seo/serp/check", { keyword, domain, country }
+  checkRanking: (keyword: string, domain: string, country?: string, article_url?: string, article_title?: string) =>
+    api.post<{ keyword: string; domain: string; position: number | null; article_url?: string; article_title?: string; country: string; checked_at: string; top_results: { pos: number; domain: string; url: string }[]; total_results: number }>(
+      "/seo/serp/check", { keyword, domain, country, article_url, article_title }
     ),
   bulkCheckRankings: (keywords: Partial<SeoKeyword>[], domain: string, country?: string) =>
     api.post<{ results: { keyword: string; position: number | null; checked_at: string }[]; domain: string; checked: number; failed: number }>(

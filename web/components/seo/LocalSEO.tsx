@@ -23,7 +23,10 @@ interface LocalKeyword {
   searchVolume?: number;
   difficulty: "low" | "medium" | "high";
   trend: "up" | "down" | "stable" | "new" | "untracked";
+  volume_trend?: "up" | "down" | "stable" | null;
   content_idea?: string;
+  article_url?: string | null;
+  article_title?: string | null;
 }
 
 interface CompetitorListing {
@@ -59,6 +62,8 @@ export default function LocalSEO() {
   const [trackingInProgress, setTrackingInProgress] = useState<string | null>(null);
   const [trackResult, setTrackResult] = useState<{ position: number | null; error?: string } | null>(null);
   const [keywordsSource, setKeywordsSource] = useState<string>("");
+  const [trackArticleUrl, setTrackArticleUrl] = useState("");
+  const [trackArticleTitle, setTrackArticleTitle] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -147,8 +152,11 @@ export default function LocalSEO() {
   };
 
   const openTrackModal = (keyword: string) => {
+    const kw = localKeywords.find(k => k.keyword === keyword);
     setTrackingKeyword(keyword);
     setTrackDomain(websiteUrl || "");
+    setTrackArticleUrl(kw?.article_url || "");
+    setTrackArticleTitle(kw?.article_title || "");
     setTrackResult(null);
     setShowTrackModal(true);
   };
@@ -157,20 +165,24 @@ export default function LocalSEO() {
     setShowTrackModal(false);
     setTrackResult(null);
     setTrackingKeyword(null);
+    setTrackArticleUrl("");
+    setTrackArticleTitle("");
   };
 
   const handleTrackKeyword = async () => {
     if (!trackingKeyword || !trackDomain.trim()) return;
     const domain = trackDomain.trim().replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+    const articleUrl = trackArticleUrl.trim() || undefined;
+    const articleTitle = trackArticleTitle.trim() || undefined;
     setTrackingInProgress(trackingKeyword);
     setTrackResult(null);
     try {
-      const result = await seoApi.checkRanking(trackingKeyword, domain);
+      const result = await seoApi.checkRanking(trackingKeyword, domain, undefined, articleUrl, articleTitle);
       const pos = result.position ?? null;
       setTrackResult({ position: pos });
       setLocalKeywords(prev => prev.map(k =>
         k.keyword === trackingKeyword
-          ? { ...k, position: pos, trend: pos != null ? "new" : "untracked" }
+          ? { ...k, position: pos, trend: pos != null ? "new" : "untracked", article_url: articleUrl ?? k.article_url, article_title: articleTitle ?? k.article_title }
           : k
       ));
     } catch (e) {
@@ -381,87 +393,81 @@ export default function LocalSEO() {
           )}
         </div>
         
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-100">
-                <th className="text-left py-3 px-2 font-medium text-slate-700">Keyword</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Location</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Position</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Search Volume</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Difficulty</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Trend</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Track</th>
-              </tr>
-            </thead>
-            <tbody>
-              {localKeywords.map((keyword, index) => (
-                <tr key={index} className="border-b border-slate-50 hover:bg-slate-50">
-                  <td className="py-3 px-2">
-                    <span
-                      className="font-medium text-slate-800 cursor-help"
-                      title={keyword.content_idea || keyword.keyword}
-                    >
-                      {keyword.keyword}
-                    </span>
-                    {keyword.content_idea && (
-                      <div className="text-xs text-slate-400 mt-0.5 truncate max-w-[220px]">{keyword.content_idea}</div>
-                    )}
-                  </td>
-                  <td className="text-center py-3">
-                    <span className="text-sm text-slate-600">{keyword.location}</span>
-                  </td>
-                  <td className="text-center py-3">
-                    {keyword.position != null ? (
-                      <div className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
-                        keyword.position <= 3 ? "bg-green-100 text-green-700" :
-                        keyword.position <= 10 ? "bg-yellow-100 text-yellow-700" :
-                        "bg-red-100 text-red-700"
-                      }`}>
-                        #{keyword.position}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-slate-400 italic">Not tracked</span>
-                    )}
-                  </td>
-                  <td className="text-center py-3">
-                    {(() => {
-                      const vol = keyword.search_volume ?? keyword.searchVolume ?? null;
-                      if (vol == null || vol === 0)
-                        return <span className="text-xs text-slate-400 italic" title="Google Ads has no volume data for this exact keyword phrase">N/A</span>;
-                      if (vol < 100) return <span className="font-medium text-slate-500">{vol.toLocaleString()}</span>;
-                      if (vol < 1000) return <span className="font-medium text-slate-700">{vol.toLocaleString()}</span>;
-                      return <span className="font-bold text-slate-800">{vol.toLocaleString()}</span>;
-                    })()}
-                  </td>
-                  <td className="text-center py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${getDifficultyColor(keyword.difficulty)}`}>
+        <div className="space-y-3">
+          {localKeywords.map((keyword, index) => {
+            const vol = keyword.search_volume ?? keyword.searchVolume ?? null;
+            const hasArticle = !!keyword.article_url;
+            return (
+              <div key={index} className="border border-slate-200 rounded-xl overflow-hidden">
+                {/* Keyword row */}
+                <div className="flex items-center justify-between px-4 py-3 bg-white">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-slate-800 text-sm">{keyword.keyword}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${getDifficultyColor(keyword.difficulty)}`}>
                       {keyword.difficulty}
                     </span>
-                  </td>
-                  <td className="text-center py-3">
-                    {getTrendBadge(keyword.trend, (keyword as Record<string, unknown>).volume_trend as string | null)}
-                  </td>
-                  <td className="text-center py-3">
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                    {vol != null && vol > 0 ? (
+                      <span className="text-sm font-bold text-slate-800">
+                        {vol >= 1000 ? `${(vol / 1000).toFixed(vol >= 10000 ? 0 : 1)}k` : vol.toLocaleString()}
+                        <span className="text-xs font-normal text-slate-400">/mo</span>
+                        {keyword.volume_trend === "up" && <span className="ml-1 text-green-500 text-xs" title="Search volume rising">▲</span>}
+                        {keyword.volume_trend === "down" && <span className="ml-1 text-red-400 text-xs" title="Search volume declining">▼</span>}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">no data</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Article row */}
+                <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-t border-slate-100">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {hasArticle ? (
+                      <>
+                        <span className="text-slate-400 text-xs">📄</span>
+                        <span className="text-xs text-slate-600 truncate max-w-[240px]" title={keyword.article_url || ""}>
+                          {keyword.article_title || keyword.article_url}
+                        </span>
+                        {keyword.position != null ? (
+                          <span className={`inline-flex items-center text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
+                            keyword.position <= 3 ? "bg-green-100 text-green-700" :
+                            keyword.position <= 10 ? "bg-yellow-100 text-yellow-700" :
+                            "bg-red-100 text-red-700"
+                          }`}>
+                            #{keyword.position}
+                            {keyword.trend === "up" && <span className="ml-0.5">↑</span>}
+                            {keyword.trend === "down" && <span className="ml-0.5">↓</span>}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400 italic">not ranked yet</span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">No article linked yet</span>
+                    )}
+                  </div>
+                  <div className="flex-shrink-0 ml-2">
                     {trackingInProgress === keyword.keyword ? (
                       <span className="text-xs text-slate-400 italic">Checking…</span>
                     ) : (
                       <button
                         onClick={() => openTrackModal(keyword.keyword)}
-                        className={`px-2.5 py-1 text-xs rounded-lg font-medium transition ${
-                          keyword.position != null
-                            ? "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                        className={`px-3 py-1 text-xs rounded-lg font-medium transition ${
+                          hasArticle
+                            ? "bg-slate-200 text-slate-600 hover:bg-slate-300"
                             : "bg-blue-600 text-white hover:bg-blue-700"
                         }`}
                       >
-                        {keyword.position != null ? "Refresh" : "Track"}
+                        {hasArticle ? "Update" : "Link Article"}
                       </button>
                     )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -670,29 +676,31 @@ export default function LocalSEO() {
         </div>
       )}
 
-      {/* Track Keyword Modal */}
+      {/* Link Article + Track Modal */}
       {showTrackModal && trackingKeyword && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-semibold text-slate-800">Track Keyword Position</h3>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-base font-semibold text-slate-800">Link Article & Check Ranking</h3>
               <button onClick={closeTrackModal} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
             </div>
-            <p className="text-sm text-slate-600 mb-1 font-medium truncate">{trackingKeyword}</p>
-            <p className="text-xs text-slate-400 mb-4">We'll check where your site ranks on Google for this keyword.</p>
+            <p className="text-sm font-medium text-blue-700 mb-1 truncate">"{trackingKeyword}"</p>
+            <p className="text-xs text-slate-400 mb-4">Link the article you wrote for this keyword, then check its Google ranking.</p>
 
-            {/* Result / error feedback */}
+            {/* Result feedback */}
             {trackResult && !trackResult.error && (
               <div className="mb-4 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-center">
                 {trackResult.position != null ? (
                   <>
                     <p className="text-2xl font-bold text-green-700">#{trackResult.position}</p>
-                    <p className="text-xs text-green-600 mt-1">Your site ranks position {trackResult.position} for this keyword.</p>
+                    <p className="text-xs text-green-600 mt-1">
+                      {trackArticleUrl ? `Your article ranks #${trackResult.position} for this keyword.` : `Your site ranks #${trackResult.position} for this keyword.`}
+                    </p>
                   </>
                 ) : (
                   <>
-                    <p className="text-sm font-semibold text-slate-600">Not found in top results</p>
-                    <p className="text-xs text-slate-400 mt-1">Your site wasn't found in the top 20 results for this keyword.</p>
+                    <p className="text-sm font-semibold text-slate-600">Not in top results yet</p>
+                    <p className="text-xs text-slate-400 mt-1">Not found in top 20. Keep building authority — it takes time.</p>
                   </>
                 )}
               </div>
@@ -705,6 +713,28 @@ export default function LocalSEO() {
 
             {!trackResult && (
               <>
+                <div className="mb-3">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Article URL <span className="text-slate-400 font-normal">(optional)</span></label>
+                  <input
+                    type="text"
+                    value={trackArticleUrl}
+                    onChange={(e) => setTrackArticleUrl(e.target.value)}
+                    placeholder="yoursite.com/blog/sick-leave-email"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!!trackingInProgress}
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Article title <span className="text-slate-400 font-normal">(optional)</span></label>
+                  <input
+                    type="text"
+                    value={trackArticleTitle}
+                    onChange={(e) => setTrackArticleTitle(e.target.value)}
+                    placeholder="How to Write a Sick Leave Email"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!!trackingInProgress}
+                  />
+                </div>
                 <div className="mb-4">
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">Your website domain</label>
                   <input
@@ -724,7 +754,7 @@ export default function LocalSEO() {
                     disabled={!trackDomain.trim() || !!trackingInProgress}
                     className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
                   >
-                    {trackingInProgress === trackingKeyword ? "Checking…" : "Check Position"}
+                    {trackingInProgress === trackingKeyword ? "Checking…" : "Check Ranking"}
                   </button>
                   <button
                     onClick={closeTrackModal}
