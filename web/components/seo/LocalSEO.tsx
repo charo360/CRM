@@ -108,6 +108,7 @@ export default function LocalSEO() {
       const result = await seoApi.addLocalListing(newListing);
       const stored = result.listing as Record<string, unknown>;
       const listing: LocalListing = {
+        id: String(stored._id ?? stored.id ?? crypto.randomUUID()),
         platform: stored.platform === "yelp" || stored.platform === "apple-maps" || stored.platform === "bing-places"
           ? stored.platform
           : "google-business",
@@ -137,6 +138,7 @@ export default function LocalSEO() {
       console.error("Error adding listing:", error);
       const listing: LocalListing = {
         ...newListing,
+        id: crypto.randomUUID(),
         status: "pending",
         lastUpdated: new Date().toISOString(),
       };
