@@ -2792,19 +2792,23 @@ Return ONLY a JSON array, no explanation:
                         if gm and gm.get("volume"):
                             meta_map[kw.lower().strip()] = gm
 
-                # For still-zero keywords strip modifiers and look up the base phrase
-                # e.g. "affordable sick leave templates" → "sick leave templates" → 880/mo
-                _loc_re = _re_vol.compile(
-                    r'\b(near me|in \w+|best|top|affordable|cheap|local|'
+                # For still-zero keywords strip modifiers and look up the base phrase.
+                # We try progressively — first strip adjectives/location words, then
+                # also strip content-type nouns, until we find a phrase with volume.
+                # e.g. "free sick leave email templates" → "sick leave email" → 8100/mo
+                _modifier_re = _re_vol.compile(
+                    r'\b(near me|in \w+|best|top|affordable|cheap|free|local|online|'
+                    r'professional|custom|easy|quick|simple|perfect|great|official|'
+                    r'templates?|examples?|samples?|generator|maker|tool|guide|tips?|'
                     r'services?|provider|near|around|close to)\b', _re_vol.I
                 )
                 still_zero = [k for k in kw_list if not (meta_map.get(k.lower().strip()) or {}).get("volume")]
                 if still_zero:
                     base_map: dict[str, str] = {}
                     for kw in still_zero:
-                        base = _loc_re.sub("", kw).strip()
+                        base = _modifier_re.sub("", kw).strip()
                         base = _re_vol.sub(r'\s{2,}', ' ', base).strip()
-                        if base and base.lower() != kw.lower():
+                        if base and base.lower() != kw.lower() and len(base.split()) >= 2:
                             base_map[base] = kw
                     if base_map:
                         base_meta = await fetch_keyword_meta_batch(list(base_map.keys()), location_code=loc_code, language_code=lang_code)
