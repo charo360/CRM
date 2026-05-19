@@ -44,11 +44,12 @@ async function composioFetch(path: string, method = "GET") {
   return res.ok ? res.json() : null;
 }
 
-async function composioConnect(toolkit: string): Promise<string | null> {
+async function composioConnect(toolkit: string, extraBody: Record<string, string> = {}): Promise<string | null> {
   const token = getToken();
   const res = await fetch(`${API_BASE}/api/composio/connect/${toolkit}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token ?? ""}` },
+    headers: { Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ redirect_base: window.location.origin, ...extraBody }),
   });
   if (!res.ok) return null;
   const data = await res.json() as { redirect_url?: string };
@@ -68,17 +69,20 @@ function MetricCard({ label, value, sub }: { label: string; value: string | numb
 
 // ── Connect Button ────────────────────────────────────────────────────────────
 function ConnectButton({
-  toolkit, label, busy, onStatusChange,
+  toolkit, label, busy, onStatusChange, customerId,
 }: {
   toolkit: string; label: string; busy: boolean;
   onStatusChange: (t: string, s: ConnStatus) => void;
+  customerId?: string;
 }) {
   const [working, setWorking] = useState(false);
 
   const handleConnect = async () => {
     setWorking(true);
     try {
-      const url = await composioConnect(toolkit);
+      const extraBody: Record<string, string> = {};
+      if (toolkit === "googleads" && customerId) extraBody.customer_id = customerId;
+      const url = await composioConnect(toolkit, extraBody);
       if (!url) { setWorking(false); return; }
       const popup = window.open(url, "composio-connect", "width=980,height=760,noopener,noreferrer");
       if (!popup) { window.location.href = url; return; }
@@ -161,6 +165,7 @@ export default function AnalyticsIntegration() {
   const [adsLoading, setAdsLoading] = useState(false);
   const [adsCustomerId, setAdsCustomerId] = useState("");
   const [adsDays, setAdsDays] = useState(30);
+  const [adsConnectId, setAdsConnectId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
 
   const refreshStatuses = useCallback(async () => {
@@ -381,7 +386,16 @@ export default function AnalyticsIntegration() {
               {busy === "googleads" ? "Disconnecting…" : "Disconnect"}
             </button>
           ) : (
-            <ConnectButton toolkit="googleads" label="Google Ads" busy={!!busy} onStatusChange={handleStatusChange} />
+            <>
+              <input
+                type="text"
+                value={adsConnectId}
+                onChange={e => setAdsConnectId(e.target.value)}
+                placeholder="Customer ID (e.g. 123-456-7890)"
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs font-mono outline-none focus:border-blue-500"
+              />
+              <ConnectButton toolkit="googleads" label="Google Ads" busy={!!busy} onStatusChange={handleStatusChange} customerId={adsConnectId} />
+            </>
           )}
         </div>
       </div>
