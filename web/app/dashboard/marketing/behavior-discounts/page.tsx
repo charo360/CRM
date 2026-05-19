@@ -11,7 +11,8 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Campaign {
-  id: string;
+  id?: string;
+  _id?: string;
   name: string;
   trigger_event: string;
   discount_type: string;
@@ -131,15 +132,17 @@ export default function BehaviorTrackerPage() {
     setNewCampaign({ name: "", trigger_event: "exit_intent", discount_type: "percentage", discount_value: 10, delivery_method: "popup", message_template: "Use code {discount_code} for {discount_value}% off!" });
   };
 
+  const getCid = (c: Campaign) => c._id || c.id || "";
+
   const toggleCampaign = async (id: string, status: string) => {
     const next = status === "active" ? "paused" : "active";
     await api.put(`/marketing/behavior-discounts/campaigns/${id}`, { status: next });
-    setCampaigns(p => p.map(c => c.id === id ? { ...c, status: next } : c));
+    setCampaigns(p => p.map(c => getCid(c) === id ? { ...c, status: next } : c));
   };
 
   const deleteCampaign = async (id: string) => {
     await api.delete(`/marketing/behavior-discounts/campaigns/${id}`);
-    setCampaigns(p => p.filter(c => c.id !== id));
+    setCampaigns(p => p.filter(c => getCid(c) !== id));
   };
 
   const copySnippet = () => {
@@ -393,7 +396,7 @@ export default function BehaviorTrackerPage() {
               <h2 className="text-base font-semibold text-slate-900 mb-4">Your Campaigns ({campaigns.length})</h2>
               <div className="space-y-3">
                 {campaigns.map((c) => (
-                  <div key={c.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                  <div key={getCid(c)} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
                     <div className="flex items-center gap-3">
                       <span className="text-xl">{DELIVERY_ICONS[c.delivery_method] || "🎯"}</span>
                       <div>
@@ -407,10 +410,10 @@ export default function BehaviorTrackerPage() {
                       <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>
                         {c.status === "active" ? "Active" : "Paused"}
                       </span>
-                      <button onClick={() => toggleCampaign(c.id, c.status)} className="p-1.5 text-slate-400 hover:text-slate-700 rounded">
+                      <button onClick={() => toggleCampaign(getCid(c), c.status)} className="p-1.5 text-slate-400 hover:text-slate-700 rounded">
                         {c.status === "active" ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                       </button>
-                      <button onClick={() => deleteCampaign(c.id)} className="p-1.5 text-slate-400 hover:text-red-600 rounded">
+                      <button onClick={() => deleteCampaign(getCid(c))} className="p-1.5 text-slate-400 hover:text-red-600 rounded">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -442,7 +445,7 @@ export default function BehaviorTrackerPage() {
               {campaigns.map((c) => {
                 const rate = c.times_triggered > 0 ? ((c.times_converted / c.times_triggered) * 100).toFixed(1) : "0.0";
                 return (
-                  <div key={c.id} className="p-4 bg-slate-50 rounded-xl">
+                  <div key={getCid(c)} className="p-4 bg-slate-50 rounded-xl">
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-sm font-semibold text-slate-900">{c.name}</p>
                       <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>{c.status}</span>
