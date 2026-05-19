@@ -19,9 +19,9 @@ interface Campaign {
   discount_value: number;
   delivery_method: string;
   message_template: string;
-  status: string;
-  times_triggered: number;
-  times_converted: number;
+  active: boolean;
+  sent_count?: number;
+  conversion_count?: number;
 }
 
 interface Analytics {
@@ -73,7 +73,7 @@ export default function BehaviorTrackerPage() {
   const [togglingEnabled, setTogglingEnabled] = useState(false);
   const [newCampaign, setNewCampaign] = useState({
     name: "", trigger_event: "exit_intent", discount_type: "percentage",
-    discount_value: 10, delivery_method: "popup",
+    discount_value: 10, delivery_method: "popup", active: true,
     message_template: "Use code {discount_code} for {discount_value}% off!",
   });
 
@@ -129,7 +129,7 @@ export default function BehaviorTrackerPage() {
       const res = await api.post("/marketing/behavior-discounts/campaigns", {
         name: tpl.name, trigger_event: tpl.trigger_event, discount_type: "percentage",
         discount_value: tpl.discount_value, delivery_method: tpl.delivery_method,
-        message_template: tpl.message_template, status: "active",
+        message_template: tpl.message_template, active: true,
       });
       setCampaigns(p => [...p, unwrapCampaign(res)]);
       setActiveTab("campaigns");
@@ -139,7 +139,7 @@ export default function BehaviorTrackerPage() {
   };
 
   const createCampaign = async () => {
-    const res = await api.post("/marketing/behavior-discounts/campaigns", { ...newCampaign, status: "active" });
+    const res = await api.post("/marketing/behavior-discounts/campaigns", { ...newCampaign });
     setCampaigns(p => [...p, unwrapCampaign(res)]);
     setShowModal(false);
     setNewCampaign({ name: "", trigger_event: "exit_intent", discount_type: "percentage", discount_value: 10, delivery_method: "popup", message_template: "Use code {discount_code} for {discount_value}% off!" });
@@ -147,10 +147,10 @@ export default function BehaviorTrackerPage() {
 
   const getCid = (c: Campaign) => c._id || c.id || "";
 
-  const toggleCampaign = async (id: string, status: string) => {
-    const next = status === "active" ? "paused" : "active";
-    await api.put(`/marketing/behavior-discounts/campaigns/${id}`, { status: next });
-    setCampaigns(p => p.map(c => getCid(c) === id ? { ...c, status: next } : c));
+  const toggleCampaign = async (id: string, currentActive: boolean) => {
+    const next = !currentActive;
+    await api.put(`/marketing/behavior-discounts/campaigns/${id}`, { active: next });
+    setCampaigns(p => p.map(c => getCid(c) === id ? { ...c, active: next } : c));
   };
 
   const deleteCampaign = async (id: string) => {
@@ -166,7 +166,7 @@ export default function BehaviorTrackerPage() {
     });
   };
 
-  const activeCampaigns = campaigns.filter(c => c.status === "active").length;
+  const activeCampaigns = campaigns.filter(c => c.active).length;
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
@@ -415,16 +415,16 @@ export default function BehaviorTrackerPage() {
                       <div>
                         <p className="text-sm font-semibold text-slate-900">{c.name}</p>
                         <p className="text-xs text-slate-500 mt-0.5">
-                          {TRIGGER_LABELS[c.trigger_event] || c.trigger_event} · {c.discount_type === "percentage" ? `${c.discount_value}%` : `$${c.discount_value}`} off · {c.times_triggered || 0} triggered · {c.times_converted || 0} converted
+                          {TRIGGER_LABELS[c.trigger_event] || c.trigger_event} · {c.discount_type === "percentage" ? `${c.discount_value}%` : `$${c.discount_value}`} off · {c.sent_count || 0} sent · {c.conversion_count || 0} converted
                         </p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>
-                        {c.status === "active" ? "Active" : "Paused"}
+                      <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.active ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>
+                        {c.active ? "Active" : "Paused"}
                       </span>
-                      <button onClick={() => toggleCampaign(getCid(c), c.status)} className="p-1.5 text-slate-400 hover:text-slate-700 rounded">
-                        {c.status === "active" ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      <button onClick={() => toggleCampaign(getCid(c), c.active)} className="p-1.5 text-slate-400 hover:text-slate-700 rounded">
+                        {c.active ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                       </button>
                       <button onClick={() => deleteCampaign(getCid(c))} className="p-1.5 text-slate-400 hover:text-red-600 rounded">
                         <Trash2 className="w-4 h-4" />
@@ -456,20 +456,22 @@ export default function BehaviorTrackerPage() {
           ) : (
             <div className="space-y-4">
               {campaigns.map((c) => {
-                const rate = c.times_triggered > 0 ? ((c.times_converted / c.times_triggered) * 100).toFixed(1) : "0.0";
+                const sent = c.sent_count || 0;
+                const conv = c.conversion_count || 0;
+                const rate = sent > 0 ? ((conv / sent) * 100).toFixed(1) : "0.0";
                 return (
                   <div key={getCid(c)} className="p-4 bg-slate-50 rounded-xl">
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-sm font-semibold text-slate-900">{c.name}</p>
-                      <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>{c.status}</span>
+                      <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${c.active ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-500"}`}>{c.active ? "Active" : "Paused"}</span>
                     </div>
                     <div className="grid grid-cols-3 gap-4 text-center mb-3">
-                      <div><p className="text-xl font-bold text-slate-900">{c.times_triggered || 0}</p><p className="text-xs text-slate-500">Triggered</p></div>
-                      <div><p className="text-xl font-bold text-blue-600">{c.times_converted || 0}</p><p className="text-xs text-slate-500">Converted</p></div>
+                      <div><p className="text-xl font-bold text-slate-900">{sent}</p><p className="text-xs text-slate-500">Sent</p></div>
+                      <div><p className="text-xl font-bold text-blue-600">{conv}</p><p className="text-xs text-slate-500">Converted</p></div>
                       <div><p className="text-xl font-bold text-green-600">{rate}%</p><p className="text-xs text-slate-500">Conv. Rate</p></div>
                     </div>
                     <div className="bg-slate-200 rounded-full h-1.5">
-                      <div className="bg-green-500 h-1.5 rounded-full" style={{ width: `${Math.min(parseFloat(rate), 100)}%` }} />
+                      <div className="bg-green-500 h-1.5 rounded-full" style={{ width: `${Math.min(Number(rate), 100)}%` }} />
                     </div>
                   </div>
                 );
