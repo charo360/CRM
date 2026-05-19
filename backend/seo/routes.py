@@ -2689,26 +2689,41 @@ Only return the JSON array."""
         """Return AI-generated local keywords based on the user's business profile."""
         tid = _tid(user)
         ctx = _seo_business_context(user)
-        location = ctx.get("location", "Your City")
+        raw_location = ctx.get("location", "").strip()
+        # Treat placeholder/default values as "no location set"
+        _no_location = {"your city", "city", "location", "", "not specified", "not set", "n/a", "none"}
+        has_location = raw_location.lower() not in _no_location
+        location = raw_location if has_location else "Worldwide"
         business_type = ctx.get("business_type", "business")
         business_name = ctx.get("business_name", "")
         snippet = ctx.get("context_snippet", "")
-        city = location.split(",")[0].strip() or location
+        city = location.split(",")[0].strip() if has_location else ""
 
-        prompt = f"""You are a local SEO expert. Generate 12 highly targeted local search keywords for this business.
+        if has_location:
+            location_instruction = (
+                f"- City + service combinations using '{city}' (real city name, no placeholders)\n"
+                f"- Question-based local searches like 'where to find X in {city}'"
+            )
+        else:
+            location_instruction = (
+                "- Online/worldwide searches (no city — do NOT use '[City]', '[Location]' or any placeholder)\n"
+                "- Use 'near me', 'online', or 'worldwide' for location-based variants"
+            )
+
+        prompt = f"""You are a local SEO expert. Generate 12 highly targeted search keywords for this business.
 
 Business: {business_name or business_type}
 Type: {business_type}
-Location: {location}
+Location: {location if has_location else "Not specified — treat as a worldwide/online business"}
 Products/Services: {snippet[:600] if snippet else 'Not specified'}
 
-Generate 12 local keywords a potential customer would type into Google to find this exact business.
+Generate 12 keywords a potential customer would type into Google to find this business.
+IMPORTANT: Never use placeholder text like [City], [Location], or [Place]. Use real words only.
 Cover a mix of:
 - "near me" searches
-- city + service combinations
-- "best", "affordable", "top" modifier searches  
-- specific service/product keywords
-- question-based local searches (e.g. "where to find X in {city}")
+- "best", "affordable", "top" modifier searches
+- Specific service/product keywords
+- {location_instruction}
 
 Return ONLY a JSON array, no explanation:
 [
@@ -2723,25 +2738,28 @@ Return ONLY a JSON array, no explanation:
             ai_keywords = _json.loads(raw)
             keywords = [
                 {
-                    "keyword": str(kw.get("keyword", "")),
+                    # Strip any leftover [City] / [Location] placeholders the AI ignored
+                    "keyword": re.sub(r'\[(?:City|Location|Place|Your City)[^\]]*\]', 'online', str(kw.get("keyword", ""))).strip(),
                     "location": location,
                     "difficulty": str(kw.get("difficulty", "medium")),
-                    "content_idea": str(kw.get("content_idea", "")),
+                    "content_idea": re.sub(r'\[(?:City|Location|Place|Your City)[^\]]*\]', location if has_location else 'online', str(kw.get("content_idea", ""))).strip(),
                     "note": "ai-generated",
                 }
                 for kw in ai_keywords if kw.get("keyword")
             ]
         except Exception:
             # Fallback to enriched templates if AI fails
+            loc_suffix = f" in {city}" if city else " online"
+            loc_label = city if city else "online"
             keywords = [
                 {"keyword": f"{business_type} near me", "location": location, "difficulty": "high", "content_idea": f"Why {business_name or business_type} Is the Best Choice Near You", "note": "suggested"},
-                {"keyword": f"{business_type} in {city}", "location": location, "difficulty": "medium", "content_idea": f"Top {business_type} Services in {city}", "note": "suggested"},
-                {"keyword": f"best {business_type} {city}", "location": location, "difficulty": "medium", "content_idea": f"Best {business_type} in {city}: What to Look For", "note": "suggested"},
-                {"keyword": f"affordable {business_type} {city}", "location": location, "difficulty": "low", "content_idea": f"Affordable {business_type} Options in {city}", "note": "suggested"},
-                {"keyword": f"{business_type} services {city}", "location": location, "difficulty": "medium", "content_idea": f"Complete Guide to {business_type} Services in {city}", "note": "suggested"},
-                {"keyword": f"top {business_type} {city}", "location": location, "difficulty": "medium", "content_idea": f"Top-Rated {business_type} Providers in {city}", "note": "suggested"},
-                {"keyword": f"{business_type} {city} reviews", "location": location, "difficulty": "low", "content_idea": f"What Customers Say About Our {business_type} in {city}", "note": "suggested"},
-                {"keyword": f"how to find {business_type} in {city}", "location": location, "difficulty": "low", "content_idea": f"How to Find the Right {business_type} in {city}", "note": "suggested"},
+                {"keyword": f"{business_type}{loc_suffix}", "location": location, "difficulty": "medium", "content_idea": f"Top {business_type} Services {loc_label.title()}", "note": "suggested"},
+                {"keyword": f"best {business_type} {loc_label}", "location": location, "difficulty": "medium", "content_idea": f"Best {business_type} {loc_label.title()}: What to Look For", "note": "suggested"},
+                {"keyword": f"affordable {business_type} {loc_label}", "location": location, "difficulty": "low", "content_idea": f"Affordable {business_type} Options {loc_label.title()}", "note": "suggested"},
+                {"keyword": f"{business_type} services{loc_suffix}", "location": location, "difficulty": "medium", "content_idea": f"Complete Guide to {business_type} Services {loc_label.title()}", "note": "suggested"},
+                {"keyword": f"top {business_type} {loc_label}", "location": location, "difficulty": "medium", "content_idea": f"Top-Rated {business_type} Providers {loc_label.title()}", "note": "suggested"},
+                {"keyword": f"{business_type} {loc_label} reviews", "location": location, "difficulty": "low", "content_idea": f"What Customers Say About Our {business_type} {loc_label.title()}", "note": "suggested"},
+                {"keyword": f"how to find {business_type}{loc_suffix}", "location": location, "difficulty": "low", "content_idea": f"How to Find the Right {business_type} {loc_label.title()}", "note": "suggested"},
             ]
         # ── Enrich with real search volumes (DataForSEO) ─────────────────────
         import os as _os
