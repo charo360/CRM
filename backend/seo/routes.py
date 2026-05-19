@@ -2686,11 +2686,10 @@ Only return the JSON array."""
 
     @router.get("/local/keywords")
     async def get_local_keywords(user=user_dep):
-        """Return AI-generated local keywords based on the user's business profile."""
+        """Return real searched keywords from DataForSEO seed expansion based on business profile."""
         tid = _tid(user)
         ctx = _seo_business_context(user)
         raw_location = ctx.get("location", "").strip()
-        # Treat placeholder/default values as "no location set"
         _no_location = {"your city", "city", "location", "", "not specified", "not set", "n/a", "none"}
         has_location = raw_location.lower() not in _no_location
         location = raw_location if has_location else "Worldwide"
@@ -2699,71 +2698,43 @@ Only return the JSON array."""
         snippet = ctx.get("context_snippet", "")
         city = location.split(",")[0].strip() if has_location else ""
 
-        if has_location:
-            location_instruction = (
-                f"- City + service combinations using '{city}' (real city name, no placeholders)\n"
-                f"- Question-based local searches like 'where to find X in {city}'"
-            )
-        else:
-            location_instruction = (
-                "- Online/worldwide searches (no city — do NOT use '[City]', '[Location]' or any placeholder)\n"
-                "- Use 'near me', 'online', or 'worldwide' for location-based variants"
-            )
-
-        prompt = f"""You are a local SEO expert. Generate 12 highly targeted search keywords for this business.
+        # ── Step 1: AI generates short seed phrases (2-3 words each) ─────────
+        seed_prompt = f"""You are an SEO keyword researcher. Generate 8 short seed keyword phrases for this business.
 
 Business: {business_name or business_type}
 Type: {business_type}
-Location: {location if has_location else "Not specified — treat as a worldwide/online business"}
-Products/Services: {snippet[:600] if snippet else 'Not specified'}
+Products/Services: {snippet[:500] if snippet else 'Not specified'}
 
-Generate 12 keywords a potential customer would type into Google to find this business.
-IMPORTANT: Never use placeholder text like [City], [Location], or [Place]. Use real words only.
-Cover a mix of:
-- "near me" searches
-- "best", "affordable", "top" modifier searches
-- Specific service/product keywords
-- {location_instruction}
+Rules:
+- Each seed MUST be 2-3 words MAXIMUM — short core phrases (e.g. "sick leave email", "leave letter template")
+- Focus on what this business SELLS or DOES — specific products, services, customer problems
+- Do NOT include city names or locations in the seeds
+- Do NOT include brand names or competitor names
+- Make seeds specific to this industry, not generic business terms
 
-Return ONLY a JSON array, no explanation:
-[
-  {{"keyword": "exact search phrase", "difficulty": "low|medium|high", "content_idea": "specific blog/page title to rank for this"}}
-]"""
+Return ONLY a JSON array of strings, no explanation:
+["seed phrase 1", "seed phrase 2", "seed phrase 3", "seed phrase 4", "seed phrase 5", "seed phrase 6", "seed phrase 7", "seed phrase 8"]"""
 
         import json as _json
+        seeds: list[str] = []
         try:
-            raw = await _call_ai(prompt, max_tokens=900)
+            raw = await _call_ai(seed_prompt, max_tokens=250)
             raw = raw.strip()
             if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
-            ai_keywords = _json.loads(raw)
-            keywords = [
-                {
-                    # Strip any leftover [City] / [Location] placeholders the AI ignored
-                    "keyword": re.sub(r'\[(?:City|Location|Place|Your City)[^\]]*\]', 'online', str(kw.get("keyword", ""))).strip(),
-                    "location": location,
-                    "difficulty": str(kw.get("difficulty", "medium")),
-                    "content_idea": re.sub(r'\[(?:City|Location|Place|Your City)[^\]]*\]', location if has_location else 'online', str(kw.get("content_idea", ""))).strip(),
-                    "note": "ai-generated",
-                }
-                for kw in ai_keywords if kw.get("keyword")
-            ]
-        except Exception:
-            # Fallback to enriched templates if AI fails
-            loc_suffix = f" in {city}" if city else " online"
-            loc_label = city if city else "online"
-            keywords = [
-                {"keyword": f"{business_type} near me", "location": location, "difficulty": "high", "content_idea": f"Why {business_name or business_type} Is the Best Choice Near You", "note": "suggested"},
-                {"keyword": f"{business_type}{loc_suffix}", "location": location, "difficulty": "medium", "content_idea": f"Top {business_type} Services {loc_label.title()}", "note": "suggested"},
-                {"keyword": f"best {business_type} {loc_label}", "location": location, "difficulty": "medium", "content_idea": f"Best {business_type} {loc_label.title()}: What to Look For", "note": "suggested"},
-                {"keyword": f"affordable {business_type} {loc_label}", "location": location, "difficulty": "low", "content_idea": f"Affordable {business_type} Options {loc_label.title()}", "note": "suggested"},
-                {"keyword": f"{business_type} services{loc_suffix}", "location": location, "difficulty": "medium", "content_idea": f"Complete Guide to {business_type} Services {loc_label.title()}", "note": "suggested"},
-                {"keyword": f"top {business_type} {loc_label}", "location": location, "difficulty": "medium", "content_idea": f"Top-Rated {business_type} Providers {loc_label.title()}", "note": "suggested"},
-                {"keyword": f"{business_type} {loc_label} reviews", "location": location, "difficulty": "low", "content_idea": f"What Customers Say About Our {business_type} {loc_label.title()}", "note": "suggested"},
-                {"keyword": f"how to find {business_type}{loc_suffix}", "location": location, "difficulty": "low", "content_idea": f"How to Find the Right {business_type} {loc_label.title()}", "note": "suggested"},
-            ]
-        # ── Enrich with real search volumes + volume trend (DataForSEO) ─────────
+            parsed = _json.loads(raw)
+            if isinstance(parsed, list):
+                seeds = [str(s).strip() for s in parsed if s and isinstance(s, str) and len(str(s).strip()) <= 50][:8]
+        except Exception as _se:
+            logger.warning("[local/keywords] AI seed generation failed: %s", _se)
+
+        if not seeds:
+            seeds = [business_type, f"{business_type} services", f"best {business_type}"]
+
+        logger.info("[local/keywords] AI seeds: %s", seeds)
+
+        # ── Step 2: DataForSEO expands seeds into real searched keywords ──────
         from seo.dataforseo import (
-            dfs_enabled, fetch_search_volumes_batch, fetch_keyword_meta_batch,
+            dfs_enabled, fetch_keywords_for_seeds, fetch_keyword_meta_batch,
             resolve_location_code, language_code_from_settings,
         )
 
@@ -2774,42 +2745,97 @@ Return ONLY a JSON array, no explanation:
         loc_code = resolve_location_code(country, country_code)
         lang_code = language_code_from_settings(primary_language)
 
+        keywords: list[dict] = []
+
         if dfs_enabled():
             try:
-                import re as _re_vol
+                dfs_results = await fetch_keywords_for_seeds(
+                    seeds,
+                    location_code=loc_code,
+                    language_code=lang_code,
+                    limit=25,
+                )
+                for r in dfs_results:
+                    vol = r.get("search_volume")
+                    kw = r.get("keyword", "")
+                    vol_display = f"~{vol:,} searches/mo" if vol else "no volume data"
+                    keywords.append({
+                        "keyword": kw,
+                        "location": location,
+                        "difficulty": r.get("difficulty", "medium"),
+                        "content_idea": f"Write an article targeting '{kw}' ({vol_display})",
+                        "search_volume": vol if vol else None,
+                        "volume_trend": None,
+                        "note": "dataforseo",
+                    })
+                logger.info("[local/keywords] DataForSEO expanded %d seeds → %d real keywords", len(seeds), len(keywords))
+            except Exception as _dfe:
+                logger.warning("[local/keywords] fetch_keywords_for_seeds failed: %s", _dfe)
+
+        # ── Step 2b: Enrich with volume trends via keyword meta batch ─────────
+        if keywords and dfs_enabled():
+            try:
                 kw_list = [k["keyword"] for k in keywords]
-
-                # Tier 1: exact keyword with user's location
                 meta_map = await fetch_keyword_meta_batch(kw_list, location_code=loc_code, language_code=lang_code)
-
-                # Tier 2: for keywords with no data, try global (no location filter)
-                # Long-tail phrases often lack regional data but have global data
-                no_data_kws = [k for k in kw_list if not (meta_map.get(k.lower().strip()) or {}).get("volume")]
-                if no_data_kws:
-                    global_meta = await fetch_keyword_meta_batch(no_data_kws, location_code=None, language_code=lang_code)
-                    for kw in no_data_kws:
-                        gm = global_meta.get(kw.lower().strip())
-                        if gm and gm.get("volume"):
-                            meta_map[kw.lower().strip()] = gm
-
-                # No base-phrase fallback — if DataForSEO has no data for the exact keyword,
-                # show None so the UI can display "N/A" honestly rather than a misleading number
                 for k in keywords:
                     meta = meta_map.get(k["keyword"].lower().strip()) or {}
-                    k["search_volume"] = meta.get("volume") or None
-                    k["volume_trend"] = meta.get("trend")  # "up" | "down" | "stable" | None
+                    if meta.get("trend"):
+                        k["volume_trend"] = meta["trend"]
+                    # Prefer meta volume if seed expansion returned 0
+                    if not k.get("search_volume") and meta.get("volume"):
+                        k["search_volume"] = meta["volume"]
+            except Exception as _te:
+                logger.warning("[local/keywords] volume trend enrichment failed: %s", _te)
 
-                with_vol = sum(1 for k in keywords if k.get("search_volume"))
-                logger.info("[local/keywords] volumes: %d/%d keywords have data", with_vol, len(keywords))
-            except Exception as _ve:
-                logger.warning("[local/keywords] DataForSEO volume fetch failed: %s", _ve)
+        # ── Fallback: AI-generated keyword list if DataForSEO unavailable ─────
+        if not keywords:
+            loc_suffix = f" in {city}" if city else " online"
+            loc_label = city if city else "online"
+            try:
+                fallback_prompt = f"""You are a local SEO expert. Generate 12 highly targeted search keywords for this business.
+
+Business: {business_name or business_type}
+Type: {business_type}
+Location: {location if has_location else "Worldwide/online"}
+Products/Services: {snippet[:500] if snippet else 'Not specified'}
+
+Generate 12 keywords a potential customer types into Google. NEVER use [City], [Location], or any placeholder text.
+Return ONLY a JSON array:
+[{{"keyword": "exact phrase", "difficulty": "low|medium|high", "content_idea": "article title to rank for this"}}]"""
+                raw2 = await _call_ai(fallback_prompt, max_tokens=800)
+                raw2 = raw2.strip()
+                if raw2.startswith("```"): raw2 = re.sub(r"```[a-z]*\n?", "", raw2).strip("`").strip()
+                ai_kws = _json.loads(raw2)
+                keywords = [
+                    {
+                        "keyword": re.sub(r'\[(?:City|Location|Place|Your City)[^\]]*\]', city or 'online', str(kw.get("keyword", ""))).strip(),
+                        "location": location,
+                        "difficulty": str(kw.get("difficulty", "medium")),
+                        "content_idea": re.sub(r'\[(?:City|Location|Place|Your City)[^\]]*\]', city or 'online', str(kw.get("content_idea", ""))).strip(),
+                        "search_volume": None,
+                        "volume_trend": None,
+                        "note": "ai-generated",
+                    }
+                    for kw in ai_kws if kw.get("keyword")
+                ]
+            except Exception:
+                loc_suffix = f" in {city}" if city else " online"
+                loc_label = city if city else "online"
+                keywords = [
+                    {"keyword": f"{business_type} near me", "location": location, "difficulty": "high", "content_idea": f"Why {business_name or business_type} Is the Best Choice Near You", "search_volume": None, "volume_trend": None, "note": "suggested"},
+                    {"keyword": f"{business_type}{loc_suffix}", "location": location, "difficulty": "medium", "content_idea": f"Top {business_type} Services {loc_label.title()}", "search_volume": None, "volume_trend": None, "note": "suggested"},
+                    {"keyword": f"best {business_type} {loc_label}", "location": location, "difficulty": "medium", "content_idea": f"Best {business_type} {loc_label.title()}: What to Look For", "search_volume": None, "volume_trend": None, "note": "suggested"},
+                    {"keyword": f"affordable {business_type} {loc_label}", "location": location, "difficulty": "low", "content_idea": f"Affordable {business_type} Options {loc_label.title()}", "search_volume": None, "volume_trend": None, "note": "suggested"},
+                ]
+
+        # Sort by volume descending so highest-opportunity keywords appear first
+        keywords.sort(key=lambda k: k.get("search_volume") or 0, reverse=True)
 
         # ── Enrich with tracked SERP positions ───────────────────────────────
         serp_rows = await db.seo_serp_rankings.find(
             {"user_id": tid}
         ).sort("checked_at", -1).to_list(2000)
 
-        # Build: keyword_lower → [positions sorted newest-first]
         pos_history: dict[str, list[int | None]] = {}
         for row in serp_rows:
             kw_key = (row.get("keyword") or "").lower().strip()
@@ -2821,17 +2847,17 @@ Return ONLY a JSON array, no explanation:
             kw_key = k["keyword"].lower().strip()
             history = pos_history.get(kw_key, [])
             latest = next((p for p in history if p is not None), None)
-            k["position"] = latest  # None = not tracked yet
+            k["position"] = latest
 
-            # Trend: compare latest vs previous non-null position
             non_null = [p for p in history if p is not None]
             if len(non_null) >= 2:
-                diff = non_null[0] - non_null[1]  # negative = moved up (improved)
+                diff = non_null[0] - non_null[1]
                 k["trend"] = "up" if diff < 0 else ("down" if diff > 0 else "stable")
             else:
                 k["trend"] = "new" if latest is not None else "untracked"
 
-        return {"keywords": keywords, "source": "ai_generated"}
+        source = "dataforseo_seeds" if any(k.get("note") == "dataforseo" for k in keywords) else "ai_generated"
+        return {"keywords": keywords, "source": source}
 
     @router.get("/local/competitors")
     async def get_local_competitors(user=user_dep):

@@ -58,6 +58,7 @@ export default function LocalSEO() {
   const [showTrackModal, setShowTrackModal] = useState(false);
   const [trackingInProgress, setTrackingInProgress] = useState<string | null>(null);
   const [trackResult, setTrackResult] = useState<{ position: number | null; error?: string } | null>(null);
+  const [keywordsSource, setKeywordsSource] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -74,6 +75,7 @@ export default function LocalSEO() {
         if (cancelled) return;
         setListings((listingsData.listings || []) as unknown as LocalListing[]);
         setLocalKeywords((keywordsData.keywords || []) as unknown as LocalKeyword[]);
+        setKeywordsSource((keywordsData as Record<string, unknown>).source as string || "");
         setCompetitors((competitorsData.competitors || []) as unknown as CompetitorListing[]);
         setLocalScore(scoreData);
         if (ctxData?.website_url) {
@@ -367,7 +369,17 @@ export default function LocalSEO() {
 
       {/* Local Keyword Rankings */}
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h3 className="text-lg font-semibold text-slate-800 mb-4">Local Keyword Rankings</h3>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-800">Keyword Opportunities</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Keywords people in your industry actually search for — sorted by monthly volume</p>
+          </div>
+          {keywordsSource === "dataforseo_seeds" && (
+            <span className="text-xs bg-green-50 text-green-700 border border-green-200 px-2 py-1 rounded-full font-medium">
+              Real search data
+            </span>
+          )}
+        </div>
         
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -386,7 +398,15 @@ export default function LocalSEO() {
               {localKeywords.map((keyword, index) => (
                 <tr key={index} className="border-b border-slate-50 hover:bg-slate-50">
                   <td className="py-3 px-2">
-                    <span className="font-medium text-slate-800">{keyword.keyword}</span>
+                    <span
+                      className="font-medium text-slate-800 cursor-help"
+                      title={keyword.content_idea || keyword.keyword}
+                    >
+                      {keyword.keyword}
+                    </span>
+                    {keyword.content_idea && (
+                      <div className="text-xs text-slate-400 mt-0.5 truncate max-w-[220px]">{keyword.content_idea}</div>
+                    )}
                   </td>
                   <td className="text-center py-3">
                     <span className="text-sm text-slate-600">{keyword.location}</span>
