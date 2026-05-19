@@ -407,10 +407,11 @@ export default function LocalSEO() {
                   <td className="text-center py-3">
                     {(() => {
                       const vol = keyword.search_volume ?? keyword.searchVolume ?? null;
-                      if (vol == null) return <span className="text-xs text-slate-400 italic">–</span>;
-                      if (vol === 0) return <span className="text-xs text-slate-400" title="Volume too low to measure or location-specific">{"< 10"}</span>;
-                      if (vol < 100) return <span className="font-medium text-slate-600">{vol.toLocaleString()}</span>;
-                      return <span className="font-medium text-slate-800">{vol.toLocaleString()}</span>;
+                      if (vol == null || vol === 0)
+                        return <span className="text-xs text-slate-400 italic" title="Google Ads has no volume data for this exact keyword phrase">N/A</span>;
+                      if (vol < 100) return <span className="font-medium text-slate-500">{vol.toLocaleString()}</span>;
+                      if (vol < 1000) return <span className="font-medium text-slate-700">{vol.toLocaleString()}</span>;
+                      return <span className="font-bold text-slate-800">{vol.toLocaleString()}</span>;
                     })()}
                   </td>
                   <td className="text-center py-3">

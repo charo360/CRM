@@ -2779,47 +2779,24 @@ Return ONLY a JSON array, no explanation:
                 import re as _re_vol
                 kw_list = [k["keyword"] for k in keywords]
 
-                # Use fetch_keyword_meta_batch — returns volume + volume trend in one call
+                # Tier 1: exact keyword with user's location
                 meta_map = await fetch_keyword_meta_batch(kw_list, location_code=loc_code, language_code=lang_code)
 
-                # For zero-volume keywords try global (no location) — local phrases often
-                # have no regional data but show up globally
-                zero_kws = [k for k in kw_list if not (meta_map.get(k.lower().strip()) or {}).get("volume")]
-                if zero_kws:
-                    global_meta = await fetch_keyword_meta_batch(zero_kws, location_code=None, language_code=lang_code)
-                    for kw in zero_kws:
+                # Tier 2: for keywords with no data, try global (no location filter)
+                # Long-tail phrases often lack regional data but have global data
+                no_data_kws = [k for k in kw_list if not (meta_map.get(k.lower().strip()) or {}).get("volume")]
+                if no_data_kws:
+                    global_meta = await fetch_keyword_meta_batch(no_data_kws, location_code=None, language_code=lang_code)
+                    for kw in no_data_kws:
                         gm = global_meta.get(kw.lower().strip())
                         if gm and gm.get("volume"):
                             meta_map[kw.lower().strip()] = gm
 
-                # For still-zero keywords strip modifiers and look up the base phrase.
-                # We try progressively — first strip adjectives/location words, then
-                # also strip content-type nouns, until we find a phrase with volume.
-                # e.g. "free sick leave email templates" → "sick leave email" → 8100/mo
-                _modifier_re = _re_vol.compile(
-                    r'\b(near me|in \w+|best|top|affordable|cheap|free|local|online|'
-                    r'professional|custom|easy|quick|simple|perfect|great|official|'
-                    r'templates?|examples?|samples?|generator|maker|tool|guide|tips?|'
-                    r'services?|provider|near|around|close to)\b', _re_vol.I
-                )
-                still_zero = [k for k in kw_list if not (meta_map.get(k.lower().strip()) or {}).get("volume")]
-                if still_zero:
-                    base_map: dict[str, str] = {}
-                    for kw in still_zero:
-                        base = _modifier_re.sub("", kw).strip()
-                        base = _re_vol.sub(r'\s{2,}', ' ', base).strip()
-                        if base and base.lower() != kw.lower() and len(base.split()) >= 2:
-                            base_map[base] = kw
-                    if base_map:
-                        base_meta = await fetch_keyword_meta_batch(list(base_map.keys()), location_code=loc_code, language_code=lang_code)
-                        for base, orig in base_map.items():
-                            bm = base_meta.get(base.lower().strip())
-                            if bm and bm.get("volume"):
-                                meta_map[orig.lower().strip()] = bm
-
+                # No base-phrase fallback — if DataForSEO has no data for the exact keyword,
+                # show None so the UI can display "N/A" honestly rather than a misleading number
                 for k in keywords:
                     meta = meta_map.get(k["keyword"].lower().strip()) or {}
-                    k["search_volume"] = meta.get("volume") or 0
+                    k["search_volume"] = meta.get("volume") or None
                     k["volume_trend"] = meta.get("trend")  # "up" | "down" | "stable" | None
 
                 with_vol = sum(1 for k in keywords if k.get("search_volume"))
