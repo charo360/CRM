@@ -10718,14 +10718,14 @@ async def shopify_oauth_callback(
         from starlette.responses import RedirectResponse
         return RedirectResponse(url=error_redirect + "invalid_state")
 
-    # 3. Exchange code for access token
+    # 3. Exchange code for access token (expiring=1 → gets expiring offline token)
     import httpx as _httpx
     try:
         async with _httpx.AsyncClient(timeout=15.0) as _c:
             r = await _c.post(
                 f"https://{shop}/admin/oauth/access_token",
-                json={"client_id": client_id, "client_secret": client_secret, "code": code},
-                headers={"Content-Type": "application/json"},
+                data={"client_id": client_id, "client_secret": client_secret, "code": code, "expiring": "1"},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
     except Exception as exc:
         logging.error(f"[shopify-oauth] Token exchange failed: {exc}")
@@ -10748,7 +10748,21 @@ async def shopify_oauth_callback(
         from starlette.responses import RedirectResponse
         return RedirectResponse(url=error_redirect + "no_token")
 
-    # 4. Store credentials in MongoDB (same fields as connect-direct)
+    refresh_token = token_data.get("refresh_token", "")
+    import time as _time
+    now_ts = int(_time.time())
+    expires_in = int(token_data.get("expires_in") or 3600)
+    refresh_expires_in = int(token_data.get("refresh_token_expires_in") or 7776000)
+    token_fields = {
+        "shopify_domain": shop,
+        "shopify_token": access_token,
+        "shopify_token_expires_at": now_ts + expires_in,
+    }
+    if refresh_token:
+        token_fields["shopify_refresh_token"] = refresh_token
+        token_fields["shopify_refresh_token_expires_at"] = now_ts + refresh_expires_in
+
+    # 4. Store credentials in MongoDB
     import bson
     try:
         oid = bson.ObjectId(user_id)
@@ -10760,7 +10774,7 @@ async def shopify_oauth_callback(
 
     await db.users.update_one(
         query,
-        {"$set": {"shopify_domain": shop, "shopify_token": access_token}},
+        {"$set": token_fields},
     )
 
     # Refresh composio_service DB reference so calls work immediately

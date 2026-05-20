@@ -64,17 +64,79 @@ async def _get_shopify_direct_creds(user_id: str) -> Optional[Dict[str, str]]:
         query = {"$or": [{"business_id": user_id}]}
         if oid:
             query["$or"].append({"_id": oid})
-        user = await _db.users.find_one(query, {"shopify_domain": 1, "shopify_token": 1})
+        user = await _db.users.find_one(
+            query,
+            {"shopify_domain": 1, "shopify_token": 1,
+             "shopify_token_expires_at": 1, "shopify_refresh_token": 1,
+             "shopify_refresh_token_expires_at": 1},
+        )
         if not user:
             return None
         domain = (user.get("shopify_domain") or "").strip()
         token  = (user.get("shopify_token")  or "").strip()
         if domain and token:
-            return {"domain": domain, "token": token}
+            return {
+                "domain": domain,
+                "token": token,
+                "expires_at": user.get("shopify_token_expires_at"),
+                "refresh_token": user.get("shopify_refresh_token") or "",
+                "refresh_token_expires_at": user.get("shopify_refresh_token_expires_at"),
+                "user_query": query,
+            }
         return None
     except Exception as exc:
         logger.warning("[shopify-direct] _get_shopify_direct_creds error: %s", exc)
         return None
+
+
+async def _shopify_refresh_access_token(creds: Dict[str, Any]) -> Optional[str]:
+    """Use the refresh token to get a new expiring access token and persist it."""
+    refresh_token = creds.get("refresh_token", "")
+    if not refresh_token or _db is None:
+        return None
+    import os as _os, time as _time
+    client_id = _os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = _os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        return None
+    domain = creds["domain"]
+    shop = domain.replace("https://", "").replace("http://", "").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as _hc:
+            r = await _hc.post(
+                f"https://{shop}/admin/oauth/access_token",
+                data={"client_id": client_id, "client_secret": client_secret,
+                      "grant_type": "refresh_token", "refresh_token": refresh_token},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except Exception as exc:
+        logger.warning("[shopify-refresh] HTTP error: %s", exc)
+        return None
+    if r.status_code != 200:
+        logger.warning("[shopify-refresh] Failed %s: %s", r.status_code, r.text[:200])
+        return None
+    try:
+        data = r.json()
+    except Exception:
+        return None
+    new_token = data.get("access_token", "")
+    if not new_token:
+        return None
+    now_ts = int(_time.time())
+    update_fields: Dict[str, Any] = {
+        "shopify_token": new_token,
+        "shopify_token_expires_at": now_ts + int(data.get("expires_in") or 3600),
+    }
+    new_refresh = data.get("refresh_token", "")
+    if new_refresh:
+        update_fields["shopify_refresh_token"] = new_refresh
+        update_fields["shopify_refresh_token_expires_at"] = now_ts + int(data.get("refresh_token_expires_in") or 7776000)
+    try:
+        await _db.users.update_one(creds["user_query"], {"$set": update_fields})
+    except Exception as exc:
+        logger.warning("[shopify-refresh] DB update error: %s", exc)
+    logger.info("[shopify-refresh] Token refreshed for shop=%s", shop)
+    return new_token
 
 
 async def _shopify_direct_proxy(
@@ -1303,10 +1365,18 @@ async def composio_proxy(
         creds = await _get_shopify_direct_creds(user_id)
         if not creds:
             raise RuntimeError(
-                "Shopify is not connected. Go to the Shopify page and enter your store domain and Admin API token."
+                "Shopify is not connected. Go to the Shopify page and connect your store."
             )
+        token = creds["token"]
+        # Auto-refresh if expiring token is expired (or expires within 60s)
+        import time as _time
+        expires_at = creds.get("expires_at")
+        if expires_at and int(_time.time()) >= int(expires_at) - 60:
+            refreshed = await _shopify_refresh_access_token(creds)
+            if refreshed:
+                token = refreshed
         return await _shopify_direct_proxy(
-            creds["domain"], creds["token"], method, path,
+            creds["domain"], token, method, path,
             params=params, json=json, timeout=timeout,
         )
 
