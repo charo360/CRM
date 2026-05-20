@@ -396,7 +396,7 @@ export async function GET(req: NextRequest) {
 
     // ── Low stock check ─────────────────────────────────────────────────────
     if (action === "low_stock") {
-      const threshold = parseInt(url.searchParams.get("threshold") ?? "5");
+      const threshold = parseInt(sp.get("threshold") ?? "5");
       const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/products.json`, {
         limit: "250", status: "active", fields: "id,title,variants",
       }) as { products: { id: number; title: string; variants: { id: number; title: string; sku: string; inventory_quantity: number }[] }[] };
