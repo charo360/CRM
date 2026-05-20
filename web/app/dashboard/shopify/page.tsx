@@ -142,8 +142,8 @@ function NoShopify({
 }) {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-8 py-16">
-      <div className="w-16 h-16 rounded-2xl bg-[#96bf48]/10 border border-[#96bf48]/20 flex items-center justify-center">
-        <ShoppingBag size={28} className="text-[#96bf48]" />
+      <div className="w-16 h-16 rounded-2xl bg-brand/10 border border-brand/20 flex items-center justify-center">
+        <ShoppingBag size={28} className="text-brand" />
       </div>
       <div>
         <p className="font-bold text-slate-200 text-base">Connect your Shopify store</p>
@@ -156,7 +156,7 @@ function NoShopify({
       <div className="w-full max-w-sm space-y-3 text-left">
         <div>
           <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5 block">Store name</label>
-          <div className="flex items-center bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-[#96bf48] transition-all">
+          <div className="flex items-center bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-brand transition-all">
             <input
               value={shop}
               onChange={(e) => setShop(e.target.value.replace(/\.myshopify\.com.*/, ""))}
@@ -171,7 +171,7 @@ function NoShopify({
         <button
           onClick={onOAuth}
           disabled={connecting || !shop.trim()}
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#96bf48] hover:bg-[#7da33a] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand hover:bg-brand-dark disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
         >
           {connecting ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
           {connecting ? "Connecting…" : "Connect with Shopify"}
@@ -1712,8 +1712,8 @@ function ShopifyPageInner() {
     <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden">
       {/* Header */}
       <div className="px-5 py-3 border-b border-slate-800 bg-slate-900/80 flex items-center gap-3">
-        <div className="w-6 h-6 rounded-lg bg-[#96bf48]/20 flex items-center justify-center">
-          <ShoppingBag size={13} className="text-[#96bf48]" />
+        <div className="w-6 h-6 rounded-lg bg-brand/20 flex items-center justify-center">
+          <ShoppingBag size={13} className="text-brand" />
         </div>
         <span className="font-semibold text-sm">Shopify</span>
         <span className="text-[10px] text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded-full border border-emerald-800/30">Connected</span>
