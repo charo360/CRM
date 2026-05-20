@@ -1062,6 +1062,24 @@ export const payheroApi = {
     ),
 };
 
+// ── Supplier connections (CJ + AliExpress per-user credentials) ──────────────
+export interface SupplierConnections {
+  cj: boolean;
+  aliexpress: boolean;
+}
+
+export const supplierApi = {
+  connections: () => api.get<SupplierConnections>("/supplier-connections"),
+  connectCJ: (email: string, api_key: string) =>
+    api.post<{ connected: boolean }>("/supplier-connections/cj", { email, api_key }),
+  disconnectCJ: () =>
+    api.delete<{ connected: boolean }>("/supplier-connections/cj"),
+  connectAliExpress: (app_key: string, app_secret: string, access_token: string) =>
+    api.post<{ connected: boolean }>("/supplier-connections/aliexpress", { app_key, app_secret, access_token }),
+  disconnectAliExpress: () =>
+    api.delete<{ connected: boolean }>("/supplier-connections/aliexpress"),
+};
+
 // ── Assistant ────────────────────────────────────────────────────────────────
 export interface AssistantModel {
   id: string;

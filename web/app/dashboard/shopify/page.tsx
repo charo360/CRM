@@ -364,6 +364,24 @@ function OverviewTab({ period, setPeriod }: { period: Period; setPeriod: (p: Per
 
 // ── Orders tab ────────────────────────────────────────────────────────────────
 
+type CJOrderStatus = {
+  found: boolean;
+  cj_order_num?: string;
+  status?: string;
+  tracking_num?: string | null;
+  carrier?: string | null;
+};
+
+const CJ_STATUS_LABELS: Record<string, string> = {
+  created:          "Sent to CJ",
+  IN_PRODUCTION:    "In Production",
+  PICKED:           "Picked",
+  PACKED:           "Packed",
+  IN_TRANSIT:       "Shipped",
+  DELIVERED:        "Delivered",
+  synced_to_shopify:"Tracking Synced",
+};
+
 function OrdersTab() {
   const [orders, setOrders] = useState<ShopifyOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -372,6 +390,10 @@ function OrdersTab() {
   const [searchInput, setSearchInput] = useState("");
   const [selected, setSelected] = useState<ShopifyOrder | null>(null);
   const [acting, setActing] = useState<string | null>(null);
+  const [cjStatus, setCjStatus] = useState<CJOrderStatus | null>(null);
+  const [cjFulfilling, setCjFulfilling] = useState(false);
+  const [aeOrderStatus, setAeOrderStatus] = useState<CJOrderStatus | null>(null);
+  const [aeFulfilling, setAeFulfilling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -386,6 +408,64 @@ function OrdersTab() {
   }, [fulfillmentFilter, search]);
 
   useEffect(() => { load(); }, [load]);
+
+  async function loadCjStatus(orderId: string) {
+    setCjStatus(null);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/cj/order-status/${orderId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) setCjStatus(await r.json() as CJOrderStatus);
+    } catch { /* silent */ }
+  }
+
+  async function loadAeStatus(orderId: string) {
+    setAeOrderStatus(null);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/aliexpress/order-status/${orderId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) setAeOrderStatus(await r.json() as CJOrderStatus);
+    } catch { /* silent */ }
+  }
+
+  async function fulfillViaAE(order: ShopifyOrder) {
+    setAeFulfilling(true);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/aliexpress/fulfill/${order.id}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json() as { success?: boolean; ae_order_id?: string; detail?: string };
+      if (!r.ok) throw new Error(data.detail || "AliExpress fulfillment failed");
+      toast.success(`Order sent to AliExpress! Ref: ${data.ae_order_id}`);
+      await loadAeStatus(String(order.id));
+    } catch (e) { toast.error(e instanceof Error ? e.message : "AliExpress fulfillment failed"); }
+    finally { setAeFulfilling(false); }
+  }
+
+  async function fulfillViaCJ(order: ShopifyOrder) {
+    setCjFulfilling(true);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/cj/fulfill/${order.id}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json() as { success?: boolean; cj_order_num?: string; detail?: string };
+      if (!r.ok) throw new Error(data.detail || "CJ fulfillment failed");
+      toast.success(`Order sent to CJ! Ref: ${data.cj_order_num}`);
+      await loadCjStatus(String(order.id));
+    } catch (e) { toast.error(e instanceof Error ? e.message : "CJ fulfillment failed"); }
+    finally { setCjFulfilling(false); }
+  }
 
   async function fulfill(order: ShopifyOrder) {
     setActing(String(order.id));
@@ -473,7 +553,12 @@ function OrdersTab() {
                 {orders.map((o) => (
                   <tr
                     key={o.id}
-                    onClick={() => setSelected(selected?.id === o.id ? null : o)}
+                    onClick={() => {
+                      const next = selected?.id === o.id ? null : o;
+                      setSelected(next);
+                      if (next) { loadCjStatus(String(next.id)); loadAeStatus(String(next.id)); }
+                      else { setCjStatus(null); setAeOrderStatus(null); }
+                    }}
                     className={cn("border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer", selected?.id === o.id && "bg-slate-100")}
                   >
                     <td className="px-4 py-3 font-semibold text-brand">{o.name}</td>
@@ -590,17 +675,88 @@ function OrdersTab() {
               </div>
             )}
             <p className="text-[10px] text-slate-600">Placed {fmtDateTime(selected.created_at)}</p>
+
+            {/* AliExpress Fulfillment Status */}
+            {aeOrderStatus?.found && (
+              <div className="border border-slate-200 rounded-xl p-3 space-y-1.5">
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">AliExpress</p>
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded-full border",
+                    aeOrderStatus.status === "FINISH" || aeOrderStatus.status === "synced_to_shopify"
+                      ? "bg-emerald-50 text-emerald-600 border-emerald-200"
+                      : aeOrderStatus.status === "PLACE_ORDER_SUCCESS" || aeOrderStatus.status === "IN_CANCEL"
+                        ? "bg-blue-50 text-blue-600 border-blue-200"
+                        : "bg-amber-50 text-amber-600 border-amber-200"
+                  )}>
+                    {aeOrderStatus.status === "FINISH" ? "Delivered"
+                      : aeOrderStatus.status === "PLACE_ORDER_SUCCESS" ? "Shipped"
+                      : aeOrderStatus.status === "synced_to_shopify" ? "Tracking Synced"
+                      : aeOrderStatus.status ?? "Sent"}
+                  </span>
+                  <span className="text-[10px] text-slate-500">{aeOrderStatus.ae_order_id ?? aeOrderStatus.cj_order_num}</span>
+                </div>
+                {aeOrderStatus.tracking_num && (
+                  <p className="text-[10px] text-slate-500">{aeOrderStatus.carrier} · <span className="font-mono text-slate-700">{aeOrderStatus.tracking_num}</span></p>
+                )}
+              </div>
+            )}
+
+            {/* CJ Fulfillment Status */}
+            {cjStatus?.found && (
+              <div className="border border-slate-200 rounded-xl p-3 space-y-1.5">
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">CJ Dropshipping</p>
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded-full border",
+                    cjStatus.status === "DELIVERED" || cjStatus.status === "synced_to_shopify"
+                      ? "bg-emerald-50 text-emerald-600 border-emerald-200"
+                      : cjStatus.status === "IN_TRANSIT" || cjStatus.status === "PACKED" || cjStatus.status === "PICKED"
+                        ? "bg-blue-50 text-blue-600 border-blue-200"
+                        : "bg-amber-50 text-amber-600 border-amber-200"
+                  )}>
+                    {CJ_STATUS_LABELS[cjStatus.status ?? ""] ?? cjStatus.status}
+                  </span>
+                  <span className="text-[10px] text-slate-500">{cjStatus.cj_order_num}</span>
+                </div>
+                {cjStatus.tracking_num && (
+                  <div>
+                    <p className="text-[10px] text-slate-500">{cjStatus.carrier} · <span className="font-mono text-slate-700">{cjStatus.tracking_num}</span></p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
           {/* Actions */}
           <div className="px-4 pb-4 space-y-2 border-t border-slate-200 pt-3">
+            {/* Fulfill buttons — CJ and AliExpress for paid unfulfilled orders */}
+            {selected.financial_status === "paid" && !selected.fulfillment_status && !cjStatus?.found && (
+              <button
+                onClick={() => fulfillViaCJ(selected)}
+                disabled={cjFulfilling}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+              >
+                {cjFulfilling ? <><Loader2 size={13} className="animate-spin" /> Sending to CJ…</> : <><Package size={13} /> Fulfill via CJ</>}
+              </button>
+            )}
+            {selected.financial_status === "paid" && !selected.fulfillment_status && !aeOrderStatus?.found && (
+              <button
+                onClick={() => fulfillViaAE(selected)}
+                disabled={aeFulfilling}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+              >
+                {aeFulfilling ? <><Loader2 size={13} className="animate-spin" /> Sending to AliExpress…</> : <><TrendingUp size={13} /> Fulfill via AliExpress</>}
+              </button>
+            )}
             {!selected.fulfillment_status && selected.financial_status === "paid" && (
               <button
                 onClick={() => fulfill(selected)}
                 disabled={acting === String(selected.id)}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-100 hover:bg-emerald-50 text-emerald-700 text-xs font-medium border border-slate-200 hover:border-emerald-200 disabled:opacity-50 transition-colors"
               >
                 {acting === String(selected.id) ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                Mark as Fulfilled
+                Mark Fulfilled (manual)
               </button>
             )}
             {selected.financial_status !== "refunded" && !selected.fulfillment_status && (
@@ -620,6 +776,33 @@ function OrdersTab() {
 }
 
 // ── Products tab ──────────────────────────────────────────────────────────────
+
+// ── CJdropshipping types ──────────────────────────────────────────────────────
+type CJProduct = {
+  cj_pid: string;
+  title: string;
+  category: string;
+  cost_price: number;
+  suggested_price: number;
+  image_url: string;
+  is_free_shipping: boolean;
+  supplier: string;
+  listed_count: number;
+};
+
+// ── AliExpress types ──────────────────────────────────────────────────────────
+type AEProduct = {
+  ae_pid: string;
+  title: string;
+  category: string;
+  cost_price: number;
+  suggested_price: number;
+  image_url: string;
+  orders_count: number;
+  shipping_time: string;
+  store_name: string;
+  detail_url: string;
+};
 
 // ── AI Product Finder types ───────────────────────────────────────────────────
 type ProductSuggestion = {
@@ -697,8 +880,13 @@ function ProductsTab() {
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
 
+  // ── Bulk delete state ────────────────────────────────────────────────────────
+  const [selectedProducts, setSelectedProducts] = useState<Set<number>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
   // ── AI finder state ─────────────────────────────────────────────────────────
   const [finderOpen, setFinderOpen] = useState(false);
+  const [finderTab, setFinderTab] = useState<"ai" | "cj" | "ae">("ai");
   const [category, setCategory] = useState("");
   const [keywords, setKeywords] = useState("");
   const [count, setCount] = useState<number>(8);
@@ -707,6 +895,26 @@ function ProductsTab() {
   const [suggestions, setSuggestions] = useState<ProductSuggestion[]>([]);
   const [addingIdx, setAddingIdx] = useState<number | null>(null);
   const [addedIdxs, setAddedIdxs] = useState<Set<number>>(new Set());
+
+  // ── Shared sourcing state ───────────────────────────────────────────────────
+  const [srcKeyword, setSrcKeyword] = useState("");
+  const [srcMaxPrice, setSrcMaxPrice] = useState("");
+
+  // ── CJ source state ──────────────────────────────────────────────────────────
+  const [cjKeyword, setCjKeyword] = useState("");
+  const [cjMaxPrice, setCjMaxPrice] = useState("");
+  const [cjSearching, setCjSearching] = useState(false);
+  const [cjResults, setCjResults] = useState<CJProduct[]>([]);
+  const [cjImportingIdx, setCjImportingIdx] = useState<number | null>(null);
+  const [cjImportedIdxs, setCjImportedIdxs] = useState<Set<number>>(new Set());
+
+  // ── AliExpress source state ──────────────────────────────────────────────────
+  const [aeKeyword, setAeKeyword] = useState("");
+  const [aeMaxPrice, setAeMaxPrice] = useState("");
+  const [aeSearching, setAeSearching] = useState(false);
+  const [aeResults, setAeResults] = useState<AEProduct[]>([]);
+  const [aeImportingIdx, setAeImportingIdx] = useState<number | null>(null);
+  const [aeImportedIdxs, setAeImportedIdxs] = useState<Set<number>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -751,6 +959,135 @@ function ProductsTab() {
       await load();
     } catch (e) { toast.error(e instanceof Error ? e.message : "Failed"); }
     finally { setSaving(false); }
+  }
+
+  async function bulkDelete() {
+    if (!selectedProducts.size) return;
+    if (!confirm(`Delete ${selectedProducts.size} product${selectedProducts.size > 1 ? "s" : ""}? This cannot be undone.`)) return;
+    setBulkDeleting(true);
+    try {
+      const res = await shopPost({
+        action: "bulk_delete_products",
+        productIds: [...selectedProducts].map(String),
+      }) as { ok: boolean; deleted: number; failed: number };
+      if (res.failed > 0) {
+        toast.error(`${res.failed} product(s) failed to delete`);
+      } else {
+        toast.success(`${res.deleted} product${res.deleted > 1 ? "s" : ""} deleted`);
+      }
+      setSelectedProducts(new Set());
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
+  async function searchCJ(keywordOverride?: string) {
+    const kw = keywordOverride ?? srcKeyword ?? cjKeyword;
+    if (!kw.trim()) { toast.error("Enter a search keyword"); return; }
+    if (keywordOverride) { setSrcKeyword(keywordOverride); setCjKeyword(keywordOverride); }
+    const maxP = srcMaxPrice || cjMaxPrice;
+    setCjSearching(true);
+    setCjResults([]);
+    setCjImportedIdxs(new Set());
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const params = new URLSearchParams({ keyword: kw, page_size: "20" });
+      if (maxP) params.set("max_price", maxP);
+      const r = await fetch(`${apiBase}/cj/products?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json() as { products: CJProduct[]; total: number };
+      setCjResults(data.products ?? []);
+      if (!data.products?.length) toast.info("No products found — try different keywords");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "CJ search failed");
+    } finally {
+      setCjSearching(false);
+    }
+  }
+
+  async function importFromCJ(p: CJProduct, idx: number) {
+    setCjImportingIdx(idx);
+    try {
+      await shopPost({
+        action: "create_product",
+        product: {
+          title:        p.title,
+          description:  `Sourced from CJdropshipping. Category: ${p.category}`,
+          vendor:       p.supplier || "CJdropshipping",
+          product_type: p.category,
+          price:        String(p.suggested_price),
+          compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
+          tags:         `dropship,cj,${p.category.toLowerCase()}`,
+          variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+        },
+      });
+      setCjImportedIdxs((prev) => new Set(prev).add(idx));
+      toast.success(`"${p.title.slice(0, 40)}" added to Shopify`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setCjImportingIdx(null);
+    }
+  }
+
+  async function searchAE(keywordOverride?: string) {
+    const kw = keywordOverride ?? srcKeyword ?? aeKeyword;
+    if (!kw.trim()) { toast.error("Enter a search keyword"); return; }
+    if (keywordOverride) { setSrcKeyword(keywordOverride); setAeKeyword(keywordOverride); }
+    const maxP = srcMaxPrice || aeMaxPrice;
+    setAeSearching(true);
+    setAeResults([]);
+    setAeImportedIdxs(new Set());
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const params = new URLSearchParams({ keyword: kw, page_size: "20" });
+      if (maxP) params.set("max_price", maxP);
+      const r = await fetch(`${apiBase}/ae/products?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json() as { products: AEProduct[]; total: number };
+      setAeResults(data.products ?? []);
+      if (!data.products?.length) toast.info("No products found — try different keywords");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "AliExpress search failed");
+    } finally {
+      setAeSearching(false);
+    }
+  }
+
+  async function importFromAE(p: AEProduct, idx: number) {
+    setAeImportingIdx(idx);
+    try {
+      await shopPost({
+        action: "create_product",
+        product: {
+          title:        p.title,
+          description:  `Sourced from AliExpress. Category: ${p.category}`,
+          vendor:       p.store_name || "AliExpress",
+          product_type: p.category,
+          price:        String(p.suggested_price),
+          compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
+          tags:         `dropship,aliexpress,${p.category.toLowerCase()}`,
+          variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+        },
+      });
+      setAeImportedIdxs((prev) => new Set(prev).add(idx));
+      toast.success(`"${p.title.slice(0, 40)}" added to Shopify`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setAeImportingIdx(null);
+    }
   }
 
   async function handleGenerate() {
@@ -808,6 +1145,16 @@ function ProductsTab() {
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products…" className="bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none w-36" />
         </div>
         <span className="text-xs text-slate-600">{filtered.length} products</span>
+        {selectedProducts.size > 0 && (
+          <button
+            onClick={() => void bulkDelete()}
+            disabled={bulkDeleting}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-500 text-white disabled:opacity-50 transition-colors"
+          >
+            {bulkDeleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+            Delete {selectedProducts.size} selected
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <button onClick={load} className="p-1.5 text-slate-500 hover:text-slate-700"><RefreshCw size={13} /></button>
           <button
@@ -828,7 +1175,30 @@ function ProductsTab() {
       {/* AI Product Finder Panel */}
       {finderOpen && (
         <div className="border-b border-slate-200 bg-slate-50">
+          {/* Tab switcher */}
+          <div className="flex items-center gap-1 px-4 pt-3 pb-0">
+            <button
+              onClick={() => setFinderTab("ai")}
+              className={cn(
+                "px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-b-2",
+                finderTab === "ai" ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <span className="flex items-center gap-1.5"><Sparkles size={11} /> AI Ideas</span>
+            </button>
+            <button
+              onClick={() => setFinderTab(finderTab === "ae" ? "ae" : "cj")}
+              className={cn(
+                "px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-b-2",
+                (finderTab === "cj" || finderTab === "ae") ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <span className="flex items-center gap-1.5"><Package size={11} /> Source Products</span>
+            </button>
+          </div>
+
           {/* Config row */}
+          {finderTab === "ai" && <>
           <div className="px-4 pt-4 pb-3 flex flex-wrap gap-3 items-end">
             <div className="flex flex-col gap-1">
               <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Store Category / Niche</label>
@@ -880,7 +1250,7 @@ function ProductsTab() {
           </div>
 
           {/* Generating skeleton */}
-          {generating && (
+          {finderTab === "ai" && generating && (
             <div className="px-4 pb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: count > 8 ? 4 : count > 4 ? 3 : 2 }).map((_, i) => (
                 <div key={i} className="bg-slate-100 rounded-2xl p-4 animate-pulse flex flex-col gap-2">
@@ -895,7 +1265,7 @@ function ProductsTab() {
           )}
 
           {/* Suggestions grid */}
-          {!generating && suggestions.length > 0 && (
+          {finderTab === "ai" && !generating && suggestions.length > 0 && (
             <div className="px-4 pb-4">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs text-slate-400">
@@ -987,6 +1357,18 @@ function ProductsTab() {
                           <><Plus size={11} /> Add to Shopify</>
                         )}
                       </button>
+                      {/* Source on CJ */}
+                      <button
+                        onClick={() => {
+                          setSrcKeyword(s.title);
+                          setCjKeyword(s.title);
+                          setFinderTab("cj");
+                          searchCJ(s.title);
+                        }}
+                        className="w-full py-1 rounded-xl text-[10px] font-medium border border-slate-200 text-slate-500 hover:border-brand hover:text-brand transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Package size={10} /> Source on CJ
+                      </button>
                     </div>
                   );
                 })}
@@ -995,13 +1377,199 @@ function ProductsTab() {
           )}
 
           {/* Empty state after generate with no results */}
-          {!generating && suggestions.length === 0 && (
+          {finderTab === "ai" && !generating && suggestions.length === 0 && (
             <div className="px-4 pb-5 flex flex-col items-center gap-2 text-center py-6">
               <Sparkles size={24} className="text-brand mb-1" />
               <p className="text-sm font-medium text-slate-700">AI Product Research</p>
               <p className="text-xs text-slate-500 max-w-xs">
                 Tell the AI your store niche and it will suggest ready-to-sell products with descriptions, pricing, and tags — add them to Shopify with one click.
               </p>
+            </div>
+          )}
+          </>}
+
+          {/* Unified Sourcing Panel */}
+          {(finderTab === "cj" || finderTab === "ae") && (
+            <div className="flex flex-col" style={{maxHeight: "500px"}}>
+              {/* Search bar + supplier toggle — sticky */}
+              <div className="px-4 pt-3 pb-3 border-b border-slate-200 flex-shrink-0 space-y-2">
+                {/* Supplier pill toggle */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mr-1">Source from</span>
+                  <button
+                    onClick={() => setFinderTab("cj")}
+                    className={cn(
+                      "flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all",
+                      finderTab === "cj"
+                        ? "bg-[#FF6600] text-white border-[#FF6600] shadow-sm"
+                        : "bg-white text-slate-500 border-slate-200 hover:border-[#FF6600] hover:text-[#FF6600]"
+                    )}
+                  >
+                    <Package size={10} /> CJdropshipping
+                  </button>
+                  <button
+                    onClick={() => setFinderTab("ae")}
+                    className={cn(
+                      "flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all",
+                      finderTab === "ae"
+                        ? "bg-[#E62222] text-white border-[#E62222] shadow-sm"
+                        : "bg-white text-slate-500 border-slate-200 hover:border-[#E62222] hover:text-[#E62222]"
+                    )}
+                  >
+                    <TrendingUp size={10} /> AliExpress
+                  </button>
+                </div>
+
+                {/* Search inputs */}
+                <div className="flex flex-wrap gap-2 items-end">
+                  <input
+                    value={srcKeyword}
+                    onChange={(e) => setSrcKeyword(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") finderTab === "cj" ? searchCJ() : searchAE(); }}
+                    placeholder="e.g. phone case, wireless earbuds, yoga mat..."
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-72"
+                  />
+                  <input
+                    value={srcMaxPrice}
+                    onChange={(e) => setSrcMaxPrice(e.target.value)}
+                    placeholder="Max cost (USD)"
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-32"
+                  />
+                  <button
+                    onClick={() => finderTab === "cj" ? searchCJ() : searchAE()}
+                    disabled={(finderTab === "cj" ? cjSearching : aeSearching) || !srcKeyword.trim()}
+                    className={cn(
+                      "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors",
+                      finderTab === "cj" ? "bg-[#FF6600] hover:bg-[#e05a00]" : "bg-[#E62222] hover:bg-[#c71c1c]"
+                    )}
+                  >
+                    {(finderTab === "cj" ? cjSearching : aeSearching)
+                      ? <><Loader2 size={12} className="animate-spin" /> Searching…</>
+                      : <><Search size={12} /> Search {finderTab === "cj" ? "CJ" : "AliExpress"}</>}
+                  </button>
+                </div>
+              </div>
+
+              {/* Scrollable results */}
+              <div className="overflow-y-auto flex-1 px-4 pb-4 pt-3">
+
+                {/* Skeleton */}
+                {(finderTab === "cj" ? cjSearching : aeSearching) && (
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <div key={i} className="bg-slate-100 rounded-2xl p-3 animate-pulse flex flex-col gap-2">
+                        <div className="h-24 bg-slate-200 rounded-xl" />
+                        <div className="h-3 bg-slate-200 rounded w-3/4" />
+                        <div className="h-2 bg-slate-200 rounded w-1/2" />
+                        <div className="h-6 bg-slate-200 rounded-xl mt-auto" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* CJ Results */}
+                {finderTab === "cj" && !cjSearching && cjResults.length > 0 && (
+                  <>
+                    <p className="text-xs text-slate-500 mb-3">
+                      <span className="font-semibold text-slate-800">{cjResults.length}</span> real supplier products · <span className="text-brand">{cjImportedIdxs.size} imported</span>
+                    </p>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                      {cjResults.map((p, idx) => {
+                        const imported = cjImportedIdxs.has(idx);
+                        const importing = cjImportingIdx === idx;
+                        const marginPct = p.suggested_price > 0 ? Math.round((p.suggested_price - p.cost_price) / p.suggested_price * 100) : 0;
+                        return (
+                          <div key={idx} className={cn(
+                            "bg-white border rounded-2xl p-3 flex flex-col gap-2 transition-all",
+                            imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
+                          )}>
+                            <div className="h-24 bg-slate-100 rounded-xl overflow-hidden relative flex items-center justify-center">
+                              {p.image_url
+                                ? <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
+                                : <Package size={24} className="text-slate-400" />}
+                              <span className="absolute top-1 right-1 bg-[#FF6600] text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">CJ</span>
+                              {p.is_free_shipping && <span className="absolute bottom-1 left-1 bg-emerald-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">FREE SHIP</span>}
+                              {imported && <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl"><CheckCircle2 size={20} className="text-emerald-600" /></div>}
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
+                              <p className="text-[10px] text-slate-400">{p.category}</p>
+                            </div>
+                            <div className="bg-slate-50 rounded-xl p-2 flex items-center justify-between">
+                              <div><p className="text-[9px] text-slate-400 uppercase">Cost</p><p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p></div>
+                              <div className="text-center"><p className="text-[9px] text-emerald-600 font-semibold">{marginPct}% margin</p></div>
+                              <div className="text-right"><p className="text-[9px] text-slate-400 uppercase">Sell at</p><p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p></div>
+                            </div>
+                            <button onClick={() => importFromCJ(p, idx)} disabled={imported || importing}
+                              className={cn("w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
+                                imported ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default" : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50")}>
+                              {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</> : imported ? <><Check size={11} /> Imported</> : <><Plus size={11} /> Import to Shopify</>}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* AliExpress Results */}
+                {finderTab === "ae" && !aeSearching && aeResults.length > 0 && (
+                  <>
+                    <p className="text-xs text-slate-500 mb-3">
+                      <span className="font-semibold text-slate-800">{aeResults.length}</span> real supplier products · <span className="text-brand">{aeImportedIdxs.size} imported</span>
+                    </p>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                      {aeResults.map((p, idx) => {
+                        const imported  = aeImportedIdxs.has(idx);
+                        const importing = aeImportingIdx === idx;
+                        const marginPct = p.cost_price > 0 ? Math.round((p.suggested_price - p.cost_price) / p.suggested_price * 100) : 0;
+                        return (
+                          <div key={idx} className={cn("border rounded-2xl p-3 flex flex-col gap-2 transition-all bg-white",
+                            imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:border-slate-300 hover:shadow-sm")}>
+                            <div className="h-24 rounded-xl overflow-hidden bg-slate-100 relative flex-shrink-0 flex items-center justify-center">
+                              {p.image_url
+                                ? <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
+                                : <TrendingUp size={22} className="text-slate-400" />}
+                              <span className="absolute top-1 right-1 bg-[#E62222] text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">AE</span>
+                              {imported && <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl"><CheckCircle2 size={20} className="text-emerald-600" /></div>}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{p.store_name || p.category}</p>
+                              {p.orders_count > 0 && <p className="text-[10px] text-emerald-600 font-medium">{p.orders_count.toLocaleString()} orders</p>}
+                              {p.shipping_time && <p className="text-[10px] text-slate-400">Ships in {p.shipping_time}d</p>}
+                            </div>
+                            <div className="bg-slate-50 rounded-xl p-2 flex items-center justify-between">
+                              <div><p className="text-[9px] text-slate-400 uppercase">Cost</p><p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p></div>
+                              <div className="text-center"><p className="text-[9px] text-emerald-600 font-semibold">{marginPct}% margin</p></div>
+                              <div className="text-right"><p className="text-[9px] text-slate-400 uppercase">Sell at</p><p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p></div>
+                            </div>
+                            <button onClick={() => importFromAE(p, idx)} disabled={imported || importing}
+                              className={cn("w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
+                                imported ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default" : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50")}>
+                              {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</> : imported ? <><Check size={11} /> Imported</> : <><Plus size={11} /> Import to Shopify</>}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* Empty state */}
+                {!cjSearching && !aeSearching && (finderTab === "cj" ? cjResults : aeResults).length === 0 && (
+                  <div className="flex flex-col items-center gap-2 text-center py-8">
+                    <Package size={28} className="text-slate-300 mb-1" />
+                    <p className="text-sm font-medium text-slate-600">Source Real Products from {finderTab === "cj" ? "CJdropshipping" : "AliExpress"}</p>
+                    <p className="text-xs text-slate-400 max-w-sm">
+                      {finderTab === "cj"
+                        ? "Search 500,000+ supplier products with real images, cost prices, and shipping info."
+                        : "Search millions of AliExpress products sorted by bestseller ranking and order volume."}
+                      {" "}Import any product to your Shopify store instantly.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -1015,6 +1583,17 @@ function ProductsTab() {
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-white border-b border-slate-200">
               <tr>
+                <th className="px-4 py-2.5 w-8">
+                  <input
+                    type="checkbox"
+                    className="rounded border-slate-300 text-brand cursor-pointer"
+                    checked={filtered.length > 0 && filtered.every((p) => selectedProducts.has(p.id))}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedProducts(new Set(filtered.map((p) => p.id)));
+                      else setSelectedProducts(new Set());
+                    }}
+                  />
+                </th>
                 {["Product", "SKU", "Price", "Stock", "Status", "Action"].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
                 ))}
@@ -1023,7 +1602,21 @@ function ProductsTab() {
             <tbody>
               {filtered.map((product) =>
                 product.variants.map((variant, vi) => (
-                  <tr key={variant.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                  <tr key={variant.id} className={cn("border-b border-slate-100 hover:bg-slate-50 transition-colors", selectedProducts.has(product.id) && "bg-red-50/40")}>
+                    <td className="px-4 py-3 w-8">
+                      {vi === 0 && (
+                        <input
+                          type="checkbox"
+                          className="rounded border-slate-300 text-brand cursor-pointer"
+                          checked={selectedProducts.has(product.id)}
+                          onChange={(e) => {
+                            const next = new Set(selectedProducts);
+                            if (e.target.checked) next.add(product.id); else next.delete(product.id);
+                            setSelectedProducts(next);
+                          }}
+                        />
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {vi === 0 ? (
                         <div className="flex items-center gap-2">
@@ -1177,7 +1770,7 @@ function CustomersTab() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((c, i) => {
+                {filtered.map((c) => {
                   const isVip = c.orders_count >= 3 || parseFloat(c.total_spent ?? "0") >= 500;
                   const daysSince = (Date.now() - new Date(c.updated_at).getTime()) / 86400000;
                   const isAtRisk = daysSince > 90 && c.orders_count > 1;

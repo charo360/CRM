@@ -6,7 +6,7 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel } from "@/lib/api";
+import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
@@ -657,6 +657,77 @@ function IntegrationsPageInner() {
   const [shopifyToken, setShopifyToken]   = useState("");
   const [shopifyFormOpen, setShopifyFormOpen] = useState<"none" | "oauth" | "manual">("none");
   const [shopifyBusy, setShopifyBusy] = useState(false);
+
+  // ── Supplier connections ──────────────────────────────────────────────────
+  const [supplierStatus, setSupplierStatus] = useState<SupplierConnections>({ cj: false, aliexpress: false });
+  const [cjEmail, setCjEmail] = useState("");
+  const [cjApiKey, setCjApiKey] = useState("");
+  const [cjBusy, setCjBusy] = useState(false);
+  const [aeBusy, setAeBusy] = useState(false);
+
+  const refreshSuppliers = useCallback(() => {
+    supplierApi.connections().then(setSupplierStatus).catch(() => {});
+  }, []);
+
+  async function connectCJ() {
+    if (!cjEmail.trim() || !cjApiKey.trim()) return;
+    setCjBusy(true);
+    try {
+      await supplierApi.connectCJ(cjEmail.trim(), cjApiKey.trim());
+      setCjEmail(""); setCjApiKey("");
+      refreshSuppliers();
+      setBanner({ type: "success", msg: "CJ Dropshipping connected." });
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect CJ." });
+    } finally { setCjBusy(false); }
+  }
+
+  async function disconnectCJ() {
+    if (!confirm("Disconnect CJ Dropshipping?")) return;
+    setCjBusy(true);
+    try { await supplierApi.disconnectCJ(); refreshSuppliers(); }
+    catch { /* ignore */ } finally { setCjBusy(false); }
+  }
+
+  async function connectAEOAuth() {
+    setAeBusy(true);
+    try {
+      const token = getToken();
+      const res = await fetch("/api/aliexpress/oauth/start", {
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Failed to start AliExpress OAuth" })) as { detail?: string };
+        setBanner({ type: "error", msg: String(err.detail ?? "Failed to start AliExpress OAuth") });
+        return;
+      }
+      const data = await res.json() as { auth_url: string };
+      const popup = window.open(data.auth_url, "ae-connect", "width=980,height=760,noopener,noreferrer");
+      if (!popup) { window.location.href = data.auth_url; return; }
+      setBanner({ type: "success", msg: "Finish connecting in the popup, then return here." });
+      const onMsg = (e: MessageEvent) => {
+        if (e.origin !== window.location.origin) return;
+        if (e.data?.type === "ae_connected") { refreshSuppliers(); setBanner({ type: "success", msg: "AliExpress connected!" }); }
+        if (e.data?.type === "ae_connect_failed") setBanner({ type: "error", msg: e.data.msg || "AliExpress connection failed." });
+        window.removeEventListener("message", onMsg);
+      };
+      window.addEventListener("message", onMsg);
+      const poll = window.setInterval(() => {
+        void refreshSuppliers();
+        if (popup.closed) { window.clearInterval(poll); setTimeout(() => void refreshSuppliers(), 1200); }
+      }, 3000);
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect AliExpress." });
+    } finally { setAeBusy(false); }
+  }
+
+  async function disconnectAE() {
+    if (!confirm("Disconnect AliExpress?")) return;
+    setAeBusy(true);
+    try { await supplierApi.disconnectAliExpress(); refreshSuppliers(); }
+    catch { /* ignore */ } finally { setAeBusy(false); }
+  }
+
   const searchParams = useSearchParams();
 
   const refreshTg = useCallback(() => {
@@ -913,7 +984,7 @@ function IntegrationsPageInner() {
     }
   }
 
-  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio]);
+  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); refreshSuppliers(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio, refreshSuppliers]);
 
   useEffect(() => {
     const platform = searchParams.get("platform");
@@ -1468,6 +1539,80 @@ function IntegrationsPageInner() {
               </button>
             )}
           </SmallTile>
+        </div>
+      </section>
+
+      {/* ── Section 7: Supplier Accounts ───────────────────────────────────── */}
+      <section>
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Supplier Accounts</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+
+          {/* CJ Dropshipping */}
+          <SmallTile
+            title="CJ Dropshipping" subtitle="Source products &amp; auto-fulfill orders"
+            borderClass="border-[#FF6600]/20 bg-[#FF6600]/5"
+            icon={
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none">
+                <rect width="24" height="24" rx="4" fill="#FF6600"/>
+                <text x="4" y="17" fontSize="11" fontWeight="bold" fill="white" fontFamily="sans-serif">CJ</text>
+              </svg>
+            }
+          >
+            {supplierStatus.cj ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+                  <CheckCircle size={12} /> Connected
+                </div>
+                <button type="button" onClick={() => void disconnectCJ()} disabled={cjBusy}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+                  {cjBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <input type="email" value={cjEmail} onChange={e => setCjEmail(e.target.value)}
+                  placeholder="CJ account email" autoComplete="off"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#FF6600]" />
+                <input type="password" value={cjApiKey} onChange={e => setCjApiKey(e.target.value)}
+                  placeholder="API key" autoComplete="off"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#FF6600]" />
+                <button type="button" onClick={() => void connectCJ()} disabled={cjBusy || !cjEmail.trim() || !cjApiKey.trim()}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#FF6600] hover:bg-[#e05a00] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                  {cjBusy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
+                </button>
+              </div>
+            )}
+          </SmallTile>
+
+          {/* AliExpress */}
+          <SmallTile
+            title="AliExpress DS" subtitle="Source products &amp; auto-fulfill via DS API"
+            borderClass="border-[#E62222]/20 bg-[#E62222]/5"
+            icon={
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none">
+                <rect width="24" height="24" rx="4" fill="#E62222"/>
+                <text x="3" y="16" fontSize="8.5" fontWeight="bold" fill="white" fontFamily="sans-serif">AliEx</text>
+              </svg>
+            }
+          >
+            {supplierStatus.aliexpress ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+                  <CheckCircle size={12} /> Connected
+                </div>
+                <button type="button" onClick={() => void disconnectAE()} disabled={aeBusy}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+                  {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+                </button>
+              </div>
+            ) : (
+              <button type="button" onClick={() => void connectAEOAuth()} disabled={aeBusy}
+                className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#E62222] hover:bg-[#c71c1c] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <><span>Connect AliExpress</span><ExternalLink size={9} /></>}
+              </button>
+            )}
+          </SmallTile>
+
         </div>
       </section>
 

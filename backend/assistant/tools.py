@@ -2546,6 +2546,46 @@ async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="list_shopify_customers",
+    description=(
+        "Fetch customers from the connected Shopify store. "
+        "Returns total count plus a list of customers with name, email, order count, and lifetime value. "
+        "Use this whenever the user asks how many customers they have or wants customer details. "
+        "Requires Shopify to be connected in Integrations."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "default": 50, "description": "Max customers to return (1-250)"},
+        },
+    },
+)
+async def list_shopify_customers(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import shopify_customers_via_composio_or_proxy
+    limit = min(int(args.get("limit", 50)), 250)
+    try:
+        data = await shopify_customers_via_composio_or_proxy(ctx.business_id, limit=limit)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    customers = data.get("customers", [])
+    out = []
+    for c in customers:
+        first = c.get("first_name") or ""
+        last  = c.get("last_name") or ""
+        out.append({
+            "id":           str(c.get("id", "")),
+            "name":         f"{first} {last}".strip() or c.get("email", "Unknown"),
+            "email":        c.get("email"),
+            "phone":        c.get("phone"),
+            "orders_count": c.get("orders_count", 0),
+            "total_spent":  c.get("total_spent", "0.00"),
+            "tags":         c.get("tags"),
+            "created_at":   c.get("created_at"),
+        })
+    return {"count": len(out), "customers": out}
+
+
+@tool(
     name="get_shopify_analytics",
     description=(
         "Get sales analytics from the connected Shopify store: total revenue, order count, "
@@ -3120,6 +3160,252 @@ async def shopify_refund_order(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="shopify_delete_product",
+    description=(
+        "Permanently delete one or more products from the connected Shopify store. "
+        "Pass a single product_id or a list of product_ids. "
+        "Use list_shopify_products first to find the IDs. "
+        "Always confirm with the user before deleting. This is a destructive, irreversible action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "product_id":  {"type": "string",  "description": "Single Shopify product ID to delete"},
+            "product_ids": {"type": "array", "items": {"type": "string"}, "description": "List of Shopify product IDs to bulk delete"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_delete_product(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    ids: List[str] = args.get("product_ids") or ([args["product_id"]] if args.get("product_id") else [])
+    if not ids:
+        return {"error": "product_id or product_ids required"}
+    deleted, failed = [], []
+    for pid in ids:
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                              f"/admin/api/2024-01/products/{pid}.json")
+            deleted.append(pid)
+        except RuntimeError as e:
+            failed.append({"id": pid, "error": str(e)})
+    return {
+        "success": len(failed) == 0,
+        "deleted_count": len(deleted),
+        "deleted_ids": deleted,
+        "failed": failed,
+    }
+
+
+@tool(
+    name="shopify_update_product",
+    description=(
+        "Edit an existing Shopify product — update its title, description, tags, vendor, "
+        "product type, or status (active/draft/archived). "
+        "Use list_shopify_products first to get the product_id. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {
+            "product_id":    {"type": "string", "description": "Shopify product ID (numeric string)"},
+            "title":         {"type": "string", "description": "New product title"},
+            "description":   {"type": "string", "description": "New product description (plain text or HTML)"},
+            "tags":          {"type": "string", "description": "Comma-separated tags (replaces existing tags)"},
+            "vendor":        {"type": "string", "description": "Brand / supplier name"},
+            "product_type":  {"type": "string", "description": "Product category / type"},
+            "status":        {"type": "string", "description": "active | draft | archived"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_product(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    product_id = str(args["product_id"])
+    update: Dict[str, Any] = {"id": product_id}
+    if args.get("title"):         update["title"]        = args["title"]
+    if args.get("description"):   update["body_html"]    = f"<p>{args['description']}</p>"
+    if args.get("tags") is not None: update["tags"]      = args["tags"]
+    if args.get("vendor"):        update["vendor"]       = args["vendor"]
+    if args.get("product_type"):  update["product_type"] = args["product_type"]
+    if args.get("status"):        update["status"]       = args["status"]
+    if len(update) == 1:
+        return {"error": "At least one field to update is required"}
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/products/{product_id}.json",
+                                   json={"product": update})
+        p = result.get("product", {})
+        return {"success": True, "product_id": p.get("id"), "title": p.get("title"), "status": p.get("status")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_create_collection",
+    description=(
+        "Create a new custom collection (category) in the Shopify store. "
+        "Collections organise products so customers can browse by category. "
+        "Returns the new collection ID which can be used with shopify_add_to_collection. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+            "title":       {"type": "string", "description": "Collection name, e.g. 'Men\\'s Streetwear'"},
+            "description": {"type": "string", "description": "Short description shown on the collection page"},
+            "published":   {"type": "boolean", "description": "Whether to publish immediately (default true)"},
+            "sort_order":  {"type": "string",  "description": "best-selling | alpha-asc | alpha-desc | price-asc | price-desc | created-desc (default: best-selling)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_create_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    payload = {
+        "custom_collection": {
+            "title":      args["title"],
+            "body_html":  f"<p>{args['description']}</p>" if args.get("description") else "",
+            "published":  args.get("published", True),
+            "sort_order": args.get("sort_order", "best-selling"),
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/custom_collections.json", json=payload)
+        c = result.get("custom_collection", {})
+        return {"success": True, "collection_id": c.get("id"), "title": c.get("title"), "handle": c.get("handle")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_add_to_collection",
+    description=(
+        "Add one or more products to a Shopify collection. "
+        "Use shopify_create_collection to get a collection_id first, "
+        "and list_shopify_products to get product_ids. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["collection_id", "product_ids"],
+        "properties": {
+            "collection_id": {"type": "string", "description": "Shopify custom collection ID"},
+            "product_ids":   {"type": "array", "items": {"type": "string"}, "description": "List of Shopify product IDs to add"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_add_to_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    collection_id = str(args["collection_id"])
+    product_ids   = args["product_ids"]
+    added, failed = [], []
+    for pid in product_ids:
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "POST",
+                              "/admin/api/2024-01/collects.json",
+                              json={"collect": {"collection_id": collection_id, "product_id": pid}})
+            added.append(pid)
+        except RuntimeError as e:
+            failed.append({"id": pid, "error": str(e)})
+    return {"success": len(failed) == 0, "added_count": len(added), "added": added, "failed": failed}
+
+
+@tool(
+    name="shopify_list_collections",
+    description=(
+        "List all custom collections (categories) in the Shopify store. "
+        "Returns collection IDs, titles, and product counts. "
+        "Use this before adding products to collections or to show the user their store structure."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def shopify_list_collections(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                   "/admin/api/2024-01/custom_collections.json",
+                                   params={"limit": "250", "fields": "id,title,handle,products_count,published_at"})
+        collections = result.get("custom_collections", [])
+        return {
+            "count": len(collections),
+            "collections": [
+                {"id": str(c.get("id")), "title": c.get("title"), "handle": c.get("handle"),
+                 "products_count": c.get("products_count", 0), "published": bool(c.get("published_at"))}
+                for c in collections
+            ],
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_bulk_update_prices",
+    description=(
+        "Bulk update prices on multiple Shopify product variants at once. "
+        "Can apply a fixed multiplier (e.g. 2.5x cost price for 60% margin), "
+        "a percentage increase/decrease, or set an explicit price on selected products. "
+        "Use list_shopify_products to get variant IDs first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["variant_ids"],
+        "properties": {
+            "variant_ids":    {"type": "array", "items": {"type": "string"}, "description": "List of Shopify variant IDs to update"},
+            "multiplier":     {"type": "number", "description": "Multiply current price by this factor, e.g. 1.2 = 20% increase, 0.9 = 10% decrease"},
+            "fixed_price":    {"type": "string", "description": "Set all variants to this exact price, e.g. '29.99'"},
+            "compare_at_multiplier": {"type": "number", "description": "Set compare_at_price as this multiple of the new price, e.g. 1.3 for a 30% 'was' price"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_bulk_update_prices(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    variant_ids = args["variant_ids"]
+    multiplier  = args.get("multiplier")
+    fixed_price = args.get("fixed_price")
+    cap_multi   = args.get("compare_at_multiplier")
+
+    if not multiplier and not fixed_price:
+        return {"error": "Either multiplier or fixed_price is required"}
+
+    updated, failed = [], []
+    for vid in variant_ids:
+        try:
+            if multiplier and not fixed_price:
+                # Fetch current price first
+                vdata = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                          f"/admin/api/2024-01/variants/{vid}.json")
+                current = float(vdata.get("variant", {}).get("price", 0))
+                new_price = round(current * multiplier, 2)
+            else:
+                new_price = float(fixed_price)  # type: ignore[arg-type]
+
+            payload: Dict[str, Any] = {"id": vid, "price": str(new_price)}
+            if cap_multi:
+                payload["compare_at_price"] = str(round(new_price * cap_multi, 2))
+
+            await nango_proxy(ctx.business_id, "shopify", "PUT",
+                              f"/admin/api/2024-01/variants/{vid}.json",
+                              json={"variant": payload})
+            updated.append({"variant_id": vid, "new_price": new_price})
+        except RuntimeError as e:
+            failed.append({"variant_id": vid, "error": str(e)})
+
+    return {
+        "success": len(failed) == 0,
+        "updated_count": len(updated),
+        "updated": updated,
+        "failed": failed,
+    }
+
+
+@tool(
     name="shopify_update_price",
     description=(
         "Update the price (and optional compare-at price) of a Shopify product variant. "
@@ -3152,6 +3438,307 @@ async def shopify_update_price(ctx: ToolContext, args: Dict[str, Any]):
             "variant_id": variant_id,
             "price": v.get("price"),
             "compare_at_price": v.get("compare_at_price"),
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_get_policies",
+    description=(
+        "Read the current store policies from the connected Shopify store: "
+        "refund policy, privacy policy, terms of service, shipping policy, and legal notice. "
+        "Use this before setting policies to see what's already there. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def shopify_get_policies(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    query = """
+    {
+      shop {
+        refundPolicy { title body url }
+        privacyPolicy { title body url }
+        termsOfService { title body url }
+        shippingPolicy { title body url }
+        legalNotice { title body url }
+      }
+    }
+    """
+    try:
+        result = await nango_proxy(
+            ctx.business_id, "shopify", "POST",
+            "/admin/api/2024-01/graphql.json",
+            json={"query": query},
+        )
+        shop = (result.get("data") or {}).get("shop", {})
+        policies = {}
+        for key in ("refundPolicy", "privacyPolicy", "termsOfService", "shippingPolicy", "legalNotice"):
+            p = shop.get(key)
+            if p:
+                policies[key] = {
+                    "title": p.get("title"),
+                    "url":   p.get("url"),
+                    "set":   bool(p.get("body")),
+                    "preview": (p.get("body") or "")[:200] + ("…" if len(p.get("body") or "") > 200 else ""),
+                }
+            else:
+                policies[key] = {"set": False}
+        return {"policies": policies}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_set_policy",
+    description=(
+        "Set or update one or more Shopify store policies (refund, privacy, terms of service, shipping, legal notice) "
+        "using the Shopify GraphQL Admin API. "
+        "Pass the policy type and the full policy body text. "
+        "The AI can generate appropriate policy content based on the store niche and location. "
+        "Always show the generated policy text to the user before setting it. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "refund_policy":    {"type": "string", "description": "Full text for the refund/return policy"},
+            "privacy_policy":   {"type": "string", "description": "Full text for the privacy policy"},
+            "terms_of_service": {"type": "string", "description": "Full text for the terms of service"},
+            "shipping_policy":  {"type": "string", "description": "Full text for the shipping policy"},
+            "legal_notice":     {"type": "string", "description": "Full text for the legal notice / imprint"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_set_policy(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+
+    # Build mutation inputs only for provided policies
+    inputs: Dict[str, str] = {}
+    mapping = {
+        "refund_policy":    "refundPolicy",
+        "privacy_policy":   "privacyPolicy",
+        "terms_of_service": "termsOfService",
+        "shipping_policy":  "shippingPolicy",
+        "legal_notice":     "legalNotice",
+    }
+    for arg_key, gql_key in mapping.items():
+        if args.get(arg_key):
+            inputs[gql_key] = args[arg_key]
+
+    if not inputs:
+        return {"error": "At least one policy field is required"}
+
+    # Build dynamic GraphQL mutation
+    mutation_args = ", ".join(f"${k}: ShopPolicyInput" for k in inputs)
+    call_args     = ", ".join(f"{k}: ${k}" for k in inputs)
+    mutation = f"""
+    mutation SetPolicies({mutation_args}) {{
+      shopPoliciesUpdate({call_args}) {{
+        shopPolicies {{ type title url }}
+        userErrors {{ field message }}
+      }}
+    }}
+    """
+    variables = {k: {"body": v} for k, v in inputs.items()}
+
+    try:
+        result = await nango_proxy(
+            ctx.business_id, "shopify", "POST",
+            "/admin/api/2024-01/graphql.json",
+            json={"query": mutation, "variables": variables},
+        )
+        data = (result.get("data") or {}).get("shopPoliciesUpdate", {})
+        errors = data.get("userErrors", [])
+        if errors:
+            return {"error": errors[0].get("message", "Unknown error"), "all_errors": errors}
+        updated = [p.get("type") for p in data.get("shopPolicies", [])]
+        return {
+            "success": True,
+            "updated_policies": updated,
+            "count": len(updated),
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_add_product_images",
+    description=(
+        "Add or replace images on an existing Shopify product. "
+        "Pass a list of public image URLs to attach. "
+        "Use list_shopify_products to get the product_id first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id", "image_urls"],
+        "properties": {
+            "product_id":  {"type": "string", "description": "Shopify product ID"},
+            "image_urls":  {"type": "array", "items": {"type": "string"}, "description": "List of public image URLs to attach"},
+            "replace_all": {"type": "boolean", "description": "True = delete existing images first; False = append (default False)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_add_product_images(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    pid   = str(args["product_id"])
+    urls  = args["image_urls"]
+    added, failed = [], []
+
+    if args.get("replace_all"):
+        try:
+            existing = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                         f"/admin/api/2024-01/products/{pid}/images.json")
+            for img in existing.get("images", []):
+                await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                                  f"/admin/api/2024-01/products/{pid}/images/{img['id']}.json")
+        except RuntimeError:
+            pass
+
+    for url in urls:
+        try:
+            r = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                  f"/admin/api/2024-01/products/{pid}/images.json",
+                                  json={"image": {"src": url}})
+            added.append(r.get("image", {}).get("id"))
+        except RuntimeError as e:
+            failed.append({"url": url, "error": str(e)})
+
+    return {"success": len(failed) == 0, "added_count": len(added), "added_image_ids": added, "failed": failed}
+
+
+@tool(
+    name="shopify_update_customer",
+    description=(
+        "Update a Shopify customer record — edit their first/last name, email, phone, "
+        "note, or tags. Useful for bulk customer cleanup or segmentation. "
+        "Use list_shopify_customers to get customer_ids first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["customer_id"],
+        "properties": {
+            "customer_id": {"type": "string", "description": "Shopify customer ID"},
+            "first_name":  {"type": "string"},
+            "last_name":   {"type": "string"},
+            "email":       {"type": "string"},
+            "phone":       {"type": "string"},
+            "note":        {"type": "string", "description": "Internal note on the customer profile"},
+            "tags":        {"type": "string", "description": "Comma-separated tags (replaces existing)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_customer(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    cid = str(args["customer_id"])
+    update: Dict[str, Any] = {"id": cid}
+    for field in ("first_name", "last_name", "email", "phone", "note", "tags"):
+        if args.get(field) is not None:
+            update[field] = args[field]
+    if len(update) == 1:
+        return {"error": "At least one field to update is required"}
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/customers/{cid}.json",
+                                   json={"customer": update})
+        c = result.get("customer", {})
+        return {"success": True, "customer_id": c.get("id"), "email": c.get("email"), "tags": c.get("tags")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_set_seo_metafields",
+    description=(
+        "Set SEO metafields (title tag and meta description) on a Shopify product "
+        "to improve search engine ranking. "
+        "Use list_shopify_products to get product_ids. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {
+            "product_id":        {"type": "string", "description": "Shopify product ID"},
+            "seo_title":         {"type": "string", "description": "SEO title tag (50-60 characters ideal)"},
+            "seo_description":   {"type": "string", "description": "Meta description (120-160 characters ideal)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_set_seo_metafields(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    pid = str(args["product_id"])
+    metafields = []
+    if args.get("seo_title"):
+        metafields.append({"namespace": "global", "key": "title_tag",       "value": args["seo_title"],       "type": "single_line_text_field"})
+    if args.get("seo_description"):
+        metafields.append({"namespace": "global", "key": "description_tag", "value": args["seo_description"], "type": "single_line_text_field"})
+    if not metafields:
+        return {"error": "seo_title or seo_description required"}
+    results = []
+    for mf in metafields:
+        try:
+            r = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                  f"/admin/api/2024-01/products/{pid}/metafields.json",
+                                  json={"metafield": mf})
+            results.append({"key": mf["key"], "id": r.get("metafield", {}).get("id")})
+        except RuntimeError as e:
+            results.append({"key": mf["key"], "error": str(e)})
+    return {"success": all("error" not in r for r in results), "product_id": pid, "metafields": results}
+
+
+@tool(
+    name="shopify_check_low_stock",
+    description=(
+        "Check Shopify inventory levels and return products/variants that are "
+        "below a specified stock threshold. "
+        "Use this for automated restocking alerts or to identify what needs topping up. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "threshold": {"type": "integer", "description": "Alert when quantity is at or below this number (default: 5)"},
+            "limit":     {"type": "integer", "description": "Max products to scan (default: 250)"},
+        },
+    },
+)
+async def shopify_check_low_stock(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    threshold = int(args.get("threshold") or 5)
+    limit     = min(int(args.get("limit") or 250), 250)
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                   "/admin/api/2024-01/products.json",
+                                   params={"limit": str(limit), "status": "active",
+                                           "fields": "id,title,variants"})
+        products  = result.get("products", [])
+        low_stock = []
+        for p in products:
+            for v in p.get("variants", []):
+                qty = v.get("inventory_quantity")
+                if qty is not None and qty <= threshold:
+                    low_stock.append({
+                        "product_id":   str(p["id"]),
+                        "product_title": p["title"],
+                        "variant_id":   str(v["id"]),
+                        "variant_title": v.get("title"),
+                        "quantity":     qty,
+                        "sku":          v.get("sku", ""),
+                    })
+        low_stock.sort(key=lambda x: x["quantity"])
+        return {
+            "threshold":  threshold,
+            "alert_count": len(low_stock),
+            "low_stock":  low_stock,
+            "message":    f"{len(low_stock)} variant(s) at or below {threshold} units" if low_stock else "All products well-stocked",
         }
     except RuntimeError as e:
         return {"error": str(e)}
@@ -11719,6 +12306,1373 @@ async def get_keyword_suggestions(ctx: ToolContext, args: Dict[str, Any]) -> Dic
     except Exception as e:
         logger.error("[get_keyword_suggestions] Error: %s", str(e))
         return {"error": str(e)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CJDROPSHIPPING + MARKET INTELLIGENCE TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+import re as _re_cj
+
+def _cj_parse_price(raw) -> float:
+    """Parse CJ sellPrice safely — handles float, int, or range strings like '5.99 -- 12.99'."""
+    if raw is None:
+        return 0.0
+    s = str(raw).strip()
+    if not s:
+        return 0.0
+    m = _re_cj.match(r"[\d.]+", s)
+    return float(m.group()) if m else 0.0
+
+@tool(
+    name="get_cj_categories",
+    description=(
+        "Get the list of CJdropshipping product categories with their IDs. "
+        "Use this before search_cj_products when the user wants to browse by category "
+        "or when you need a category_id to filter product searches."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_cj_categories(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+    try:
+        data = await cj_get("/product/getCategory", {})
+    except RuntimeError as e:
+        return {"error": str(e)}
+    raw = data if isinstance(data, list) else data.get("list", []) if isinstance(data, dict) else []
+    categories = [
+        {"id": str(c.get("categoryId", "")), "name": c.get("categoryEnName") or c.get("categoryName", "")}
+        for c in raw if c.get("categoryId")
+    ]
+    return {"categories": categories, "tip": "Pass a category id to search_cj_products as category_id to filter results."}
+
+
+@tool(
+    name="search_cj_products",
+    description=(
+        "Search CJdropshipping supplier catalog for real products to sell. "
+        "Returns product name, cost price, sale price suggestion, images, shipping time, and CJ product ID. "
+        "Use this when a user wants to find products to source and sell in their Shopify store."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword":      {"type": "string",  "description": "Search term e.g. 'wireless earbuds', 'yoga mat', 'phone case'"},
+            "category_id":  {"type": "string",  "description": "Optional CJ category ID to filter results"},
+            "min_price":    {"type": "number",  "description": "Minimum product cost price in USD"},
+            "max_price":    {"type": "number",  "description": "Maximum product cost price in USD"},
+            "page_size":    {"type": "integer", "description": "Number of results to return (default 20, max 50)"},
+        },
+    },
+)
+async def search_cj_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    params: Dict[str, Any] = {
+        "productNameEn": args["keyword"],
+        "pageNum":       1,
+        "pageSize":      min(int(args.get("page_size", 20)), 50),
+    }
+    if args.get("category_id"):
+        params["categoryId"] = args["category_id"]
+    if args.get("min_price") is not None:
+        params["minPrice"] = args["min_price"]
+    if args.get("max_price") is not None:
+        params["maxPrice"] = args["max_price"]
+
+    try:
+        data = await cj_get("/product/list", params)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    raw_list = data.get("list", []) if isinstance(data, dict) else []
+    products = []
+    for p in raw_list:
+        cost = _cj_parse_price(p.get("sellPrice"))
+        products.append({
+            "cj_pid":          p.get("pid", ""),
+            "title":           p.get("productNameEn") or p.get("productName", ""),
+            "category":        p.get("categoryName", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "currency":        "USD",
+            "image_url":       p.get("productImage", ""),
+            "is_free_shipping": p.get("isFreeShipping", False),
+            "supplier":        p.get("supplierName", ""),
+            "listed_count":    p.get("listedNum", 0),
+        })
+
+    return {
+        "keyword":       args["keyword"],
+        "total_found":   data.get("total", len(products)) if isinstance(data, dict) else len(products),
+        "products":      products,
+        "tip": "Use import_cj_product_to_shopify to add any product to the user's Shopify store.",
+    }
+
+
+@tool(
+    name="get_cj_hot_products",
+    description=(
+        "Get trending / hot-selling products from CJdropshipping — products with high order volumes across all CJ stores. "
+        "Use this to show what's selling well in a category right now across the market (not just the user's store)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "category_id": {"type": "string",  "description": "Optional CJ category ID (leave blank for all categories)"},
+            "page_size":   {"type": "integer", "description": "Number of results (default 20)"},
+        },
+    },
+)
+async def get_cj_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    params: Dict[str, Any] = {
+        "pageNum":  1,
+        "pageSize": min(int(args.get("page_size", 20)), 50),
+    }
+    if args.get("category_id"):
+        params["categoryId"] = args["category_id"]
+
+    try:
+        data = await cj_get("/product/list", params)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    raw_list = data.get("list", []) if isinstance(data, dict) else []
+    # Sort by listedNum (how many stores have listed this product) as a proxy for popularity
+    raw_list.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+    products = []
+    for p in raw_list:
+        cost = _cj_parse_price(p.get("sellPrice"))
+        products.append({
+            "cj_pid":          p.get("pid", ""),
+            "title":           p.get("productNameEn") or p.get("productName", ""),
+            "category":        p.get("categoryName", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("productImage", ""),
+            "listed_by_stores": p.get("listedNum", 0),
+            "is_free_shipping": p.get("isFreeShipping", False),
+            "supplier":        p.get("supplierName", ""),
+        })
+
+    return {
+        "source":   "CJdropshipping — sorted by store popularity",
+        "products": products,
+        "tip": "listed_by_stores = how many Shopify/WooCommerce stores are already selling this product on CJ.",
+    }
+
+
+@tool(
+    name="get_market_trends",
+    description=(
+        "Get Google Trends data for product keywords — shows rising/falling search interest over the past 12 months. "
+        "Use this to identify trending product categories before sourcing them. "
+        "Compare multiple keywords to see which has more demand."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keywords"],
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "1–5 product keywords to compare e.g. ['wireless earbuds', 'bone conduction headphones']",
+            },
+            "geo": {"type": "string", "description": "Country code e.g. 'US', 'GB', 'ZA' (default: worldwide)"},
+            "timeframe": {"type": "string", "description": "Timeframe: 'today 12-m' (default), 'today 3-m', 'today 1-m'"},
+        },
+    },
+)
+async def get_market_trends(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        return {"error": "pytrends not installed. Run: pip install pytrends"}
+
+    keywords  = args["keywords"][:5]
+    geo       = args.get("geo", "")
+    timeframe = args.get("timeframe", "today 12-m")
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+
+        def _fetch():
+            pt = TrendReq(hl="en-US", tz=0, timeout=(10, 30))
+            pt.build_payload(keywords, cat=0, timeframe=timeframe, geo=geo, gprop="")
+            interest = pt.interest_over_time()
+            related  = pt.related_queries()
+            return interest, related
+
+        interest_df, related_dict = await loop.run_in_executor(None, _fetch)
+
+        summary = {}
+        if not interest_df.empty:
+            for kw in keywords:
+                if kw in interest_df.columns:
+                    col = interest_df[kw]
+                    summary[kw] = {
+                        "current_interest": int(col.iloc[-1]),
+                        "peak_interest":    int(col.max()),
+                        "avg_interest":     int(col.mean()),
+                        "trend":            "rising" if col.iloc[-1] > col.mean() else "declining",
+                    }
+
+        rising = {}
+        for kw in keywords:
+            kw_data = related_dict.get(kw, {})
+            top = kw_data.get("rising")
+            if top is not None and not top.empty:
+                rising[kw] = top.head(5)["query"].tolist()
+
+        return {
+            "timeframe": timeframe,
+            "geo":       geo or "Worldwide",
+            "keywords":  summary,
+            "rising_related_queries": rising,
+        }
+    except Exception as e:
+        return {"error": f"Google Trends fetch failed: {e}"}
+
+
+@tool(
+    name="import_cj_product_to_shopify",
+    description=(
+        "Import a CJdropshipping product into the user's Shopify store. "
+        "Fetches full product details from CJ (images, variants, description) and creates the Shopify listing. "
+        "Stores the CJ cost price in the database for margin tracking. "
+        "Requires both Shopify and CJdropshipping to be configured. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["cj_pid"],
+        "properties": {
+            "cj_pid":       {"type": "string", "description": "CJ product ID from search_cj_products or get_cj_hot_products"},
+            "sale_price":   {"type": "number", "description": "Price to sell at in your store (USD). Default: 2.5x cost price"},
+            "product_title": {"type": "string", "description": "Override the product title (optional)"},
+        },
+    },
+    destructive=True,
+)
+async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    cj_pid = args["cj_pid"]
+
+    # 1. Fetch full product detail from CJ using the correct detail endpoint
+    try:
+        detail = await cj_get("/product/query", {"pid": cj_pid})
+        # /product/query returns the product directly or in a list
+        if isinstance(detail, dict) and "list" in detail:
+            prod = (detail["list"] or [{}])[0]
+        else:
+            prod = detail if isinstance(detail, dict) else {}
+    except RuntimeError:
+        # Fall back to list endpoint to get basic product data
+        try:
+            detail2 = await cj_get("/product/list", {"pid": cj_pid, "pageSize": 1})
+            items = detail2.get("list", []) if isinstance(detail2, dict) else []
+            prod = items[0] if items else {}
+        except RuntimeError as e2:
+            return {"error": f"CJ product fetch failed: {e2}"}
+
+    cost_price  = _cj_parse_price(prod.get("sellPrice"))
+    sale_price  = float(args.get("sale_price") or round(cost_price * 2.5, 2))
+    title       = args.get("product_title") or prod.get("productNameEn") or prod.get("productName", "")
+    description = prod.get("productDescription", "") or prod.get("remark", "")
+    images      = prod.get("productImages", []) or ([prod.get("productImage")] if prod.get("productImage") else [])
+
+    # Build variants from CJ variants list
+    cj_variants = prod.get("variants", [])
+    if isinstance(cj_variants, list) and cj_variants:
+        variants = [
+            {
+                "title":                v.get("variantNameEn", "Default Title"),
+                "price":                str(sale_price),
+                "compare_at_price":     str(round(sale_price * 1.3, 2)),
+                "inventory_management": "shopify",
+                "inventory_quantity":   50,
+            }
+            for v in cj_variants[:30]
+        ]
+    else:
+        variants = [{
+            "title": "Default Title",
+            "price": str(sale_price),
+            "compare_at_price": str(round(sale_price * 1.3, 2)),
+            "inventory_management": "shopify",
+            "inventory_quantity": 50,
+        }]
+
+    shopify_payload = {
+        "product": {
+            "title":       title,
+            "body_html":   f"<p>{description}</p>" if description else "",
+            "vendor":      "CJdropshipping",
+            "product_type": prod.get("categoryName", ""),
+            "status":      "active",
+            "tags":        f"dropship,cj,{prod.get('categoryName', '')}",
+            "variants":    variants,
+            "images":      [{"src": img} for img in images[:5] if img],
+        }
+    }
+
+    # 2. Create product in Shopify
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/products.json",
+                                   json=shopify_payload)
+        shopify_product = result.get("product", {})
+        shopify_id = shopify_product.get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify create failed: {e}"}
+
+    # 3. Store CJ cost price mapping in DB for margin tracking
+    if shopify_id:
+        await ctx.db.cj_products.update_one(
+            {"user_id": ctx.business_id, "cj_pid": cj_pid},
+            {"$set": {
+                "user_id":           ctx.business_id,
+                "shopify_product_id": str(shopify_id),
+                "cj_pid":            cj_pid,
+                "cost_price":        cost_price,
+                "sale_price":        sale_price,
+                "supplier":          "cj",
+                "title":             title,
+                "imported_at":       __import__("datetime").datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+
+    return {
+        "success":          True,
+        "shopify_product_id": shopify_id,
+        "title":            title,
+        "cost_price":       cost_price,
+        "sale_price":       sale_price,
+        "margin_per_unit":  round(sale_price - cost_price, 2),
+        "margin_pct":       f"{round((sale_price - cost_price) / sale_price * 100, 1)}%" if sale_price else "N/A",
+        "images_imported":  len(images[:5]),
+        "variants_imported": len(variants),
+    }
+
+
+@tool(
+    name="cj_fulfill_order",
+    description=(
+        "Fulfill a Shopify order using CJdropshipping. "
+        "Looks up the order's shipping address and CJ-sourced line items, then places the fulfillment order with CJ. "
+        "Use this when a customer has paid and the order contains CJ-sourced products. "
+        "Returns a CJ order number to use with cj_get_order_status and cj_sync_tracking_to_shopify."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["shopify_order_id"],
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID (numeric)"},
+            "shipping_method": {"type": "string", "description": "CJ shipping method code e.g. 'CJPacket_Ordinary' (default). Leave blank for cheapest available."},
+        },
+    },
+    destructive=True,
+)
+async def cj_fulfill_order(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get, cj_post
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    order_id = str(args["shopify_order_id"])
+
+    # 1. Fetch Shopify order for shipping address + line items
+    try:
+        ord_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{order_id}.json")
+        order = ord_data.get("order", {})
+    except RuntimeError as e:
+        return {"error": f"Failed to fetch Shopify order: {e}"}
+
+    if not order:
+        return {"error": "Order not found"}
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    customer_name = f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip() or "Customer"
+    shipping_info = {
+        "shippingCustomerName": customer_name,
+        "shippingPhone":        ship.get("phone") or order.get("phone") or "0000000000",
+        "shippingAddress":      ship.get("address1", ""),
+        "shippingCity":         ship.get("city", ""),
+        "shippingProvince":     ship.get("province", ""),
+        "shippingZip":          ship.get("zip", ""),
+        "shippingCountryCode":  ship.get("country_code", "US"),
+    }
+
+    # 2. Find which line items are CJ-sourced
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    cj_mappings = {}
+    if shopify_pids:
+        async for doc in ctx.db.cj_products.find(
+            {"user_id": ctx.business_id, "shopify_product_id": {"$in": shopify_pids}}
+        ):
+            cj_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not cj_mappings:
+        return {"error": "No CJ-sourced products found in this order. Only CJ-imported products can be fulfilled via CJ."}
+
+    # 3. Build CJ products list — fetch variant ID for each CJ product
+    cj_products_payload = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in cj_mappings:
+            continue
+        cj_pid = cj_mappings[pid]["cj_pid"]
+        quantity = int(li.get("quantity", 1))
+
+        # Get variant ID from CJ
+        vid = None
+        try:
+            detail = await cj_get("/product/query", {"pid": cj_pid})
+            variants = []
+            if isinstance(detail, dict):
+                variants = detail.get("variants", []) or (detail.get("list", [{}])[0] or {}).get("variants", [])
+            if variants:
+                vid = variants[0].get("vid") or variants[0].get("variantId")
+        except Exception:
+            pass
+
+        entry: Dict[str, Any] = {"quantity": quantity}
+        if vid:
+            entry["vid"] = str(vid)
+        else:
+            entry["pid"] = cj_pid
+        cj_products_payload.append(entry)
+
+    if not cj_products_payload:
+        return {"error": "Could not resolve CJ variant IDs for order line items"}
+
+    # 4. Create CJ order
+    cj_order_num = f"ZILO-{order_id}"
+    payload = {
+        "orderNumber":   cj_order_num,
+        "products":      cj_products_payload,
+        **shipping_info,
+    }
+    if args.get("shipping_method"):
+        payload["shippingCountry"] = shipping_info["shippingCountryCode"]
+
+    try:
+        result = await cj_post("/order/create", payload)
+    except RuntimeError as e:
+        return {"error": f"CJ order creation failed: {e}"}
+
+    cj_order_id = result.get("orderId") or result.get("orderNum") or cj_order_num
+
+    # 5. Store mapping in DB
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "shopify_order_id": order_id},
+        {"$set": {
+            "user_id":          ctx.business_id,
+            "shopify_order_id": order_id,
+            "cj_order_id":      str(cj_order_id),
+            "cj_order_num":     cj_order_num,
+            "status":           "created",
+            "created_at":       datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+
+    return {
+        "success":          True,
+        "cj_order_id":      str(cj_order_id),
+        "cj_order_num":     cj_order_num,
+        "shopify_order_id": order_id,
+        "items_fulfilled":  len(cj_products_payload),
+        "next_step":        "Use cj_get_order_status to track progress, then cj_sync_tracking_to_shopify when shipped.",
+    }
+
+
+@tool(
+    name="cj_get_order_status",
+    description=(
+        "Check the fulfillment status of a CJ order. "
+        "Returns the current status (e.g. CREATED, IN_PRODUCTION, IN_TRANSIT, DELIVERED), "
+        "tracking number, and shipping carrier when available. "
+        "You can pass either the CJ order number or the Shopify order ID."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID — will look up the CJ order number automatically"},
+            "cj_order_num":     {"type": "string", "description": "CJ order number (e.g. ZILO-123456) — use if you already know it"},
+        },
+    },
+)
+async def cj_get_order_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    cj_order_num = args.get("cj_order_num")
+    if not cj_order_num and args.get("shopify_order_id"):
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": str(args["shopify_order_id"])}
+        )
+        if not doc:
+            return {"error": "No CJ fulfillment found for this Shopify order. Use cj_fulfill_order first."}
+        cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+
+    if not cj_order_num:
+        return {"error": "Provide either shopify_order_id or cj_order_num"}
+
+    try:
+        data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+    except RuntimeError as e:
+        return {"error": f"CJ status fetch failed: {e}"}
+
+    order_detail = data if isinstance(data, dict) else {}
+    status       = order_detail.get("orderStatus", "UNKNOWN")
+    tracking_num = order_detail.get("trackNumber") or order_detail.get("trackingNumber")
+    carrier      = order_detail.get("shippingCarrier") or order_detail.get("logisticName")
+
+    # Update DB with latest status
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "cj_order_num": cj_order_num},
+        {"$set": {
+            "status":        status,
+            "tracking_num":  tracking_num,
+            "carrier":       carrier,
+            "last_checked":  datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "cj_order_num":  cj_order_num,
+        "status":        status,
+        "tracking_num":  tracking_num,
+        "carrier":       carrier,
+        "shipped":       status in ("IN_TRANSIT", "DELIVERED", "PICKED", "PACKED"),
+        "delivered":     status == "DELIVERED",
+        "tip": "If tracking_num is available, use cj_sync_tracking_to_shopify to push it to Shopify.",
+    }
+
+
+@tool(
+    name="cj_sync_tracking_to_shopify",
+    description=(
+        "Get the tracking number from a CJ fulfillment and push it to the matching Shopify order. "
+        "This triggers Shopify's shipping confirmation email to the customer. "
+        "Call this once cj_get_order_status shows the order is IN_TRANSIT."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID"},
+            "cj_order_num":     {"type": "string", "description": "CJ order number (optional — auto-looked up from shopify_order_id if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def cj_sync_tracking_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    shopify_order_id = str(args.get("shopify_order_id", ""))
+    cj_order_num     = args.get("cj_order_num")
+
+    # Resolve CJ order num from DB if not provided
+    if not cj_order_num and shopify_order_id:
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": shopify_order_id}
+        )
+        if not doc:
+            return {"error": "No CJ fulfillment found for this Shopify order. Use cj_fulfill_order first."}
+        cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+
+    if not cj_order_num:
+        return {"error": "Provide either shopify_order_id or cj_order_num"}
+
+    # 1. Get tracking from CJ
+    try:
+        data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+    except RuntimeError as e:
+        return {"error": f"CJ tracking fetch failed: {e}"}
+
+    order_detail = data if isinstance(data, dict) else {}
+    tracking_num = order_detail.get("trackNumber") or order_detail.get("trackingNumber")
+    carrier      = order_detail.get("shippingCarrier") or order_detail.get("logisticName") or ""
+    status       = order_detail.get("orderStatus", "")
+
+    if not tracking_num:
+        return {
+            "success": False,
+            "cj_status": status,
+            "message": "Tracking number not yet assigned by CJ. Try again when status is IN_TRANSIT.",
+        }
+
+    # 2. Look up Shopify order ID from DB if not provided
+    if not shopify_order_id:
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "cj_order_num": cj_order_num}
+        )
+        shopify_order_id = doc.get("shopify_order_id", "") if doc else ""
+
+    if not shopify_order_id:
+        return {"error": "Could not resolve Shopify order ID. Pass shopify_order_id explicitly."}
+
+    # 3. Get fulfillment orders from Shopify
+    try:
+        fo_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                    f"/admin/api/2024-01/orders/{shopify_order_id}/fulfillment_orders.json")
+        fo_list = fo_data.get("fulfillment_orders", [])
+        open_fos = [fo for fo in fo_list if fo.get("status") == "open"]
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment order fetch failed: {e}"}
+
+    if not open_fos:
+        return {"error": "No open fulfillment orders on this Shopify order — may already be fulfilled"}
+
+    # 4. Create Shopify fulfillment with tracking
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": [
+                {
+                    "fulfillment_order_id": fo["id"],
+                    "fulfillment_order_line_items": [
+                        {"id": li["id"], "quantity": li["fulfillable_quantity"]}
+                        for li in fo.get("line_items", [])
+                    ],
+                }
+                for fo in open_fos
+            ],
+            "tracking_info": {"number": tracking_num, "company": carrier},
+            "notify_customer": True,
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/fulfillments.json", json=payload)
+        fulfillment_id = result.get("fulfillment", {}).get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment create failed: {e}"}
+
+    # 5. Update DB
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "cj_order_num": cj_order_num},
+        {"$set": {
+            "status":            "synced_to_shopify",
+            "tracking_num":      tracking_num,
+            "carrier":           carrier,
+            "shopify_fulfillment_id": str(fulfillment_id),
+            "synced_at":         datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "success":              True,
+        "tracking_num":         tracking_num,
+        "carrier":              carrier,
+        "shopify_order_id":     shopify_order_id,
+        "shopify_fulfillment_id": str(fulfillment_id),
+        "message":              f"Tracking {tracking_num} pushed to Shopify. Customer notified.",
+    }
+
+
+@tool(
+    name="shopify_product_analytics",
+    description=(
+        "Get per-product sales performance for the Shopify store: units sold, revenue, refund count, "
+        "and profit margin (if the product was sourced via CJdropshipping). "
+        "Use this to identify best sellers, worst performers, and high-margin products."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "days":     {"type": "integer", "description": "Lookback period in days (default 30)"},
+            "limit":    {"type": "integer", "description": "Max products to return (default 20)"},
+            "sort_by":  {"type": "string",  "description": "'revenue' (default), 'units', 'margin', 'refunds'"},
+        },
+    },
+)
+async def shopify_product_analytics(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from .composio_helper import composio_proxy as nango_proxy
+    from datetime import datetime, timedelta
+
+    days  = int(args.get("days", 30))
+    limit = int(args.get("limit", 20))
+    sort_by = args.get("sort_by", "revenue")
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+
+    try:
+        orders_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                        "/admin/api/2024-01/orders.json",
+                                        params={
+                                            "status": "any",
+                                            "financial_status": "paid",
+                                            "created_at_min": since,
+                                            "limit": "250",
+                                            "fields": "id,line_items,refunds,financial_status",
+                                        })
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    orders = orders_data.get("orders", [])
+
+    # Aggregate by product
+    product_stats: Dict[str, Dict] = {}
+    for order in orders:
+        for item in order.get("line_items", []):
+            pid   = str(item.get("product_id", ""))
+            title = item.get("title", "Unknown")
+            qty   = int(item.get("quantity", 0))
+            rev   = float(item.get("price", 0)) * qty
+            key   = pid or title
+
+            if key not in product_stats:
+                product_stats[key] = {
+                    "product_id": pid,
+                    "title":      title,
+                    "units_sold": 0,
+                    "revenue":    0.0,
+                    "refunds":    0,
+                    "cost_price": None,
+                }
+            product_stats[key]["units_sold"] += qty
+            product_stats[key]["revenue"]    += rev
+
+        for refund in order.get("refunds", []):
+            for ri in refund.get("refund_line_items", []):
+                li   = ri.get("line_item", {})
+                pid  = str(li.get("product_id", ""))
+                title = li.get("title", "")
+                key  = pid or title
+                if key in product_stats:
+                    product_stats[key]["refunds"] += int(ri.get("quantity", 1))
+
+    # Enrich with CJ cost prices
+    cj_docs = await ctx.db.cj_products.find({"user_id": ctx.business_id}).to_list(500)
+    cost_map = {str(d["shopify_product_id"]): d["cost_price"] for d in cj_docs if d.get("shopify_product_id")}
+
+    results = []
+    for key, s in product_stats.items():
+        cost = cost_map.get(s["product_id"])
+        margin = round(s["revenue"] - (cost * s["units_sold"]), 2) if cost else None
+        results.append({
+            **s,
+            "revenue":      round(s["revenue"], 2),
+            "cost_price":   cost,
+            "gross_margin": margin,
+            "margin_pct":   f"{round(margin / s['revenue'] * 100, 1)}%" if margin and s["revenue"] else "N/A",
+        })
+
+    sort_keys = {"revenue": "revenue", "units": "units_sold", "margin": "gross_margin", "refunds": "refunds"}
+    sk = sort_keys.get(sort_by, "revenue")
+    results.sort(key=lambda x: (x.get(sk) or 0), reverse=True)
+
+    return {
+        "period_days": days,
+        "products":    results[:limit],
+        "total_products_with_sales": len(results),
+        "note": "gross_margin only available for products sourced via CJdropshipping",
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ALIEXPRESS DROPSHIPPING TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_aliexpress_categories",
+    description=(
+        "Get AliExpress DS product categories with their IDs. "
+        "Use before search_aliexpress_products when the user wants to browse by category."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_aliexpress_categories(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    try:
+        data = await ae_get_categories()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    out = [{"id": str(c.get("category_id", "")), "name": c.get("category_name", "")} for c in (cats or []) if c.get("category_id")]
+    return {"categories": out, "tip": "Pass a category id to search_aliexpress_products as category_id."}
+
+
+@tool(
+    name="search_aliexpress_products",
+    description=(
+        "Search AliExpress DS catalog for real dropship products. "
+        "Returns product ID, title, cost price, sale price suggestion, images, and shipping info. "
+        "Use when a user wants to source products from AliExpress."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword":     {"type": "string",  "description": "Search term e.g. 'bluetooth speaker', 'cat toy'"},
+            "category_id": {"type": "string",  "description": "AliExpress category ID (optional)"},
+            "min_price":   {"type": "number",  "description": "Min cost price USD"},
+            "max_price":   {"type": "number",  "description": "Max cost price USD"},
+            "page_size":   {"type": "integer", "description": "Results to return (default 20, max 50)"},
+            "sort":        {"type": "string",  "description": "SALE_PRICE_ASC | SALE_PRICE_DESC | LAST_VOLUME_DESC (default: LAST_VOLUME_DESC for best sellers)"},
+        },
+    },
+)
+async def search_aliexpress_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    try:
+        data = await ae_ds_search(
+            keyword=args["keyword"],
+            category_id=args.get("category_id"),
+            min_price=args.get("min_price"),
+            max_price=args.get("max_price"),
+            page_size=int(args.get("page_size", 20)),
+            sort=args.get("sort", "LAST_VOLUME_DESC"),
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    # Unwrap products list — AE response structure varies
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    out = []
+    for p in products_raw:
+        cost = float(p.get("sale_price", p.get("target_sale_price", 0)) or 0)
+        out.append({
+            "ae_pid":          str(p.get("product_id", p.get("product_main_image_url", ""))),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", p.get("first_level_category_name", "")),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "currency":        p.get("target_sale_price_currency", "USD"),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "detail_url":      p.get("product_detail_url", ""),
+        })
+    return {
+        "keyword":     args["keyword"],
+        "total_found": data.get("total_record_count", len(out)),
+        "products":    out,
+        "tip":         "Use import_aliexpress_product_to_shopify to add any product to Shopify.",
+    }
+
+
+@tool(
+    name="get_aliexpress_hot_products",
+    description=(
+        "Get best-selling / trending products from AliExpress DS — sorted by order volume. "
+        "Use to find what's selling well right now across AliExpress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword":     {"type": "string",  "description": "Category or niche keyword (optional)"},
+            "category_id": {"type": "string",  "description": "AliExpress category ID (optional)"},
+            "page_size":   {"type": "integer", "description": "Number of results (default 20)"},
+        },
+    },
+)
+async def get_aliexpress_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    keyword = args.get("keyword", "")
+    if not keyword and not args.get("category_id"):
+        keyword = "bestseller"
+    try:
+        data = await ae_ds_search(
+            keyword=keyword,
+            category_id=args.get("category_id"),
+            page_size=int(args.get("page_size", 20)),
+            sort="LAST_VOLUME_DESC",
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    out = []
+    for p in products_raw:
+        cost = float(p.get("sale_price", p.get("target_sale_price", 0)) or 0)
+        out.append({
+            "ae_pid":          str(p.get("product_id", "")),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+        })
+    return {"source": "AliExpress DS — sorted by order volume", "products": out}
+
+
+@tool(
+    name="import_aliexpress_product_to_shopify",
+    description=(
+        "Import an AliExpress DS product into the user's Shopify store. "
+        "Fetches full product detail (images, variants, description) and creates the Shopify listing. "
+        "Stores AliExpress cost price for margin tracking. Requires Shopify + AliExpress configured."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["ae_pid"],
+        "properties": {
+            "ae_pid":         {"type": "string", "description": "AliExpress product ID from search_aliexpress_products"},
+            "sale_price":     {"type": "number", "description": "Selling price in USD (default: 2.5x cost)"},
+            "product_title":  {"type": "string", "description": "Override product title (optional)"},
+            "ship_to_country":{"type": "string", "description": "Target country code e.g. US, GB, ZA (default: US)"},
+        },
+    },
+    destructive=True,
+)
+async def import_aliexpress_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_product_detail
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    ae_pid     = str(args["ae_pid"])
+    ship_to    = args.get("ship_to_country", "US")
+
+    # 1. Fetch full product detail
+    try:
+        raw = await ae_ds_product_detail(ae_pid, ship_to=ship_to)
+    except RuntimeError as e:
+        return {"error": f"AliExpress product fetch failed: {e}"}
+
+    # Unwrap nested response
+    prod = (
+        raw.get("result", raw)
+        if "result" in raw
+        else raw
+    )
+    ae_item = prod.get("ae_item_base_info_dto", prod)
+    ae_sku_list = prod.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+    ae_images   = prod.get("ae_multimedia_info_dto", {}).get("image_urls", "")
+
+    title       = args.get("product_title") or ae_item.get("subject", "")
+    description = ae_item.get("detail", "")
+    images      = [i.strip() for i in ae_images.split(";") if i.strip()][:5] if ae_images else []
+
+    # Cost from first SKU or base price
+    cost_price = 0.0
+    if ae_sku_list:
+        try:
+            cost_price = float(ae_sku_list[0].get("sku_price", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    if not cost_price:
+        try:
+            cost_price = float(ae_item.get("min_activity_amount", ae_item.get("price", 0)) or 0)
+        except (TypeError, ValueError):
+            pass
+
+    sale_price = float(args.get("sale_price") or round(cost_price * 2.5, 2))
+
+    # Build Shopify variants from AliExpress SKUs
+    if ae_sku_list:
+        variants = [
+            {
+                "title":                (s.get("sku_attr", "Default Title") or "Default Title"),
+                "price":                str(sale_price),
+                "compare_at_price":     str(round(sale_price * 1.3, 2)),
+                "inventory_management": "shopify",
+                "inventory_quantity":   int(s.get("sku_available_stock", 50) or 50),
+            }
+            for s in ae_sku_list[:30]
+        ]
+    else:
+        variants = [{
+            "title": "Default Title",
+            "price": str(sale_price),
+            "compare_at_price": str(round(sale_price * 1.3, 2)),
+            "inventory_management": "shopify",
+            "inventory_quantity": 50,
+        }]
+
+    shopify_payload = {
+        "product": {
+            "title":        title,
+            "body_html":    f"<p>{description}</p>" if description else "",
+            "vendor":       "AliExpress",
+            "product_type": ae_item.get("category_id", ""),
+            "status":       "active",
+            "tags":         "dropship,aliexpress",
+            "variants":     variants,
+            "images":       [{"src": img} for img in images if img],
+        }
+    }
+
+    # 2. Create Shopify product
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/products.json",
+                                   json=shopify_payload)
+        shopify_product = result.get("product", {})
+        shopify_id = shopify_product.get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify create failed: {e}"}
+
+    # 3. Store mapping for margin tracking
+    if shopify_id:
+        await ctx.db.ae_products.update_one(
+            {"user_id": ctx.business_id, "ae_pid": ae_pid},
+            {"$set": {
+                "user_id":            ctx.business_id,
+                "shopify_product_id": str(shopify_id),
+                "ae_pid":             ae_pid,
+                "cost_price":         cost_price,
+                "sale_price":         sale_price,
+                "supplier":           "aliexpress",
+                "title":              title,
+                "imported_at":        datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+
+    return {
+        "success":           True,
+        "shopify_product_id": shopify_id,
+        "title":             title,
+        "cost_price":        cost_price,
+        "sale_price":        sale_price,
+        "margin_per_unit":   round(sale_price - cost_price, 2),
+        "margin_pct":        f"{round((sale_price - cost_price) / sale_price * 100, 1)}%" if sale_price else "N/A",
+        "images_imported":   len(images),
+        "variants_imported": len(variants),
+    }
+
+
+@tool(
+    name="aliexpress_fulfill_order",
+    description=(
+        "Fulfill a Shopify order using AliExpress DS. "
+        "Looks up the order shipping address and AliExpress-sourced line items, "
+        "then places the order with AliExpress DS. "
+        "Returns an AliExpress order ID for tracking."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["shopify_order_id"],
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID (numeric)"},
+        },
+    },
+    destructive=True,
+)
+async def aliexpress_fulfill_order(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_create_order, ae_ds_product_detail
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    order_id = str(args["shopify_order_id"])
+
+    # 1. Fetch Shopify order
+    try:
+        ord_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{order_id}.json")
+        order = ord_data.get("order", {})
+    except RuntimeError as e:
+        return {"error": f"Failed to fetch Shopify order: {e}"}
+    if not order:
+        return {"error": "Order not found"}
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+
+    # 2. Find AliExpress-sourced line items
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    ae_mappings: Dict[str, Any] = {}
+    if shopify_pids:
+        async for doc in ctx.db.ae_products.find(
+            {"user_id": ctx.business_id, "shopify_product_id": {"$in": shopify_pids}}
+        ):
+            ae_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not ae_mappings:
+        return {"error": "No AliExpress-sourced products found in this order. Only AliExpress-imported products can be fulfilled via AliExpress."}
+
+    # 3. Build AliExpress DS order payload
+    ae_product_items = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in ae_mappings:
+            continue
+        ae_pid    = ae_mappings[pid]["ae_pid"]
+        quantity  = int(li.get("quantity", 1))
+        # Get sku_id from product detail
+        sku_id = None
+        try:
+            detail    = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"))
+            sku_list  = detail.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+            if sku_list:
+                sku_id = sku_list[0].get("sku_id")
+        except Exception:
+            pass
+        item: Dict[str, Any] = {"product_id": ae_pid, "product_count": quantity}
+        if sku_id:
+            item["sku_id"] = str(sku_id)
+        ae_product_items.append(item)
+
+    if not ae_product_items:
+        return {"error": "Could not resolve AliExpress SKU IDs for order line items"}
+
+    order_payload = {
+        "logistics_address": {
+            "contact_person":  f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip(),
+            "mobile_no":       ship.get("phone") or order.get("phone") or "",
+            "address":         ship.get("address1", ""),
+            "city":            ship.get("city", ""),
+            "province":        ship.get("province", ""),
+            "zip":             ship.get("zip", ""),
+            "country":         ship.get("country_code", "US"),
+        },
+        "product_items": ae_product_items,
+    }
+
+    try:
+        result = await ae_ds_create_order(order_payload)
+    except RuntimeError as e:
+        return {"error": f"AliExpress order creation failed: {e}"}
+
+    ae_order_id = str(result.get("order_id", result.get("ae_order_id", f"AE-{order_id}")))
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "shopify_order_id": order_id},
+        {"$set": {
+            "user_id":          ctx.business_id,
+            "shopify_order_id": order_id,
+            "ae_order_id":      ae_order_id,
+            "status":           "created",
+            "created_at":       datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+
+    return {
+        "success":          True,
+        "ae_order_id":      ae_order_id,
+        "shopify_order_id": order_id,
+        "items_fulfilled":  len(ae_product_items),
+        "next_step":        "Use aliexpress_get_order_status to track, then aliexpress_sync_tracking_to_shopify when shipped.",
+    }
+
+
+@tool(
+    name="aliexpress_get_order_status",
+    description=(
+        "Check the status of an AliExpress DS fulfillment order. "
+        "Returns status, tracking number and carrier when shipped. "
+        "Pass either shopify_order_id (auto-lookup) or ae_order_id."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID for auto-lookup"},
+            "ae_order_id":      {"type": "string", "description": "AliExpress order ID if already known"},
+        },
+    },
+)
+async def aliexpress_get_order_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_get_order
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+
+    ae_order_id = args.get("ae_order_id")
+    if not ae_order_id and args.get("shopify_order_id"):
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": str(args["shopify_order_id"])}
+        )
+        if not doc:
+            return {"error": "No AliExpress fulfillment found. Use aliexpress_fulfill_order first."}
+        ae_order_id = doc.get("ae_order_id")
+
+    if not ae_order_id:
+        return {"error": "Provide shopify_order_id or ae_order_id"}
+
+    try:
+        data = await ae_ds_get_order(ae_order_id)
+    except RuntimeError as e:
+        return {"error": f"AliExpress order status fetch failed: {e}"}
+
+    order_info   = data.get("result", data) if isinstance(data, dict) else {}
+    status       = order_info.get("order_status", "UNKNOWN")
+    logistics    = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+    tracking_num = logistics[0].get("logistics_no") if logistics else None
+    carrier      = logistics[0].get("logistics_company") if logistics else None
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "ae_order_id": ae_order_id},
+        {"$set": {"status": status, "tracking_num": tracking_num, "carrier": carrier, "last_checked": datetime.utcnow()}},
+    )
+
+    return {
+        "ae_order_id":  ae_order_id,
+        "status":       status,
+        "tracking_num": tracking_num,
+        "carrier":      carrier,
+        "shipped":      status in ("FINISH", "IN_CANCEL", "PLACE_ORDER_SUCCESS"),
+        "tip":          "If tracking_num is available, use aliexpress_sync_tracking_to_shopify.",
+    }
+
+
+@tool(
+    name="aliexpress_sync_tracking_to_shopify",
+    description=(
+        "Push AliExpress tracking number to Shopify, triggering the shipping confirmation email to the customer."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID"},
+            "ae_order_id":      {"type": "string", "description": "AliExpress order ID (auto-looked up if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def aliexpress_sync_tracking_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_get_order
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    shopify_order_id = str(args.get("shopify_order_id", ""))
+    ae_order_id      = args.get("ae_order_id")
+
+    if not ae_order_id and shopify_order_id:
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": shopify_order_id}
+        )
+        if not doc:
+            return {"error": "No AliExpress fulfillment found for this order."}
+        ae_order_id = doc.get("ae_order_id")
+
+    if not ae_order_id:
+        return {"error": "Provide shopify_order_id or ae_order_id"}
+
+    # Get tracking from AliExpress
+    try:
+        data = await ae_ds_get_order(ae_order_id)
+    except RuntimeError as e:
+        return {"error": f"AliExpress tracking fetch failed: {e}"}
+
+    order_info   = data.get("result", data) if isinstance(data, dict) else {}
+    logistics    = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+    tracking_num = logistics[0].get("logistics_no") if logistics else None
+    carrier      = logistics[0].get("logistics_company", "") if logistics else ""
+    status       = order_info.get("order_status", "")
+
+    if not tracking_num:
+        return {"success": False, "ae_status": status,
+                "message": "Tracking not yet assigned. Try again when order is shipped."}
+
+    # Resolve shopify_order_id from DB if not provided
+    if not shopify_order_id:
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "ae_order_id": ae_order_id}
+        )
+        shopify_order_id = doc.get("shopify_order_id", "") if doc else ""
+
+    if not shopify_order_id:
+        return {"error": "Could not resolve Shopify order ID. Pass shopify_order_id explicitly."}
+
+    # Push to Shopify fulfillment
+    try:
+        fo_data  = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}/fulfillment_orders.json")
+        open_fos = [fo for fo in fo_data.get("fulfillment_orders", []) if fo.get("status") == "open"]
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment order fetch failed: {e}"}
+
+    if not open_fos:
+        return {"error": "No open Shopify fulfillment orders — may already be fulfilled"}
+
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": [
+                {
+                    "fulfillment_order_id": fo["id"],
+                    "fulfillment_order_line_items": [
+                        {"id": li["id"], "quantity": li["fulfillable_quantity"]}
+                        for li in fo.get("line_items", [])
+                    ],
+                }
+                for fo in open_fos
+            ],
+            "tracking_info": {"number": tracking_num, "company": carrier},
+            "notify_customer": True,
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/fulfillments.json", json=payload)
+        fulfillment_id = result.get("fulfillment", {}).get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment create failed: {e}"}
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "ae_order_id": ae_order_id},
+        {"$set": {
+            "status":                  "synced_to_shopify",
+            "tracking_num":            tracking_num,
+            "carrier":                 carrier,
+            "shopify_fulfillment_id":  str(fulfillment_id),
+            "synced_at":               datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "success":               True,
+        "tracking_num":          tracking_num,
+        "carrier":               carrier,
+        "shopify_order_id":      shopify_order_id,
+        "shopify_fulfillment_id": str(fulfillment_id),
+        "message":               f"Tracking {tracking_num} pushed to Shopify. Customer notified.",
+    }
 
 
 # ═════════════════════════════════════════════════════════════════════════════

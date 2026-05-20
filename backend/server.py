@@ -10596,12 +10596,13 @@ async def send_daily_notifications_now(user = Depends(get_current_user)):
 _SHOPIFY_SCOPES = (
     "read_orders,write_orders,"
     "read_products,write_products,"
-    "read_customers,"
+    "read_customers,write_customers,"
     "read_script_tags,write_script_tags,"
     "read_price_rules,write_price_rules,"
     "read_discounts,write_discounts,"
     "read_checkouts,"
-    "read_locations"
+    "read_locations,write_inventory,"
+    "read_content,write_content"
 )
 
 
@@ -10785,6 +10786,12 @@ async def shopify_oauth_callback(
         pass
 
     logging.info(f"[shopify-oauth] Connected shop={shop} user={user_id}")
+    # Auto-register webhooks in background
+    try:
+        import asyncio as _aio
+        _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
+    except Exception as _wh_exc:
+        logging.warning(f"[shopify-oauth] webhook registration failed: {_wh_exc}")
     from starlette.responses import RedirectResponse
     return RedirectResponse(url=f"{frontend_url}/dashboard/shopify?shopify_connected=1")
 
@@ -10836,6 +10843,12 @@ async def shopify_connect_direct(request: Request, user=Depends(get_current_user
     except Exception:
         pass
     logging.info(f"[shopify-direct] Connected store={domain} user={user_id}")
+    # Auto-register webhooks in background
+    try:
+        import asyncio as _aio
+        _aio.create_task(_shopify_register_webhooks(domain, token, _shopify_backend_url()))
+    except Exception as _wh_exc:
+        logging.warning(f"[shopify-direct] webhook registration failed: {_wh_exc}")
     return {"ok": True, "domain": domain, "shop_name": shop_info.get("name", domain)}
 
 
@@ -10857,6 +10870,234 @@ async def shopify_disconnect_direct(user=Depends(get_current_user)):
     )
     logging.info(f"[shopify-direct] Disconnected user={user_id} matched={result.matched_count}")
     return {"ok": True}
+
+
+# ── Shopify Webhook helpers ────────────────────────────────────────────────────
+
+def _shopify_verify_webhook_hmac(body: bytes, hmac_header: str, secret: str) -> bool:
+    import hashlib, hmac as _hmac, base64
+    digest = _hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    return _hmac.compare_digest(base64.b64encode(digest).decode(), hmac_header)
+
+
+async def _shopify_register_webhooks(domain: str, token: str, backend_url: str) -> list:
+    """Register all required Shopify webhooks for a store. Returns list of registered topics."""
+    import httpx as _httpx
+    topics = [
+        ("orders/paid",    f"{backend_url}/api/shopify/webhook/orders-paid"),
+        ("orders/updated", f"{backend_url}/api/shopify/webhook/orders-updated"),
+        ("products/create", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("products/update", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("products/delete", f"{backend_url}/api/shopify/webhook/products-sync"),
+    ]
+    registered = []
+    async with _httpx.AsyncClient(timeout=15.0) as _c:
+        for topic, address in topics:
+            try:
+                r = await _c.post(
+                    f"https://{domain}/admin/api/2024-01/webhooks.json",
+                    headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+                    json={"webhook": {"topic": topic, "address": address, "format": "json"}},
+                )
+                if r.status_code in (200, 201, 422):  # 422 = already registered, fine
+                    registered.append(topic)
+                else:
+                    logging.warning(f"[shopify-webhook] register {topic} → {r.status_code}")
+            except Exception as exc:
+                logging.warning(f"[shopify-webhook] register {topic} error: {exc}")
+    return registered
+
+
+def _shopify_backend_url() -> str:
+    return (
+        os.environ.get("BACKEND_PUBLIC_URL")
+        or os.environ.get("NEXT_PUBLIC_API_URL", "").replace("/api", "")
+        or "https://crm-1-pnfo.onrender.com"
+    ).rstrip("/")
+
+
+@api_router.post("/shopify/webhooks/register")
+async def shopify_register_webhooks(user=Depends(get_current_user)):
+    """Manually register Shopify webhooks for the connected store."""
+    from composio_service import _get_shopify_direct_creds
+    user_id = str(user.get("business_id") or user["_id"])
+    creds = await _get_shopify_direct_creds(user_id)
+    if not creds:
+        raise HTTPException(400, "Shopify not connected")
+    registered = await _shopify_register_webhooks(
+        creds["domain"], creds["token"], _shopify_backend_url()
+    )
+    return {"ok": True, "registered": registered}
+
+
+# ── Auto-fulfillment: orders/paid webhook ──────────────────────────────────────
+
+async def _auto_fulfill_order_bg(user_id: str, order: dict) -> None:
+    """Background task: attempt to auto-fulfill each line item via CJ or AliExpress."""
+    from composio_service import _get_shopify_direct_creds, _shopify_direct_proxy
+    import httpx as _httpx
+
+    creds = await _get_shopify_direct_creds(user_id)
+    if not creds:
+        return
+
+    order_id    = str(order.get("id", ""))
+    order_name  = order.get("name", order_id)
+    line_items  = order.get("line_items", [])
+    ship_addr   = order.get("shipping_address") or order.get("billing_address") or {}
+
+    fulfilled_items = []
+    for item in line_items:
+        product_id = str(item.get("product_id") or "")
+        quantity   = item.get("quantity", 1)
+
+        # ── Check CJ mapping ─────────────────────────────────────────────────
+        cj_mapping = await db.cj_products.find_one(
+            {"user_id": user_id, "shopify_product_id": product_id}
+        )
+        if cj_mapping:
+            try:
+                from cj_dropship.client import cj_post
+                payload = {
+                    "orderNumber":  order_id,
+                    "shippingZip":  ship_addr.get("zip", ""),
+                    "shippingCountryCode": ship_addr.get("country_code", "US"),
+                    "shippingPhone": ship_addr.get("phone", ""),
+                    "shippingCustomerName": f"{ship_addr.get('first_name','')} {ship_addr.get('last_name','')}".strip(),
+                    "shippingAddress": ship_addr.get("address1", ""),
+                    "shippingCity":    ship_addr.get("city", ""),
+                    "shippingProvince": ship_addr.get("province", ""),
+                    "products": [{"vid": cj_mapping.get("cj_vid", ""), "quantity": quantity}],
+                }
+                result = await cj_post("/order/create", payload)
+                cj_order_id = (result or {}).get("orderId") or (result or {}).get("data", {}).get("orderId")
+                if cj_order_id:
+                    await db.cj_products.update_one(
+                        {"user_id": user_id, "shopify_product_id": product_id},
+                        {"$push": {"orders": {"shopify_order_id": order_id, "cj_order_id": cj_order_id,
+                                              "quantity": quantity, "created_at": __import__("datetime").datetime.utcnow()}}},
+                    )
+                    fulfilled_items.append({"product_id": product_id, "supplier": "cj", "cj_order_id": cj_order_id})
+                    logging.info(f"[shopify-autofulfill] CJ order {cj_order_id} placed for shopify order {order_name}")
+            except Exception as exc:
+                logging.error(f"[shopify-autofulfill] CJ fulfillment error order={order_name}: {exc}")
+            continue
+
+        # ── Check AliExpress mapping ──────────────────────────────────────────
+        ali_mapping = await db.aliexpress_products.find_one(
+            {"user_id": user_id, "shopify_product_id": product_id}
+        )
+        if ali_mapping:
+            logging.info(f"[shopify-autofulfill] AliExpress auto-fulfill order={order_name} product={product_id} (manual review recommended)")
+            fulfilled_items.append({"product_id": product_id, "supplier": "aliexpress", "status": "pending_manual"})
+
+    if fulfilled_items:
+        await db.shopify_auto_fulfillments.update_one(
+            {"user_id": user_id, "shopify_order_id": order_id},
+            {"$set": {"user_id": user_id, "shopify_order_id": order_id, "order_name": order_name,
+                      "items": fulfilled_items, "fulfilled_at": __import__("datetime").datetime.utcnow()}},
+            upsert=True,
+        )
+
+
+@api_router.post("/shopify/webhook/orders-paid")
+async def shopify_webhook_orders_paid(request: Request):
+    """Shopify orders/paid webhook — triggers auto-fulfillment via CJ/AliExpress."""
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    body = await request.body()
+
+    if client_secret:
+        hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+        if not _shopify_verify_webhook_hmac(body, hmac_header, client_secret):
+            raise HTTPException(status_code=401, detail="HMAC verification failed")
+
+    try:
+        order = __import__("json").loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        import asyncio as _asyncio
+        _asyncio.create_task(_auto_fulfill_order_bg(user_id, order))
+
+    return {"status": "ok"}
+
+
+# ── Sync webhooks: orders/updated, products ────────────────────────────────────
+
+@api_router.post("/shopify/webhook/orders-updated")
+async def shopify_webhook_orders_updated(request: Request):
+    """Shopify orders/updated — sync order status changes back to Zilo CRM."""
+    body = await request.body()
+    try:
+        order = __import__("json").loads(body)
+    except Exception:
+        return {"status": "ok"}
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        await db.shopify_orders_cache.update_one(
+            {"user_id": user_id, "shopify_order_id": str(order.get("id"))},
+            {"$set": {
+                "user_id":          user_id,
+                "shopify_order_id": str(order.get("id")),
+                "order_number":     order.get("name"),
+                "financial_status": order.get("financial_status"),
+                "fulfillment_status": order.get("fulfillment_status"),
+                "updated_at":       __import__("datetime").datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+    return {"status": "ok"}
+
+
+@api_router.post("/shopify/webhook/products-sync")
+async def shopify_webhook_products_sync(request: Request):
+    """Shopify products/create|update|delete — sync product catalog changes to Zilo."""
+    body = await request.body()
+    try:
+        product = __import__("json").loads(body)
+    except Exception:
+        return {"status": "ok"}
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    topic       = request.headers.get("X-Shopify-Topic", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id    = str(user.get("business_id") or user["_id"])
+        product_id = str(product.get("id", ""))
+
+        if topic == "products/delete":
+            await db.shopify_products_cache.delete_one({"user_id": user_id, "shopify_product_id": product_id})
+        else:
+            await db.shopify_products_cache.update_one(
+                {"user_id": user_id, "shopify_product_id": product_id},
+                {"$set": {
+                    "user_id":           user_id,
+                    "shopify_product_id": product_id,
+                    "title":             product.get("title"),
+                    "vendor":            product.get("vendor"),
+                    "status":            product.get("status"),
+                    "tags":              product.get("tags"),
+                    "updated_at":        __import__("datetime").datetime.utcnow(),
+                }},
+                upsert=True,
+            )
+    return {"status": "ok"}
 
 
 @api_router.post("/integrations/shopify/sync-products")
@@ -13708,6 +13949,744 @@ async def assistant_ai_draft_alias(req: Request, user=Depends(get_current_user))
     """Thin alias to the assistant router's /ai-draft for frontend compatibility."""
     from assistant.routes import ai_draft as _ai_draft_handler
     return await _ai_draft_handler(req, user)
+
+def _cj_price(raw) -> float:
+    """Parse CJ sellPrice which can be '5.99' or '5.99 -- 12.99' (range = take minimum)."""
+    if raw is None:
+        return 0.0
+    s = str(raw).strip()
+    if not s:
+        return 0.0
+    # Take first number before any space or dash separator
+    import re as _re
+    m = _re.match(r'[\d.]+', s)
+    return float(m.group()) if m else 0.0
+
+
+# ── Supplier connections (per-user credentials for CJ + AliExpress) ──────────
+
+async def _get_supplier_creds(business_id: str, supplier: str) -> Optional[dict]:
+    """Look up a user's stored supplier credentials. Returns None if not connected."""
+    doc = await db.supplier_connections.find_one({"user_id": business_id, "supplier": supplier})
+    return doc.get("credentials") if doc else None
+
+
+class CJConnectBody(BaseModel):
+    email: str
+    api_key: str
+
+class AEConnectBody(BaseModel):
+    app_key: str
+    app_secret: str
+    access_token: str = ""
+
+class AEOAuthStateBody(BaseModel):
+    state: str
+
+
+@api_router.get("/supplier-connections")
+async def get_supplier_connections(user=Depends(get_current_user)):
+    """Return which supplier accounts this user has connected."""
+    business_id = user.get("business_id") or str(user["_id"])
+    docs = await db.supplier_connections.find({"user_id": business_id}).to_list(20)
+    connected = {d["supplier"]: True for d in docs}
+    return {
+        "cj":          connected.get("cj", False),
+        "aliexpress":  connected.get("aliexpress", False),
+    }
+
+
+@api_router.post("/supplier-connections/cj")
+async def connect_cj(body: CJConnectBody, user=Depends(get_current_user)):
+    """Save and test CJ Dropshipping credentials for this user."""
+    business_id = user.get("business_id") or str(user["_id"])
+    try:
+        from cj_dropship.client import cj_get
+        creds = {"email": body.email.strip(), "api_key": body.api_key.strip()}
+        await cj_get("/product/getCategory", {}, creds=creds)
+    except Exception as e:
+        raise HTTPException(400, f"CJ credentials test failed: {e}")
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "cj"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "cj",
+            "credentials":  {"email": body.email.strip(), "api_key": body.api_key.strip()},
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"connected": True}
+
+
+@api_router.delete("/supplier-connections/cj")
+async def disconnect_cj(user=Depends(get_current_user)):
+    business_id = user.get("business_id") or str(user["_id"])
+    await db.supplier_connections.delete_one({"user_id": business_id, "supplier": "cj"})
+    return {"connected": False}
+
+
+@api_router.post("/supplier-connections/aliexpress")
+async def connect_aliexpress(body: AEConnectBody, user=Depends(get_current_user)):
+    """Save and test AliExpress credentials for this user."""
+    business_id = user.get("business_id") or str(user["_id"])
+    try:
+        from aliexpress.client import ae_get_categories
+        creds = {
+            "app_key":      body.app_key.strip(),
+            "app_secret":   body.app_secret.strip(),
+            "access_token": body.access_token.strip(),
+        }
+        await ae_get_categories(creds=creds)
+    except Exception as e:
+        raise HTTPException(400, f"AliExpress credentials test failed: {e}")
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "aliexpress"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "aliexpress",
+            "credentials":  {
+                "app_key":      body.app_key.strip(),
+                "app_secret":   body.app_secret.strip(),
+                "access_token": body.access_token.strip(),
+            },
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"connected": True}
+
+
+@api_router.delete("/supplier-connections/aliexpress")
+async def disconnect_aliexpress(user=Depends(get_current_user)):
+    business_id = user.get("business_id") or str(user["_id"])
+    await db.supplier_connections.delete_one({"user_id": business_id, "supplier": "aliexpress"})
+    return {"connected": False}
+
+
+# ── AliExpress OAuth flow ─────────────────────────────────────────────────────
+
+@api_router.get("/aliexpress/oauth/start")
+async def ae_oauth_start(user=Depends(get_current_user)):
+    """Generate AliExpress OAuth URL. Requires ALIEXPRESS_APP_KEY in server env."""
+    import urllib.parse
+    app_key = os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    if not app_key:
+        raise HTTPException(503, "ALIEXPRESS_APP_KEY is not configured on the server.")
+    business_id = user.get("business_id") or str(user["_id"])
+    # Sign the state so the callback can't be forged
+    state = hmac.new(
+        os.environ.get("JWT_SECRET", "secret").encode(),
+        business_id.encode(),
+        hashlib.sha256,
+    ).hexdigest()[:16] + "__" + business_id
+    # Store state → business_id mapping (TTL 10 min)
+    from datetime import datetime as _dt
+    await db.ae_oauth_states.update_one(
+        {"state": state},
+        {"$set": {"state": state, "business_id": business_id, "created_at": _dt.utcnow()}},
+        upsert=True,
+    )
+    base_url = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
+    auth_url = (
+        "https://oauth.aliexpress.com/auth"
+        f"?response_type=code"
+        f"&client_id={app_key}"
+        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
+        f"&state={urllib.parse.quote(state, safe='')}"
+        f"&sp=ae&view=web&locale=en_US"
+    )
+    return {"auth_url": auth_url}
+
+
+@api_router.get("/aliexpress/oauth/callback")
+async def ae_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """AliExpress redirects here after the user authorizes. Stores the token and closes the popup."""
+    from starlette.responses import HTMLResponse
+    import urllib.parse
+
+    def _close_popup(ok: bool, msg: str = "") -> HTMLResponse:
+        js_event = "ae_connected" if ok else "ae_connect_failed"
+        return HTMLResponse(f"""<!DOCTYPE html><html><body>
+<script>
+if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},window.location.origin);window.close();}}
+else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}";}}
+</script></body></html>""")
+
+    if error:
+        return _close_popup(False, error)
+    if not code or not state:
+        return _close_popup(False, "Missing code or state")
+
+    # Validate state and look up business_id
+    state_doc = await db.ae_oauth_states.find_one({"state": state})
+    if not state_doc:
+        return _close_popup(False, "Invalid or expired state")
+    business_id = state_doc["business_id"]
+    await db.ae_oauth_states.delete_one({"state": state})
+
+    # Exchange code for access token
+    app_key    = os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    app_secret = os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
+    if not app_key or not app_secret:
+        return _close_popup(False, "Server not configured")
+    base_url     = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.post("https://oauth.aliexpress.com/token", data={
+                "grant_type":    "authorization_code",
+                "code":          code,
+                "client_id":     app_key,
+                "client_secret": app_secret,
+                "redirect_uri":  redirect_uri,
+            })
+        token_data = r.json()
+    except Exception as e:
+        return _close_popup(False, f"Token exchange failed: {e}")
+
+    access_token  = token_data.get("access_token", "")
+    refresh_token = token_data.get("refresh_token", "")
+    if not access_token:
+        return _close_popup(False, token_data.get("error_description", "No access token returned"))
+
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "aliexpress"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "aliexpress",
+            "credentials":  {
+                "app_key":       app_key,
+                "app_secret":    app_secret,
+                "access_token":  access_token,
+                "refresh_token": refresh_token,
+            },
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return _close_popup(True)
+
+
+# ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
+@api_router.get("/cj/products")
+async def cj_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    hot: bool = False,
+    user=Depends(get_current_user),
+):
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        raise HTTPException(503, "CJdropshipping module not available")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    params: dict = {"pageNum": 1, "pageSize": min(page_size, 50)}
+    if keyword:
+        params["productNameEn"] = keyword
+    if category_id:
+        params["categoryId"] = category_id
+    if min_price is not None:
+        params["minPrice"] = min_price
+    if max_price is not None:
+        params["maxPrice"] = max_price
+
+    try:
+        data = await cj_get("/product/list", params, creds=cj_creds)
+    except Exception as e:
+        logging.error("[cj/products] cj_get error: %s", e, exc_info=True)
+        raise HTTPException(502, f"CJ API error: {e}")
+
+    try:
+        raw = data.get("list", []) if isinstance(data, dict) else []
+        if hot:
+            raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+
+        products = []
+        for p in raw:
+            cost = _cj_price(p.get("sellPrice"))
+            products.append({
+                "cj_pid":           p.get("pid", ""),
+                "title":            p.get("productNameEn") or p.get("productName", ""),
+                "category":         p.get("categoryName", ""),
+                "cost_price":       cost,
+                "suggested_price":  round(cost * 2.5, 2),
+                "image_url":        p.get("productImage", ""),
+                "is_free_shipping": bool(p.get("isFreeShipping", False)),
+                "supplier":         p.get("supplierName", "") or "",
+                "listed_count":     int(p.get("listedNum", 0) or 0),
+            })
+        return {"products": products, "total": data.get("total", len(products)) if isinstance(data, dict) else len(products)}
+    except Exception as e:
+        logging.error("[cj/products] serialisation error: %s", e, exc_info=True)
+        raise HTTPException(500, f"Response processing error: {e}")
+
+
+@api_router.get("/cj/categories")
+async def cj_get_categories(user=Depends(get_current_user)):
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        raise HTTPException(503, "CJdropshipping module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+    try:
+        data = await cj_get("/product/getCategory", {}, creds=cj_creds)
+    except Exception as e:
+        raise HTTPException(502, f"CJ API error: {e}")
+    raw = data if isinstance(data, list) else data.get("list", []) if isinstance(data, dict) else []
+    categories = [
+        {"id": str(c.get("categoryId", "")), "name": c.get("categoryEnName") or c.get("categoryName", "")}
+        for c in raw if c.get("categoryId")
+    ]
+    return {"categories": categories}
+
+
+# ── AliExpress REST endpoints (used by Shopify Products tab UI) ──────────────
+@api_router.get("/ae/products")
+async def ae_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    sort: str = "LAST_VOLUME_DESC",
+    user=Depends(get_current_user),
+):
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    if not keyword and not category_id:
+        raise HTTPException(422, "keyword or category_id required")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+
+    try:
+        data = await ae_ds_search(
+            keyword=keyword or "bestseller",
+            category_id=category_id or None,
+            min_price=min_price,
+            max_price=max_price,
+            page_size=min(page_size, 50),
+            sort=sort,
+            creds=ae_creds,
+        )
+    except Exception as e:
+        logging.error("[ae/products] error: %s", e, exc_info=True)
+        raise HTTPException(502, f"AliExpress API error: {e}")
+
+    try:
+        products_raw = (
+            data.get("products", {}).get("product", [])
+            or data.get("result", {}).get("products", {}).get("product", [])
+            or []
+        )
+        products = []
+        for p in products_raw:
+            cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
+            products.append({
+                "ae_pid":          str(p.get("product_id", "")),
+                "title":           p.get("product_title", ""),
+                "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
+                "cost_price":      cost,
+                "suggested_price": round(cost * 2.5, 2),
+                "image_url":       p.get("product_main_image_url", ""),
+                "orders_count":    int(p.get("lastest_volume", 0) or 0),
+                "shipping_time":   p.get("shipping_lead_time", ""),
+                "store_name":      p.get("shop_name", ""),
+                "source":          "aliexpress",
+            })
+        return {"products": products, "total": int(data.get("total_record_count", len(products)))}
+    except Exception as e:
+        logging.error("[ae/products] serialisation error: %s", e, exc_info=True)
+        raise HTTPException(500, f"Response processing error: {e}")
+
+
+@api_router.get("/ae/categories")
+async def ae_get_categories_endpoint(user=Depends(get_current_user)):
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    try:
+        data = await ae_get_categories(creds=ae_creds)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress API error: {e}")
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    categories = [
+        {"id": str(c.get("category_id", "")), "name": c.get("category_name", "")}
+        for c in (cats or []) if c.get("category_id")
+    ]
+    return {"categories": categories}
+
+
+@api_router.post("/cj/fulfill/{shopify_order_id}")
+async def cj_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Trigger CJ fulfillment for a paid Shopify order from the Orders tab UI."""
+    try:
+        from cj_dropship.client import cj_get, cj_post
+        from assistant.composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        raise HTTPException(503, f"Module not available: {e}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    # 1. Fetch Shopify order
+    try:
+        ord_data = await nango_proxy(business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}.json")
+        order = ord_data.get("order", {})
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Shopify order: {e}")
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    customer_name = f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip() or "Customer"
+
+    # 2. Find CJ-sourced line items
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    cj_mappings: dict = {}
+    if shopify_pids:
+        async for doc in db.cj_products.find({"user_id": business_id, "shopify_product_id": {"$in": shopify_pids}}):
+            cj_mappings[str(doc["shopify_product_id"])] = doc
+    if not cj_mappings:
+        raise HTTPException(422, "No CJ-sourced products found in this order")
+
+    # 3. Build CJ products payload
+    cj_products_payload = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in cj_mappings:
+            continue
+        cj_pid = cj_mappings[pid]["cj_pid"]
+        quantity = int(li.get("quantity", 1))
+        vid = None
+        try:
+            detail = await cj_get("/product/query", {"pid": cj_pid}, creds=cj_creds)
+            variants = detail.get("variants", []) if isinstance(detail, dict) else []
+            if not variants and isinstance(detail, dict) and detail.get("list"):
+                variants = (detail["list"] or [{}])[0].get("variants", [])
+            if variants:
+                vid = variants[0].get("vid") or variants[0].get("variantId")
+        except Exception:
+            pass
+        entry: dict = {"quantity": quantity}
+        if vid:
+            entry["vid"] = str(vid)
+        else:
+            entry["pid"] = cj_pid
+        cj_products_payload.append(entry)
+
+    if not cj_products_payload:
+        raise HTTPException(422, "Could not resolve CJ variant IDs for line items")
+
+    # 4. Create CJ order
+    cj_order_num = f"ZILO-{shopify_order_id}"
+    payload = {
+        "orderNumber":          cj_order_num,
+        "shippingCustomerName": customer_name,
+        "shippingPhone":        ship.get("phone") or order.get("phone") or "0000000000",
+        "shippingAddress":      ship.get("address1", ""),
+        "shippingCity":         ship.get("city", ""),
+        "shippingProvince":     ship.get("province", ""),
+        "shippingZip":          ship.get("zip", ""),
+        "shippingCountryCode":  ship.get("country_code", "US"),
+        "products":             cj_products_payload,
+    }
+    try:
+        result = await cj_post("/order/create", payload, creds=cj_creds)
+    except Exception as e:
+        raise HTTPException(502, f"CJ order creation failed: {e}")
+
+    from datetime import datetime as _dt
+    cj_order_id = result.get("orderId") or result.get("orderNum") or cj_order_num
+    await db.cj_order_fulfillments.update_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id},
+        {"$set": {
+            "user_id":          business_id,
+            "shopify_order_id": shopify_order_id,
+            "cj_order_id":      str(cj_order_id),
+            "cj_order_num":     cj_order_num,
+            "status":           "created",
+            "created_at":       _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"success": True, "cj_order_id": str(cj_order_id), "cj_order_num": cj_order_num, "items": len(cj_products_payload)}
+
+
+@api_router.get("/cj/order-status/{shopify_order_id}")
+async def cj_order_status_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Return CJ fulfillment status + tracking for a Shopify order (Orders tab UI)."""
+    business_id = user.get("business_id") or str(user["_id"])
+    doc = await db.cj_order_fulfillments.find_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id}
+    )
+    if not doc:
+        return {"found": False}
+
+    cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+    result: dict = {
+        "found":        True,
+        "cj_order_num": cj_order_num,
+        "status":       doc.get("status", "created"),
+        "tracking_num": doc.get("tracking_num"),
+        "carrier":      doc.get("carrier"),
+    }
+
+    # Live-fetch from CJ if not yet delivered/synced
+    if doc.get("status") not in ("delivered", "synced_to_shopify") and cj_order_num:
+        try:
+            from cj_dropship.client import cj_get
+            cj_creds = await _get_supplier_creds(business_id, "cj")
+            data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num}, creds=cj_creds)
+            if isinstance(data, dict):
+                cj_status    = data.get("orderStatus") or result["status"]
+                tracking_num = data.get("trackNumber") or data.get("trackingNumber") or doc.get("tracking_num")
+                carrier      = data.get("shippingCarrier") or data.get("logisticName") or doc.get("carrier")
+                result.update({"status": cj_status, "tracking_num": tracking_num, "carrier": carrier})
+                await db.cj_order_fulfillments.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"status": cj_status, "tracking_num": tracking_num, "carrier": carrier}},
+                )
+        except Exception:
+            pass
+
+    return result
+
+
+# ── AliExpress REST endpoints (used by Shopify Products + Orders UI) ─────────
+def _ae_price(raw) -> float:
+    if not raw:
+        return 0.0
+    try:
+        return float(str(raw).strip().split()[0].replace(",", ""))
+    except Exception:
+        return 0.0
+
+
+@api_router.get("/aliexpress/categories")
+async def ae_get_categories_endpoint(user=Depends(get_current_user)):
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    try:
+        data = await ae_get_categories(creds=ae_creds)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress API error: {e}")
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    categories = [
+        {"id": str(c.get("category_id", "")), "name": c.get("category_name", "")}
+        for c in (cats or []) if c.get("category_id")
+    ]
+    return {"categories": categories}
+
+
+@api_router.get("/aliexpress/products")
+async def ae_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    sort: str = "LAST_VOLUME_DESC",
+    user=Depends(get_current_user),
+):
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    if not keyword and not category_id:
+        raise HTTPException(422, "keyword or category_id required")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    try:
+        data = await ae_ds_search(
+            keyword=keyword,
+            category_id=category_id or None,
+            min_price=min_price,
+            max_price=max_price,
+            page_size=min(page_size, 50),
+            sort=sort,
+            creds=ae_creds,
+        )
+    except Exception as e:
+        logging.error("[ae/products] error: %s", e, exc_info=True)
+        raise HTTPException(502, f"AliExpress API error: {e}")
+
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    products = []
+    for p in products_raw:
+        cost = _ae_price(p.get("sale_price") or p.get("target_sale_price"))
+        products.append({
+            "ae_pid":          str(p.get("product_id", "")),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", p.get("first_level_category_name", "")),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "detail_url":      p.get("product_detail_url", ""),
+        })
+    return {"products": products, "total": data.get("total_record_count", len(products))}
+
+
+@api_router.post("/aliexpress/fulfill/{shopify_order_id}")
+async def ae_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Trigger AliExpress DS fulfillment for a paid Shopify order."""
+    try:
+        from aliexpress.client import ae_ds_create_order, ae_ds_product_detail
+        from assistant.composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        raise HTTPException(503, f"Module not available: {e}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+
+    try:
+        ord_data = await nango_proxy(business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}.json")
+        order = ord_data.get("order", {})
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Shopify order: {e}")
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+
+    ae_mappings: dict = {}
+    if shopify_pids:
+        async for doc in db.ae_products.find({"user_id": business_id, "shopify_product_id": {"$in": shopify_pids}}):
+            ae_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not ae_mappings:
+        raise HTTPException(422, "No AliExpress-sourced products found in this order")
+
+    ae_product_items = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in ae_mappings:
+            continue
+        ae_pid   = ae_mappings[pid]["ae_pid"]
+        quantity = int(li.get("quantity", 1))
+        sku_id   = None
+        try:
+            detail   = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"), creds=ae_creds)
+            sku_list = detail.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+            if sku_list:
+                sku_id = sku_list[0].get("sku_id")
+        except Exception:
+            pass
+        item: dict = {"product_id": ae_pid, "product_count": quantity}
+        if sku_id:
+            item["sku_id"] = str(sku_id)
+        ae_product_items.append(item)
+
+    if not ae_product_items:
+        raise HTTPException(422, "Could not resolve AliExpress SKU IDs for line items")
+
+    order_payload = {
+        "logistics_address": {
+            "contact_person": f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip(),
+            "mobile_no":      ship.get("phone") or order.get("phone") or "",
+            "address":        ship.get("address1", ""),
+            "city":           ship.get("city", ""),
+            "province":       ship.get("province", ""),
+            "zip":            ship.get("zip", ""),
+            "country":        ship.get("country_code", "US"),
+        },
+        "product_items": ae_product_items,
+    }
+    try:
+        result = await ae_ds_create_order(order_payload, creds=ae_creds)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress order creation failed: {e}")
+
+    from datetime import datetime as _dt
+    ae_order_id = str(result.get("order_id") or result.get("ae_order_id") or f"AE-{shopify_order_id}")
+    await db.ae_order_fulfillments.update_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id},
+        {"$set": {
+            "user_id":          business_id,
+            "shopify_order_id": shopify_order_id,
+            "ae_order_id":      ae_order_id,
+            "status":           "created",
+            "created_at":       _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"success": True, "ae_order_id": ae_order_id, "items": len(ae_product_items)}
+
+
+@api_router.get("/aliexpress/order-status/{shopify_order_id}")
+async def ae_order_status_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Return AliExpress fulfillment status + tracking for a Shopify order."""
+    business_id = user.get("business_id") or str(user["_id"])
+    doc = await db.ae_order_fulfillments.find_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id}
+    )
+    if not doc:
+        return {"found": False}
+
+    ae_order_id = doc.get("ae_order_id")
+    result: dict = {
+        "found":        True,
+        "ae_order_id":  ae_order_id,
+        "status":       doc.get("status", "created"),
+        "tracking_num": doc.get("tracking_num"),
+        "carrier":      doc.get("carrier"),
+    }
+    if doc.get("status") not in ("synced_to_shopify",) and ae_order_id:
+        try:
+            from aliexpress.client import ae_ds_get_order
+            ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+            data = await ae_ds_get_order(ae_order_id, creds=ae_creds)
+            order_info = data.get("result", data) if isinstance(data, dict) else {}
+            logistics  = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+            ae_status    = order_info.get("order_status") or result["status"]
+            tracking_num = (logistics[0].get("logistics_no") if logistics else None) or doc.get("tracking_num")
+            carrier      = (logistics[0].get("logistics_company") if logistics else None) or doc.get("carrier")
+            result.update({"status": ae_status, "tracking_num": tracking_num, "carrier": carrier})
+            await db.ae_order_fulfillments.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {"status": ae_status, "tracking_num": tracking_num, "carrier": carrier}},
+            )
+        except Exception:
+            pass
+    return result
+
 
 # ── Marketing (Meta Ads drafts, etc.) ──
 try:
