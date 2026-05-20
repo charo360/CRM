@@ -794,13 +794,17 @@ def _mk_router(db, get_current_user):
             raise HTTPException(400, "prompt is required")
 
         from .models import chat_with_tools as _chat_with_tools
-        result = await _chat_with_tools(
-            messages=[{"role": "user", "content": prompt}],
-            tools=[],
-            model_id=body.get("model") or DEFAULT_MODEL,
-            temperature=0.3,
-            timeout=30.0,
-        )
+        try:
+            result = await _chat_with_tools(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                model_id=body.get("model") or DEFAULT_MODEL,
+                temperature=0.3,
+                timeout=90.0,
+            )
+        except Exception as exc:
+            logging.warning("[ai-draft] LLM call failed: %s", exc)
+            raise HTTPException(status_code=503, detail=f"AI service unavailable: {exc}")
         reply = (result.get("content") or "").strip()
         return {"reply": reply}
 
