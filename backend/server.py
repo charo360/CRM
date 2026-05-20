@@ -13709,13 +13709,26 @@ async def assistant_ai_draft_alias(req: Request, user=Depends(get_current_user))
     from assistant.routes import ai_draft as _ai_draft_handler
     return await _ai_draft_handler(req, user)
 
+def _cj_price(raw) -> float:
+    """Parse CJ sellPrice which can be '5.99' or '5.99 -- 12.99' (range = take minimum)."""
+    if raw is None:
+        return 0.0
+    s = str(raw).strip()
+    if not s:
+        return 0.0
+    # Take first number before any space or dash separator
+    import re as _re
+    m = _re.match(r'[\d.]+', s)
+    return float(m.group()) if m else 0.0
+
+
 # ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
 @api_router.get("/cj/products")
 async def cj_search_products(
     keyword: str = "",
     category_id: str = "",
-    min_price: float = None,
-    max_price: float = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
     page_size: int = 20,
     hot: bool = False,
     user=Depends(get_current_user),
@@ -13725,7 +13738,7 @@ async def cj_search_products(
     except ImportError:
         raise HTTPException(503, "CJdropshipping module not available")
 
-    params = {"pageNum": 1, "pageSize": min(page_size, 50)}
+    params: dict = {"pageNum": 1, "pageSize": min(page_size, 50)}
     if keyword:
         params["productName"] = keyword
     if category_id:
@@ -13737,29 +13750,33 @@ async def cj_search_products(
 
     try:
         data = await cj_get("/product/list", params)
-    except RuntimeError as e:
-        raise HTTPException(502, str(e))
+    except Exception as e:
+        logging.error("[cj/products] cj_get error: %s", e, exc_info=True)
+        raise HTTPException(502, f"CJ API error: {e}")
 
-    raw = data.get("list", []) if isinstance(data, dict) else []
-    if hot:
-        raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+    try:
+        raw = data.get("list", []) if isinstance(data, dict) else []
+        if hot:
+            raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
 
-    products = []
-    for p in raw:
-        cost = float(p.get("sellPrice", 0) or 0)
-        products.append({
-            "cj_pid":           p.get("pid", ""),
-            "title":            p.get("productNameEn") or p.get("productName", ""),
-            "category":         p.get("categoryName", ""),
-            "cost_price":       cost,
-            "suggested_price":  round(cost * 2.5, 2),
-            "image_url":        p.get("productImage", ""),
-            "is_free_shipping": p.get("isFreeShipping", False),
-            "supplier":         p.get("supplierName", ""),
-            "listed_count":     p.get("listedNum", 0),
-        })
-
-    return {"products": products, "total": data.get("total", len(products)) if isinstance(data, dict) else len(products)}
+        products = []
+        for p in raw:
+            cost = _cj_price(p.get("sellPrice"))
+            products.append({
+                "cj_pid":           p.get("pid", ""),
+                "title":            p.get("productNameEn") or p.get("productName", ""),
+                "category":         p.get("categoryName", ""),
+                "cost_price":       cost,
+                "suggested_price":  round(cost * 2.5, 2),
+                "image_url":        p.get("productImage", ""),
+                "is_free_shipping": bool(p.get("isFreeShipping", False)),
+                "supplier":         p.get("supplierName", "") or "",
+                "listed_count":     int(p.get("listedNum", 0) or 0),
+            })
+        return {"products": products, "total": data.get("total", len(products)) if isinstance(data, dict) else len(products)}
+    except Exception as e:
+        logging.error("[cj/products] serialisation error: %s", e, exc_info=True)
+        raise HTTPException(500, f"Response processing error: {e}")
 
 
 # ── Marketing (Meta Ads drafts, etc.) ──

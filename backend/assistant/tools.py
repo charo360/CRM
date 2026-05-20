@@ -11765,6 +11765,18 @@ async def get_keyword_suggestions(ctx: ToolContext, args: Dict[str, Any]) -> Dic
 # CJDROPSHIPPING + MARKET INTELLIGENCE TOOLS
 # ═════════════════════════════════════════════════════════════════════════════
 
+import re as _re_cj
+
+def _cj_parse_price(raw) -> float:
+    """Parse CJ sellPrice safely — handles float, int, or range strings like '5.99 -- 12.99'."""
+    if raw is None:
+        return 0.0
+    s = str(raw).strip()
+    if not s:
+        return 0.0
+    m = _re_cj.match(r"[\d.]+", s)
+    return float(m.group()) if m else 0.0
+
 @tool(
     name="search_cj_products",
     description=(
@@ -11810,7 +11822,7 @@ async def search_cj_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str
     raw_list = data.get("list", []) if isinstance(data, dict) else []
     products = []
     for p in raw_list:
-        cost = float(p.get("sellPrice", 0) or 0)
+        cost = _cj_parse_price(p.get("sellPrice"))
         products.append({
             "cj_pid":          p.get("pid", ""),
             "title":           p.get("productNameEn") or p.get("productName", ""),
@@ -11869,7 +11881,7 @@ async def get_cj_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[st
     raw_list.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
     products = []
     for p in raw_list:
-        cost = float(p.get("sellPrice", 0) or 0)
+        cost = _cj_parse_price(p.get("sellPrice"))
         products.append({
             "cj_pid":          p.get("pid", ""),
             "title":           p.get("productNameEn") or p.get("productName", ""),
@@ -12007,7 +12019,7 @@ async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -
         except RuntimeError as e2:
             return {"error": f"CJ product fetch failed: {e2}"}
 
-    cost_price  = float(prod.get("sellPrice", 0) or 0)
+    cost_price  = _cj_parse_price(prod.get("sellPrice"))
     sale_price  = float(args.get("sale_price") or round(cost_price * 2.5, 2))
     title       = args.get("product_title") or prod.get("productNameEn") or prod.get("productName", "")
     description = prod.get("productDescription", "") or prod.get("remark", "")
