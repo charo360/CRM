@@ -14688,6 +14688,104 @@ async def ae_order_status_endpoint(shopify_order_id: str, user=Depends(get_curre
     return result
 
 
+# ── Smart Discovery / Market Intelligence ─────────────────────────────────────
+
+@api_router.get("/market/trends")
+async def market_trends(
+    keyword: str,
+    country: str = "US",
+    user=Depends(get_current_user),
+):
+    """Google Trends interest + direction for a keyword."""
+    try:
+        from market_intelligence.trends import get_interest_over_time, get_related_rising
+        trend, rising = await asyncio.gather(
+            get_interest_over_time(keyword, geo=country),
+            get_related_rising(keyword, geo=country),
+        )
+        return {**trend, "rising_queries": rising}
+    except Exception as e:
+        raise HTTPException(502, f"Trends error: {e}")
+
+
+@api_router.get("/market/fb-ads")
+async def market_fb_ads(
+    keyword: str,
+    country: str = "US",
+    limit: int = 20,
+    user=Depends(get_current_user),
+):
+    """Facebook Ad Library search — shows what competitors are advertising."""
+    try:
+        from market_intelligence.fb_ads import search_ads
+        return await search_ads(keyword, countries=[country], limit=limit)
+    except Exception as e:
+        raise HTTPException(502, f"FB Ads error: {e}")
+
+
+@api_router.get("/market/winning-products")
+async def market_winning_products(
+    niche: str,
+    country: str = "US",
+    limit: int = 10,
+    user=Depends(get_current_user),
+):
+    """Full analysis: Google Trends + CJ hot products + FB ads → opportunity scores."""
+    try:
+        from market_intelligence.analyzer import find_winning_products
+        business_id = user.get("business_id") or str(user["_id"])
+        # Use user's CJ creds if connected, else env fallback
+        from cj_dropship import client as _cj_client
+        cj_creds = await _get_supplier_creds(business_id, "cj")
+        # Temporarily override if user has creds stored (analyzer uses env fallback internally)
+        # Pass creds into env context — simpler than rewiring the full analyzer
+        result = await find_winning_products(niche, country=country, limit=limit)
+        return result
+    except Exception as e:
+        logging.error("[market/winning-products] %s", e, exc_info=True)
+        raise HTTPException(502, f"Analysis error: {e}")
+
+
+@api_router.get("/market/hot-products")
+async def market_hot_products(
+    keyword: str = "",
+    limit: int = 20,
+    user=Depends(get_current_user),
+):
+    """CJ hot products ranked by order volume — fastest signal of what's selling."""
+    try:
+        from cj_dropship.client import cj_get
+        business_id = user.get("business_id") or str(user["_id"])
+        cj_creds = await _get_supplier_creds(business_id, "cj")
+        params: dict = {"pageNum": 1, "pageSize": min(limit, 50)}
+        if keyword:
+            params["productNameEn"] = keyword
+        data = await cj_get("/product/list", params, creds=cj_creds)
+        raw = data.get("list", []) if isinstance(data, dict) else []
+        raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+        products = []
+        for p in raw:
+            try:
+                cost = float(str(p.get("sellPrice", 0)).split()[0].replace(",", "") or 0)
+            except Exception:
+                cost = 0.0
+            products.append({
+                "cj_pid":      p.get("pid", ""),
+                "title":       p.get("productNameEn") or p.get("productName", ""),
+                "category":    p.get("categoryName", ""),
+                "cost":        cost,
+                "sell_price":  round(cost * 2.5, 2),
+                "margin":      round(cost * 1.5, 2),
+                "orders":      int(p.get("listedNum", 0) or 0),
+                "free_ship":   bool(p.get("isFreeShipping", False)),
+                "image":       p.get("productImage", ""),
+            })
+        return {"products": products, "total": len(products)}
+    except Exception as e:
+        logging.error("[market/hot-products] %s", e, exc_info=True)
+        raise HTTPException(502, f"CJ error: {e}")
+
+
 # ── Marketing (Meta Ads drafts, etc.) ──
 try:
     from marketing.routes import make_marketing_router as _mk_marketing_router

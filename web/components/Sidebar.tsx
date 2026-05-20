@@ -51,6 +51,7 @@ import {
   Globe,
   Globe2,
   Activity,
+  Radar,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -143,6 +144,7 @@ export default function Sidebar() {
     { href: "/dashboard/email", label: "Email", icon: Mail },
     { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDays },
     { href: "/dashboard/shopify", label: "Shopify", icon: ShoppingBag },
+    { href: "/dashboard/smart-discovery", label: "Smart Discovery", icon: Radar },
     { href: "/dashboard/design-templates", label: "Design Library", icon: Image },
     { href: "/dashboard/documents", label: "Documents", icon: FileText },
     { href: "/dashboard/forms", label: "Forms", icon: FileInput },

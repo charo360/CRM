@@ -414,7 +414,8 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_aliexpress_categories", "search_aliexpress_products", "get_aliexpress_hot_products",
     "import_aliexpress_product_to_shopify",
     "aliexpress_fulfill_order", "aliexpress_get_order_status", "aliexpress_sync_tracking_to_shopify",
-    "get_market_trends", "shopify_product_analytics",
+    "get_market_trends", "find_winning_products", "search_facebook_ads",
+    "get_cj_hot_products", "shopify_product_analytics",
 })
 SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "shopify_fulfill_order", "shopify_cancel_order",
@@ -437,7 +438,8 @@ SHOPIFY_PRODUCTS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_cj_categories", "search_cj_products", "get_cj_hot_products", "import_cj_product_to_shopify",
     "get_aliexpress_categories", "search_aliexpress_products", "get_aliexpress_hot_products",
     "import_aliexpress_product_to_shopify",
-    "get_market_trends", "shopify_product_analytics",
+    "get_market_trends", "find_winning_products", "search_facebook_ads",
+    "get_cj_hot_products", "shopify_product_analytics",
 })
 SHOPIFY_ANALYTICS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_shopify_analytics", "list_shopify_orders", "list_shopify_products",

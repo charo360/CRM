@@ -15410,3 +15410,120 @@ Return ONLY valid JSON."""
         return {"site_url": site_url, "days": days, "analysis": parsed}
     except Exception as e:
         return {"error": f"Search Console analysis failed: {e}"}
+
+
+# ── Smart Discovery / Market Intelligence tools ────────────────────────────────
+
+@tool(
+    name="get_market_trends",
+    description="Get Google Trends interest score and direction for a keyword or product niche. Returns trend over time, % change, rising/falling direction, and related rising search queries. Use to gauge whether demand for a product is growing.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "Product or niche to analyze (e.g. 'resistance bands', 'yoga mat')"},
+            "country": {"type": "string", "description": "2-letter country code (default US)", "default": "US"},
+        },
+        "required": ["keyword"],
+    },
+)
+async def get_market_trends(keyword: str, country: str = "US", **_):
+    try:
+        from market_intelligence.trends import get_interest_over_time, get_related_rising
+        import asyncio as _asyncio
+        trend, rising = await _asyncio.gather(
+            get_interest_over_time(keyword, geo=country),
+            get_related_rising(keyword, geo=country),
+        )
+        return {**trend, "rising_queries": rising[:8]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="search_facebook_ads",
+    description="Search the Facebook Ad Library for active ads about a product or niche. Shows how many competitors are advertising it and sample ad copy. High ad count = validated product (people spend money because it converts).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "Product to search for in Facebook ads"},
+            "country": {"type": "string", "description": "2-letter country code (default US)", "default": "US"},
+        },
+        "required": ["keyword"],
+    },
+)
+async def search_facebook_ads(keyword: str, country: str = "US", **_):
+    try:
+        from market_intelligence.fb_ads import search_ads
+        return await search_ads(keyword, countries=[country], limit=10)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="find_winning_products",
+    description="Full market intelligence analysis for a niche. Combines Google Trends (demand), CJ hot products (proven sales), and Facebook Ad Library (competitor ad spend) to score and rank the best product opportunities. Use when a user asks what to sell, what's trending, or wants winning products in a niche.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "niche": {"type": "string", "description": "Product niche or category (e.g. 'women fitness gear', 'pet accessories', 'kitchen gadgets')"},
+            "country": {"type": "string", "description": "2-letter country code (default US)", "default": "US"},
+            "limit": {"type": "integer", "description": "Max products to return (default 8)", "default": 8},
+        },
+        "required": ["niche"],
+    },
+)
+async def find_winning_products(niche: str, country: str = "US", limit: int = 8, **_):
+    try:
+        from market_intelligence.analyzer import find_winning_products as _analyze
+        return await _analyze(niche, country=country, limit=limit)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="get_cj_hot_products",
+    description="Get CJ Dropshipping hot products ranked by order volume — real global sales data showing what's actually selling right now. Use to find proven products to add to a store.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "Optional keyword to filter (leave empty for overall hot products)"},
+            "limit": {"type": "integer", "description": "Max products to return (default 10)", "default": 10},
+        },
+        "required": [],
+    },
+)
+async def get_cj_hot_products_tool(keyword: str = "", limit: int = 10, **kwargs):
+    try:
+        from cj_dropship.client import cj_get
+        ctx = kwargs.get("_ctx")
+        cj_creds = None
+        if ctx:
+            business_id = getattr(ctx, "business_id", None) or getattr(ctx, "user_id", None)
+            if business_id:
+                doc = await ctx.db.supplier_connections.find_one({"user_id": business_id, "supplier": "cj"})
+                cj_creds = doc.get("credentials") if doc else None
+        params: dict = {"pageNum": 1, "pageSize": min(limit, 50)}
+        if keyword:
+            params["productNameEn"] = keyword
+        data = await cj_get("/product/list", params, creds=cj_creds)
+        raw = data.get("list", []) if isinstance(data, dict) else []
+        raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+        products = []
+        for p in raw[:limit]:
+            try:
+                cost = float(str(p.get("sellPrice", 0)).split()[0].replace(",", "") or 0)
+            except Exception:
+                cost = 0.0
+            products.append({
+                "title":     p.get("productNameEn") or p.get("productName", ""),
+                "category":  p.get("categoryName", ""),
+                "cost":      cost,
+                "sell_price": round(cost * 2.5, 2),
+                "margin":    round(cost * 1.5, 2),
+                "orders":    int(p.get("listedNum", 0) or 0),
+                "cj_pid":    p.get("pid", ""),
+                "image":     p.get("productImage", ""),
+            })
+        return {"products": products, "keyword": keyword}
+    except Exception as e:
+        return {"error": str(e)}
