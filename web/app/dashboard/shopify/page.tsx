@@ -1205,9 +1205,9 @@ function ProductsTab() {
 
           {/* CJ Source Panel */}
           {finderTab === "cj" && (
-            <div className="px-4 pt-4 pb-4">
-              {/* Search bar */}
-              <div className="flex flex-wrap gap-2 mb-4 items-end">
+            <div className="flex flex-col" style={{maxHeight: "480px"}}>
+              {/* Search bar — sticky */}
+              <div className="px-4 pt-4 pb-3 flex flex-wrap gap-2 items-end border-b border-slate-200 flex-shrink-0">
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Product keyword</label>
                   <input
@@ -1235,6 +1235,9 @@ function ProductsTab() {
                   {cjSearching ? <><Loader2 size={12} className="animate-spin" /> Searching CJ…</> : <><Search size={12} /> Search CJ</>}
                 </button>
               </div>
+
+              {/* Scrollable results area */}
+              <div className="overflow-y-auto flex-1 px-4 pb-4 pt-3">
 
               {/* Skeleton */}
               {cjSearching && (
@@ -1337,6 +1340,7 @@ function ProductsTab() {
                   </p>
                 </div>
               )}
+              </div>{/* end scrollable */}
             </div>
           )}
         </div>
