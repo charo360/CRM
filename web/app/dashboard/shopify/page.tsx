@@ -880,6 +880,10 @@ function ProductsTab() {
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
 
+  // ── Bulk delete state ────────────────────────────────────────────────────────
+  const [selectedProducts, setSelectedProducts] = useState<Set<number>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
   // ── AI finder state ─────────────────────────────────────────────────────────
   const [finderOpen, setFinderOpen] = useState(false);
   const [finderTab, setFinderTab] = useState<"ai" | "cj" | "ae">("ai");
@@ -891,6 +895,10 @@ function ProductsTab() {
   const [suggestions, setSuggestions] = useState<ProductSuggestion[]>([]);
   const [addingIdx, setAddingIdx] = useState<number | null>(null);
   const [addedIdxs, setAddedIdxs] = useState<Set<number>>(new Set());
+
+  // ── Shared sourcing state ───────────────────────────────────────────────────
+  const [srcKeyword, setSrcKeyword] = useState("");
+  const [srcMaxPrice, setSrcMaxPrice] = useState("");
 
   // ── CJ source state ──────────────────────────────────────────────────────────
   const [cjKeyword, setCjKeyword] = useState("");
@@ -953,9 +961,34 @@ function ProductsTab() {
     finally { setSaving(false); }
   }
 
+  async function bulkDelete() {
+    if (!selectedProducts.size) return;
+    if (!confirm(`Delete ${selectedProducts.size} product${selectedProducts.size > 1 ? "s" : ""}? This cannot be undone.`)) return;
+    setBulkDeleting(true);
+    try {
+      const res = await shopPost({
+        action: "bulk_delete_products",
+        productIds: [...selectedProducts].map(String),
+      }) as { ok: boolean; deleted: number; failed: number };
+      if (res.failed > 0) {
+        toast.error(`${res.failed} product(s) failed to delete`);
+      } else {
+        toast.success(`${res.deleted} product${res.deleted > 1 ? "s" : ""} deleted`);
+      }
+      setSelectedProducts(new Set());
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   async function searchCJ(keywordOverride?: string) {
-    const kw = keywordOverride ?? cjKeyword;
+    const kw = keywordOverride ?? srcKeyword ?? cjKeyword;
     if (!kw.trim()) { toast.error("Enter a search keyword"); return; }
+    if (keywordOverride) { setSrcKeyword(keywordOverride); setCjKeyword(keywordOverride); }
+    const maxP = srcMaxPrice || cjMaxPrice;
     setCjSearching(true);
     setCjResults([]);
     setCjImportedIdxs(new Set());
@@ -963,7 +996,7 @@ function ProductsTab() {
       const token = getToken();
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
       const params = new URLSearchParams({ keyword: kw, page_size: "20" });
-      if (cjMaxPrice) params.set("max_price", cjMaxPrice);
+      if (maxP) params.set("max_price", maxP);
       const r = await fetch(`${apiBase}/cj/products?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1005,8 +1038,10 @@ function ProductsTab() {
   }
 
   async function searchAE(keywordOverride?: string) {
-    const kw = keywordOverride ?? aeKeyword;
+    const kw = keywordOverride ?? srcKeyword ?? aeKeyword;
     if (!kw.trim()) { toast.error("Enter a search keyword"); return; }
+    if (keywordOverride) { setSrcKeyword(keywordOverride); setAeKeyword(keywordOverride); }
+    const maxP = srcMaxPrice || aeMaxPrice;
     setAeSearching(true);
     setAeResults([]);
     setAeImportedIdxs(new Set());
@@ -1014,8 +1049,8 @@ function ProductsTab() {
       const token = getToken();
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
       const params = new URLSearchParams({ keyword: kw, page_size: "20" });
-      if (aeMaxPrice) params.set("max_price", aeMaxPrice);
-      const r = await fetch(`${apiBase}/aliexpress/products?${params}`, {
+      if (maxP) params.set("max_price", maxP);
+      const r = await fetch(`${apiBase}/ae/products?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!r.ok) throw new Error(await r.text());
@@ -1110,6 +1145,16 @@ function ProductsTab() {
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products…" className="bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none w-36" />
         </div>
         <span className="text-xs text-slate-600">{filtered.length} products</span>
+        {selectedProducts.size > 0 && (
+          <button
+            onClick={() => void bulkDelete()}
+            disabled={bulkDeleting}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-500 text-white disabled:opacity-50 transition-colors"
+          >
+            {bulkDeleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+            Delete {selectedProducts.size} selected
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <button onClick={load} className="p-1.5 text-slate-500 hover:text-slate-700"><RefreshCw size={13} /></button>
           <button
@@ -1142,22 +1187,13 @@ function ProductsTab() {
               <span className="flex items-center gap-1.5"><Sparkles size={11} /> AI Ideas</span>
             </button>
             <button
-              onClick={() => setFinderTab("cj")}
+              onClick={() => setFinderTab(finderTab === "ae" ? "ae" : "cj")}
               className={cn(
                 "px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-b-2",
-                finderTab === "cj" ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
+                (finderTab === "cj" || finderTab === "ae") ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
               )}
             >
-              <span className="flex items-center gap-1.5"><Package size={11} /> Source from CJ</span>
-            </button>
-            <button
-              onClick={() => setFinderTab("ae")}
-              className={cn(
-                "px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-b-2",
-                finderTab === "ae" ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
-              )}
-            >
-              <span className="flex items-center gap-1.5"><TrendingUp size={11} /> Source from AliExpress</span>
+              <span className="flex items-center gap-1.5"><Package size={11} /> Source Products</span>
             </button>
           </div>
 
@@ -1324,6 +1360,7 @@ function ProductsTab() {
                       {/* Source on CJ */}
                       <button
                         onClick={() => {
+                          setSrcKeyword(s.title);
                           setCjKeyword(s.title);
                           setFinderTab("cj");
                           searchCJ(s.title);
@@ -1351,250 +1388,122 @@ function ProductsTab() {
           )}
           </>}
 
-          {/* CJ Source Panel */}
-          {finderTab === "cj" && (
-            <div className="flex flex-col" style={{maxHeight: "480px"}}>
-              {/* Search bar — sticky */}
-              <div className="px-4 pt-4 pb-3 flex flex-wrap gap-2 items-end border-b border-slate-200 flex-shrink-0">
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Product keyword</label>
+          {/* Unified Sourcing Panel */}
+          {(finderTab === "cj" || finderTab === "ae") && (
+            <div className="flex flex-col" style={{maxHeight: "500px"}}>
+              {/* Search bar + supplier toggle — sticky */}
+              <div className="px-4 pt-3 pb-3 border-b border-slate-200 flex-shrink-0 space-y-2">
+                {/* Supplier pill toggle */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mr-1">Source from</span>
+                  <button
+                    onClick={() => setFinderTab("cj")}
+                    className={cn(
+                      "flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all",
+                      finderTab === "cj"
+                        ? "bg-[#FF6600] text-white border-[#FF6600] shadow-sm"
+                        : "bg-white text-slate-500 border-slate-200 hover:border-[#FF6600] hover:text-[#FF6600]"
+                    )}
+                  >
+                    <Package size={10} /> CJdropshipping
+                  </button>
+                  <button
+                    onClick={() => setFinderTab("ae")}
+                    className={cn(
+                      "flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all",
+                      finderTab === "ae"
+                        ? "bg-[#E62222] text-white border-[#E62222] shadow-sm"
+                        : "bg-white text-slate-500 border-slate-200 hover:border-[#E62222] hover:text-[#E62222]"
+                    )}
+                  >
+                    <TrendingUp size={10} /> AliExpress
+                  </button>
+                </div>
+
+                {/* Search inputs */}
+                <div className="flex flex-wrap gap-2 items-end">
                   <input
-                    value={cjKeyword}
-                    onChange={(e) => setCjKeyword(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && searchCJ(cjKeyword)}
-                    placeholder="e.g. wireless earbuds, yoga mat, phone case..."
+                    value={srcKeyword}
+                    onChange={(e) => setSrcKeyword(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") finderTab === "cj" ? searchCJ() : searchAE(); }}
+                    placeholder="e.g. phone case, wireless earbuds, yoga mat..."
                     className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-72"
                   />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Max cost price (USD)</label>
                   <input
-                    value={cjMaxPrice}
-                    onChange={(e) => setCjMaxPrice(e.target.value)}
-                    placeholder="e.g. 15"
-                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-28"
+                    value={srcMaxPrice}
+                    onChange={(e) => setSrcMaxPrice(e.target.value)}
+                    placeholder="Max cost (USD)"
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-32"
                   />
+                  <button
+                    onClick={() => finderTab === "cj" ? searchCJ() : searchAE()}
+                    disabled={(finderTab === "cj" ? cjSearching : aeSearching) || !srcKeyword.trim()}
+                    className={cn(
+                      "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors",
+                      finderTab === "cj" ? "bg-[#FF6600] hover:bg-[#e05a00]" : "bg-[#E62222] hover:bg-[#c71c1c]"
+                    )}
+                  >
+                    {(finderTab === "cj" ? cjSearching : aeSearching)
+                      ? <><Loader2 size={12} className="animate-spin" /> Searching…</>
+                      : <><Search size={12} /> Search {finderTab === "cj" ? "CJ" : "AliExpress"}</>}
+                  </button>
                 </div>
-                <button
-                  onClick={() => searchCJ(cjKeyword)}
-                  disabled={cjSearching || !cjKeyword.trim()}
-                  className="flex items-center gap-2 px-4 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-medium transition-colors"
-                >
-                  {cjSearching ? <><Loader2 size={12} className="animate-spin" /> Searching CJ…</> : <><Search size={12} /> Search CJ</>}
-                </button>
               </div>
 
-              {/* Scrollable results area */}
+              {/* Scrollable results */}
               <div className="overflow-y-auto flex-1 px-4 pb-4 pt-3">
 
-              {/* Skeleton */}
-              {cjSearching && (
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                  {Array.from({ length: 8 }).map((_, i) => (
-                    <div key={i} className="bg-slate-100 rounded-2xl p-3 animate-pulse flex flex-col gap-2">
-                      <div className="h-24 bg-slate-200 rounded-xl" />
-                      <div className="h-3 bg-slate-200 rounded w-3/4" />
-                      <div className="h-2 bg-slate-200 rounded w-1/2" />
-                      <div className="h-6 bg-slate-200 rounded-xl mt-auto" />
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Results grid */}
-              {!cjSearching && cjResults.length > 0 && (
-                <>
-                  <p className="text-xs text-slate-500 mb-3">
-                    <span className="font-semibold text-slate-800">{cjResults.length}</span> real supplier products · <span className="text-brand">{cjImportedIdxs.size} imported</span>
-                  </p>
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                    {cjResults.map((p, idx) => {
-                      const imported = cjImportedIdxs.has(idx);
-                      const importing = cjImportingIdx === idx;
-                      const margin = p.suggested_price - p.cost_price;
-                      const marginPct = p.suggested_price > 0 ? Math.round((margin / p.suggested_price) * 100) : 0;
-                      return (
-                        <div key={idx} className={cn(
-                          "bg-white border rounded-2xl p-3 flex flex-col gap-2 transition-all",
-                          imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
-                        )}>
-                          {/* Image */}
-                          <div className="h-24 bg-slate-100 rounded-xl overflow-hidden relative flex items-center justify-center">
-                            {p.image_url ? (
-                              <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
-                            ) : (
-                              <Package size={24} className="text-slate-400" />
-                            )}
-                            {p.is_free_shipping && (
-                              <span className="absolute bottom-1 left-1 bg-emerald-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">FREE SHIP</span>
-                            )}
-                            {imported && (
-                              <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl">
-                                <CheckCircle2 size={20} className="text-emerald-600" />
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Info */}
-                          <div className="flex-1">
-                            <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
-                            <p className="text-[10px] text-slate-400">{p.category}</p>
-                          </div>
-
-                          {/* Pricing */}
-                          <div className="bg-slate-50 rounded-xl p-2 flex items-center justify-between">
-                            <div>
-                              <p className="text-[9px] text-slate-400 uppercase tracking-wider">Cost</p>
-                              <p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p>
-                            </div>
-                            <div className="text-center">
-                              <p className="text-[9px] text-emerald-600 uppercase tracking-wider font-semibold">{marginPct}% margin</p>
-                            </div>
-                            <div className="text-right">
-                              <p className="text-[9px] text-slate-400 uppercase tracking-wider">Sell at</p>
-                              <p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p>
-                            </div>
-                          </div>
-
-                          {/* Import button */}
-                          <button
-                            onClick={() => importFromCJ(p, idx)}
-                            disabled={imported || importing}
-                            className={cn(
-                              "w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
-                              imported
-                                ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default"
-                                : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50"
-                            )}
-                          >
-                            {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</>
-                            : imported ? <><Check size={11} /> Imported</>
-                            : <><Plus size={11} /> Import to Shopify</>}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-
-              {/* Empty state */}
-              {!cjSearching && cjResults.length === 0 && (
-                <div className="flex flex-col items-center gap-2 text-center py-8">
-                  <Package size={28} className="text-slate-300 mb-1" />
-                  <p className="text-sm font-medium text-slate-600">Source Real Products from CJdropshipping</p>
-                  <p className="text-xs text-slate-400 max-w-sm">
-                    Search 500,000+ supplier products with real images, cost prices, and shipping info. Import any product to your Shopify store instantly.
-                  </p>
-                </div>
-              )}
-              </div>{/* end scrollable */}
-            </div>
-          )}
-
-          {/* AliExpress Source Panel */}
-          {finderTab === "ae" && (
-            <div className="flex flex-col" style={{maxHeight: "480px"}}>
-              {/* Search bar */}
-              <div className="px-4 pt-4 pb-3 flex flex-wrap gap-2 items-end border-b border-slate-100">
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Product keyword</label>
-                  <input
-                    value={aeKeyword}
-                    onChange={(e) => setAeKeyword(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && searchAE(aeKeyword)}
-                    placeholder="e.g. bluetooth speaker, cat toy, gym band..."
-                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-72"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Max cost (USD)</label>
-                  <input
-                    value={aeMaxPrice}
-                    onChange={(e) => setAeMaxPrice(e.target.value)}
-                    placeholder="e.g. 20"
-                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-28"
-                  />
-                </div>
-                <button
-                  onClick={() => searchAE(aeKeyword)}
-                  disabled={aeSearching || !aeKeyword.trim()}
-                  className="flex items-center gap-2 px-4 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-medium transition-colors"
-                >
-                  {aeSearching ? <><Loader2 size={12} className="animate-spin" /> Searching…</> : <><Search size={12} /> Search AliExpress</>}
-                </button>
-              </div>
-
-              {/* Results */}
-              <div className="overflow-y-auto flex-1 px-4 py-3">
-                {aeSearching && (
+                {/* Skeleton */}
+                {(finderTab === "cj" ? cjSearching : aeSearching) && (
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
                     {Array.from({ length: 8 }).map((_, i) => (
                       <div key={i} className="bg-slate-100 rounded-2xl p-3 animate-pulse flex flex-col gap-2">
                         <div className="h-24 bg-slate-200 rounded-xl" />
                         <div className="h-3 bg-slate-200 rounded w-3/4" />
                         <div className="h-2 bg-slate-200 rounded w-1/2" />
+                        <div className="h-6 bg-slate-200 rounded-xl mt-auto" />
                       </div>
                     ))}
                   </div>
                 )}
 
-                {!aeSearching && aeResults.length > 0 && (
+                {/* CJ Results */}
+                {finderTab === "cj" && !cjSearching && cjResults.length > 0 && (
                   <>
-                    <p className="text-xs text-slate-400 mb-3"><span className="font-semibold text-slate-700">{aeResults.length}</span> products from AliExpress · <span className="text-slate-500">{aeImportedIdxs.size} imported</span></p>
+                    <p className="text-xs text-slate-500 mb-3">
+                      <span className="font-semibold text-slate-800">{cjResults.length}</span> real supplier products · <span className="text-brand">{cjImportedIdxs.size} imported</span>
+                    </p>
                     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-                      {aeResults.map((p, idx) => {
-                        const imported  = aeImportedIdxs.has(idx);
-                        const importing = aeImportingIdx === idx;
-                        const marginPct = p.cost_price > 0 ? Math.round((p.suggested_price - p.cost_price) / p.suggested_price * 100) : 0;
+                      {cjResults.map((p, idx) => {
+                        const imported = cjImportedIdxs.has(idx);
+                        const importing = cjImportingIdx === idx;
+                        const marginPct = p.suggested_price > 0 ? Math.round((p.suggested_price - p.cost_price) / p.suggested_price * 100) : 0;
                         return (
-                          <div key={idx} className={cn("border rounded-2xl p-3 flex flex-col gap-2 transition-all", imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-white hover:border-slate-300")}>
-                            {/* Image */}
-                            <div className="h-24 rounded-xl overflow-hidden bg-slate-100 relative flex-shrink-0">
+                          <div key={idx} className={cn(
+                            "bg-white border rounded-2xl p-3 flex flex-col gap-2 transition-all",
+                            imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
+                          )}>
+                            <div className="h-24 bg-slate-100 rounded-xl overflow-hidden relative flex items-center justify-center">
                               {p.image_url
                                 ? <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
-                                : <div className="w-full h-full flex items-center justify-center"><TrendingUp size={22} className="text-slate-400" /></div>}
-                              {imported && (
-                                <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl">
-                                  <CheckCircle2 size={20} className="text-emerald-600" />
-                                </div>
-                              )}
+                                : <Package size={24} className="text-slate-400" />}
+                              <span className="absolute top-1 right-1 bg-[#FF6600] text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">CJ</span>
+                              {p.is_free_shipping && <span className="absolute bottom-1 left-1 bg-emerald-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">FREE SHIP</span>}
+                              {imported && <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl"><CheckCircle2 size={20} className="text-emerald-600" /></div>}
                             </div>
-                            {/* Info */}
-                            <div className="flex-1 min-w-0">
+                            <div className="flex-1">
                               <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
-                              <p className="text-[10px] text-slate-500 truncate">{p.store_name || p.category}</p>
-                              {p.orders_count > 0 && <p className="text-[10px] text-emerald-600 font-medium">{p.orders_count.toLocaleString()} orders</p>}
-                              {p.shipping_time && <p className="text-[10px] text-slate-400">Ships in {p.shipping_time} days</p>}
+                              <p className="text-[10px] text-slate-400">{p.category}</p>
                             </div>
-                            {/* Pricing */}
-                            <div className="flex items-center justify-between text-[10px]">
-                              <div>
-                                <p className="text-slate-400 uppercase tracking-wider">Cost</p>
-                                <p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p>
-                              </div>
-                              <div className="text-center">
-                                <p className="text-emerald-600 uppercase tracking-wider font-semibold">{marginPct}% margin</p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-slate-400 uppercase tracking-wider">Sell at</p>
-                                <p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p>
-                              </div>
+                            <div className="bg-slate-50 rounded-xl p-2 flex items-center justify-between">
+                              <div><p className="text-[9px] text-slate-400 uppercase">Cost</p><p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p></div>
+                              <div className="text-center"><p className="text-[9px] text-emerald-600 font-semibold">{marginPct}% margin</p></div>
+                              <div className="text-right"><p className="text-[9px] text-slate-400 uppercase">Sell at</p><p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p></div>
                             </div>
-                            {/* Import button */}
-                            <button
-                              onClick={() => importFromAE(p, idx)}
-                              disabled={imported || importing}
-                              className={cn(
-                                "w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
-                                imported
-                                  ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default"
-                                  : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50"
-                              )}
-                            >
-                              {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</>
-                              : imported ? <><Check size={11} /> Imported</>
-                              : <><Plus size={11} /> Import to Shopify</>}
+                            <button onClick={() => importFromCJ(p, idx)} disabled={imported || importing}
+                              className={cn("w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
+                                imported ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default" : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50")}>
+                              {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</> : imported ? <><Check size={11} /> Imported</> : <><Plus size={11} /> Import to Shopify</>}
                             </button>
                           </div>
                         );
@@ -1603,12 +1512,60 @@ function ProductsTab() {
                   </>
                 )}
 
-                {!aeSearching && aeResults.length === 0 && (
+                {/* AliExpress Results */}
+                {finderTab === "ae" && !aeSearching && aeResults.length > 0 && (
+                  <>
+                    <p className="text-xs text-slate-500 mb-3">
+                      <span className="font-semibold text-slate-800">{aeResults.length}</span> real supplier products · <span className="text-brand">{aeImportedIdxs.size} imported</span>
+                    </p>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                      {aeResults.map((p, idx) => {
+                        const imported  = aeImportedIdxs.has(idx);
+                        const importing = aeImportingIdx === idx;
+                        const marginPct = p.cost_price > 0 ? Math.round((p.suggested_price - p.cost_price) / p.suggested_price * 100) : 0;
+                        return (
+                          <div key={idx} className={cn("border rounded-2xl p-3 flex flex-col gap-2 transition-all bg-white",
+                            imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:border-slate-300 hover:shadow-sm")}>
+                            <div className="h-24 rounded-xl overflow-hidden bg-slate-100 relative flex-shrink-0 flex items-center justify-center">
+                              {p.image_url
+                                ? <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
+                                : <TrendingUp size={22} className="text-slate-400" />}
+                              <span className="absolute top-1 right-1 bg-[#E62222] text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">AE</span>
+                              {imported && <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl"><CheckCircle2 size={20} className="text-emerald-600" /></div>}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{p.store_name || p.category}</p>
+                              {p.orders_count > 0 && <p className="text-[10px] text-emerald-600 font-medium">{p.orders_count.toLocaleString()} orders</p>}
+                              {p.shipping_time && <p className="text-[10px] text-slate-400">Ships in {p.shipping_time}d</p>}
+                            </div>
+                            <div className="bg-slate-50 rounded-xl p-2 flex items-center justify-between">
+                              <div><p className="text-[9px] text-slate-400 uppercase">Cost</p><p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p></div>
+                              <div className="text-center"><p className="text-[9px] text-emerald-600 font-semibold">{marginPct}% margin</p></div>
+                              <div className="text-right"><p className="text-[9px] text-slate-400 uppercase">Sell at</p><p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p></div>
+                            </div>
+                            <button onClick={() => importFromAE(p, idx)} disabled={imported || importing}
+                              className={cn("w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
+                                imported ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default" : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50")}>
+                              {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</> : imported ? <><Check size={11} /> Imported</> : <><Plus size={11} /> Import to Shopify</>}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* Empty state */}
+                {!cjSearching && !aeSearching && (finderTab === "cj" ? cjResults : aeResults).length === 0 && (
                   <div className="flex flex-col items-center gap-2 text-center py-8">
-                    <TrendingUp size={28} className="text-slate-300 mb-1" />
-                    <p className="text-sm font-medium text-slate-600">Source Real Products from AliExpress</p>
+                    <Package size={28} className="text-slate-300 mb-1" />
+                    <p className="text-sm font-medium text-slate-600">Source Real Products from {finderTab === "cj" ? "CJdropshipping" : "AliExpress"}</p>
                     <p className="text-xs text-slate-400 max-w-sm">
-                      Search millions of AliExpress products with real prices, order volumes and shipping estimates. Import any product to Shopify in one click.
+                      {finderTab === "cj"
+                        ? "Search 500,000+ supplier products with real images, cost prices, and shipping info."
+                        : "Search millions of AliExpress products sorted by bestseller ranking and order volume."}
+                      {" "}Import any product to your Shopify store instantly.
                     </p>
                   </div>
                 )}
@@ -1626,6 +1583,17 @@ function ProductsTab() {
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-white border-b border-slate-200">
               <tr>
+                <th className="px-4 py-2.5 w-8">
+                  <input
+                    type="checkbox"
+                    className="rounded border-slate-300 text-brand cursor-pointer"
+                    checked={filtered.length > 0 && filtered.every((p) => selectedProducts.has(p.id))}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedProducts(new Set(filtered.map((p) => p.id)));
+                      else setSelectedProducts(new Set());
+                    }}
+                  />
+                </th>
                 {["Product", "SKU", "Price", "Stock", "Status", "Action"].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
                 ))}
@@ -1634,7 +1602,21 @@ function ProductsTab() {
             <tbody>
               {filtered.map((product) =>
                 product.variants.map((variant, vi) => (
-                  <tr key={variant.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                  <tr key={variant.id} className={cn("border-b border-slate-100 hover:bg-slate-50 transition-colors", selectedProducts.has(product.id) && "bg-red-50/40")}>
+                    <td className="px-4 py-3 w-8">
+                      {vi === 0 && (
+                        <input
+                          type="checkbox"
+                          className="rounded border-slate-300 text-brand cursor-pointer"
+                          checked={selectedProducts.has(product.id)}
+                          onChange={(e) => {
+                            const next = new Set(selectedProducts);
+                            if (e.target.checked) next.add(product.id); else next.delete(product.id);
+                            setSelectedProducts(next);
+                          }}
+                        />
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {vi === 0 ? (
                         <div className="flex items-center gap-2">

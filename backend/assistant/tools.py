@@ -3160,6 +3160,252 @@ async def shopify_refund_order(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="shopify_delete_product",
+    description=(
+        "Permanently delete one or more products from the connected Shopify store. "
+        "Pass a single product_id or a list of product_ids. "
+        "Use list_shopify_products first to find the IDs. "
+        "Always confirm with the user before deleting. This is a destructive, irreversible action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "product_id":  {"type": "string",  "description": "Single Shopify product ID to delete"},
+            "product_ids": {"type": "array", "items": {"type": "string"}, "description": "List of Shopify product IDs to bulk delete"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_delete_product(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    ids: List[str] = args.get("product_ids") or ([args["product_id"]] if args.get("product_id") else [])
+    if not ids:
+        return {"error": "product_id or product_ids required"}
+    deleted, failed = [], []
+    for pid in ids:
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                              f"/admin/api/2024-01/products/{pid}.json")
+            deleted.append(pid)
+        except RuntimeError as e:
+            failed.append({"id": pid, "error": str(e)})
+    return {
+        "success": len(failed) == 0,
+        "deleted_count": len(deleted),
+        "deleted_ids": deleted,
+        "failed": failed,
+    }
+
+
+@tool(
+    name="shopify_update_product",
+    description=(
+        "Edit an existing Shopify product — update its title, description, tags, vendor, "
+        "product type, or status (active/draft/archived). "
+        "Use list_shopify_products first to get the product_id. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {
+            "product_id":    {"type": "string", "description": "Shopify product ID (numeric string)"},
+            "title":         {"type": "string", "description": "New product title"},
+            "description":   {"type": "string", "description": "New product description (plain text or HTML)"},
+            "tags":          {"type": "string", "description": "Comma-separated tags (replaces existing tags)"},
+            "vendor":        {"type": "string", "description": "Brand / supplier name"},
+            "product_type":  {"type": "string", "description": "Product category / type"},
+            "status":        {"type": "string", "description": "active | draft | archived"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_product(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    product_id = str(args["product_id"])
+    update: Dict[str, Any] = {"id": product_id}
+    if args.get("title"):         update["title"]        = args["title"]
+    if args.get("description"):   update["body_html"]    = f"<p>{args['description']}</p>"
+    if args.get("tags") is not None: update["tags"]      = args["tags"]
+    if args.get("vendor"):        update["vendor"]       = args["vendor"]
+    if args.get("product_type"):  update["product_type"] = args["product_type"]
+    if args.get("status"):        update["status"]       = args["status"]
+    if len(update) == 1:
+        return {"error": "At least one field to update is required"}
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/products/{product_id}.json",
+                                   json={"product": update})
+        p = result.get("product", {})
+        return {"success": True, "product_id": p.get("id"), "title": p.get("title"), "status": p.get("status")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_create_collection",
+    description=(
+        "Create a new custom collection (category) in the Shopify store. "
+        "Collections organise products so customers can browse by category. "
+        "Returns the new collection ID which can be used with shopify_add_to_collection. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+            "title":       {"type": "string", "description": "Collection name, e.g. 'Men\\'s Streetwear'"},
+            "description": {"type": "string", "description": "Short description shown on the collection page"},
+            "published":   {"type": "boolean", "description": "Whether to publish immediately (default true)"},
+            "sort_order":  {"type": "string",  "description": "best-selling | alpha-asc | alpha-desc | price-asc | price-desc | created-desc (default: best-selling)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_create_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    payload = {
+        "custom_collection": {
+            "title":      args["title"],
+            "body_html":  f"<p>{args['description']}</p>" if args.get("description") else "",
+            "published":  args.get("published", True),
+            "sort_order": args.get("sort_order", "best-selling"),
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/custom_collections.json", json=payload)
+        c = result.get("custom_collection", {})
+        return {"success": True, "collection_id": c.get("id"), "title": c.get("title"), "handle": c.get("handle")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_add_to_collection",
+    description=(
+        "Add one or more products to a Shopify collection. "
+        "Use shopify_create_collection to get a collection_id first, "
+        "and list_shopify_products to get product_ids. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["collection_id", "product_ids"],
+        "properties": {
+            "collection_id": {"type": "string", "description": "Shopify custom collection ID"},
+            "product_ids":   {"type": "array", "items": {"type": "string"}, "description": "List of Shopify product IDs to add"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_add_to_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    collection_id = str(args["collection_id"])
+    product_ids   = args["product_ids"]
+    added, failed = [], []
+    for pid in product_ids:
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "POST",
+                              "/admin/api/2024-01/collects.json",
+                              json={"collect": {"collection_id": collection_id, "product_id": pid}})
+            added.append(pid)
+        except RuntimeError as e:
+            failed.append({"id": pid, "error": str(e)})
+    return {"success": len(failed) == 0, "added_count": len(added), "added": added, "failed": failed}
+
+
+@tool(
+    name="shopify_list_collections",
+    description=(
+        "List all custom collections (categories) in the Shopify store. "
+        "Returns collection IDs, titles, and product counts. "
+        "Use this before adding products to collections or to show the user their store structure."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def shopify_list_collections(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                   "/admin/api/2024-01/custom_collections.json",
+                                   params={"limit": "250", "fields": "id,title,handle,products_count,published_at"})
+        collections = result.get("custom_collections", [])
+        return {
+            "count": len(collections),
+            "collections": [
+                {"id": str(c.get("id")), "title": c.get("title"), "handle": c.get("handle"),
+                 "products_count": c.get("products_count", 0), "published": bool(c.get("published_at"))}
+                for c in collections
+            ],
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_bulk_update_prices",
+    description=(
+        "Bulk update prices on multiple Shopify product variants at once. "
+        "Can apply a fixed multiplier (e.g. 2.5x cost price for 60% margin), "
+        "a percentage increase/decrease, or set an explicit price on selected products. "
+        "Use list_shopify_products to get variant IDs first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["variant_ids"],
+        "properties": {
+            "variant_ids":    {"type": "array", "items": {"type": "string"}, "description": "List of Shopify variant IDs to update"},
+            "multiplier":     {"type": "number", "description": "Multiply current price by this factor, e.g. 1.2 = 20% increase, 0.9 = 10% decrease"},
+            "fixed_price":    {"type": "string", "description": "Set all variants to this exact price, e.g. '29.99'"},
+            "compare_at_multiplier": {"type": "number", "description": "Set compare_at_price as this multiple of the new price, e.g. 1.3 for a 30% 'was' price"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_bulk_update_prices(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    variant_ids = args["variant_ids"]
+    multiplier  = args.get("multiplier")
+    fixed_price = args.get("fixed_price")
+    cap_multi   = args.get("compare_at_multiplier")
+
+    if not multiplier and not fixed_price:
+        return {"error": "Either multiplier or fixed_price is required"}
+
+    updated, failed = [], []
+    for vid in variant_ids:
+        try:
+            if multiplier and not fixed_price:
+                # Fetch current price first
+                vdata = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                          f"/admin/api/2024-01/variants/{vid}.json")
+                current = float(vdata.get("variant", {}).get("price", 0))
+                new_price = round(current * multiplier, 2)
+            else:
+                new_price = float(fixed_price)  # type: ignore[arg-type]
+
+            payload: Dict[str, Any] = {"id": vid, "price": str(new_price)}
+            if cap_multi:
+                payload["compare_at_price"] = str(round(new_price * cap_multi, 2))
+
+            await nango_proxy(ctx.business_id, "shopify", "PUT",
+                              f"/admin/api/2024-01/variants/{vid}.json",
+                              json={"variant": payload})
+            updated.append({"variant_id": vid, "new_price": new_price})
+        except RuntimeError as e:
+            failed.append({"variant_id": vid, "error": str(e)})
+
+    return {
+        "success": len(failed) == 0,
+        "updated_count": len(updated),
+        "updated": updated,
+        "failed": failed,
+    }
+
+
+@tool(
     name="shopify_update_price",
     description=(
         "Update the price (and optional compare-at price) of a Shopify product variant. "
@@ -3192,6 +3438,307 @@ async def shopify_update_price(ctx: ToolContext, args: Dict[str, Any]):
             "variant_id": variant_id,
             "price": v.get("price"),
             "compare_at_price": v.get("compare_at_price"),
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_get_policies",
+    description=(
+        "Read the current store policies from the connected Shopify store: "
+        "refund policy, privacy policy, terms of service, shipping policy, and legal notice. "
+        "Use this before setting policies to see what's already there. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def shopify_get_policies(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    query = """
+    {
+      shop {
+        refundPolicy { title body url }
+        privacyPolicy { title body url }
+        termsOfService { title body url }
+        shippingPolicy { title body url }
+        legalNotice { title body url }
+      }
+    }
+    """
+    try:
+        result = await nango_proxy(
+            ctx.business_id, "shopify", "POST",
+            "/admin/api/2024-01/graphql.json",
+            json={"query": query},
+        )
+        shop = (result.get("data") or {}).get("shop", {})
+        policies = {}
+        for key in ("refundPolicy", "privacyPolicy", "termsOfService", "shippingPolicy", "legalNotice"):
+            p = shop.get(key)
+            if p:
+                policies[key] = {
+                    "title": p.get("title"),
+                    "url":   p.get("url"),
+                    "set":   bool(p.get("body")),
+                    "preview": (p.get("body") or "")[:200] + ("…" if len(p.get("body") or "") > 200 else ""),
+                }
+            else:
+                policies[key] = {"set": False}
+        return {"policies": policies}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_set_policy",
+    description=(
+        "Set or update one or more Shopify store policies (refund, privacy, terms of service, shipping, legal notice) "
+        "using the Shopify GraphQL Admin API. "
+        "Pass the policy type and the full policy body text. "
+        "The AI can generate appropriate policy content based on the store niche and location. "
+        "Always show the generated policy text to the user before setting it. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "refund_policy":    {"type": "string", "description": "Full text for the refund/return policy"},
+            "privacy_policy":   {"type": "string", "description": "Full text for the privacy policy"},
+            "terms_of_service": {"type": "string", "description": "Full text for the terms of service"},
+            "shipping_policy":  {"type": "string", "description": "Full text for the shipping policy"},
+            "legal_notice":     {"type": "string", "description": "Full text for the legal notice / imprint"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_set_policy(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+
+    # Build mutation inputs only for provided policies
+    inputs: Dict[str, str] = {}
+    mapping = {
+        "refund_policy":    "refundPolicy",
+        "privacy_policy":   "privacyPolicy",
+        "terms_of_service": "termsOfService",
+        "shipping_policy":  "shippingPolicy",
+        "legal_notice":     "legalNotice",
+    }
+    for arg_key, gql_key in mapping.items():
+        if args.get(arg_key):
+            inputs[gql_key] = args[arg_key]
+
+    if not inputs:
+        return {"error": "At least one policy field is required"}
+
+    # Build dynamic GraphQL mutation
+    mutation_args = ", ".join(f"${k}: ShopPolicyInput" for k in inputs)
+    call_args     = ", ".join(f"{k}: ${k}" for k in inputs)
+    mutation = f"""
+    mutation SetPolicies({mutation_args}) {{
+      shopPoliciesUpdate({call_args}) {{
+        shopPolicies {{ type title url }}
+        userErrors {{ field message }}
+      }}
+    }}
+    """
+    variables = {k: {"body": v} for k, v in inputs.items()}
+
+    try:
+        result = await nango_proxy(
+            ctx.business_id, "shopify", "POST",
+            "/admin/api/2024-01/graphql.json",
+            json={"query": mutation, "variables": variables},
+        )
+        data = (result.get("data") or {}).get("shopPoliciesUpdate", {})
+        errors = data.get("userErrors", [])
+        if errors:
+            return {"error": errors[0].get("message", "Unknown error"), "all_errors": errors}
+        updated = [p.get("type") for p in data.get("shopPolicies", [])]
+        return {
+            "success": True,
+            "updated_policies": updated,
+            "count": len(updated),
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_add_product_images",
+    description=(
+        "Add or replace images on an existing Shopify product. "
+        "Pass a list of public image URLs to attach. "
+        "Use list_shopify_products to get the product_id first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id", "image_urls"],
+        "properties": {
+            "product_id":  {"type": "string", "description": "Shopify product ID"},
+            "image_urls":  {"type": "array", "items": {"type": "string"}, "description": "List of public image URLs to attach"},
+            "replace_all": {"type": "boolean", "description": "True = delete existing images first; False = append (default False)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_add_product_images(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    pid   = str(args["product_id"])
+    urls  = args["image_urls"]
+    added, failed = [], []
+
+    if args.get("replace_all"):
+        try:
+            existing = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                         f"/admin/api/2024-01/products/{pid}/images.json")
+            for img in existing.get("images", []):
+                await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                                  f"/admin/api/2024-01/products/{pid}/images/{img['id']}.json")
+        except RuntimeError:
+            pass
+
+    for url in urls:
+        try:
+            r = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                  f"/admin/api/2024-01/products/{pid}/images.json",
+                                  json={"image": {"src": url}})
+            added.append(r.get("image", {}).get("id"))
+        except RuntimeError as e:
+            failed.append({"url": url, "error": str(e)})
+
+    return {"success": len(failed) == 0, "added_count": len(added), "added_image_ids": added, "failed": failed}
+
+
+@tool(
+    name="shopify_update_customer",
+    description=(
+        "Update a Shopify customer record — edit their first/last name, email, phone, "
+        "note, or tags. Useful for bulk customer cleanup or segmentation. "
+        "Use list_shopify_customers to get customer_ids first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["customer_id"],
+        "properties": {
+            "customer_id": {"type": "string", "description": "Shopify customer ID"},
+            "first_name":  {"type": "string"},
+            "last_name":   {"type": "string"},
+            "email":       {"type": "string"},
+            "phone":       {"type": "string"},
+            "note":        {"type": "string", "description": "Internal note on the customer profile"},
+            "tags":        {"type": "string", "description": "Comma-separated tags (replaces existing)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_customer(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    cid = str(args["customer_id"])
+    update: Dict[str, Any] = {"id": cid}
+    for field in ("first_name", "last_name", "email", "phone", "note", "tags"):
+        if args.get(field) is not None:
+            update[field] = args[field]
+    if len(update) == 1:
+        return {"error": "At least one field to update is required"}
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/customers/{cid}.json",
+                                   json={"customer": update})
+        c = result.get("customer", {})
+        return {"success": True, "customer_id": c.get("id"), "email": c.get("email"), "tags": c.get("tags")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_set_seo_metafields",
+    description=(
+        "Set SEO metafields (title tag and meta description) on a Shopify product "
+        "to improve search engine ranking. "
+        "Use list_shopify_products to get product_ids. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {
+            "product_id":        {"type": "string", "description": "Shopify product ID"},
+            "seo_title":         {"type": "string", "description": "SEO title tag (50-60 characters ideal)"},
+            "seo_description":   {"type": "string", "description": "Meta description (120-160 characters ideal)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_set_seo_metafields(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    pid = str(args["product_id"])
+    metafields = []
+    if args.get("seo_title"):
+        metafields.append({"namespace": "global", "key": "title_tag",       "value": args["seo_title"],       "type": "single_line_text_field"})
+    if args.get("seo_description"):
+        metafields.append({"namespace": "global", "key": "description_tag", "value": args["seo_description"], "type": "single_line_text_field"})
+    if not metafields:
+        return {"error": "seo_title or seo_description required"}
+    results = []
+    for mf in metafields:
+        try:
+            r = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                  f"/admin/api/2024-01/products/{pid}/metafields.json",
+                                  json={"metafield": mf})
+            results.append({"key": mf["key"], "id": r.get("metafield", {}).get("id")})
+        except RuntimeError as e:
+            results.append({"key": mf["key"], "error": str(e)})
+    return {"success": all("error" not in r for r in results), "product_id": pid, "metafields": results}
+
+
+@tool(
+    name="shopify_check_low_stock",
+    description=(
+        "Check Shopify inventory levels and return products/variants that are "
+        "below a specified stock threshold. "
+        "Use this for automated restocking alerts or to identify what needs topping up. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "threshold": {"type": "integer", "description": "Alert when quantity is at or below this number (default: 5)"},
+            "limit":     {"type": "integer", "description": "Max products to scan (default: 250)"},
+        },
+    },
+)
+async def shopify_check_low_stock(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    threshold = int(args.get("threshold") or 5)
+    limit     = min(int(args.get("limit") or 250), 250)
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                   "/admin/api/2024-01/products.json",
+                                   params={"limit": str(limit), "status": "active",
+                                           "fields": "id,title,variants"})
+        products  = result.get("products", [])
+        low_stock = []
+        for p in products:
+            for v in p.get("variants", []):
+                qty = v.get("inventory_quantity")
+                if qty is not None and qty <= threshold:
+                    low_stock.append({
+                        "product_id":   str(p["id"]),
+                        "product_title": p["title"],
+                        "variant_id":   str(v["id"]),
+                        "variant_title": v.get("title"),
+                        "quantity":     qty,
+                        "sku":          v.get("sku", ""),
+                    })
+        low_stock.sort(key=lambda x: x["quantity"])
+        return {
+            "threshold":  threshold,
+            "alert_count": len(low_stock),
+            "low_stock":  low_stock,
+            "message":    f"{len(low_stock)} variant(s) at or below {threshold} units" if low_stock else "All products well-stocked",
         }
     except RuntimeError as e:
         return {"error": str(e)}

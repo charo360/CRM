@@ -401,8 +401,13 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_shopify_analytics",
     "shopify_get_abandoned_carts", "shopify_get_growth_metrics",
     "shopify_create_discount", "shopify_fulfill_order", "shopify_cancel_order",
-    "shopify_adjust_inventory", "shopify_add_product",
-    "shopify_refund_order", "shopify_update_price", "shopify_tag_customer",
+    "shopify_adjust_inventory", "shopify_add_product", "shopify_delete_product",
+    "shopify_update_product", "shopify_update_price", "shopify_bulk_update_prices",
+    "shopify_add_product_images", "shopify_set_seo_metafields",
+    "shopify_update_customer", "shopify_check_low_stock",
+    "shopify_refund_order", "shopify_tag_customer",
+    "shopify_list_collections", "shopify_create_collection", "shopify_add_to_collection",
+    "shopify_get_policies", "shopify_set_policy",
     "shopify_publish_blog_post", "generate_blog_post",
     "get_cj_categories", "search_cj_products", "get_cj_hot_products", "import_cj_product_to_shopify",
     "cj_fulfill_order", "cj_get_order_status", "cj_sync_tracking_to_shopify",
@@ -420,8 +425,13 @@ SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_customers", "get_customer", "send_whatsapp_message",
 })
 SHOPIFY_PRODUCTS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
-    "list_shopify_products", "shopify_adjust_inventory", "shopify_add_product",
-    "shopify_update_price", "shopify_tag_customer",
+    "list_shopify_products", "shopify_adjust_inventory",
+    "shopify_add_product", "shopify_delete_product", "shopify_update_product",
+    "shopify_update_price", "shopify_bulk_update_prices",
+    "shopify_add_product_images", "shopify_set_seo_metafields",
+    "shopify_update_customer", "shopify_tag_customer", "shopify_check_low_stock",
+    "shopify_list_collections", "shopify_create_collection", "shopify_add_to_collection",
+    "shopify_get_policies", "shopify_set_policy",
     "list_products", "create_product", "update_product", "delete_product",
     "list_customers", "get_customer",
     "get_cj_categories", "search_cj_products", "get_cj_hot_products", "import_cj_product_to_shopify",
@@ -1270,14 +1280,57 @@ This is a **conversation**, not a one-shot form. Keep track of what was suggeste
 
 ### 2. Catalog & inventory management
 When the user asks about existing products, stock, SKUs, variants:
-- `list_shopify_products` — view live Shopify catalog.
-- `shopify_adjust_inventory` — update stock levels (requires confirmation).
+- `list_shopify_products` — view live Shopify catalog with IDs, variants, prices, stock.
+- `shopify_update_product` — edit title, description, tags, vendor, type, or status on any product.
+- `shopify_adjust_inventory` — update stock levels at a location.
+- `shopify_delete_product` — permanently delete one or more products (requires explicit confirmation).
+- `shopify_update_price` — update a single variant price.
+- `shopify_bulk_update_prices` — apply a multiplier or fixed price across many variants at once (e.g. "raise all prices 20%", "set 2.5x markup on all CJ products").
+- `shopify_add_product_images` — add or replace images on an existing product from public URLs.
+- `shopify_set_seo_metafields` — set SEO title tag and meta description on a product (50-60 chars title, 120-160 chars description).
+- `shopify_check_low_stock` — scan all active products and return any variants below a stock threshold (default ≤5 units). Use this proactively to alert users.
+- `shopify_update_customer` — edit customer name, email, phone, note, or tags.
 - `list_products` — Zilo CRM catalog (for WhatsApp / catalog features).
+
+### 3. Store structure — Collections
+- `shopify_list_collections` — see all existing collections and product counts.
+- `shopify_create_collection` — create a new category (e.g. "Men's Streetwear", "Sale Items").
+- `shopify_add_to_collection` — assign products to a collection by product IDs.
+
+### 4. Store policies
+- `shopify_get_policies` — read current refund, privacy, terms, shipping, and legal notice policies.
+- `shopify_set_policy` — write policy content directly to Shopify via the GraphQL Admin API.
+
+**Policy workflow:**
+1. Ask the user: store name, niche, country/jurisdiction, and any specific terms (e.g. processing time, return window).
+2. Generate full professional policy text tailored to their store.
+3. Show each policy to the user for review.
+4. On confirmation, call `shopify_set_policy` with all policies at once — done.
+
+You can set all 5 policies in a single call: `refund_policy`, `privacy_policy`, `terms_of_service`, `shipping_policy`, `legal_notice`.
+
+**Limitation:** These policies are suitable for standard dropshipping stores. For jurisdiction-specific legal compliance, recommend a specialist app like Termageddon.
+
+### 5. Store rebuild workflow
+When a user asks to "rebuild my store", "start fresh", or "set up my store from scratch":
+1. `list_shopify_products` — show what's currently there, confirm wipe if needed.
+2. `shopify_delete_product` (bulk) — clear all existing products (with confirmation).
+3. Ask the user their niche/focus. Then `search_cj_products` or `search_aliexpress_products` for that niche.
+4. `import_cj_product_to_shopify` or `import_aliexpress_product_to_shopify` — bulk import chosen products.
+5. `shopify_create_collection` — create collections to organise the store.
+6. `shopify_add_to_collection` — assign imported products to the right collections.
+7. `shopify_bulk_update_prices` — apply consistent pricing/margin across the store.
+8. `shopify_create_discount` — set up a launch discount if desired.
+9. `shopify_set_policy` — generate and set all store policies.
+Full end-to-end store setup is possible entirely within this chat.
 
 ## Tool usage rules
 - **Never call `shopify_add_product` without the user explicitly approving** the specific product(s).
 - When adding multiple products the user approved, call them in sequence.
 - `create_product` → Zilo catalog only. `shopify_add_product` → live Shopify store.
+- **Never call `shopify_delete_product` without the user explicitly confirming** which products to delete. Always call `list_shopify_products` first so the user can see what will be deleted, then confirm before proceeding. Deletion is permanent and irreversible.
+- For bulk deletion (e.g. "delete all demo products"), list the products first, show a summary of what will be deleted, wait for a "yes, delete them all" confirmation, then pass all IDs in one `shopify_delete_product` call.
+- For `shopify_bulk_update_prices`, always show the user what the new prices will be (sample of 3-5) before applying.
 
 ## Conversational examples
 

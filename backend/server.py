@@ -10596,12 +10596,13 @@ async def send_daily_notifications_now(user = Depends(get_current_user)):
 _SHOPIFY_SCOPES = (
     "read_orders,write_orders,"
     "read_products,write_products,"
-    "read_customers,"
+    "read_customers,write_customers,"
     "read_script_tags,write_script_tags,"
     "read_price_rules,write_price_rules,"
     "read_discounts,write_discounts,"
     "read_checkouts,"
-    "read_locations"
+    "read_locations,write_inventory,"
+    "read_content,write_content"
 )
 
 
@@ -10785,6 +10786,12 @@ async def shopify_oauth_callback(
         pass
 
     logging.info(f"[shopify-oauth] Connected shop={shop} user={user_id}")
+    # Auto-register webhooks in background
+    try:
+        import asyncio as _aio
+        _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
+    except Exception as _wh_exc:
+        logging.warning(f"[shopify-oauth] webhook registration failed: {_wh_exc}")
     from starlette.responses import RedirectResponse
     return RedirectResponse(url=f"{frontend_url}/dashboard/shopify?shopify_connected=1")
 
@@ -10836,6 +10843,12 @@ async def shopify_connect_direct(request: Request, user=Depends(get_current_user
     except Exception:
         pass
     logging.info(f"[shopify-direct] Connected store={domain} user={user_id}")
+    # Auto-register webhooks in background
+    try:
+        import asyncio as _aio
+        _aio.create_task(_shopify_register_webhooks(domain, token, _shopify_backend_url()))
+    except Exception as _wh_exc:
+        logging.warning(f"[shopify-direct] webhook registration failed: {_wh_exc}")
     return {"ok": True, "domain": domain, "shop_name": shop_info.get("name", domain)}
 
 
@@ -10857,6 +10870,234 @@ async def shopify_disconnect_direct(user=Depends(get_current_user)):
     )
     logging.info(f"[shopify-direct] Disconnected user={user_id} matched={result.matched_count}")
     return {"ok": True}
+
+
+# ── Shopify Webhook helpers ────────────────────────────────────────────────────
+
+def _shopify_verify_webhook_hmac(body: bytes, hmac_header: str, secret: str) -> bool:
+    import hashlib, hmac as _hmac, base64
+    digest = _hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    return _hmac.compare_digest(base64.b64encode(digest).decode(), hmac_header)
+
+
+async def _shopify_register_webhooks(domain: str, token: str, backend_url: str) -> list:
+    """Register all required Shopify webhooks for a store. Returns list of registered topics."""
+    import httpx as _httpx
+    topics = [
+        ("orders/paid",    f"{backend_url}/api/shopify/webhook/orders-paid"),
+        ("orders/updated", f"{backend_url}/api/shopify/webhook/orders-updated"),
+        ("products/create", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("products/update", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("products/delete", f"{backend_url}/api/shopify/webhook/products-sync"),
+    ]
+    registered = []
+    async with _httpx.AsyncClient(timeout=15.0) as _c:
+        for topic, address in topics:
+            try:
+                r = await _c.post(
+                    f"https://{domain}/admin/api/2024-01/webhooks.json",
+                    headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+                    json={"webhook": {"topic": topic, "address": address, "format": "json"}},
+                )
+                if r.status_code in (200, 201, 422):  # 422 = already registered, fine
+                    registered.append(topic)
+                else:
+                    logging.warning(f"[shopify-webhook] register {topic} → {r.status_code}")
+            except Exception as exc:
+                logging.warning(f"[shopify-webhook] register {topic} error: {exc}")
+    return registered
+
+
+def _shopify_backend_url() -> str:
+    return (
+        os.environ.get("BACKEND_PUBLIC_URL")
+        or os.environ.get("NEXT_PUBLIC_API_URL", "").replace("/api", "")
+        or "https://crm-1-pnfo.onrender.com"
+    ).rstrip("/")
+
+
+@api_router.post("/shopify/webhooks/register")
+async def shopify_register_webhooks(user=Depends(get_current_user)):
+    """Manually register Shopify webhooks for the connected store."""
+    from composio_service import _get_shopify_direct_creds
+    user_id = str(user.get("business_id") or user["_id"])
+    creds = await _get_shopify_direct_creds(user_id)
+    if not creds:
+        raise HTTPException(400, "Shopify not connected")
+    registered = await _shopify_register_webhooks(
+        creds["domain"], creds["token"], _shopify_backend_url()
+    )
+    return {"ok": True, "registered": registered}
+
+
+# ── Auto-fulfillment: orders/paid webhook ──────────────────────────────────────
+
+async def _auto_fulfill_order_bg(user_id: str, order: dict) -> None:
+    """Background task: attempt to auto-fulfill each line item via CJ or AliExpress."""
+    from composio_service import _get_shopify_direct_creds, _shopify_direct_proxy
+    import httpx as _httpx
+
+    creds = await _get_shopify_direct_creds(user_id)
+    if not creds:
+        return
+
+    order_id    = str(order.get("id", ""))
+    order_name  = order.get("name", order_id)
+    line_items  = order.get("line_items", [])
+    ship_addr   = order.get("shipping_address") or order.get("billing_address") or {}
+
+    fulfilled_items = []
+    for item in line_items:
+        product_id = str(item.get("product_id") or "")
+        quantity   = item.get("quantity", 1)
+
+        # ── Check CJ mapping ─────────────────────────────────────────────────
+        cj_mapping = await db.cj_products.find_one(
+            {"user_id": user_id, "shopify_product_id": product_id}
+        )
+        if cj_mapping:
+            try:
+                from cj_dropship.client import cj_post
+                payload = {
+                    "orderNumber":  order_id,
+                    "shippingZip":  ship_addr.get("zip", ""),
+                    "shippingCountryCode": ship_addr.get("country_code", "US"),
+                    "shippingPhone": ship_addr.get("phone", ""),
+                    "shippingCustomerName": f"{ship_addr.get('first_name','')} {ship_addr.get('last_name','')}".strip(),
+                    "shippingAddress": ship_addr.get("address1", ""),
+                    "shippingCity":    ship_addr.get("city", ""),
+                    "shippingProvince": ship_addr.get("province", ""),
+                    "products": [{"vid": cj_mapping.get("cj_vid", ""), "quantity": quantity}],
+                }
+                result = await cj_post("/order/create", payload)
+                cj_order_id = (result or {}).get("orderId") or (result or {}).get("data", {}).get("orderId")
+                if cj_order_id:
+                    await db.cj_products.update_one(
+                        {"user_id": user_id, "shopify_product_id": product_id},
+                        {"$push": {"orders": {"shopify_order_id": order_id, "cj_order_id": cj_order_id,
+                                              "quantity": quantity, "created_at": __import__("datetime").datetime.utcnow()}}},
+                    )
+                    fulfilled_items.append({"product_id": product_id, "supplier": "cj", "cj_order_id": cj_order_id})
+                    logging.info(f"[shopify-autofulfill] CJ order {cj_order_id} placed for shopify order {order_name}")
+            except Exception as exc:
+                logging.error(f"[shopify-autofulfill] CJ fulfillment error order={order_name}: {exc}")
+            continue
+
+        # ── Check AliExpress mapping ──────────────────────────────────────────
+        ali_mapping = await db.aliexpress_products.find_one(
+            {"user_id": user_id, "shopify_product_id": product_id}
+        )
+        if ali_mapping:
+            logging.info(f"[shopify-autofulfill] AliExpress auto-fulfill order={order_name} product={product_id} (manual review recommended)")
+            fulfilled_items.append({"product_id": product_id, "supplier": "aliexpress", "status": "pending_manual"})
+
+    if fulfilled_items:
+        await db.shopify_auto_fulfillments.update_one(
+            {"user_id": user_id, "shopify_order_id": order_id},
+            {"$set": {"user_id": user_id, "shopify_order_id": order_id, "order_name": order_name,
+                      "items": fulfilled_items, "fulfilled_at": __import__("datetime").datetime.utcnow()}},
+            upsert=True,
+        )
+
+
+@api_router.post("/shopify/webhook/orders-paid")
+async def shopify_webhook_orders_paid(request: Request):
+    """Shopify orders/paid webhook — triggers auto-fulfillment via CJ/AliExpress."""
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    body = await request.body()
+
+    if client_secret:
+        hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+        if not _shopify_verify_webhook_hmac(body, hmac_header, client_secret):
+            raise HTTPException(status_code=401, detail="HMAC verification failed")
+
+    try:
+        order = __import__("json").loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        import asyncio as _asyncio
+        _asyncio.create_task(_auto_fulfill_order_bg(user_id, order))
+
+    return {"status": "ok"}
+
+
+# ── Sync webhooks: orders/updated, products ────────────────────────────────────
+
+@api_router.post("/shopify/webhook/orders-updated")
+async def shopify_webhook_orders_updated(request: Request):
+    """Shopify orders/updated — sync order status changes back to Zilo CRM."""
+    body = await request.body()
+    try:
+        order = __import__("json").loads(body)
+    except Exception:
+        return {"status": "ok"}
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        await db.shopify_orders_cache.update_one(
+            {"user_id": user_id, "shopify_order_id": str(order.get("id"))},
+            {"$set": {
+                "user_id":          user_id,
+                "shopify_order_id": str(order.get("id")),
+                "order_number":     order.get("name"),
+                "financial_status": order.get("financial_status"),
+                "fulfillment_status": order.get("fulfillment_status"),
+                "updated_at":       __import__("datetime").datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+    return {"status": "ok"}
+
+
+@api_router.post("/shopify/webhook/products-sync")
+async def shopify_webhook_products_sync(request: Request):
+    """Shopify products/create|update|delete — sync product catalog changes to Zilo."""
+    body = await request.body()
+    try:
+        product = __import__("json").loads(body)
+    except Exception:
+        return {"status": "ok"}
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    topic       = request.headers.get("X-Shopify-Topic", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id    = str(user.get("business_id") or user["_id"])
+        product_id = str(product.get("id", ""))
+
+        if topic == "products/delete":
+            await db.shopify_products_cache.delete_one({"user_id": user_id, "shopify_product_id": product_id})
+        else:
+            await db.shopify_products_cache.update_one(
+                {"user_id": user_id, "shopify_product_id": product_id},
+                {"$set": {
+                    "user_id":           user_id,
+                    "shopify_product_id": product_id,
+                    "title":             product.get("title"),
+                    "vendor":            product.get("vendor"),
+                    "status":            product.get("status"),
+                    "tags":              product.get("tags"),
+                    "updated_at":        __import__("datetime").datetime.utcnow(),
+                }},
+                upsert=True,
+            )
+    return {"status": "ok"}
 
 
 @api_router.post("/integrations/shopify/sync-products")
@@ -14007,6 +14248,90 @@ async def cj_get_categories(user=Depends(get_current_user)):
     categories = [
         {"id": str(c.get("categoryId", "")), "name": c.get("categoryEnName") or c.get("categoryName", "")}
         for c in raw if c.get("categoryId")
+    ]
+    return {"categories": categories}
+
+
+# ── AliExpress REST endpoints (used by Shopify Products tab UI) ──────────────
+@api_router.get("/ae/products")
+async def ae_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    sort: str = "LAST_VOLUME_DESC",
+    user=Depends(get_current_user),
+):
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    if not keyword and not category_id:
+        raise HTTPException(422, "keyword or category_id required")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+
+    try:
+        data = await ae_ds_search(
+            keyword=keyword or "bestseller",
+            category_id=category_id or None,
+            min_price=min_price,
+            max_price=max_price,
+            page_size=min(page_size, 50),
+            sort=sort,
+            creds=ae_creds,
+        )
+    except Exception as e:
+        logging.error("[ae/products] error: %s", e, exc_info=True)
+        raise HTTPException(502, f"AliExpress API error: {e}")
+
+    try:
+        products_raw = (
+            data.get("products", {}).get("product", [])
+            or data.get("result", {}).get("products", {}).get("product", [])
+            or []
+        )
+        products = []
+        for p in products_raw:
+            cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
+            products.append({
+                "ae_pid":          str(p.get("product_id", "")),
+                "title":           p.get("product_title", ""),
+                "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
+                "cost_price":      cost,
+                "suggested_price": round(cost * 2.5, 2),
+                "image_url":       p.get("product_main_image_url", ""),
+                "orders_count":    int(p.get("lastest_volume", 0) or 0),
+                "shipping_time":   p.get("shipping_lead_time", ""),
+                "store_name":      p.get("shop_name", ""),
+                "source":          "aliexpress",
+            })
+        return {"products": products, "total": int(data.get("total_record_count", len(products)))}
+    except Exception as e:
+        logging.error("[ae/products] serialisation error: %s", e, exc_info=True)
+        raise HTTPException(500, f"Response processing error: {e}")
+
+
+@api_router.get("/ae/categories")
+async def ae_get_categories_endpoint(user=Depends(get_current_user)):
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    try:
+        data = await ae_get_categories(creds=ae_creds)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress API error: {e}")
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    categories = [
+        {"id": str(c.get("category_id", "")), "name": c.get("category_name", "")}
+        for c in (cats or []) if c.get("category_id")
     ]
     return {"categories": categories}
 
