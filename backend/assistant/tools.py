@@ -3316,6 +3316,52 @@ async def shopify_add_to_collection(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="shopify_delete_collection",
+    description=(
+        "Permanently delete one or more collections (categories) from the Shopify store. "
+        "Works for both custom collections and smart collections. "
+        "Use shopify_list_collections first to get collection IDs. "
+        "Always confirm with the user before deleting. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "collection_id":  {"type": "string", "description": "Single collection ID to delete"},
+            "collection_ids": {"type": "array", "items": {"type": "string"}, "description": "List of collection IDs to bulk delete"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_delete_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    ids: List[str] = args.get("collection_ids") or ([args["collection_id"]] if args.get("collection_id") else [])
+    if not ids:
+        return {"error": "collection_id or collection_ids required"}
+    deleted, failed = [], []
+    for cid in ids:
+        # Try custom collection first, fall back to smart collection
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                              f"/admin/api/2024-01/custom_collections/{cid}.json")
+            deleted.append(cid)
+            continue
+        except RuntimeError:
+            pass
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                              f"/admin/api/2024-01/smart_collections/{cid}.json")
+            deleted.append(cid)
+        except RuntimeError as e:
+            failed.append({"id": cid, "error": str(e)})
+    return {
+        "success": len(failed) == 0,
+        "deleted_count": len(deleted),
+        "deleted_ids": deleted,
+        "failed": failed,
+    }
+
+
+@tool(
     name="shopify_list_collections",
     description=(
         "List all custom collections (categories) in the Shopify store. "
@@ -3327,20 +3373,28 @@ async def shopify_add_to_collection(ctx: ToolContext, args: Dict[str, Any]):
 async def shopify_list_collections(ctx: ToolContext, args: Dict[str, Any]):
     from .composio_helper import composio_proxy as nango_proxy
     try:
-        result = await nango_proxy(ctx.business_id, "shopify", "GET",
-                                   "/admin/api/2024-01/custom_collections.json",
-                                   params={"limit": "250", "fields": "id,title,handle,products_count,published_at"})
-        collections = result.get("custom_collections", [])
-        return {
-            "count": len(collections),
-            "collections": [
-                {"id": str(c.get("id")), "title": c.get("title"), "handle": c.get("handle"),
-                 "products_count": c.get("products_count", 0), "published": bool(c.get("published_at"))}
-                for c in collections
-            ],
-        }
-    except RuntimeError as e:
-        return {"error": str(e)}
+        custom_result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                          "/admin/api/2024-01/custom_collections.json",
+                                          params={"limit": "250", "fields": "id,title,handle,products_count,published_at"})
+        custom = custom_result.get("custom_collections", [])
+    except RuntimeError:
+        custom = []
+    try:
+        smart_result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                         "/admin/api/2024-01/smart_collections.json",
+                                         params={"limit": "250", "fields": "id,title,handle,products_count,published_at"})
+        smart = smart_result.get("smart_collections", [])
+    except RuntimeError:
+        smart = []
+    all_collections = (
+        [{"id": str(c.get("id")), "title": c.get("title"), "handle": c.get("handle"),
+          "type": "custom", "products_count": c.get("products_count", 0), "published": bool(c.get("published_at"))}
+         for c in custom]
+        + [{"id": str(c.get("id")), "title": c.get("title"), "handle": c.get("handle"),
+            "type": "smart", "products_count": c.get("products_count", 0), "published": bool(c.get("published_at"))}
+           for c in smart]
+    )
+    return {"count": len(all_collections), "collections": all_collections}
 
 
 @tool(

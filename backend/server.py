@@ -10919,11 +10919,21 @@ def _shopify_backend_url() -> str:
 @api_router.post("/shopify/webhooks/register")
 async def shopify_register_webhooks(user=Depends(get_current_user)):
     """Manually register Shopify webhooks for the connected store."""
-    from composio_service import _get_shopify_direct_creds
+    import bson as _bson
     user_id = str(user.get("business_id") or user["_id"])
-    creds = await _get_shopify_direct_creds(user_id)
-    if not creds:
+    try:
+        _oid = _bson.ObjectId(user_id)
+    except Exception:
+        _oid = None
+    _q = {"$or": [{"business_id": user_id}]}
+    if _oid:
+        _q["$or"].append({"_id": _oid})
+    user_doc = await db.users.find_one(_q)
+    domain = (user_doc or {}).get("shopify_domain")
+    token  = (user_doc or {}).get("shopify_token")
+    if not domain or not token:
         raise HTTPException(400, "Shopify not connected")
+    creds = {"domain": domain, "token": token}
     registered = await _shopify_register_webhooks(
         creds["domain"], creds["token"], _shopify_backend_url()
     )
@@ -10934,11 +10944,17 @@ async def shopify_register_webhooks(user=Depends(get_current_user)):
 
 async def _auto_fulfill_order_bg(user_id: str, order: dict) -> None:
     """Background task: attempt to auto-fulfill each line item via CJ or AliExpress."""
-    from composio_service import _get_shopify_direct_creds, _shopify_direct_proxy
-    import httpx as _httpx
-
-    creds = await _get_shopify_direct_creds(user_id)
-    if not creds:
+    import bson as _bson
+    # Verify the user still exists and has Shopify connected
+    try:
+        _oid = _bson.ObjectId(user_id)
+    except Exception:
+        _oid = None
+    _query = {"$or": [{"business_id": user_id}]}
+    if _oid:
+        _query["$or"].append({"_id": _oid})
+    user_doc = await db.users.find_one(_query)
+    if not user_doc or not user_doc.get("shopify_domain"):
         return
 
     order_id    = str(order.get("id", ""))

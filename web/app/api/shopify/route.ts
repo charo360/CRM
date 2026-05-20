@@ -490,6 +490,7 @@ export async function POST(req: NextRequest) {
     status?: string;
     // collections
     collectionId?: string;
+    collectionIds?: string[];
     // policies (set_policy action)
     refundPolicy?: string;
     privacyPolicy?: string;
@@ -707,6 +708,29 @@ export async function POST(req: NextRequest) {
       const added = results.filter((r) => r.status === "fulfilled").length;
       const failed = results.length - added;
       return NextResponse.json({ ok: true, added, failed });
+    }
+
+    // ── Delete collection(s) ──────────────────────────────────────────────────
+    if (body.action === "delete_collection") {
+      const ids: string[] = body.collectionIds ?? (body.collectionId ? [body.collectionId] : []);
+      if (!ids.length) return err("collectionId or collectionIds required");
+      let deleted = 0, failed = 0;
+      for (const cid of ids) {
+        // Try custom collection first, fall back to smart collection
+        let ok = false;
+        try {
+          await shopifyDelete(req, auth, `/admin/api/${SHOPIFY_API}/custom_collections/${cid}.json`);
+          ok = true;
+        } catch { /* try smart */ }
+        if (!ok) {
+          try {
+            await shopifyDelete(req, auth, `/admin/api/${SHOPIFY_API}/smart_collections/${cid}.json`);
+            ok = true;
+          } catch { failed++; continue; }
+        }
+        if (ok) deleted++;
+      }
+      return NextResponse.json({ ok: failed === 0, deleted, failed });
     }
 
     // ── Update customer ───────────────────────────────────────────────────────

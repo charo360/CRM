@@ -406,7 +406,7 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_add_product_images", "shopify_set_seo_metafields",
     "shopify_update_customer", "shopify_check_low_stock",
     "shopify_refund_order", "shopify_tag_customer",
-    "shopify_list_collections", "shopify_create_collection", "shopify_add_to_collection",
+    "shopify_list_collections", "shopify_create_collection", "shopify_add_to_collection", "shopify_delete_collection",
     "shopify_get_policies", "shopify_set_policy",
     "shopify_publish_blog_post", "generate_blog_post",
     "get_cj_categories", "search_cj_products", "get_cj_hot_products", "import_cj_product_to_shopify",
@@ -415,7 +415,7 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "import_aliexpress_product_to_shopify",
     "aliexpress_fulfill_order", "aliexpress_get_order_status", "aliexpress_sync_tracking_to_shopify",
     "get_market_trends", "find_winning_products", "search_facebook_ads",
-    "get_cj_hot_products", "shopify_product_analytics",
+    "shopify_product_analytics",
 })
 SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "shopify_fulfill_order", "shopify_cancel_order",
@@ -431,7 +431,7 @@ SHOPIFY_PRODUCTS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_update_price", "shopify_bulk_update_prices",
     "shopify_add_product_images", "shopify_set_seo_metafields",
     "shopify_update_customer", "shopify_tag_customer", "shopify_check_low_stock",
-    "shopify_list_collections", "shopify_create_collection", "shopify_add_to_collection",
+    "shopify_list_collections", "shopify_create_collection", "shopify_add_to_collection", "shopify_delete_collection",
     "shopify_get_policies", "shopify_set_policy",
     "list_products", "create_product", "update_product", "delete_product",
     "list_customers", "get_customer",
@@ -439,19 +439,22 @@ SHOPIFY_PRODUCTS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_aliexpress_categories", "search_aliexpress_products", "get_aliexpress_hot_products",
     "import_aliexpress_product_to_shopify",
     "get_market_trends", "find_winning_products", "search_facebook_ads",
-    "get_cj_hot_products", "shopify_product_analytics",
+    "shopify_product_analytics",
 })
 SHOPIFY_ANALYTICS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_shopify_analytics", "list_shopify_orders", "list_shopify_products",
     "list_shopify_customers",
     "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
     "get_revenue_trends", "get_top_customers", "get_sales_pipeline",
-    "shopify_tag_customer", "shopify_product_analytics", "get_market_trends",
+    "shopify_tag_customer", "shopify_product_analytics",
+    "shopify_check_low_stock",
+    "get_market_trends", "find_winning_products", "search_facebook_ads", "get_cj_hot_products",
 })
 SHOPIFY_CUSTOMERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_customers", "list_shopify_orders", "get_shopify_analytics",
     "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
-    "shopify_tag_customer", "shopify_create_discount",
+    "shopify_tag_customer", "shopify_update_customer", "shopify_create_discount",
+    "shopify_check_low_stock",
     "list_customers", "get_customer", "get_top_customers",
     "send_whatsapp_message",
 })
@@ -1298,6 +1301,7 @@ When the user asks about existing products, stock, SKUs, variants:
 - `shopify_list_collections` — see all existing collections and product counts.
 - `shopify_create_collection` — create a new category (e.g. "Men's Streetwear", "Sale Items").
 - `shopify_add_to_collection` — assign products to a collection by product IDs.
+- `shopify_delete_collection` — permanently delete one or more collections (custom or smart). Always call `shopify_list_collections` first so the user can confirm the ID. Requires explicit confirmation before calling.
 
 ### 4. Store policies
 - `shopify_get_policies` — read current refund, privacy, terms, shipping, and legal notice policies.
