@@ -42,12 +42,20 @@ def _cj_credentials() -> tuple[str, str]:
     raw = os.environ.get("CJ_API_KEY", "").strip()
     if not raw:
         raise RuntimeError("CJ_API_KEY is not set in environment.")
+    # Strip accidental duplicate prefix e.g. "CJ_API_KEY=CJ5436522@api@..."
+    if raw.startswith("CJ_API_KEY="):
+        raw = raw[len("CJ_API_KEY="):]
     email_hint, api_key = _parse_cj_key(raw)
-    # Prefer explicit CJ_EMAIL env var; fall back to the hint embedded in the key
-    email = os.environ.get("CJ_EMAIL", "").strip() or email_hint or ""
+    # Accept both CJ_API_EMAIL and CJ_EMAIL
+    email = (
+        os.environ.get("CJ_API_EMAIL", "").strip()
+        or os.environ.get("CJ_EMAIL", "").strip()
+        or email_hint
+        or ""
+    )
     if not email:
         raise RuntimeError(
-            "CJ_EMAIL is not set. Add CJ_EMAIL=your@email.com to .env.local"
+            "CJ_API_EMAIL is not set. Add CJ_API_EMAIL=your@email.com to .env.local"
         )
     return email, api_key
 
@@ -84,14 +92,31 @@ async def _get_access_token() -> str:
     d = data.get("data", {})
     access_token  = d.get("accessToken", "")
     refresh_token = d.get("refreshToken", "")
-    expires_in    = int(d.get("accessTokenExpiryDate", 86400))  # seconds
+    expires_at    = _parse_expiry(d.get("accessTokenExpiryDate"), now + 86400)
 
     _token_cache[api_key] = {
         "access_token":  access_token,
         "refresh_token": refresh_token,
-        "expires_at":    now + expires_in,
+        "expires_at":    expires_at,
     }
     return access_token
+
+
+def _parse_expiry(value: Any, fallback: float) -> float:
+    """Parse CJ expiry — either an ISO datetime string or seconds-from-now int."""
+    if not value:
+        return fallback
+    if isinstance(value, (int, float)):
+        # If it looks like a unix timestamp (> 1e9), use directly; else treat as seconds
+        v = float(value)
+        return v if v > 1_000_000_000 else time.time() + v
+    try:
+        from datetime import datetime, timezone
+        s = str(value).strip()
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).timestamp()
+    except Exception:
+        return fallback
 
 
 async def _refresh_token(refresh_token: str, api_key: str) -> Optional[str]:
@@ -105,10 +130,10 @@ async def _refresh_token(refresh_token: str, api_key: str) -> Optional[str]:
         return None
     d = data.get("data", {})
     access_token = d.get("accessToken", "")
-    expires_in   = int(d.get("accessTokenExpiryDate", 86400))
+    expires_at   = _parse_expiry(d.get("accessTokenExpiryDate"), time.time() + 86400)
     _token_cache[api_key].update({
-        "access_token": access_token,
-        "expires_at":   time.time() + expires_in,
+        "access_token":  access_token,
+        "expires_at":    expires_at,
         "refresh_token": d.get("refreshToken", refresh_token),
     })
     return access_token

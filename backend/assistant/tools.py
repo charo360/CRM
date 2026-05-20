@@ -11746,24 +11746,24 @@ async def get_keyword_suggestions(ctx: ToolContext, args: Dict[str, Any]) -> Dic
 )
 async def search_cj_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        from cj_dropship.client import cj_post
+        from cj_dropship.client import cj_get
     except ImportError:
         return {"error": "CJdropshipping module not available"}
 
-    body: Dict[str, Any] = {
-        "productNameEn": args["keyword"],
-        "pageNum":       1,
-        "pageSize":      min(int(args.get("page_size", 20)), 50),
+    params: Dict[str, Any] = {
+        "productName": args["keyword"],
+        "pageNum":     1,
+        "pageSize":    min(int(args.get("page_size", 20)), 50),
     }
     if args.get("category_id"):
-        body["categoryId"] = args["category_id"]
+        params["categoryId"] = args["category_id"]
     if args.get("min_price") is not None:
-        body["priceMin"] = args["min_price"]
+        params["minPrice"] = args["min_price"]
     if args.get("max_price") is not None:
-        body["priceMax"] = args["max_price"]
+        params["maxPrice"] = args["max_price"]
 
     try:
-        data = await cj_post("/product/query", body)
+        data = await cj_get("/product/list", params)
     except RuntimeError as e:
         return {"error": str(e)}
 
@@ -11773,15 +11773,15 @@ async def search_cj_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str
         cost = float(p.get("sellPrice", 0) or 0)
         products.append({
             "cj_pid":          p.get("pid", ""),
-            "title":           p.get("productNameEn", ""),
+            "title":           p.get("productNameEn") or p.get("productName", ""),
             "category":        p.get("categoryName", ""),
             "cost_price":      cost,
             "suggested_price": round(cost * 2.5, 2),
             "currency":        "USD",
             "image_url":       p.get("productImage", ""),
-            "shipping_time":   p.get("shippingTime", ""),
-            "supplier_score":  p.get("supplierScore", ""),
-            "variants_count":  p.get("variants", 0),
+            "is_free_shipping": p.get("isFreeShipping", False),
+            "supplier":        p.get("supplierName", ""),
+            "listed_count":    p.get("listedNum", 0),
         })
 
     return {
@@ -11820,29 +11820,32 @@ async def get_cj_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[st
         params["categoryId"] = args["category_id"]
 
     try:
-        data = await cj_get("/product/hotProductList", params)
+        data = await cj_get("/product/list", params)
     except RuntimeError as e:
         return {"error": str(e)}
 
     raw_list = data.get("list", []) if isinstance(data, dict) else []
+    # Sort by listedNum (how many stores have listed this product) as a proxy for popularity
+    raw_list.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
     products = []
     for p in raw_list:
         cost = float(p.get("sellPrice", 0) or 0)
         products.append({
-            "cj_pid":        p.get("pid", ""),
-            "title":         p.get("productNameEn", ""),
-            "category":      p.get("categoryName", ""),
-            "cost_price":    cost,
+            "cj_pid":          p.get("pid", ""),
+            "title":           p.get("productNameEn") or p.get("productName", ""),
+            "category":        p.get("categoryName", ""),
+            "cost_price":      cost,
             "suggested_price": round(cost * 2.5, 2),
-            "image_url":     p.get("productImage", ""),
-            "orders_30d":    p.get("recentOrders", ""),
-            "shipping_time": p.get("shippingTime", ""),
+            "image_url":       p.get("productImage", ""),
+            "listed_by_stores": p.get("listedNum", 0),
+            "is_free_shipping": p.get("isFreeShipping", False),
+            "supplier":        p.get("supplierName", ""),
         })
 
     return {
-        "source":   "CJdropshipping hot products",
+        "source":   "CJdropshipping — sorted by store popularity",
         "products": products,
-        "tip": "These are currently high-order-volume products across all CJ stores globally.",
+        "tip": "listed_by_stores = how many Shopify/WooCommerce stores are already selling this product on CJ.",
     }
 
 
@@ -11947,18 +11950,27 @@ async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -
 
     cj_pid = args["cj_pid"]
 
-    # 1. Fetch full product detail from CJ
+    # 1. Fetch full product detail from CJ using the correct detail endpoint
     try:
-        detail = await cj_get(f"/product/query", {"pid": cj_pid})
-        products = detail.get("list", [detail]) if isinstance(detail, dict) else []
-        prod = products[0] if products else detail
-    except RuntimeError as e:
-        return {"error": f"CJ product fetch failed: {e}"}
+        detail = await cj_get("/product/query", {"pid": cj_pid})
+        # /product/query returns the product directly or in a list
+        if isinstance(detail, dict) and "list" in detail:
+            prod = (detail["list"] or [{}])[0]
+        else:
+            prod = detail if isinstance(detail, dict) else {}
+    except RuntimeError:
+        # Fall back to list endpoint to get basic product data
+        try:
+            detail2 = await cj_get("/product/list", {"pid": cj_pid, "pageSize": 1})
+            items = detail2.get("list", []) if isinstance(detail2, dict) else []
+            prod = items[0] if items else {}
+        except RuntimeError as e2:
+            return {"error": f"CJ product fetch failed: {e2}"}
 
     cost_price  = float(prod.get("sellPrice", 0) or 0)
     sale_price  = float(args.get("sale_price") or round(cost_price * 2.5, 2))
-    title       = args.get("product_title") or prod.get("productNameEn", "")
-    description = prod.get("productDescription", "") or prod.get("description", "")
+    title       = args.get("product_title") or prod.get("productNameEn") or prod.get("productName", "")
+    description = prod.get("productDescription", "") or prod.get("remark", "")
     images      = prod.get("productImages", []) or ([prod.get("productImage")] if prod.get("productImage") else [])
 
     # Build variants from CJ variants list
