@@ -102,32 +102,32 @@ function copyToClipboard(text: string) {
 
 function FinancialBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
-    paid: "bg-emerald-900/40 text-emerald-400 border-emerald-800/40",
-    pending: "bg-amber-900/40 text-amber-400 border-amber-800/40",
-    refunded: "bg-rose-900/40 text-rose-400 border-rose-800/40",
-    partially_refunded: "bg-orange-900/40 text-orange-400 border-orange-800/40",
-    voided: "bg-slate-800 text-slate-500 border-slate-700",
-    authorized: "bg-blue-900/40 text-blue-400 border-blue-800/40",
+    paid: "bg-emerald-50 text-emerald-600 border-emerald-200",
+    pending: "bg-amber-50 text-amber-600 border-amber-200",
+    refunded: "bg-rose-50 text-rose-600 border-rose-200",
+    partially_refunded: "bg-orange-50 text-orange-600 border-orange-200",
+    voided: "bg-slate-100 text-slate-500 border-slate-200",
+    authorized: "bg-blue-50 text-blue-600 border-blue-200",
   };
   return (
-    <span className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full border capitalize", map[status] ?? "bg-slate-800 text-slate-400 border-slate-700")}>
+    <span className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full border capitalize", map[status] ?? "bg-slate-100 text-slate-400 border-slate-200")}>
       {status?.replace(/_/g, " ")}
     </span>
   );
 }
 
 function FulfillmentBadge({ status }: { status: string | null }) {
-  if (!status) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-amber-900/40 text-amber-400 border-amber-800/40">Unfulfilled</span>;
-  if (status === "fulfilled") return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-emerald-900/40 text-emerald-400 border-emerald-800/40">Fulfilled</span>;
-  if (status === "partial") return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-blue-900/40 text-blue-400 border-blue-800/40">Partial</span>;
-  return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-slate-800 text-slate-400 border-slate-700 capitalize">{status}</span>;
+  if (!status) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-amber-50 text-amber-600 border-amber-200">Unfulfilled</span>;
+  if (status === "fulfilled") return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-600 border-emerald-200">Fulfilled</span>;
+  if (status === "partial") return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-blue-50 text-blue-600 border-blue-200">Partial</span>;
+  return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-slate-100 text-slate-400 border-slate-200 capitalize">{status}</span>;
 }
 
 function StockBadge({ qty }: { qty: number }) {
-  if (qty <= 0) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-900/40 text-rose-400 border border-rose-800/40">Out of stock</span>;
-  if (qty < 5) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-900/40 text-rose-400 border border-rose-800/40">Critical: {qty}</span>;
-  if (qty < 20) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-900/40 text-amber-400 border border-amber-800/40">Low: {qty}</span>;
-  return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 border border-emerald-800/40">{qty} in stock</span>;
+  if (qty <= 0) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200">Out of stock</span>;
+  if (qty < 5) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200">Critical: {qty}</span>;
+  if (qty < 20) return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-200">Low: {qty}</span>;
+  return <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200">{qty} in stock</span>;
 }
 
 // ── No connection ─────────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ function NoShopify({
         <ShoppingBag size={28} className="text-brand" />
       </div>
       <div>
-        <p className="font-bold text-slate-200 text-base">Connect your Shopify store</p>
+        <p className="font-bold text-slate-800 text-base">Connect your Shopify store</p>
         <p className="text-sm text-slate-500 mt-1.5 max-w-xs leading-relaxed">
           Enter your store name and click Connect — you’ll be taken to Shopify to approve access.
         </p>
@@ -156,13 +156,13 @@ function NoShopify({
       <div className="w-full max-w-sm space-y-3 text-left">
         <div>
           <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5 block">Store name</label>
-          <div className="flex items-center bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-brand transition-all">
+          <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-brand transition-all">
             <input
               value={shop}
               onChange={(e) => setShop(e.target.value.replace(/\.myshopify\.com.*/, ""))}
               onKeyDown={(e) => e.key === "Enter" && !connecting && shop.trim() && onOAuth()}
               placeholder="yourstore"
-              className="flex-1 bg-transparent px-3.5 py-2.5 text-sm text-slate-200 placeholder-slate-500 outline-none"
+              className="flex-1 bg-transparent px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-500 outline-none"
               disabled={connecting}
             />
             <span className="px-3 text-slate-500 text-sm select-none">.myshopify.com</span>
@@ -187,8 +187,8 @@ function NoShopify({
           ["🔔", "Low stock alerts", "Never run out unexpectedly"],
           ["👥", "Customer LTV", "Know your best customers"],
         ].map(([icon, title, desc]) => (
-          <div key={title} className="bg-slate-800/60 rounded-xl p-3 border border-slate-700/50">
-            <p className="text-sm mb-1">{icon} <span className="font-medium text-slate-200">{title}</span></p>
+          <div key={title} className="bg-slate-100 rounded-xl p-3 border border-slate-100">
+            <p className="text-sm mb-1">{icon} <span className="font-medium text-slate-800">{title}</span></p>
             <p className="text-[11px] text-slate-500">{desc}</p>
           </div>
         ))}
@@ -225,12 +225,12 @@ function StatCard({ icon: Icon, label, value, sub, color = "text-brand" }: {
   icon: React.ElementType; label: string; value: string; sub?: string; color?: string;
 }) {
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-2">
+    <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="text-xs text-slate-500">{label}</span>
         <Icon size={14} className={color} />
       </div>
-      <p className="text-xl font-bold text-slate-100">{value}</p>
+      <p className="text-xl font-bold text-slate-900">{value}</p>
       {sub && <p className="text-[11px] text-slate-600">{sub}</p>}
     </div>
   );
@@ -266,47 +266,47 @@ function OverviewTab({ period, setPeriod }: { period: Period; setPeriod: (p: Per
           <button
             key={p}
             onClick={() => setPeriod(p)}
-            className={cn("text-xs px-3 py-1.5 rounded-lg capitalize font-medium transition-colors", period === p ? "bg-brand-dark text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700")}
+            className={cn("text-xs px-3 py-1.5 rounded-lg capitalize font-medium transition-colors", period === p ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-400 hover:bg-slate-200")}
           >
             {p === "today" ? "Today" : p === "week" ? "7 days" : "This month"}
           </button>
         ))}
-        <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-300 transition-colors"><RefreshCw size={13} /></button>
+        <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-700 transition-colors"><RefreshCw size={13} /></button>
       </div>
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard icon={DollarSign} label="Revenue" value={fmtMoney(stats.revenue)} sub={`${stats.orderCount} orders`} color="text-emerald-400" />
+        <StatCard icon={DollarSign} label="Revenue" value={fmtMoney(stats.revenue)} sub={`${stats.orderCount} orders`} color="text-emerald-600" />
         <StatCard icon={ShoppingCart} label="Avg Order Value" value={fmtMoney(stats.aov)} sub="per order" color="text-brand" />
-        <StatCard icon={CheckCircle2} label="Fulfillment Rate" value={`${stats.fulfillmentRate}%`} sub={`${stats.unfulfilled} pending`} color="text-blue-400" />
-        <StatCard icon={TrendingDown} label="Refunds" value={String(stats.refunds)} sub={`${stats.pending} payment pending`} color="text-rose-400" />
+        <StatCard icon={CheckCircle2} label="Fulfillment Rate" value={`${stats.fulfillmentRate}%`} sub={`${stats.unfulfilled} pending`} color="text-blue-600" />
+        <StatCard icon={TrendingDown} label="Refunds" value={String(stats.refunds)} sub={`${stats.pending} payment pending`} color="text-rose-600" />
       </div>
 
       {/* Secondary row */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 text-center">
+        <div className="bg-white border border-slate-200 rounded-2xl p-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Products</p>
           <p className="text-lg font-bold">{stats.productCount}</p>
         </div>
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 text-center">
+        <div className="bg-white border border-slate-200 rounded-2xl p-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Customers</p>
           <p className="text-lg font-bold">{stats.customerCount.toLocaleString()}</p>
         </div>
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 text-center">
+        <div className="bg-white border border-slate-200 rounded-2xl p-3 text-center">
           <p className="text-xs text-slate-500 mb-1">Unfulfilled</p>
-          <p className={cn("text-lg font-bold", stats.unfulfilled > 0 ? "text-amber-400" : "text-slate-300")}>{stats.unfulfilled}</p>
+          <p className={cn("text-lg font-bold", stats.unfulfilled > 0 ? "text-amber-600" : "text-slate-700")}>{stats.unfulfilled}</p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Revenue chart */}
-        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-4">
           <p className="text-xs font-semibold text-slate-400 mb-3 flex items-center gap-1.5"><BarChart3 size={12} /> Revenue by day</p>
           <RevenueChart data={revenueByDay} />
         </div>
 
         {/* Top products */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div className="bg-white border border-slate-200 rounded-2xl p-4">
           <p className="text-xs font-semibold text-slate-400 mb-3 flex items-center gap-1.5"><TrendingUp size={12} /> Top products</p>
           {topProducts.length === 0 ? (
             <p className="text-xs text-slate-600 py-4 text-center">No data</p>
@@ -316,10 +316,10 @@ function OverviewTab({ period, setPeriod }: { period: Period; setPeriod: (p: Per
                 <div key={i} className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-600 w-4">{i + 1}</span>
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs text-slate-300 truncate">{p.title}</p>
+                    <p className="text-xs text-slate-700 truncate">{p.title}</p>
                     <p className="text-[10px] text-slate-600">{p.units} units</p>
                   </div>
-                  <span className="text-xs font-semibold text-emerald-400">{fmtMoney(p.revenue)}</span>
+                  <span className="text-xs font-semibold text-emerald-600">{fmtMoney(p.revenue)}</span>
                 </div>
               ))}
             </div>
@@ -328,15 +328,15 @@ function OverviewTab({ period, setPeriod }: { period: Period; setPeriod: (p: Per
       </div>
 
       {/* Recent orders */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
           <p className="text-xs font-semibold text-slate-400">Recent orders</p>
           <span className="text-[10px] text-slate-600">{recentOrders.length} shown</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-slate-800">
+              <tr className="border-b border-slate-200">
                 {["Order", "Customer", "Items", "Total", "Payment", "Fulfillment", "Date"].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
                 ))}
@@ -344,11 +344,11 @@ function OverviewTab({ period, setPeriod }: { period: Period; setPeriod: (p: Per
             </thead>
             <tbody>
               {recentOrders.map((o) => (
-                <tr key={o.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                <tr key={o.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                   <td className="px-4 py-2.5 font-semibold text-brand">{o.name}</td>
-                  <td className="px-4 py-2.5 text-slate-300">{o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : o.email ?? "—"}</td>
+                  <td className="px-4 py-2.5 text-slate-700">{o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : o.email ?? "—"}</td>
                   <td className="px-4 py-2.5 text-slate-500">{o.line_items?.length ?? 0}</td>
-                  <td className="px-4 py-2.5 font-semibold text-slate-200">{fmtMoney(o.total_price, o.currency)}</td>
+                  <td className="px-4 py-2.5 font-semibold text-slate-800">{fmtMoney(o.total_price, o.currency)}</td>
                   <td className="px-4 py-2.5"><FinancialBadge status={o.financial_status} /></td>
                   <td className="px-4 py-2.5"><FulfillmentBadge status={o.fulfillment_status} /></td>
                   <td className="px-4 py-2.5 text-slate-500">{timeAgo(o.created_at)}</td>
@@ -423,23 +423,23 @@ function OrdersTab() {
     <div className="flex-1 flex overflow-hidden">
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Toolbar */}
-        <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2 flex-wrap">
-          <form onSubmit={(e) => { e.preventDefault(); setSearch(searchInput); }} className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-1.5 border border-slate-700">
+        <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-2 flex-wrap">
+          <form onSubmit={(e) => { e.preventDefault(); setSearch(searchInput); }} className="flex items-center gap-2 bg-slate-100 rounded-xl px-3 py-1.5 border border-slate-200">
             <Search size={12} className="text-slate-500" />
             <input
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Order # or customer…"
-              className="bg-transparent text-xs text-slate-200 placeholder-slate-500 outline-none w-40"
+              className="bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none w-40"
             />
             {searchInput && <button type="button" onClick={() => { setSearchInput(""); setSearch(""); }}><X size={11} className="text-slate-500" /></button>}
           </form>
-          <div className="flex items-center bg-slate-800 rounded-xl p-0.5 gap-0.5">
+          <div className="flex items-center bg-slate-100 rounded-xl p-0.5 gap-0.5">
             {filterButtons.map((f) => (
               <button
                 key={f.id}
                 onClick={() => setFulfillmentFilter(f.id)}
-                className={cn("text-xs px-3 py-1.5 rounded-lg font-medium transition-colors", fulfillmentFilter === f.id ? "bg-brand-dark text-white" : "text-slate-500 hover:text-slate-100")}
+                className={cn("text-xs px-3 py-1.5 rounded-lg font-medium transition-colors", fulfillmentFilter === f.id ? "bg-brand-dark text-white" : "text-slate-500 hover:text-slate-900")}
               >
                 {f.label}
                 {f.id === "unfulfilled" && unfulfilled > 0 && (
@@ -448,7 +448,7 @@ function OrdersTab() {
               </button>
             ))}
           </div>
-          <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-300 transition-colors"><RefreshCw size={13} /></button>
+          <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-700 transition-colors"><RefreshCw size={13} /></button>
         </div>
 
         {/* Table */}
@@ -462,7 +462,7 @@ function OrdersTab() {
         ) : (
           <div className="flex-1 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-slate-950 border-b border-slate-800">
+              <thead className="sticky top-0 bg-white border-b border-slate-200">
                 <tr>
                   {["Order", "Customer", "Items", "Total", "Payment", "Fulfillment", "Date", "Actions"].map((h) => (
                     <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
@@ -474,15 +474,15 @@ function OrdersTab() {
                   <tr
                     key={o.id}
                     onClick={() => setSelected(selected?.id === o.id ? null : o)}
-                    className={cn("border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors cursor-pointer", selected?.id === o.id && "bg-slate-800/50")}
+                    className={cn("border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer", selected?.id === o.id && "bg-slate-100")}
                   >
                     <td className="px-4 py-3 font-semibold text-brand">{o.name}</td>
                     <td className="px-4 py-3">
-                      <p className="text-slate-200">{o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : "—"}</p>
+                      <p className="text-slate-800">{o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : "—"}</p>
                       <p className="text-[10px] text-slate-600">{o.email ?? o.customer?.email ?? ""}</p>
                     </td>
                     <td className="px-4 py-3 text-slate-400">{o.line_items?.length ?? 0} item{o.line_items?.length !== 1 ? "s" : ""}</td>
-                    <td className="px-4 py-3 font-semibold text-slate-200">{fmtMoney(o.total_price, o.currency)}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-800">{fmtMoney(o.total_price, o.currency)}</td>
                     <td className="px-4 py-3"><FinancialBadge status={o.financial_status} /></td>
                     <td className="px-4 py-3"><FulfillmentBadge status={o.fulfillment_status} /></td>
                     <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtDate(o.created_at)}</td>
@@ -492,7 +492,7 @@ function OrdersTab() {
                           <button
                             onClick={(e) => { e.stopPropagation(); fulfill(o); }}
                             disabled={acting === String(o.id)}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-400 text-[10px] font-medium border border-emerald-700/40 disabled:opacity-50 transition-colors"
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-600 text-[10px] font-medium border border-emerald-700/40 disabled:opacity-50 transition-colors"
                           >
                             {acting === String(o.id) ? <Loader2 size={9} className="animate-spin" /> : <Check size={9} />}
                             Fulfill
@@ -502,7 +502,7 @@ function OrdersTab() {
                           <button
                             onClick={(e) => { e.stopPropagation(); cancel(o); }}
                             disabled={acting === String(o.id)}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-900/20 hover:bg-rose-900/40 text-rose-400 text-[10px] font-medium border border-rose-800/30 disabled:opacity-50 transition-colors"
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-50 text-rose-600 text-[10px] font-medium border border-rose-200 disabled:opacity-50 transition-colors"
                           >
                             <X size={9} /> Cancel
                           </button>
@@ -519,10 +519,10 @@ function OrdersTab() {
 
       {/* Order detail panel */}
       {selected && (
-        <div className="w-80 border-l border-slate-800 bg-slate-900 flex flex-col overflow-y-auto shrink-0">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+        <div className="w-80 border-l border-slate-200 bg-white flex flex-col overflow-y-auto shrink-0">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
             <span className="font-semibold text-sm">{selected.name}</span>
-            <button onClick={() => setSelected(null)} className="text-slate-500 hover:text-slate-100"><X size={14} /></button>
+            <button onClick={() => setSelected(null)} className="text-slate-500 hover:text-slate-900"><X size={14} /></button>
           </div>
           <div className="px-4 py-4 space-y-4 flex-1 overflow-y-auto">
             {/* Status */}
@@ -533,7 +533,7 @@ function OrdersTab() {
             {/* Customer */}
             <div>
               <p className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Customer</p>
-              <p className="text-sm font-medium text-slate-200">{selected.customer ? `${selected.customer.first_name} ${selected.customer.last_name}` : "Guest"}</p>
+              <p className="text-sm font-medium text-slate-800">{selected.customer ? `${selected.customer.first_name} ${selected.customer.last_name}` : "Guest"}</p>
               <p className="text-xs text-slate-500">{selected.email ?? selected.customer?.email}</p>
               {selected.customer?.orders_count && (
                 <p className="text-[10px] text-slate-600 mt-0.5">{selected.customer.orders_count} orders · {fmtMoney(selected.customer.total_spent ?? "0")} lifetime</p>
@@ -544,9 +544,9 @@ function OrdersTab() {
               <p className="text-[10px] text-slate-500 mb-2 uppercase tracking-wider">Items</p>
               <div className="space-y-2">
                 {selected.line_items?.map((li) => (
-                  <div key={li.id} className="flex items-start gap-2 bg-slate-800/50 rounded-xl p-2">
+                  <div key={li.id} className="flex items-start gap-2 bg-slate-100 rounded-xl p-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs text-slate-200 font-medium truncate">{li.title}</p>
+                      <p className="text-xs text-slate-800 font-medium truncate">{li.title}</p>
                       {li.variant_title && li.variant_title !== "Default Title" && (
                         <p className="text-[10px] text-slate-500">{li.variant_title}</p>
                       )}
@@ -561,15 +561,15 @@ function OrdersTab() {
               </div>
             </div>
             {/* Totals */}
-            <div className="border-t border-slate-800 pt-3 space-y-1.5">
+            <div className="border-t border-slate-200 pt-3 space-y-1.5">
               {parseFloat(selected.total_discounts ?? "0") > 0 && (
                 <div className="flex justify-between text-xs">
                   <span className="text-slate-500">Discount</span>
-                  <span className="text-rose-400">-{fmtMoney(selected.total_discounts, selected.currency)}</span>
+                  <span className="text-rose-600">-{fmtMoney(selected.total_discounts, selected.currency)}</span>
                 </div>
               )}
               <div className="flex justify-between text-sm font-bold">
-                <span className="text-slate-300">Total</span>
+                <span className="text-slate-700">Total</span>
                 <span>{fmtMoney(selected.total_price, selected.currency)}</span>
               </div>
             </div>
@@ -577,7 +577,7 @@ function OrdersTab() {
             {selected.shipping_address && (
               <div>
                 <p className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Ship to</p>
-                <p className="text-xs text-slate-300">{selected.shipping_address.first_name} {selected.shipping_address.last_name}</p>
+                <p className="text-xs text-slate-700">{selected.shipping_address.first_name} {selected.shipping_address.last_name}</p>
                 <p className="text-[11px] text-slate-500">{selected.shipping_address.address1}</p>
                 <p className="text-[11px] text-slate-500">{selected.shipping_address.city}, {selected.shipping_address.country} {selected.shipping_address.zip}</p>
               </div>
@@ -586,13 +586,13 @@ function OrdersTab() {
             {selected.note && (
               <div>
                 <p className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Note</p>
-                <p className="text-xs text-slate-400 bg-slate-800/50 rounded-xl p-2">{selected.note}</p>
+                <p className="text-xs text-slate-400 bg-slate-100 rounded-xl p-2">{selected.note}</p>
               </div>
             )}
             <p className="text-[10px] text-slate-600">Placed {fmtDateTime(selected.created_at)}</p>
           </div>
           {/* Actions */}
-          <div className="px-4 pb-4 space-y-2 border-t border-slate-800 pt-3">
+          <div className="px-4 pb-4 space-y-2 border-t border-slate-200 pt-3">
             {!selected.fulfillment_status && selected.financial_status === "paid" && (
               <button
                 onClick={() => fulfill(selected)}
@@ -607,7 +607,7 @@ function OrdersTab() {
               <button
                 onClick={() => cancel(selected)}
                 disabled={acting === String(selected.id)}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-800 hover:bg-rose-900/30 text-rose-400 text-xs font-medium border border-slate-700 hover:border-rose-800/40 disabled:opacity-50 transition-colors"
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-100 hover:bg-rose-50 text-rose-600 text-xs font-medium border border-slate-200 hover:border-rose-200 disabled:opacity-50 transition-colors"
               >
                 <X size={13} /> Cancel & Refund
               </button>
@@ -791,9 +791,9 @@ function ProductsTab() {
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Alert bar */}
       {(lowStock > 0 || outOfStock > 0) && (
-        <div className="px-4 py-2.5 bg-amber-900/20 border-b border-amber-800/30 flex items-center gap-2">
-          <AlertTriangle size={13} className="text-amber-400" />
-          <span className="text-xs text-amber-300">
+        <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+          <AlertTriangle size={13} className="text-amber-600" />
+          <span className="text-xs text-amber-700">
             {outOfStock > 0 && <span className="font-semibold">{outOfStock} out of stock</span>}
             {outOfStock > 0 && lowStock > outOfStock && " · "}
             {lowStock > outOfStock && <span>{lowStock - outOfStock} running low</span>}
@@ -802,21 +802,21 @@ function ProductsTab() {
       )}
 
       {/* Toolbar */}
-      <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2">
-        <div className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-1.5 border border-slate-700">
+      <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
+        <div className="flex items-center gap-2 bg-slate-100 rounded-xl px-3 py-1.5 border border-slate-200">
           <Search size={12} className="text-slate-500" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products…" className="bg-transparent text-xs text-slate-200 placeholder-slate-500 outline-none w-36" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search products…" className="bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none w-36" />
         </div>
         <span className="text-xs text-slate-600">{filtered.length} products</span>
         <div className="ml-auto flex items-center gap-2">
-          <button onClick={load} className="p-1.5 text-slate-500 hover:text-slate-300"><RefreshCw size={13} /></button>
+          <button onClick={load} className="p-1.5 text-slate-500 hover:text-slate-700"><RefreshCw size={13} /></button>
           <button
             onClick={() => { setFinderOpen((o) => !o); setSuggestions([]); }}
             className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-colors border",
               finderOpen
                 ? "bg-brand-dark text-white border-brand"
-                : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700"
+                : "bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200"
             )}
           >
             <Wand2 size={12} />
@@ -827,7 +827,7 @@ function ProductsTab() {
 
       {/* AI Product Finder Panel */}
       {finderOpen && (
-        <div className="border-b border-slate-800 bg-slate-900/60">
+        <div className="border-b border-slate-200 bg-slate-50">
           {/* Config row */}
           <div className="px-4 pt-4 pb-3 flex flex-wrap gap-3 items-end">
             <div className="flex flex-col gap-1">
@@ -836,7 +836,7 @@ function ProductsTab() {
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
                 placeholder="e.g. Men's Streetwear, Organic Skincare, Home Gym..."
-                className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-64"
+                className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-64"
               />
             </div>
             <div className="flex flex-col gap-1">
@@ -845,7 +845,7 @@ function ProductsTab() {
                 value={keywords}
                 onChange={(e) => setKeywords(e.target.value)}
                 placeholder="e.g. minimalist, eco-friendly, premium..."
-                className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-52"
+                className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-52"
               />
             </div>
             <div className="flex flex-col gap-1">
@@ -853,7 +853,7 @@ function ProductsTab() {
               <select
                 value={priceRange}
                 onChange={(e) => setPriceRange(e.target.value)}
-                className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-brand"
+                className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 outline-none focus:ring-1 focus:ring-brand"
               >
                 {PRICE_RANGES.map((r) => <option key={r}>{r}</option>)}
               </select>
@@ -863,7 +863,7 @@ function ProductsTab() {
               <select
                 value={count}
                 onChange={(e) => setCount(Number(e.target.value))}
-                className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-200 outline-none focus:ring-1 focus:ring-brand"
+                className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 outline-none focus:ring-1 focus:ring-brand"
               >
                 {PRODUCT_COUNTS.map((n) => <option key={n} value={n}>{n} products</option>)}
               </select>
@@ -883,12 +883,12 @@ function ProductsTab() {
           {generating && (
             <div className="px-4 pb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: count > 8 ? 4 : count > 4 ? 3 : 2 }).map((_, i) => (
-                <div key={i} className="bg-slate-800/60 rounded-2xl p-4 animate-pulse flex flex-col gap-2">
-                  <div className="h-24 bg-slate-700 rounded-xl" />
-                  <div className="h-3 bg-slate-700 rounded w-3/4" />
-                  <div className="h-2 bg-slate-700 rounded w-1/2" />
-                  <div className="h-2 bg-slate-700 rounded w-full" />
-                  <div className="h-2 bg-slate-700 rounded w-2/3" />
+                <div key={i} className="bg-slate-100 rounded-2xl p-4 animate-pulse flex flex-col gap-2">
+                  <div className="h-24 bg-slate-200 rounded-xl" />
+                  <div className="h-3 bg-slate-200 rounded w-3/4" />
+                  <div className="h-2 bg-slate-200 rounded w-1/2" />
+                  <div className="h-2 bg-slate-200 rounded w-full" />
+                  <div className="h-2 bg-slate-200 rounded w-2/3" />
                 </div>
               ))}
             </div>
@@ -899,7 +899,7 @@ function ProductsTab() {
             <div className="px-4 pb-4">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs text-slate-400">
-                  <span className="font-semibold text-slate-200">{suggestions.length}</span> products found for <span className="text-brand">{category}</span>
+                  <span className="font-semibold text-slate-800">{suggestions.length}</span> products found for <span className="text-brand">{category}</span>
                   {" · "}<span className="text-slate-600">{addedIdxs.size} added to store</span>
                 </p>
                 <button onClick={handleGenerate} className="text-xs text-brand hover:text-brand/50 flex items-center gap-1">
@@ -917,12 +917,12 @@ function ProductsTab() {
                     <div
                       key={idx}
                       className={cn(
-                        "bg-slate-800/60 border rounded-2xl p-3 flex flex-col gap-2 transition-all",
-                        added ? "border-emerald-800/60 bg-emerald-950/20" : "border-slate-700/60 hover:border-slate-600"
+                        "bg-slate-100 border rounded-2xl p-3 flex flex-col gap-2 transition-all",
+                        added ? "border-emerald-200 bg-emerald-50" : "border-slate-200/60 hover:border-slate-300"
                       )}
                     >
                       {/* Image placeholder with category icon */}
-                      <div className="h-20 bg-slate-700/60 rounded-xl flex items-center justify-center relative overflow-hidden">
+                      <div className="h-20 bg-slate-200 rounded-xl flex items-center justify-center relative overflow-hidden">
                         <div className="text-center">
                           <Package size={22} className="text-slate-500 mx-auto mb-1" />
                           <p className="text-[9px] text-slate-600 leading-tight px-2">{s.imageQuery || s.product_type}</p>
@@ -933,15 +933,15 @@ function ProductsTab() {
                           </span>
                         )}
                         {added && (
-                          <div className="absolute inset-0 bg-emerald-950/60 flex items-center justify-center rounded-xl">
-                            <CheckCircle2 size={20} className="text-emerald-400" />
+                          <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl">
+                            <CheckCircle2 size={20} className="text-emerald-600" />
                           </div>
                         )}
                       </div>
 
                       {/* Product info */}
                       <div className="flex-1">
-                        <p className="text-xs font-semibold text-slate-200 leading-tight mb-0.5 line-clamp-2">{s.title}</p>
+                        <p className="text-xs font-semibold text-slate-800 leading-tight mb-0.5 line-clamp-2">{s.title}</p>
                         {s.vendor && <p className="text-[10px] text-slate-500 mb-1">{s.vendor}</p>}
                         <p className="text-[10px] text-slate-400 leading-relaxed line-clamp-3">{s.description}</p>
                       </div>
@@ -950,7 +950,7 @@ function ProductsTab() {
                       {s.tags && (
                         <div className="flex flex-wrap gap-1">
                           {s.tags.split(",").slice(0, 3).map((t) => (
-                            <span key={t} className="text-[9px] bg-slate-700/60 text-slate-500 px-1.5 py-0.5 rounded-full">
+                            <span key={t} className="text-[9px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded-full">
                               {t.trim()}
                             </span>
                           ))}
@@ -959,7 +959,7 @@ function ProductsTab() {
 
                       {/* Price + variants */}
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-slate-200">${s.price}</span>
+                        <span className="text-sm font-bold text-slate-800">${s.price}</span>
                         {s.compare_at_price && (
                           <span className="text-[10px] text-slate-600 line-through">${s.compare_at_price}</span>
                         )}
@@ -975,7 +975,7 @@ function ProductsTab() {
                         className={cn(
                           "w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
                           added
-                            ? "bg-emerald-900/30 text-emerald-400 border border-emerald-800/40 cursor-default"
+                            ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default"
                             : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50"
                         )}
                       >
@@ -998,7 +998,7 @@ function ProductsTab() {
           {!generating && suggestions.length === 0 && (
             <div className="px-4 pb-5 flex flex-col items-center gap-2 text-center py-6">
               <Sparkles size={24} className="text-brand mb-1" />
-              <p className="text-sm font-medium text-slate-300">AI Product Research</p>
+              <p className="text-sm font-medium text-slate-700">AI Product Research</p>
               <p className="text-xs text-slate-500 max-w-xs">
                 Tell the AI your store niche and it will suggest ready-to-sell products with descriptions, pricing, and tags — add them to Shopify with one click.
               </p>
@@ -1013,7 +1013,7 @@ function ProductsTab() {
       ) : (
         <div className="flex-1 overflow-y-auto">
           <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-slate-950 border-b border-slate-800">
+            <thead className="sticky top-0 bg-white border-b border-slate-200">
               <tr>
                 {["Product", "SKU", "Price", "Stock", "Status", "Action"].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
@@ -1023,15 +1023,15 @@ function ProductsTab() {
             <tbody>
               {filtered.map((product) =>
                 product.variants.map((variant, vi) => (
-                  <tr key={variant.id} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
+                  <tr key={variant.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3">
                       {vi === 0 ? (
                         <div className="flex items-center gap-2">
                           {product.image?.src && (
-                            <img src={product.image.src} alt="" className="w-8 h-8 rounded-lg object-cover bg-slate-800" />
+                            <img src={product.image.src} alt="" className="w-8 h-8 rounded-lg object-cover bg-slate-100" />
                           )}
                           <div>
-                            <p className="font-medium text-slate-200">{product.title}</p>
+                            <p className="font-medium text-slate-800">{product.title}</p>
                             {product.product_type && <p className="text-[10px] text-slate-600">{product.product_type}</p>}
                           </div>
                         </div>
@@ -1040,7 +1040,7 @@ function ProductsTab() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-slate-500 font-mono">{variant.sku || "—"}</td>
-                    <td className="px-4 py-3 font-semibold text-slate-200">{fmtMoney(variant.price)}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-800">{fmtMoney(variant.price)}</td>
                     <td className="px-4 py-3">
                       {editing?.variantId === variant.id ? (
                         <div className="flex items-center gap-1.5">
@@ -1049,19 +1049,19 @@ function ProductsTab() {
                             onChange={(e) => setNewQty(e.target.value)}
                             type="number"
                             autoFocus
-                            className="w-16 bg-slate-700 text-xs text-slate-200 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-brand border border-slate-600"
+                            className="w-16 bg-slate-200 text-xs text-slate-800 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-brand border border-slate-300"
                           />
-                          <button onClick={updateInventory} disabled={saving} className="p-1 text-emerald-400 hover:text-emerald-300 disabled:opacity-50">
+                          <button onClick={updateInventory} disabled={saving} className="p-1 text-emerald-600 hover:text-emerald-300 disabled:opacity-50">
                             {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
                           </button>
-                          <button onClick={() => { setEditing(null); setNewQty(""); }} className="p-1 text-slate-500 hover:text-slate-300"><X size={11} /></button>
+                          <button onClick={() => { setEditing(null); setNewQty(""); }} className="p-1 text-slate-500 hover:text-slate-700"><X size={11} /></button>
                         </div>
                       ) : (
                         <StockBadge qty={variant.inventory_quantity} />
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <span className={cn("text-[10px] font-medium capitalize", product.status === "active" ? "text-emerald-400" : "text-slate-500")}>
+                      <span className={cn("text-[10px] font-medium capitalize", product.status === "active" ? "text-emerald-600" : "text-slate-500")}>
                         {product.status}
                       </span>
                     </td>
@@ -1139,12 +1139,12 @@ function CustomersTab() {
     <div className="flex-1 flex overflow-hidden">
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Toolbar */}
-        <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-1.5 border border-slate-700">
+        <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 bg-slate-100 rounded-xl px-3 py-1.5 border border-slate-200">
             <Search size={12} className="text-slate-500" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search customers…" className="bg-transparent text-xs text-slate-200 placeholder-slate-500 outline-none w-36" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search customers…" className="bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none w-36" />
           </div>
-          <div className="flex items-center bg-slate-800 rounded-xl p-0.5 gap-0.5">
+          <div className="flex items-center bg-slate-100 rounded-xl p-0.5 gap-0.5">
             {([
               ["all", "All", customers.length],
               ["vip", "⭐ VIP", vipCount],
@@ -1154,14 +1154,14 @@ function CustomersTab() {
               <button
                 key={id}
                 onClick={() => setSegment(id)}
-                className={cn("text-xs px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1", segment === id ? "bg-brand-dark text-white" : "text-slate-500 hover:text-slate-100")}
+                className={cn("text-xs px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1", segment === id ? "bg-brand-dark text-white" : "text-slate-500 hover:text-slate-900")}
               >
                 {label}
-                <span className={cn("text-[10px] px-1 rounded-full", segment === id ? "bg-white/20 text-white" : "bg-slate-700 text-slate-400")}>{count}</span>
+                <span className={cn("text-[10px] px-1 rounded-full", segment === id ? "bg-white/20 text-white" : "bg-slate-200 text-slate-400")}>{count}</span>
               </button>
             ))}
           </div>
-          <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-300"><RefreshCw size={13} /></button>
+          <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-700"><RefreshCw size={13} /></button>
         </div>
 
         {loading ? (
@@ -1169,7 +1169,7 @@ function CustomersTab() {
         ) : (
           <div className="flex-1 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-slate-950 border-b border-slate-800">
+              <thead className="sticky top-0 bg-white border-b border-slate-200">
                 <tr>
                   {["Customer", "Location", "Orders", "Lifetime Value", "Last Order", "Status"].map((h) => (
                     <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
@@ -1185,7 +1185,7 @@ function CustomersTab() {
                     <tr
                       key={c.id}
                       onClick={() => setSelected(selected?.id === c.id ? null : c)}
-                      className={cn("border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors cursor-pointer", selected?.id === c.id && "bg-slate-800/50")}
+                      className={cn("border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer", selected?.id === c.id && "bg-slate-100")}
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2.5">
@@ -1193,19 +1193,19 @@ function CustomersTab() {
                             {(c.first_name?.[0] ?? c.email?.[0] ?? "?").toUpperCase()}
                           </div>
                           <div>
-                            <p className="font-medium text-slate-200">{c.first_name} {c.last_name}</p>
+                            <p className="font-medium text-slate-800">{c.first_name} {c.last_name}</p>
                             <p className="text-[10px] text-slate-500">{c.email}</p>
                           </div>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-500">{c.default_address?.city ?? "—"}</td>
-                      <td className="px-4 py-3 text-slate-300">{c.orders_count}</td>
-                      <td className="px-4 py-3 font-semibold text-emerald-400">{fmtMoney(c.total_spent)}</td>
+                      <td className="px-4 py-3 text-slate-700">{c.orders_count}</td>
+                      <td className="px-4 py-3 font-semibold text-emerald-600">{fmtMoney(c.total_spent)}</td>
                       <td className="px-4 py-3 text-slate-500">{c.last_order_name ?? fmtDate(c.updated_at)}</td>
                       <td className="px-4 py-3">
-                        {isVip ? <span className="text-[10px] font-semibold text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded-full border border-amber-800/30">⭐ VIP</span>
-                          : isAtRisk ? <span className="text-[10px] font-semibold text-rose-400 bg-rose-900/30 px-2 py-0.5 rounded-full border border-rose-800/30">At-risk</span>
-                          : c.orders_count === 1 ? <span className="text-[10px] font-semibold text-blue-400 bg-blue-900/30 px-2 py-0.5 rounded-full border border-blue-800/30">New</span>
+                        {isVip ? <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">⭐ VIP</span>
+                          : isAtRisk ? <span className="text-[10px] font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">At-risk</span>
+                          : c.orders_count === 1 ? <span className="text-[10px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">New</span>
                           : <span className="text-[10px] text-slate-500">Regular</span>
                         }
                       </td>
@@ -1220,20 +1220,20 @@ function CustomersTab() {
 
       {/* Customer detail */}
       {selected && (
-        <div className="w-72 border-l border-slate-800 bg-slate-900 flex flex-col overflow-y-auto shrink-0">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+        <div className="w-72 border-l border-slate-200 bg-white flex flex-col overflow-y-auto shrink-0">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
             <span className="font-semibold text-sm">{selected.first_name} {selected.last_name}</span>
-            <button onClick={() => setSelected(null)} className="text-slate-500 hover:text-slate-100"><X size={14} /></button>
+            <button onClick={() => setSelected(null)} className="text-slate-500 hover:text-slate-900"><X size={14} /></button>
           </div>
           <div className="px-4 py-4 space-y-3">
             <div className="grid grid-cols-2 gap-2">
-              <div className="bg-slate-800/50 rounded-xl p-3 text-center">
+              <div className="bg-slate-100 rounded-xl p-3 text-center">
                 <p className="text-[10px] text-slate-500">Orders</p>
                 <p className="text-lg font-bold">{selected.orders_count}</p>
               </div>
-              <div className="bg-slate-800/50 rounded-xl p-3 text-center">
+              <div className="bg-slate-100 rounded-xl p-3 text-center">
                 <p className="text-[10px] text-slate-500">Lifetime value</p>
-                <p className="text-sm font-bold text-emerald-400">{fmtMoney(selected.total_spent)}</p>
+                <p className="text-sm font-bold text-emerald-600">{fmtMoney(selected.total_spent)}</p>
               </div>
             </div>
             <div className="space-y-1.5">
@@ -1298,16 +1298,16 @@ Write a subject line then the email body. Keep it personal, create urgency, ment
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Summary bar */}
-      <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-4">
+      <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-4">
         <div>
           <span className="text-xs text-slate-500">Abandoned carts: </span>
-          <span className="text-sm font-bold text-slate-200">{carts.length}</span>
+          <span className="text-sm font-bold text-slate-800">{carts.length}</span>
         </div>
         <div>
           <span className="text-xs text-slate-500">Recoverable value: </span>
-          <span className="text-sm font-bold text-amber-400">{fmtMoney(totalValue)}</span>
+          <span className="text-sm font-bold text-amber-600">{fmtMoney(totalValue)}</span>
         </div>
-        <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-300"><RefreshCw size={13} /></button>
+        <button onClick={load} className="ml-auto p-1.5 text-slate-500 hover:text-slate-700"><RefreshCw size={13} /></button>
       </div>
 
       {loading ? (
@@ -1320,12 +1320,12 @@ Write a subject line then the email body. Keep it personal, create urgency, ment
       ) : (
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {carts.map((cart) => (
-            <div key={cart.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+            <div key={cart.id} className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="px-4 py-3 flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-sm font-semibold text-slate-200">{cart.email}</p>
-                    <span className="text-[10px] text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded-full border border-amber-800/30">
+                    <p className="text-sm font-semibold text-slate-800">{cart.email}</p>
+                    <span className="text-[10px] text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
                       {fmtMoney(cart.total_price, cart.currency)}
                     </span>
                     <span className="text-[10px] text-slate-600">{timeAgo(cart.updated_at)}</span>
@@ -1336,7 +1336,7 @@ Write a subject line then the email body. Keep it personal, create urgency, ment
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {cart.abandoned_checkout_url && (
-                    <a href={cart.abandoned_checkout_url} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Open checkout">
+                    <a href={cart.abandoned_checkout_url} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-lg text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors" title="Open checkout">
                       <ExternalLink size={13} />
                     </a>
                   )}
@@ -1353,22 +1353,22 @@ Write a subject line then the email body. Keep it personal, create urgency, ment
 
               {/* Draft email */}
               {showDraft === cart.id && draftEmails[cart.id] && (
-                <div className="border-t border-slate-800 px-4 py-3 space-y-2 bg-slate-800/30">
+                <div className="border-t border-slate-200 px-4 py-3 space-y-2 bg-slate-50">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-semibold text-brand/50 flex items-center gap-1"><Sparkles size={10} /> AI Recovery Email</span>
                     <div className="flex items-center gap-2">
-                      <button onClick={() => copyToClipboard(draftEmails[cart.id])} className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-200 transition-colors">
+                      <button onClick={() => copyToClipboard(draftEmails[cart.id])} className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-800 transition-colors">
                         <Copy size={10} /> Copy
                       </button>
                       <button onClick={() => setShowDraft(null)} className="text-slate-600 hover:text-slate-400"><X size={12} /></button>
                     </div>
                   </div>
-                  <pre className="text-xs text-slate-300 whitespace-pre-wrap font-sans leading-relaxed bg-slate-900/50 rounded-xl p-3 border border-slate-800">
+                  <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-slate-50 rounded-xl p-3 border border-slate-200">
                     {draftEmails[cart.id]}
                   </pre>
                   <button
                     onClick={() => generateRecoveryEmail(cart)}
-                    className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+                    className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-700 transition-colors"
                   >
                     <RotateCcw size={10} /> Regenerate
                   </button>
@@ -1452,7 +1452,7 @@ function DiscountsTab() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
         <p className="text-xs text-slate-500">{discounts.length} price rules</p>
         <button
           onClick={() => setShowCreate((v) => !v)}
@@ -1464,7 +1464,7 @@ function DiscountsTab() {
 
       {/* Create form */}
       {showCreate && (
-        <div className="px-4 py-4 border-b border-slate-800 bg-slate-900/50">
+        <div className="px-4 py-4 border-b border-slate-200 bg-slate-50">
           <p className="text-sm font-semibold mb-3">Create Discount Code</p>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {/* Code */}
@@ -1475,9 +1475,9 @@ function DiscountsTab() {
                   value={form.code}
                   onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase() }))}
                   placeholder="SAVE20"
-                  className="flex-1 bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700 font-mono uppercase"
+                  className="flex-1 bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200 font-mono uppercase"
                 />
-                <button onClick={generateCode} disabled={genCode} className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-400 hover:text-brand transition-colors" title="Generate code">
+                <button onClick={generateCode} disabled={genCode} className="p-2 rounded-xl bg-slate-100 border border-slate-200 text-slate-400 hover:text-brand transition-colors" title="Generate code">
                   <Zap size={12} />
                 </button>
               </div>
@@ -1485,7 +1485,7 @@ function DiscountsTab() {
             {/* Type */}
             <div>
               <label className="text-[10px] text-slate-500 mb-1 block">Type</label>
-              <div className="flex items-center gap-1 bg-slate-800 border border-slate-700 rounded-xl p-0.5">
+              <div className="flex items-center gap-1 bg-slate-100 border border-slate-200 rounded-xl p-0.5">
                 <button onClick={() => setForm((f) => ({ ...f, valueType: "percentage" }))} className={cn("flex-1 py-1.5 rounded-lg text-xs font-medium flex items-center justify-center gap-1 transition-colors", form.valueType === "percentage" ? "bg-brand-dark text-white" : "text-slate-400")}>
                   <Percent size={10} /> %
                 </button>
@@ -1497,26 +1497,26 @@ function DiscountsTab() {
             {/* Value */}
             <div>
               <label className="text-[10px] text-slate-500 mb-1 block">Value ({form.valueType === "percentage" ? "%" : "$"})</label>
-              <input value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} placeholder="20" type="number" className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700" />
+              <input value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} placeholder="20" type="number" className="w-full bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
             </div>
             {/* Min purchase */}
             <div>
               <label className="text-[10px] text-slate-500 mb-1 block">Min purchase ($)</label>
-              <input value={form.minPurchase} onChange={(e) => setForm((f) => ({ ...f, minPurchase: e.target.value }))} placeholder="0" type="number" className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700" />
+              <input value={form.minPurchase} onChange={(e) => setForm((f) => ({ ...f, minPurchase: e.target.value }))} placeholder="0" type="number" className="w-full bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
             </div>
             {/* Usage limit */}
             <div>
               <label className="text-[10px] text-slate-500 mb-1 block">Usage limit</label>
-              <input value={form.usageLimit} onChange={(e) => setForm((f) => ({ ...f, usageLimit: e.target.value }))} placeholder="Unlimited" type="number" className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700" />
+              <input value={form.usageLimit} onChange={(e) => setForm((f) => ({ ...f, usageLimit: e.target.value }))} placeholder="Unlimited" type="number" className="w-full bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
             </div>
             {/* Expires */}
             <div>
               <label className="text-[10px] text-slate-500 mb-1 block">Expires</label>
-              <input value={form.endsAt} onChange={(e) => setForm((f) => ({ ...f, endsAt: e.target.value }))} type="date" className="w-full bg-slate-800 text-sm text-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700" />
+              <input value={form.endsAt} onChange={(e) => setForm((f) => ({ ...f, endsAt: e.target.value }))} type="date" className="w-full bg-slate-100 text-sm text-slate-800 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
             </div>
           </div>
           <div className="flex items-center gap-2 mt-3">
-            <button onClick={() => setShowCreate(false)} className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-100 transition-colors">Cancel</button>
+            <button onClick={() => setShowCreate(false)} className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-900 transition-colors">Cancel</button>
             <button onClick={createDiscount} disabled={creating} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-50 transition-colors">
               {creating ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
               Create
@@ -1535,7 +1535,7 @@ function DiscountsTab() {
       ) : (
         <div className="flex-1 overflow-y-auto">
           <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-slate-950 border-b border-slate-800">
+            <thead className="sticky top-0 bg-white border-b border-slate-200">
               <tr>
                 {["Code", "Discount", "Used / Limit", "Expires", "Created", ""].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{h}</th>
@@ -1547,14 +1547,14 @@ function DiscountsTab() {
                 const code = d.codes?.[0]?.code ?? d.title;
                 const isExpired = d.ends_at && new Date(d.ends_at) < new Date();
                 return (
-                  <tr key={d.id} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
+                  <tr key={d.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <span className="font-mono font-semibold text-brand bg-brand-ink/50 px-2 py-0.5 rounded-lg border border-brand-ink/50">{code}</span>
-                        <button onClick={() => copyToClipboard(code)} className="text-slate-600 hover:text-slate-300 transition-colors"><Copy size={11} /></button>
+                        <button onClick={() => copyToClipboard(code)} className="text-slate-600 hover:text-slate-700 transition-colors"><Copy size={11} /></button>
                       </div>
                     </td>
-                    <td className="px-4 py-3 font-semibold text-emerald-400">
+                    <td className="px-4 py-3 font-semibold text-emerald-600">
                       {d.value_type === "percentage" ? `${Math.abs(parseFloat(d.value))}% off` : `${fmtMoney(Math.abs(parseFloat(d.value)))} off`}
                     </td>
                     <td className="px-4 py-3 text-slate-400">
@@ -1562,7 +1562,7 @@ function DiscountsTab() {
                     </td>
                     <td className="px-4 py-3 text-slate-500">
                       {d.ends_at ? (
-                        <span className={cn(isExpired && "text-rose-400")}>{fmtDate(d.ends_at)}{isExpired && " (expired)"}</span>
+                        <span className={cn(isExpired && "text-rose-600")}>{fmtDate(d.ends_at)}{isExpired && " (expired)"}</span>
                       ) : "No expiry"}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{fmtDate(d.created_at)}</td>
@@ -1570,7 +1570,7 @@ function DiscountsTab() {
                       <button
                         onClick={() => deleteDiscount(d.id)}
                         disabled={deleting === d.id}
-                        className="p-1.5 rounded-lg text-slate-600 hover:text-rose-400 hover:bg-rose-900/20 transition-colors disabled:opacity-50"
+                        className="p-1.5 rounded-lg text-slate-600 hover:text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-50"
                       >
                         {deleting === d.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                       </button>
@@ -1591,7 +1591,7 @@ function DiscountsTab() {
 export default function ShopifyPage() {
   return (
     <Suspense fallback={
-      <div className="flex-1 flex items-center justify-center bg-slate-950">
+      <div className="flex-1 flex items-center justify-center bg-white">
         <Loader2 size={24} className="animate-spin text-slate-600" />
       </div>
     }>
@@ -1680,7 +1680,7 @@ function ShopifyPageInner() {
 
   if (connected === null) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-slate-950">
+      <div className="flex-1 flex items-center justify-center bg-white">
         <Loader2 size={24} className="animate-spin text-slate-600" />
       </div>
     );
@@ -1688,7 +1688,7 @@ function ShopifyPageInner() {
 
   if (connected === false) {
     return (
-      <div className="flex-1 overflow-y-auto bg-slate-950 text-slate-100">
+      <div className="flex-1 overflow-y-auto bg-white text-slate-900">
         <NoShopify
           shop={shop} setShop={setShop}
           onOAuth={connectViaOAuth}
@@ -1709,25 +1709,25 @@ function ShopifyPageInner() {
   ];
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden">
+    <div className="flex flex-col h-full bg-slate-50 text-slate-900 overflow-hidden">
       {/* Header */}
-      <div className="px-5 py-3 border-b border-slate-800 bg-slate-900/80 flex items-center gap-3">
+      <div className="px-5 py-3 border-b border-slate-200 bg-white flex items-center gap-3">
         <div className="w-6 h-6 rounded-lg bg-brand/20 flex items-center justify-center">
           <ShoppingBag size={13} className="text-brand" />
         </div>
         <span className="font-semibold text-sm">Shopify</span>
-        <span className="text-[10px] text-emerald-400 bg-emerald-900/30 px-2 py-0.5 rounded-full border border-emerald-800/30">Connected</span>
+        <span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">Connected</span>
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-slate-800 bg-slate-900/60 overflow-x-auto">
+      <div className="flex border-b border-slate-200 bg-slate-50 overflow-x-auto">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
             className={cn(
               "flex items-center gap-1.5 px-4 py-3 text-xs font-medium whitespace-nowrap border-b-2 transition-colors",
-              tab === id ? "text-brand border-brand" : "text-slate-500 border-transparent hover:text-slate-300"
+              tab === id ? "text-brand border-brand" : "text-slate-500 border-transparent hover:text-slate-700"
             )}
           >
             <Icon size={12} />{label}
