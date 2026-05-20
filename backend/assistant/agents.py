@@ -405,11 +405,13 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_refund_order", "shopify_update_price", "shopify_tag_customer",
     "shopify_publish_blog_post", "generate_blog_post",
     "search_cj_products", "get_cj_hot_products", "import_cj_product_to_shopify",
+    "cj_fulfill_order", "cj_get_order_status", "cj_sync_tracking_to_shopify",
     "get_market_trends", "shopify_product_analytics",
 })
 SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "shopify_fulfill_order", "shopify_cancel_order",
     "shopify_refund_order",
+    "cj_fulfill_order", "cj_get_order_status", "cj_sync_tracking_to_shopify",
     "list_orders", "update_order_status", "get_sales_pipeline",
     "list_customers", "get_customer", "send_whatsapp_message",
 })

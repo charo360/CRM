@@ -12101,6 +12101,331 @@ async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -
 
 
 @tool(
+    name="cj_fulfill_order",
+    description=(
+        "Fulfill a Shopify order using CJdropshipping. "
+        "Looks up the order's shipping address and CJ-sourced line items, then places the fulfillment order with CJ. "
+        "Use this when a customer has paid and the order contains CJ-sourced products. "
+        "Returns a CJ order number to use with cj_get_order_status and cj_sync_tracking_to_shopify."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["shopify_order_id"],
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID (numeric)"},
+            "shipping_method": {"type": "string", "description": "CJ shipping method code e.g. 'CJPacket_Ordinary' (default). Leave blank for cheapest available."},
+        },
+    },
+    destructive=True,
+)
+async def cj_fulfill_order(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get, cj_post
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    order_id = str(args["shopify_order_id"])
+
+    # 1. Fetch Shopify order for shipping address + line items
+    try:
+        ord_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{order_id}.json")
+        order = ord_data.get("order", {})
+    except RuntimeError as e:
+        return {"error": f"Failed to fetch Shopify order: {e}"}
+
+    if not order:
+        return {"error": "Order not found"}
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    customer_name = f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip() or "Customer"
+    shipping_info = {
+        "shippingCustomerName": customer_name,
+        "shippingPhone":        ship.get("phone") or order.get("phone") or "0000000000",
+        "shippingAddress":      ship.get("address1", ""),
+        "shippingCity":         ship.get("city", ""),
+        "shippingProvince":     ship.get("province", ""),
+        "shippingZip":          ship.get("zip", ""),
+        "shippingCountryCode":  ship.get("country_code", "US"),
+    }
+
+    # 2. Find which line items are CJ-sourced
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    cj_mappings = {}
+    if shopify_pids:
+        async for doc in ctx.db.cj_products.find(
+            {"user_id": ctx.business_id, "shopify_product_id": {"$in": shopify_pids}}
+        ):
+            cj_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not cj_mappings:
+        return {"error": "No CJ-sourced products found in this order. Only CJ-imported products can be fulfilled via CJ."}
+
+    # 3. Build CJ products list — fetch variant ID for each CJ product
+    cj_products_payload = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in cj_mappings:
+            continue
+        cj_pid = cj_mappings[pid]["cj_pid"]
+        quantity = int(li.get("quantity", 1))
+
+        # Get variant ID from CJ
+        vid = None
+        try:
+            detail = await cj_get("/product/query", {"pid": cj_pid})
+            variants = []
+            if isinstance(detail, dict):
+                variants = detail.get("variants", []) or (detail.get("list", [{}])[0] or {}).get("variants", [])
+            if variants:
+                vid = variants[0].get("vid") or variants[0].get("variantId")
+        except Exception:
+            pass
+
+        entry: Dict[str, Any] = {"quantity": quantity}
+        if vid:
+            entry["vid"] = str(vid)
+        else:
+            entry["pid"] = cj_pid
+        cj_products_payload.append(entry)
+
+    if not cj_products_payload:
+        return {"error": "Could not resolve CJ variant IDs for order line items"}
+
+    # 4. Create CJ order
+    cj_order_num = f"ZILO-{order_id}"
+    payload = {
+        "orderNumber":   cj_order_num,
+        "products":      cj_products_payload,
+        **shipping_info,
+    }
+    if args.get("shipping_method"):
+        payload["shippingCountry"] = shipping_info["shippingCountryCode"]
+
+    try:
+        result = await cj_post("/order/create", payload)
+    except RuntimeError as e:
+        return {"error": f"CJ order creation failed: {e}"}
+
+    cj_order_id = result.get("orderId") or result.get("orderNum") or cj_order_num
+
+    # 5. Store mapping in DB
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "shopify_order_id": order_id},
+        {"$set": {
+            "user_id":          ctx.business_id,
+            "shopify_order_id": order_id,
+            "cj_order_id":      str(cj_order_id),
+            "cj_order_num":     cj_order_num,
+            "status":           "created",
+            "created_at":       datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+
+    return {
+        "success":          True,
+        "cj_order_id":      str(cj_order_id),
+        "cj_order_num":     cj_order_num,
+        "shopify_order_id": order_id,
+        "items_fulfilled":  len(cj_products_payload),
+        "next_step":        "Use cj_get_order_status to track progress, then cj_sync_tracking_to_shopify when shipped.",
+    }
+
+
+@tool(
+    name="cj_get_order_status",
+    description=(
+        "Check the fulfillment status of a CJ order. "
+        "Returns the current status (e.g. CREATED, IN_PRODUCTION, IN_TRANSIT, DELIVERED), "
+        "tracking number, and shipping carrier when available. "
+        "You can pass either the CJ order number or the Shopify order ID."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID — will look up the CJ order number automatically"},
+            "cj_order_num":     {"type": "string", "description": "CJ order number (e.g. ZILO-123456) — use if you already know it"},
+        },
+    },
+)
+async def cj_get_order_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    cj_order_num = args.get("cj_order_num")
+    if not cj_order_num and args.get("shopify_order_id"):
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": str(args["shopify_order_id"])}
+        )
+        if not doc:
+            return {"error": "No CJ fulfillment found for this Shopify order. Use cj_fulfill_order first."}
+        cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+
+    if not cj_order_num:
+        return {"error": "Provide either shopify_order_id or cj_order_num"}
+
+    try:
+        data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+    except RuntimeError as e:
+        return {"error": f"CJ status fetch failed: {e}"}
+
+    order_detail = data if isinstance(data, dict) else {}
+    status       = order_detail.get("orderStatus", "UNKNOWN")
+    tracking_num = order_detail.get("trackNumber") or order_detail.get("trackingNumber")
+    carrier      = order_detail.get("shippingCarrier") or order_detail.get("logisticName")
+
+    # Update DB with latest status
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "cj_order_num": cj_order_num},
+        {"$set": {
+            "status":        status,
+            "tracking_num":  tracking_num,
+            "carrier":       carrier,
+            "last_checked":  datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "cj_order_num":  cj_order_num,
+        "status":        status,
+        "tracking_num":  tracking_num,
+        "carrier":       carrier,
+        "shipped":       status in ("IN_TRANSIT", "DELIVERED", "PICKED", "PACKED"),
+        "delivered":     status == "DELIVERED",
+        "tip": "If tracking_num is available, use cj_sync_tracking_to_shopify to push it to Shopify.",
+    }
+
+
+@tool(
+    name="cj_sync_tracking_to_shopify",
+    description=(
+        "Get the tracking number from a CJ fulfillment and push it to the matching Shopify order. "
+        "This triggers Shopify's shipping confirmation email to the customer. "
+        "Call this once cj_get_order_status shows the order is IN_TRANSIT."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID"},
+            "cj_order_num":     {"type": "string", "description": "CJ order number (optional — auto-looked up from shopify_order_id if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def cj_sync_tracking_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    shopify_order_id = str(args.get("shopify_order_id", ""))
+    cj_order_num     = args.get("cj_order_num")
+
+    # Resolve CJ order num from DB if not provided
+    if not cj_order_num and shopify_order_id:
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": shopify_order_id}
+        )
+        if not doc:
+            return {"error": "No CJ fulfillment found for this Shopify order. Use cj_fulfill_order first."}
+        cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+
+    if not cj_order_num:
+        return {"error": "Provide either shopify_order_id or cj_order_num"}
+
+    # 1. Get tracking from CJ
+    try:
+        data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+    except RuntimeError as e:
+        return {"error": f"CJ tracking fetch failed: {e}"}
+
+    order_detail = data if isinstance(data, dict) else {}
+    tracking_num = order_detail.get("trackNumber") or order_detail.get("trackingNumber")
+    carrier      = order_detail.get("shippingCarrier") or order_detail.get("logisticName") or ""
+    status       = order_detail.get("orderStatus", "")
+
+    if not tracking_num:
+        return {
+            "success": False,
+            "cj_status": status,
+            "message": "Tracking number not yet assigned by CJ. Try again when status is IN_TRANSIT.",
+        }
+
+    # 2. Look up Shopify order ID from DB if not provided
+    if not shopify_order_id:
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "cj_order_num": cj_order_num}
+        )
+        shopify_order_id = doc.get("shopify_order_id", "") if doc else ""
+
+    if not shopify_order_id:
+        return {"error": "Could not resolve Shopify order ID. Pass shopify_order_id explicitly."}
+
+    # 3. Get fulfillment orders from Shopify
+    try:
+        fo_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                    f"/admin/api/2024-01/orders/{shopify_order_id}/fulfillment_orders.json")
+        fo_list = fo_data.get("fulfillment_orders", [])
+        open_fos = [fo for fo in fo_list if fo.get("status") == "open"]
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment order fetch failed: {e}"}
+
+    if not open_fos:
+        return {"error": "No open fulfillment orders on this Shopify order — may already be fulfilled"}
+
+    # 4. Create Shopify fulfillment with tracking
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": [
+                {
+                    "fulfillment_order_id": fo["id"],
+                    "fulfillment_order_line_items": [
+                        {"id": li["id"], "quantity": li["fulfillable_quantity"]}
+                        for li in fo.get("line_items", [])
+                    ],
+                }
+                for fo in open_fos
+            ],
+            "tracking_info": {"number": tracking_num, "company": carrier},
+            "notify_customer": True,
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/fulfillments.json", json=payload)
+        fulfillment_id = result.get("fulfillment", {}).get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment create failed: {e}"}
+
+    # 5. Update DB
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "cj_order_num": cj_order_num},
+        {"$set": {
+            "status":            "synced_to_shopify",
+            "tracking_num":      tracking_num,
+            "carrier":           carrier,
+            "shopify_fulfillment_id": str(fulfillment_id),
+            "synced_at":         datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "success":              True,
+        "tracking_num":         tracking_num,
+        "carrier":              carrier,
+        "shopify_order_id":     shopify_order_id,
+        "shopify_fulfillment_id": str(fulfillment_id),
+        "message":              f"Tracking {tracking_num} pushed to Shopify. Customer notified.",
+    }
+
+
+@tool(
     name="shopify_product_analytics",
     description=(
         "Get per-product sales performance for the Shopify store: units sold, revenue, refund count, "

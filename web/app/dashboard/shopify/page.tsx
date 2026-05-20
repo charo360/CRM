@@ -775,15 +775,16 @@ function ProductsTab() {
     finally { setSaving(false); }
   }
 
-  async function searchCJ() {
-    if (!cjKeyword.trim()) { toast.error("Enter a search keyword"); return; }
+  async function searchCJ(keywordOverride?: string) {
+    const kw = keywordOverride ?? cjKeyword;
+    if (!kw.trim()) { toast.error("Enter a search keyword"); return; }
     setCjSearching(true);
     setCjResults([]);
     setCjImportedIdxs(new Set());
     try {
       const token = getToken();
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
-      const params = new URLSearchParams({ keyword: cjKeyword, page_size: "20" });
+      const params = new URLSearchParams({ keyword: kw, page_size: "20" });
       if (cjMaxPrice) params.set("max_price", cjMaxPrice);
       const r = await fetch(`${apiBase}/cj/products?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1082,6 +1083,17 @@ function ProductsTab() {
                           <><Plus size={11} /> Add to Shopify</>
                         )}
                       </button>
+                      {/* Source on CJ */}
+                      <button
+                        onClick={() => {
+                          setCjKeyword(s.title);
+                          setFinderTab("cj");
+                          searchCJ(s.title);
+                        }}
+                        className="w-full py-1 rounded-xl text-[10px] font-medium border border-slate-200 text-slate-500 hover:border-brand hover:text-brand transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Package size={10} /> Source on CJ
+                      </button>
                     </div>
                   );
                 })}
@@ -1111,7 +1123,7 @@ function ProductsTab() {
                   <input
                     value={cjKeyword}
                     onChange={(e) => setCjKeyword(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && searchCJ()}
+                    onKeyDown={(e) => e.key === "Enter" && searchCJ(cjKeyword)}
                     placeholder="e.g. wireless earbuds, yoga mat, phone case..."
                     className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-72"
                   />
@@ -1126,7 +1138,7 @@ function ProductsTab() {
                   />
                 </div>
                 <button
-                  onClick={searchCJ}
+                  onClick={() => searchCJ(cjKeyword)}
                   disabled={cjSearching || !cjKeyword.trim()}
                   className="flex items-center gap-2 px-4 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-medium transition-colors"
                 >
