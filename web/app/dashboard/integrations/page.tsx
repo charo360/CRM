@@ -873,10 +873,15 @@ function IntegrationsPageInner() {
     setShopifyBusy(true);
     try {
       const authTok = getToken();
-      await fetch("/api/shopify/connect-direct", {
+      const res = await fetch("/api/shopify/connect-direct", {
         method: "DELETE",
         headers: { Authorization: `Bearer ${authTok ?? ""}` },
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { detail?: string };
+        setBanner({ type: "error", msg: (data.detail as string) || "Disconnect failed. Please try again." });
+        return;
+      }
       setComposioStatus((prev) => ({ ...prev, shopify: false }));
       setBanner({ type: "success", msg: "Shopify disconnected." });
     } catch (e) {

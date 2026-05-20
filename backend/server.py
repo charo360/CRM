@@ -10828,12 +10828,20 @@ async def shopify_connect_direct(request: Request, user=Depends(get_current_user
 @api_router.delete("/shopify/connect-direct")
 async def shopify_disconnect_direct(user=Depends(get_current_user)):
     """Remove stored Shopify credentials for this user."""
-    await db.users.update_one(
-        {"_id": user["_id"]},
+    import bson as _bson
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        oid = _bson.ObjectId(user_id)
+    except Exception:
+        oid = None
+    query: dict = {"$or": [{"business_id": user_id}]}
+    if oid:
+        query["$or"].append({"_id": oid})
+    result = await db.users.update_one(
+        query,
         {"$unset": {"shopify_domain": "", "shopify_token": "", "shopify_shop": ""}},
     )
-    user_id = str(user.get("business_id") or user["_id"])
-    logging.info(f"[shopify-direct] Disconnected user={user_id}")
+    logging.info(f"[shopify-direct] Disconnected user={user_id} matched={result.matched_count}")
     return {"ok": True}
 
 
