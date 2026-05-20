@@ -59,7 +59,8 @@ SEO_AGENT_ID            = "seo"
 SHOPIFY_AGENT_ID           = "shopify"
 SHOPIFY_ORDERS_AGENT_ID    = "shopify_orders"
 SHOPIFY_PRODUCTS_AGENT_ID  = "shopify_products"
-SHOPIFY_ANALYTICS_AGENT_ID = "shopify_analytics"
+SHOPIFY_ANALYTICS_AGENT_ID  = "shopify_analytics"
+SHOPIFY_CUSTOMERS_AGENT_ID = "shopify_customers"
 STRIPE_AGENT_ID            = "stripe"
 KLAVIYO_AGENT_ID           = "klaviyo"
 MAILCHIMP_AGENT_ID         = "mailchimp"
@@ -418,6 +419,13 @@ SHOPIFY_ANALYTICS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
     "get_revenue_trends", "get_top_customers", "get_sales_pipeline",
     "shopify_tag_customer",
+})
+SHOPIFY_CUSTOMERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
+    "list_shopify_orders", "get_shopify_analytics",
+    "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
+    "shopify_tag_customer", "shopify_create_discount",
+    "list_customers", "get_customer", "get_top_customers",
+    "send_whatsapp_message",
 })
 
 # All integration agents share a minimal base
@@ -1274,6 +1282,39 @@ User: “What products are already in my store?”
 
 ## Style
 Short paragraphs. Use **bold** for product names. Use backticks for tags. Always end a suggestion batch with a clear call-to-action. Never invent inventory data — only fabricate for suggestions (clearly framed as ideas, not real stock).
+"""
+
+SHOPIFY_CUSTOMERS_SYSTEM_PROMPT = """You are the **Shopify Customers specialist** inside Zilo Chat. You own everything about the humans behind the orders.
+
+## Your expertise
+- Customer lookup: find any customer by name, email, phone, or order number.
+- Segmentation: VIP buyers, at-risk churners, first-time buyers, wholesale accounts.
+- Tagging: label customers for targeting (vip, repeat-buyer, at-risk, wholesale, etc.).
+- Win-back campaigns: identify lapsed customers and recommend recovery actions.
+- Lifetime value: who are the top spenders, how often do they buy, what's their AOV.
+- Abandoned cart owners: who left without buying and how to reach them.
+- WhatsApp outreach: send personalised messages to individual customers.
+
+## Tools
+Always fetch live data before making statements. Confirm destructive actions before executing.
+- `list_customers` — search and filter CRM customers by name/phone/email.
+- `get_customer` — full profile, order history, spend, tags.
+- `get_top_customers` — rank customers by revenue or order count.
+- `shopify_get_growth_metrics` — repeat rate, LTV, at-risk segment, channel attribution.
+- `shopify_get_abandoned_carts` — who abandoned and what they left behind.
+- `list_shopify_orders` — order history for any customer.
+- `shopify_tag_customer` — tag a customer (requires confirmation). Merge or replace tags.
+- `shopify_create_discount` — create a win-back or loyalty discount code (requires confirmation).
+- `send_whatsapp_message` — message a customer directly (requires confirmation).
+- `get_shopify_analytics` — store-wide revenue context.
+
+## Workflow patterns
+- **Win-back**: `shopify_get_growth_metrics` → identify at-risk → `shopify_tag_customer` with 'at-risk' → `shopify_create_discount` for win-back code → `send_whatsapp_message` with offer.
+- **VIP programme**: `get_top_customers` → `shopify_tag_customer` with 'vip' → `shopify_create_discount` for VIP-only code.
+- **Abandoned cart recovery**: `shopify_get_abandoned_carts` → `shopify_create_discount` → `send_whatsapp_message` to cart owner.
+
+## Style
+Always show customer name + spend + last order date when discussing a customer. Tables for segment lists. Never guess LTV — only state what tools return. Always confirm before tagging or messaging.
 """
 
 SHOPIFY_ANALYTICS_SYSTEM_PROMPT = """You are the **Shopify Analytics sub-agent** inside Zilo Chat. Your focus is Shopify store performance, growth intelligence, and revenue recovery.
@@ -3324,6 +3365,13 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
         "allowed_tools": SHOPIFY_ANALYTICS_TOOLS,
         "use_default_system_prompt": False,
         "system_prompt": SHOPIFY_ANALYTICS_SYSTEM_PROMPT,
+    },
+    SHOPIFY_CUSTOMERS_AGENT_ID: {
+        "label": "Shopify Customers",
+        "description": "Shopify customer lookup, segmentation, tagging, win-back campaigns, VIP, abandoned cart outreach",
+        "allowed_tools": SHOPIFY_CUSTOMERS_TOOLS,
+        "use_default_system_prompt": False,
+        "system_prompt": SHOPIFY_CUSTOMERS_SYSTEM_PROMPT,
     },
 
     # ── Payments ───────────────────────────────────────────────────────────────
