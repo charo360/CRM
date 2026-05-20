@@ -1740,6 +1740,28 @@ async def shopify_products_via_composio_or_proxy(
 
 
 
+async def shopify_customers_via_composio_or_proxy(
+    user_id: str,
+    *,
+    limit: int,
+    created_at_min: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List customers via Shopify Admin REST proxy."""
+    lim = min(max(limit, 1), 250)
+    params: Dict[str, str] = {"limit": str(lim)}
+    if created_at_min:
+        params["created_at_min"] = created_at_min
+    return await composio_proxy(
+        user_id,
+        TOOLKIT_SHOPIFY,
+        "GET",
+        "/admin/api/2024-01/customers.json",
+        params=params,
+    )
+
+
+
+
 def _unwrap_execute_dict(exec_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     if exec_result.get("error") or not exec_result.get("success"):

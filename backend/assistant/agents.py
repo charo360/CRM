@@ -397,7 +397,8 @@ _SHOPIFY_BASE: FrozenSet[str] = frozenset({
     "generate_document",
 }) | _WEB_TOOLS
 SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
-    "list_shopify_orders", "list_shopify_products", "get_shopify_analytics",
+    "list_shopify_orders", "list_shopify_products", "list_shopify_customers",
+    "get_shopify_analytics",
     "shopify_get_abandoned_carts", "shopify_get_growth_metrics",
     "shopify_create_discount", "shopify_fulfill_order", "shopify_cancel_order",
     "shopify_adjust_inventory", "shopify_add_product",
@@ -422,12 +423,13 @@ SHOPIFY_PRODUCTS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
 })
 SHOPIFY_ANALYTICS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_shopify_analytics", "list_shopify_orders", "list_shopify_products",
+    "list_shopify_customers",
     "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
     "get_revenue_trends", "get_top_customers", "get_sales_pipeline",
     "shopify_tag_customer", "shopify_product_analytics", "get_market_trends",
 })
 SHOPIFY_CUSTOMERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
-    "list_shopify_orders", "get_shopify_analytics",
+    "list_shopify_customers", "list_shopify_orders", "get_shopify_analytics",
     "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
     "shopify_tag_customer", "shopify_create_discount",
     "list_customers", "get_customer", "get_top_customers",

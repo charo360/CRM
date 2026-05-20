@@ -2546,6 +2546,46 @@ async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="list_shopify_customers",
+    description=(
+        "Fetch customers from the connected Shopify store. "
+        "Returns total count plus a list of customers with name, email, order count, and lifetime value. "
+        "Use this whenever the user asks how many customers they have or wants customer details. "
+        "Requires Shopify to be connected in Integrations."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "default": 50, "description": "Max customers to return (1-250)"},
+        },
+    },
+)
+async def list_shopify_customers(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import shopify_customers_via_composio_or_proxy
+    limit = min(int(args.get("limit", 50)), 250)
+    try:
+        data = await shopify_customers_via_composio_or_proxy(ctx.business_id, limit=limit)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    customers = data.get("customers", [])
+    out = []
+    for c in customers:
+        first = c.get("first_name") or ""
+        last  = c.get("last_name") or ""
+        out.append({
+            "id":           str(c.get("id", "")),
+            "name":         f"{first} {last}".strip() or c.get("email", "Unknown"),
+            "email":        c.get("email"),
+            "phone":        c.get("phone"),
+            "orders_count": c.get("orders_count", 0),
+            "total_spent":  c.get("total_spent", "0.00"),
+            "tags":         c.get("tags"),
+            "created_at":   c.get("created_at"),
+        })
+    return {"count": len(out), "customers": out}
+
+
+@tool(
     name="get_shopify_analytics",
     description=(
         "Get sales analytics from the connected Shopify store: total revenue, order count, "
