@@ -24,7 +24,7 @@ _LLM_ROUTE_CONFIDENCE_MIN = 0.75
 
 # Routed here only when the user clearly means the Shopify *store*, not generic catalog work.
 _SHOPIFY_AGENT_IDS = frozenset(
-    {"shopify", "shopify_orders", "shopify_products", "shopify_analytics"}
+    {"shopify", "shopify_orders", "shopify_products", "shopify_analytics", "shopify_customers"}
 )
 
 
@@ -131,6 +131,7 @@ _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS = frozenset(
         "shopify_products",
         "shopify_orders",
         "shopify_analytics",
+        "shopify_customers",
     }
 )
 
@@ -287,6 +288,15 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "ai product finder", "product sourcing", "shopify add product",
         # Note: do not use generic phrases like "adjust inventory" / "low stock" here —
         # those belong to CRM `inventory`; Shopify wins only when Shopify-specific terms match.
+    ],
+    "shopify_customers": [
+        "shopify customer", "shopify buyer", "shopify client",
+        "tag customer", "tag shopify customer", "shopify vip",
+        "win-back", "win back customer", "lapsed customer",
+        "at-risk customer", "shopify segment", "customer segment shopify",
+        "shopify loyalty", "shopify ltv customer", "top shopify customer",
+        "abandoned cart customer", "message shopify customer",
+        "shopify customer tag", "customer lifetime value shopify",
     ],
     "shopify_analytics": [
         "shopify revenue", "shopify sales", "shopify analytics",

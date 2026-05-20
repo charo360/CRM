@@ -158,13 +158,17 @@ async def chat_with_tools(
                 return await _call_openai_compatible(attempt_cfg, messages, tools, temperature, timeout)
             if p == "anthropic":
                 return await _call_anthropic(attempt_cfg, messages, tools, temperature, timeout, attachments=attachments)
-        except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+        except (httpx.TimeoutException, httpx.HTTPStatusError, KeyError, ValueError, RuntimeError) as exc:
             if attempt_cfg is not providers_to_try[-1]:
                 logger.warning("[models] provider %s failed (%s), trying fallback", attempt_cfg["provider"], exc)
                 last_exc = exc
                 continue
             raise
-        except Exception:
+        except Exception as exc:
+            logger.warning("[models] provider %s unexpected error (%s), trying fallback", attempt_cfg.get("provider"), exc)
+            if attempt_cfg is not providers_to_try[-1]:
+                last_exc = exc
+                continue
             raise
 
     raise last_exc
