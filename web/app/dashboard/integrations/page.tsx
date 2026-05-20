@@ -879,6 +879,7 @@ function IntegrationsPageInner() {
       });
       setComposioStatus((prev) => ({ ...prev, shopify: false }));
       setBanner({ type: "success", msg: "Shopify disconnected." });
+      await refreshComposio();
     } catch (e) {
       setBanner({ type: "error", msg: e instanceof Error ? e.message : "Disconnect failed" });
     } finally {
