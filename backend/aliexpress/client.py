@@ -1,14 +1,16 @@
 """
 AliExpress Open Platform API client (DS Center / Dropship).
 
-Credentials required in environment:
+Credentials required (per-user or from environment):
   ALIEXPRESS_APP_KEY     — your app key from open.aliexpress.com
   ALIEXPRESS_APP_SECRET  — your app secret
   ALIEXPRESS_ACCESS_TOKEN — OAuth access token (self-authorization for your own account)
 
+Per-user mode: pass creds={"app_key": ..., "app_secret": ..., "access_token": ...}
+to any function to use that user's credentials instead of env vars.
+
 Auth:
   Every request is signed with HMAC-SHA256 over sorted parameters.
-  No token refresh needed — access tokens for the DS Center are long-lived.
 
 Docs: https://open.aliexpress.com/doc/api.htm
 """
@@ -52,9 +54,14 @@ def _sign(params: Dict[str, str], app_secret: str) -> str:
     ).hexdigest().upper()
 
 
-async def ae_call(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+async def ae_call(method: str, params: Dict[str, Any], *, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Make a signed request to the AliExpress Open Platform."""
-    app_key, app_secret, access_token = _ae_credentials()
+    if creds:
+        app_key      = creds["app_key"]
+        app_secret   = creds["app_secret"]
+        access_token = creds.get("access_token", "")
+    else:
+        app_key, app_secret, access_token = _ae_credentials()
 
     all_params: Dict[str, str] = {
         "method":       method,
@@ -100,6 +107,7 @@ async def ae_ds_search(
     page_size: int = 20,
     page_no: int = 1,
     sort: str = "SALE_PRICE_ASC",
+    creds: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Search AliExpress DS product catalog."""
     params: Dict[str, Any] = {
@@ -114,31 +122,31 @@ async def ae_ds_search(
         params["min_sale_price"] = int(min_price * 100)  # AE uses cents
     if max_price is not None:
         params["max_sale_price"] = int(max_price * 100)
-    return await ae_call("aliexpress.ds.product.search.get", params)
+    return await ae_call("aliexpress.ds.product.search.get", params, creds=creds)
 
 
-async def ae_ds_product_detail(product_id: str, ship_to: str = "US") -> Dict[str, Any]:
+async def ae_ds_product_detail(product_id: str, ship_to: str = "US", *, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Get full AliExpress DS product detail including variants and images."""
     return await ae_call("aliexpress.ds.product.get", {
         "product_id":       product_id,
         "ship_to_country":  ship_to,
         "target_currency":  "USD",
         "target_language":  "en",
-    })
+    }, creds=creds)
 
 
-async def ae_ds_create_order(order_payload: Dict[str, Any]) -> Dict[str, Any]:
+async def ae_ds_create_order(order_payload: Dict[str, Any], *, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Create a DS order on AliExpress."""
     return await ae_call("aliexpress.ds.order.create", {
         "param_place_order_request4_open_api_d_t_o": str(order_payload).replace("'", '"'),
-    })
+    }, creds=creds)
 
 
-async def ae_ds_get_order(ae_order_id: str) -> Dict[str, Any]:
+async def ae_ds_get_order(ae_order_id: str, *, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Get DS order status and tracking."""
-    return await ae_call("aliexpress.ds.order.get", {"order_id": ae_order_id})
+    return await ae_call("aliexpress.ds.order.get", {"order_id": ae_order_id}, creds=creds)
 
 
-async def ae_get_categories() -> Dict[str, Any]:
+async def ae_get_categories(*, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Get AliExpress top-level DS categories."""
-    return await ae_call("aliexpress.ds.category.get", {})
+    return await ae_call("aliexpress.ds.category.get", {}, creds=creds)

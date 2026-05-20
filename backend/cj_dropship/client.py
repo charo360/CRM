@@ -6,6 +6,7 @@ Auth flow:
   → { accessToken, refreshToken, expiresIn }
 
 Access token is cached in-process until 5 min before expiry.
+Per-user credentials: pass creds={"email": ..., "api_key": ...} to override env vars.
 """
 from __future__ import annotations
 
@@ -60,9 +61,11 @@ def _cj_credentials() -> tuple[str, str]:
     return email, api_key
 
 
-async def _get_access_token() -> str:
+async def _get_access_token(email: Optional[str] = None, api_key: Optional[str] = None) -> str:
     """Return a valid CJ access token, refreshing if needed."""
-    email, api_key = _cj_credentials()
+    if not email or not api_key:
+        email, api_key = _cj_credentials()
+
     cache = _token_cache.get(api_key)
     now = time.time()
 
@@ -139,8 +142,10 @@ async def _refresh_token(refresh_token: str, api_key: str) -> Optional[str]:
     return access_token
 
 
-async def cj_get(path: str, params: Optional[Dict] = None) -> Dict[str, Any]:
-    token = await _get_access_token()
+async def cj_get(path: str, params: Optional[Dict] = None, *, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    email   = creds.get("email")   if creds else None
+    api_key = creds.get("api_key") if creds else None
+    token = await _get_access_token(email, api_key)
     async with httpx.AsyncClient(timeout=30) as hc:
         r = await hc.get(
             f"{CJ_BASE}{path}",
@@ -153,8 +158,10 @@ async def cj_get(path: str, params: Optional[Dict] = None) -> Dict[str, Any]:
     return data.get("data", data)
 
 
-async def cj_post(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    token = await _get_access_token()
+async def cj_post(path: str, body: Dict[str, Any], *, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    email   = creds.get("email")   if creds else None
+    api_key = creds.get("api_key") if creds else None
+    token = await _get_access_token(email, api_key)
     async with httpx.AsyncClient(timeout=30) as hc:
         r = await hc.post(
             f"{CJ_BASE}{path}",

@@ -13722,6 +13722,106 @@ def _cj_price(raw) -> float:
     return float(m.group()) if m else 0.0
 
 
+# ── Supplier connections (per-user credentials for CJ + AliExpress) ──────────
+
+async def _get_supplier_creds(business_id: str, supplier: str) -> Optional[dict]:
+    """Look up a user's stored supplier credentials. Returns None if not connected."""
+    doc = await db.supplier_connections.find_one({"user_id": business_id, "supplier": supplier})
+    return doc.get("credentials") if doc else None
+
+
+class CJConnectBody(BaseModel):
+    email: str
+    api_key: str
+
+class AEConnectBody(BaseModel):
+    app_key: str
+    app_secret: str
+    access_token: str = ""
+
+
+@api_router.get("/supplier-connections")
+async def get_supplier_connections(user=Depends(get_current_user)):
+    """Return which supplier accounts this user has connected."""
+    business_id = user.get("business_id") or str(user["_id"])
+    docs = await db.supplier_connections.find({"user_id": business_id}).to_list(20)
+    connected = {d["supplier"]: True for d in docs}
+    return {
+        "cj":          connected.get("cj", False),
+        "aliexpress":  connected.get("aliexpress", False),
+    }
+
+
+@api_router.post("/supplier-connections/cj")
+async def connect_cj(body: CJConnectBody, user=Depends(get_current_user)):
+    """Save and test CJ Dropshipping credentials for this user."""
+    business_id = user.get("business_id") or str(user["_id"])
+    try:
+        from cj_dropship.client import cj_get
+        creds = {"email": body.email.strip(), "api_key": body.api_key.strip()}
+        await cj_get("/product/getCategory", {}, creds=creds)
+    except Exception as e:
+        raise HTTPException(400, f"CJ credentials test failed: {e}")
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "cj"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "cj",
+            "credentials":  {"email": body.email.strip(), "api_key": body.api_key.strip()},
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"connected": True}
+
+
+@api_router.delete("/supplier-connections/cj")
+async def disconnect_cj(user=Depends(get_current_user)):
+    business_id = user.get("business_id") or str(user["_id"])
+    await db.supplier_connections.delete_one({"user_id": business_id, "supplier": "cj"})
+    return {"connected": False}
+
+
+@api_router.post("/supplier-connections/aliexpress")
+async def connect_aliexpress(body: AEConnectBody, user=Depends(get_current_user)):
+    """Save and test AliExpress credentials for this user."""
+    business_id = user.get("business_id") or str(user["_id"])
+    try:
+        from aliexpress.client import ae_get_categories
+        creds = {
+            "app_key":      body.app_key.strip(),
+            "app_secret":   body.app_secret.strip(),
+            "access_token": body.access_token.strip(),
+        }
+        await ae_get_categories(creds=creds)
+    except Exception as e:
+        raise HTTPException(400, f"AliExpress credentials test failed: {e}")
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "aliexpress"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "aliexpress",
+            "credentials":  {
+                "app_key":      body.app_key.strip(),
+                "app_secret":   body.app_secret.strip(),
+                "access_token": body.access_token.strip(),
+            },
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"connected": True}
+
+
+@api_router.delete("/supplier-connections/aliexpress")
+async def disconnect_aliexpress(user=Depends(get_current_user)):
+    business_id = user.get("business_id") or str(user["_id"])
+    await db.supplier_connections.delete_one({"user_id": business_id, "supplier": "aliexpress"})
+    return {"connected": False}
+
+
 # ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
 @api_router.get("/cj/products")
 async def cj_search_products(
@@ -13738,6 +13838,9 @@ async def cj_search_products(
     except ImportError:
         raise HTTPException(503, "CJdropshipping module not available")
 
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
     params: dict = {"pageNum": 1, "pageSize": min(page_size, 50)}
     if keyword:
         params["productNameEn"] = keyword
@@ -13749,7 +13852,7 @@ async def cj_search_products(
         params["maxPrice"] = max_price
 
     try:
-        data = await cj_get("/product/list", params)
+        data = await cj_get("/product/list", params, creds=cj_creds)
     except Exception as e:
         logging.error("[cj/products] cj_get error: %s", e, exc_info=True)
         raise HTTPException(502, f"CJ API error: {e}")
@@ -13785,8 +13888,10 @@ async def cj_get_categories(user=Depends(get_current_user)):
         from cj_dropship.client import cj_get
     except ImportError:
         raise HTTPException(503, "CJdropshipping module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
     try:
-        data = await cj_get("/product/getCategory", {})
+        data = await cj_get("/product/getCategory", {}, creds=cj_creds)
     except Exception as e:
         raise HTTPException(502, f"CJ API error: {e}")
     raw = data if isinstance(data, list) else data.get("list", []) if isinstance(data, dict) else []
@@ -13807,6 +13912,7 @@ async def cj_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_curr
         raise HTTPException(503, f"Module not available: {e}")
 
     business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
 
     # 1. Fetch Shopify order
     try:
@@ -13841,7 +13947,7 @@ async def cj_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_curr
         quantity = int(li.get("quantity", 1))
         vid = None
         try:
-            detail = await cj_get("/product/query", {"pid": cj_pid})
+            detail = await cj_get("/product/query", {"pid": cj_pid}, creds=cj_creds)
             variants = detail.get("variants", []) if isinstance(detail, dict) else []
             if not variants and isinstance(detail, dict) and detail.get("list"):
                 variants = (detail["list"] or [{}])[0].get("variants", [])
@@ -13873,7 +13979,7 @@ async def cj_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_curr
         "products":             cj_products_payload,
     }
     try:
-        result = await cj_post("/order/create", payload)
+        result = await cj_post("/order/create", payload, creds=cj_creds)
     except Exception as e:
         raise HTTPException(502, f"CJ order creation failed: {e}")
 
@@ -13917,7 +14023,8 @@ async def cj_order_status_endpoint(shopify_order_id: str, user=Depends(get_curre
     if doc.get("status") not in ("delivered", "synced_to_shopify") and cj_order_num:
         try:
             from cj_dropship.client import cj_get
-            data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+            cj_creds = await _get_supplier_creds(business_id, "cj")
+            data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num}, creds=cj_creds)
             if isinstance(data, dict):
                 cj_status    = data.get("orderStatus") or result["status"]
                 tracking_num = data.get("trackNumber") or data.get("trackingNumber") or doc.get("tracking_num")
@@ -13949,8 +14056,10 @@ async def ae_get_categories_endpoint(user=Depends(get_current_user)):
         from aliexpress.client import ae_get_categories
     except ImportError:
         raise HTTPException(503, "AliExpress module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
     try:
-        data = await ae_get_categories()
+        data = await ae_get_categories(creds=ae_creds)
     except Exception as e:
         raise HTTPException(502, f"AliExpress API error: {e}")
     cats = data.get("categories", data.get("result", []))
@@ -13979,6 +14088,8 @@ async def ae_search_products(
         raise HTTPException(503, "AliExpress module not available")
     if not keyword and not category_id:
         raise HTTPException(422, "keyword or category_id required")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
     try:
         data = await ae_ds_search(
             keyword=keyword,
@@ -13987,6 +14098,7 @@ async def ae_search_products(
             max_price=max_price,
             page_size=min(page_size, 50),
             sort=sort,
+            creds=ae_creds,
         )
     except Exception as e:
         logging.error("[ae/products] error: %s", e, exc_info=True)
@@ -14025,6 +14137,7 @@ async def ae_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_curr
         raise HTTPException(503, f"Module not available: {e}")
 
     business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
 
     try:
         ord_data = await nango_proxy(business_id, "shopify", "GET",
@@ -14056,7 +14169,7 @@ async def ae_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_curr
         quantity = int(li.get("quantity", 1))
         sku_id   = None
         try:
-            detail   = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"))
+            detail   = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"), creds=ae_creds)
             sku_list = detail.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
             if sku_list:
                 sku_id = sku_list[0].get("sku_id")
@@ -14083,7 +14196,7 @@ async def ae_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_curr
         "product_items": ae_product_items,
     }
     try:
-        result = await ae_ds_create_order(order_payload)
+        result = await ae_ds_create_order(order_payload, creds=ae_creds)
     except Exception as e:
         raise HTTPException(502, f"AliExpress order creation failed: {e}")
 
@@ -14124,7 +14237,8 @@ async def ae_order_status_endpoint(shopify_order_id: str, user=Depends(get_curre
     if doc.get("status") not in ("synced_to_shopify",) and ae_order_id:
         try:
             from aliexpress.client import ae_ds_get_order
-            data = await ae_ds_get_order(ae_order_id)
+            ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+            data = await ae_ds_get_order(ae_order_id, creds=ae_creds)
             order_info = data.get("result", data) if isinstance(data, dict) else {}
             logistics  = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
             ae_status    = order_info.get("order_status") or result["status"]
