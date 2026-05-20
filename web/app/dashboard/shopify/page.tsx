@@ -621,6 +621,19 @@ function OrdersTab() {
 
 // ── Products tab ──────────────────────────────────────────────────────────────
 
+// ── CJdropshipping types ──────────────────────────────────────────────────────
+type CJProduct = {
+  cj_pid: string;
+  title: string;
+  category: string;
+  cost_price: number;
+  suggested_price: number;
+  image_url: string;
+  is_free_shipping: boolean;
+  supplier: string;
+  listed_count: number;
+};
+
 // ── AI Product Finder types ───────────────────────────────────────────────────
 type ProductSuggestion = {
   title: string;
@@ -699,6 +712,7 @@ function ProductsTab() {
 
   // ── AI finder state ─────────────────────────────────────────────────────────
   const [finderOpen, setFinderOpen] = useState(false);
+  const [finderTab, setFinderTab] = useState<"ai" | "cj">("ai");
   const [category, setCategory] = useState("");
   const [keywords, setKeywords] = useState("");
   const [count, setCount] = useState<number>(8);
@@ -707,6 +721,14 @@ function ProductsTab() {
   const [suggestions, setSuggestions] = useState<ProductSuggestion[]>([]);
   const [addingIdx, setAddingIdx] = useState<number | null>(null);
   const [addedIdxs, setAddedIdxs] = useState<Set<number>>(new Set());
+
+  // ── CJ source state ──────────────────────────────────────────────────────────
+  const [cjKeyword, setCjKeyword] = useState("");
+  const [cjMaxPrice, setCjMaxPrice] = useState("");
+  const [cjSearching, setCjSearching] = useState(false);
+  const [cjResults, setCjResults] = useState<CJProduct[]>([]);
+  const [cjImportingIdx, setCjImportingIdx] = useState<number | null>(null);
+  const [cjImportedIdxs, setCjImportedIdxs] = useState<Set<number>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -751,6 +773,56 @@ function ProductsTab() {
       await load();
     } catch (e) { toast.error(e instanceof Error ? e.message : "Failed"); }
     finally { setSaving(false); }
+  }
+
+  async function searchCJ() {
+    if (!cjKeyword.trim()) { toast.error("Enter a search keyword"); return; }
+    setCjSearching(true);
+    setCjResults([]);
+    setCjImportedIdxs(new Set());
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const params = new URLSearchParams({ keyword: cjKeyword, page_size: "20" });
+      if (cjMaxPrice) params.set("max_price", cjMaxPrice);
+      const r = await fetch(`${apiBase}/cj/products?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json() as { products: CJProduct[]; total: number };
+      setCjResults(data.products ?? []);
+      if (!data.products?.length) toast.info("No products found — try different keywords");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "CJ search failed");
+    } finally {
+      setCjSearching(false);
+    }
+  }
+
+  async function importFromCJ(p: CJProduct, idx: number) {
+    setCjImportingIdx(idx);
+    try {
+      await shopPost({
+        action: "create_product",
+        product: {
+          title:        p.title,
+          description:  `Sourced from CJdropshipping. Category: ${p.category}`,
+          vendor:       p.supplier || "CJdropshipping",
+          product_type: p.category,
+          price:        String(p.suggested_price),
+          compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
+          tags:         `dropship,cj,${p.category.toLowerCase()}`,
+          variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+        },
+      });
+      setCjImportedIdxs((prev) => new Set(prev).add(idx));
+      toast.success(`"${p.title.slice(0, 40)}" added to Shopify`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setCjImportingIdx(null);
+    }
   }
 
   async function handleGenerate() {
@@ -828,7 +900,30 @@ function ProductsTab() {
       {/* AI Product Finder Panel */}
       {finderOpen && (
         <div className="border-b border-slate-200 bg-slate-50">
+          {/* Tab switcher */}
+          <div className="flex items-center gap-1 px-4 pt-3 pb-0">
+            <button
+              onClick={() => setFinderTab("ai")}
+              className={cn(
+                "px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-b-2",
+                finderTab === "ai" ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <span className="flex items-center gap-1.5"><Sparkles size={11} /> AI Ideas</span>
+            </button>
+            <button
+              onClick={() => setFinderTab("cj")}
+              className={cn(
+                "px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-b-2",
+                finderTab === "cj" ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <span className="flex items-center gap-1.5"><Package size={11} /> Source from CJ</span>
+            </button>
+          </div>
+
           {/* Config row */}
+          {finderTab === "ai" && <>
           <div className="px-4 pt-4 pb-3 flex flex-wrap gap-3 items-end">
             <div className="flex flex-col gap-1">
               <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Store Category / Niche</label>
@@ -880,7 +975,7 @@ function ProductsTab() {
           </div>
 
           {/* Generating skeleton */}
-          {generating && (
+          {finderTab === "ai" && generating && (
             <div className="px-4 pb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: count > 8 ? 4 : count > 4 ? 3 : 2 }).map((_, i) => (
                 <div key={i} className="bg-slate-100 rounded-2xl p-4 animate-pulse flex flex-col gap-2">
@@ -895,7 +990,7 @@ function ProductsTab() {
           )}
 
           {/* Suggestions grid */}
-          {!generating && suggestions.length > 0 && (
+          {finderTab === "ai" && !generating && suggestions.length > 0 && (
             <div className="px-4 pb-4">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs text-slate-400">
@@ -995,13 +1090,151 @@ function ProductsTab() {
           )}
 
           {/* Empty state after generate with no results */}
-          {!generating && suggestions.length === 0 && (
+          {finderTab === "ai" && !generating && suggestions.length === 0 && (
             <div className="px-4 pb-5 flex flex-col items-center gap-2 text-center py-6">
               <Sparkles size={24} className="text-brand mb-1" />
               <p className="text-sm font-medium text-slate-700">AI Product Research</p>
               <p className="text-xs text-slate-500 max-w-xs">
                 Tell the AI your store niche and it will suggest ready-to-sell products with descriptions, pricing, and tags — add them to Shopify with one click.
               </p>
+            </div>
+          )}
+          </>}
+
+          {/* CJ Source Panel */}
+          {finderTab === "cj" && (
+            <div className="px-4 pt-4 pb-4">
+              {/* Search bar */}
+              <div className="flex flex-wrap gap-2 mb-4 items-end">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Product keyword</label>
+                  <input
+                    value={cjKeyword}
+                    onChange={(e) => setCjKeyword(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && searchCJ()}
+                    placeholder="e.g. wireless earbuds, yoga mat, phone case..."
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-72"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Max cost price (USD)</label>
+                  <input
+                    value={cjMaxPrice}
+                    onChange={(e) => setCjMaxPrice(e.target.value)}
+                    placeholder="e.g. 15"
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-28"
+                  />
+                </div>
+                <button
+                  onClick={searchCJ}
+                  disabled={cjSearching || !cjKeyword.trim()}
+                  className="flex items-center gap-2 px-4 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-medium transition-colors"
+                >
+                  {cjSearching ? <><Loader2 size={12} className="animate-spin" /> Searching CJ…</> : <><Search size={12} /> Search CJ</>}
+                </button>
+              </div>
+
+              {/* Skeleton */}
+              {cjSearching && (
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                  {Array.from({ length: 8 }).map((_, i) => (
+                    <div key={i} className="bg-slate-100 rounded-2xl p-3 animate-pulse flex flex-col gap-2">
+                      <div className="h-24 bg-slate-200 rounded-xl" />
+                      <div className="h-3 bg-slate-200 rounded w-3/4" />
+                      <div className="h-2 bg-slate-200 rounded w-1/2" />
+                      <div className="h-6 bg-slate-200 rounded-xl mt-auto" />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Results grid */}
+              {!cjSearching && cjResults.length > 0 && (
+                <>
+                  <p className="text-xs text-slate-500 mb-3">
+                    <span className="font-semibold text-slate-800">{cjResults.length}</span> real supplier products · <span className="text-brand">{cjImportedIdxs.size} imported</span>
+                  </p>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                    {cjResults.map((p, idx) => {
+                      const imported = cjImportedIdxs.has(idx);
+                      const importing = cjImportingIdx === idx;
+                      const margin = p.suggested_price - p.cost_price;
+                      const marginPct = p.suggested_price > 0 ? Math.round((margin / p.suggested_price) * 100) : 0;
+                      return (
+                        <div key={idx} className={cn(
+                          "bg-white border rounded-2xl p-3 flex flex-col gap-2 transition-all",
+                          imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
+                        )}>
+                          {/* Image */}
+                          <div className="h-24 bg-slate-100 rounded-xl overflow-hidden relative flex items-center justify-center">
+                            {p.image_url ? (
+                              <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
+                            ) : (
+                              <Package size={24} className="text-slate-400" />
+                            )}
+                            {p.is_free_shipping && (
+                              <span className="absolute bottom-1 left-1 bg-emerald-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">FREE SHIP</span>
+                            )}
+                            {imported && (
+                              <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl">
+                                <CheckCircle2 size={20} className="text-emerald-600" />
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Info */}
+                          <div className="flex-1">
+                            <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
+                            <p className="text-[10px] text-slate-400">{p.category}</p>
+                          </div>
+
+                          {/* Pricing */}
+                          <div className="bg-slate-50 rounded-xl p-2 flex items-center justify-between">
+                            <div>
+                              <p className="text-[9px] text-slate-400 uppercase tracking-wider">Cost</p>
+                              <p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-[9px] text-emerald-600 uppercase tracking-wider font-semibold">{marginPct}% margin</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[9px] text-slate-400 uppercase tracking-wider">Sell at</p>
+                              <p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p>
+                            </div>
+                          </div>
+
+                          {/* Import button */}
+                          <button
+                            onClick={() => importFromCJ(p, idx)}
+                            disabled={imported || importing}
+                            className={cn(
+                              "w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
+                              imported
+                                ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default"
+                                : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50"
+                            )}
+                          >
+                            {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</>
+                            : imported ? <><Check size={11} /> Imported</>
+                            : <><Plus size={11} /> Import to Shopify</>}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* Empty state */}
+              {!cjSearching && cjResults.length === 0 && (
+                <div className="flex flex-col items-center gap-2 text-center py-8">
+                  <Package size={28} className="text-slate-300 mb-1" />
+                  <p className="text-sm font-medium text-slate-600">Source Real Products from CJdropshipping</p>
+                  <p className="text-xs text-slate-400 max-w-sm">
+                    Search 500,000+ supplier products with real images, cost prices, and shipping info. Import any product to your Shopify store instantly.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

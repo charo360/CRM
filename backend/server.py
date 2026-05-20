@@ -13709,6 +13709,59 @@ async def assistant_ai_draft_alias(req: Request, user=Depends(get_current_user))
     from assistant.routes import ai_draft as _ai_draft_handler
     return await _ai_draft_handler(req, user)
 
+# ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
+@api_router.get("/cj/products")
+async def cj_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: float = None,
+    max_price: float = None,
+    page_size: int = 20,
+    hot: bool = False,
+    user=Depends(get_current_user),
+):
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        raise HTTPException(503, "CJdropshipping module not available")
+
+    params = {"pageNum": 1, "pageSize": min(page_size, 50)}
+    if keyword:
+        params["productName"] = keyword
+    if category_id:
+        params["categoryId"] = category_id
+    if min_price is not None:
+        params["minPrice"] = min_price
+    if max_price is not None:
+        params["maxPrice"] = max_price
+
+    try:
+        data = await cj_get("/product/list", params)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+    raw = data.get("list", []) if isinstance(data, dict) else []
+    if hot:
+        raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+
+    products = []
+    for p in raw:
+        cost = float(p.get("sellPrice", 0) or 0)
+        products.append({
+            "cj_pid":           p.get("pid", ""),
+            "title":            p.get("productNameEn") or p.get("productName", ""),
+            "category":         p.get("categoryName", ""),
+            "cost_price":       cost,
+            "suggested_price":  round(cost * 2.5, 2),
+            "image_url":        p.get("productImage", ""),
+            "is_free_shipping": p.get("isFreeShipping", False),
+            "supplier":         p.get("supplierName", ""),
+            "listed_count":     p.get("listedNum", 0),
+        })
+
+    return {"products": products, "total": data.get("total", len(products)) if isinstance(data, dict) else len(products)}
+
+
 # ── Marketing (Meta Ads drafts, etc.) ──
 try:
     from marketing.routes import make_marketing_router as _mk_marketing_router
