@@ -364,6 +364,24 @@ function OverviewTab({ period, setPeriod }: { period: Period; setPeriod: (p: Per
 
 // ── Orders tab ────────────────────────────────────────────────────────────────
 
+type CJOrderStatus = {
+  found: boolean;
+  cj_order_num?: string;
+  status?: string;
+  tracking_num?: string | null;
+  carrier?: string | null;
+};
+
+const CJ_STATUS_LABELS: Record<string, string> = {
+  created:          "Sent to CJ",
+  IN_PRODUCTION:    "In Production",
+  PICKED:           "Picked",
+  PACKED:           "Packed",
+  IN_TRANSIT:       "Shipped",
+  DELIVERED:        "Delivered",
+  synced_to_shopify:"Tracking Synced",
+};
+
 function OrdersTab() {
   const [orders, setOrders] = useState<ShopifyOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -372,6 +390,8 @@ function OrdersTab() {
   const [searchInput, setSearchInput] = useState("");
   const [selected, setSelected] = useState<ShopifyOrder | null>(null);
   const [acting, setActing] = useState<string | null>(null);
+  const [cjStatus, setCjStatus] = useState<CJOrderStatus | null>(null);
+  const [cjFulfilling, setCjFulfilling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -386,6 +406,35 @@ function OrdersTab() {
   }, [fulfillmentFilter, search]);
 
   useEffect(() => { load(); }, [load]);
+
+  async function loadCjStatus(orderId: string) {
+    setCjStatus(null);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/cj/order-status/${orderId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) setCjStatus(await r.json() as CJOrderStatus);
+    } catch { /* silent */ }
+  }
+
+  async function fulfillViaCJ(order: ShopifyOrder) {
+    setCjFulfilling(true);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/cj/fulfill/${order.id}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json() as { success?: boolean; cj_order_num?: string; detail?: string };
+      if (!r.ok) throw new Error(data.detail || "CJ fulfillment failed");
+      toast.success(`Order sent to CJ! Ref: ${data.cj_order_num}`);
+      await loadCjStatus(String(order.id));
+    } catch (e) { toast.error(e instanceof Error ? e.message : "CJ fulfillment failed"); }
+    finally { setCjFulfilling(false); }
+  }
 
   async function fulfill(order: ShopifyOrder) {
     setActing(String(order.id));
@@ -473,7 +522,12 @@ function OrdersTab() {
                 {orders.map((o) => (
                   <tr
                     key={o.id}
-                    onClick={() => setSelected(selected?.id === o.id ? null : o)}
+                    onClick={() => {
+                      const next = selected?.id === o.id ? null : o;
+                      setSelected(next);
+                      if (next) loadCjStatus(String(next.id));
+                      else setCjStatus(null);
+                    }}
                     className={cn("border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer", selected?.id === o.id && "bg-slate-100")}
                   >
                     <td className="px-4 py-3 font-semibold text-brand">{o.name}</td>
@@ -590,17 +644,53 @@ function OrdersTab() {
               </div>
             )}
             <p className="text-[10px] text-slate-600">Placed {fmtDateTime(selected.created_at)}</p>
+
+            {/* CJ Fulfillment Status */}
+            {cjStatus?.found && (
+              <div className="border border-slate-200 rounded-xl p-3 space-y-1.5">
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">CJ Dropshipping</p>
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded-full border",
+                    cjStatus.status === "DELIVERED" || cjStatus.status === "synced_to_shopify"
+                      ? "bg-emerald-50 text-emerald-600 border-emerald-200"
+                      : cjStatus.status === "IN_TRANSIT" || cjStatus.status === "PACKED" || cjStatus.status === "PICKED"
+                        ? "bg-blue-50 text-blue-600 border-blue-200"
+                        : "bg-amber-50 text-amber-600 border-amber-200"
+                  )}>
+                    {CJ_STATUS_LABELS[cjStatus.status ?? ""] ?? cjStatus.status}
+                  </span>
+                  <span className="text-[10px] text-slate-500">{cjStatus.cj_order_num}</span>
+                </div>
+                {cjStatus.tracking_num && (
+                  <div>
+                    <p className="text-[10px] text-slate-500">{cjStatus.carrier} · <span className="font-mono text-slate-700">{cjStatus.tracking_num}</span></p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
           {/* Actions */}
           <div className="px-4 pb-4 space-y-2 border-t border-slate-200 pt-3">
+            {/* CJ Fulfill button — for paid unfulfilled orders not yet sent to CJ */}
+            {selected.financial_status === "paid" && !selected.fulfillment_status && !cjStatus?.found && (
+              <button
+                onClick={() => fulfillViaCJ(selected)}
+                disabled={cjFulfilling}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+              >
+                {cjFulfilling ? <><Loader2 size={13} className="animate-spin" /> Sending to CJ…</> : <><Package size={13} /> Fulfill via CJ</>}
+              </button>
+            )}
             {!selected.fulfillment_status && selected.financial_status === "paid" && (
               <button
                 onClick={() => fulfill(selected)}
                 disabled={acting === String(selected.id)}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-100 hover:bg-emerald-50 text-emerald-700 text-xs font-medium border border-slate-200 hover:border-emerald-200 disabled:opacity-50 transition-colors"
               >
                 {acting === String(selected.id) ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                Mark as Fulfilled
+                Mark Fulfilled (manual)
               </button>
             )}
             {selected.financial_status !== "refunded" && !selected.fulfillment_status && (
@@ -1422,7 +1512,7 @@ function CustomersTab() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((c, i) => {
+                {filtered.map((c) => {
                   const isVip = c.orders_count >= 3 || parseFloat(c.total_spent ?? "0") >= 500;
                   const daysSince = (Date.now() - new Date(c.updated_at).getTime()) / 86400000;
                   const isAtRisk = daysSince > 90 && c.orders_count > 1;

@@ -11778,6 +11778,32 @@ def _cj_parse_price(raw) -> float:
     return float(m.group()) if m else 0.0
 
 @tool(
+    name="get_cj_categories",
+    description=(
+        "Get the list of CJdropshipping product categories with their IDs. "
+        "Use this before search_cj_products when the user wants to browse by category "
+        "or when you need a category_id to filter product searches."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_cj_categories(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+    try:
+        data = await cj_get("/product/getCategory", {})
+    except RuntimeError as e:
+        return {"error": str(e)}
+    raw = data if isinstance(data, list) else data.get("list", []) if isinstance(data, dict) else []
+    categories = [
+        {"id": str(c.get("categoryId", "")), "name": c.get("categoryEnName") or c.get("categoryName", "")}
+        for c in raw if c.get("categoryId")
+    ]
+    return {"categories": categories, "tip": "Pass a category id to search_cj_products as category_id to filter results."}
+
+
+@tool(
     name="search_cj_products",
     description=(
         "Search CJdropshipping supplier catalog for real products to sell. "
@@ -11803,9 +11829,9 @@ async def search_cj_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str
         return {"error": "CJdropshipping module not available"}
 
     params: Dict[str, Any] = {
-        "productName": args["keyword"],
-        "pageNum":     1,
-        "pageSize":    min(int(args.get("page_size", 20)), 50),
+        "productNameEn": args["keyword"],
+        "pageNum":       1,
+        "pageSize":      min(int(args.get("page_size", 20)), 50),
     }
     if args.get("category_id"):
         params["categoryId"] = args["category_id"]

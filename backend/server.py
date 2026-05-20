@@ -13740,7 +13740,7 @@ async def cj_search_products(
 
     params: dict = {"pageNum": 1, "pageSize": min(page_size, 50)}
     if keyword:
-        params["productName"] = keyword
+        params["productNameEn"] = keyword
     if category_id:
         params["categoryId"] = category_id
     if min_price is not None:
@@ -13777,6 +13777,160 @@ async def cj_search_products(
     except Exception as e:
         logging.error("[cj/products] serialisation error: %s", e, exc_info=True)
         raise HTTPException(500, f"Response processing error: {e}")
+
+
+@api_router.get("/cj/categories")
+async def cj_get_categories(user=Depends(get_current_user)):
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        raise HTTPException(503, "CJdropshipping module not available")
+    try:
+        data = await cj_get("/product/getCategory", {})
+    except Exception as e:
+        raise HTTPException(502, f"CJ API error: {e}")
+    raw = data if isinstance(data, list) else data.get("list", []) if isinstance(data, dict) else []
+    categories = [
+        {"id": str(c.get("categoryId", "")), "name": c.get("categoryEnName") or c.get("categoryName", "")}
+        for c in raw if c.get("categoryId")
+    ]
+    return {"categories": categories}
+
+
+@api_router.post("/cj/fulfill/{shopify_order_id}")
+async def cj_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Trigger CJ fulfillment for a paid Shopify order from the Orders tab UI."""
+    try:
+        from cj_dropship.client import cj_get, cj_post
+        from assistant.composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        raise HTTPException(503, f"Module not available: {e}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+
+    # 1. Fetch Shopify order
+    try:
+        ord_data = await nango_proxy(business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}.json")
+        order = ord_data.get("order", {})
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Shopify order: {e}")
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    customer_name = f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip() or "Customer"
+
+    # 2. Find CJ-sourced line items
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    cj_mappings: dict = {}
+    if shopify_pids:
+        async for doc in db.cj_products.find({"user_id": business_id, "shopify_product_id": {"$in": shopify_pids}}):
+            cj_mappings[str(doc["shopify_product_id"])] = doc
+    if not cj_mappings:
+        raise HTTPException(422, "No CJ-sourced products found in this order")
+
+    # 3. Build CJ products payload
+    cj_products_payload = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in cj_mappings:
+            continue
+        cj_pid = cj_mappings[pid]["cj_pid"]
+        quantity = int(li.get("quantity", 1))
+        vid = None
+        try:
+            detail = await cj_get("/product/query", {"pid": cj_pid})
+            variants = detail.get("variants", []) if isinstance(detail, dict) else []
+            if not variants and isinstance(detail, dict) and detail.get("list"):
+                variants = (detail["list"] or [{}])[0].get("variants", [])
+            if variants:
+                vid = variants[0].get("vid") or variants[0].get("variantId")
+        except Exception:
+            pass
+        entry: dict = {"quantity": quantity}
+        if vid:
+            entry["vid"] = str(vid)
+        else:
+            entry["pid"] = cj_pid
+        cj_products_payload.append(entry)
+
+    if not cj_products_payload:
+        raise HTTPException(422, "Could not resolve CJ variant IDs for line items")
+
+    # 4. Create CJ order
+    cj_order_num = f"ZILO-{shopify_order_id}"
+    payload = {
+        "orderNumber":          cj_order_num,
+        "shippingCustomerName": customer_name,
+        "shippingPhone":        ship.get("phone") or order.get("phone") or "0000000000",
+        "shippingAddress":      ship.get("address1", ""),
+        "shippingCity":         ship.get("city", ""),
+        "shippingProvince":     ship.get("province", ""),
+        "shippingZip":          ship.get("zip", ""),
+        "shippingCountryCode":  ship.get("country_code", "US"),
+        "products":             cj_products_payload,
+    }
+    try:
+        result = await cj_post("/order/create", payload)
+    except Exception as e:
+        raise HTTPException(502, f"CJ order creation failed: {e}")
+
+    from datetime import datetime as _dt
+    cj_order_id = result.get("orderId") or result.get("orderNum") or cj_order_num
+    await db.cj_order_fulfillments.update_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id},
+        {"$set": {
+            "user_id":          business_id,
+            "shopify_order_id": shopify_order_id,
+            "cj_order_id":      str(cj_order_id),
+            "cj_order_num":     cj_order_num,
+            "status":           "created",
+            "created_at":       _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"success": True, "cj_order_id": str(cj_order_id), "cj_order_num": cj_order_num, "items": len(cj_products_payload)}
+
+
+@api_router.get("/cj/order-status/{shopify_order_id}")
+async def cj_order_status_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Return CJ fulfillment status + tracking for a Shopify order (Orders tab UI)."""
+    business_id = user.get("business_id") or str(user["_id"])
+    doc = await db.cj_order_fulfillments.find_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id}
+    )
+    if not doc:
+        return {"found": False}
+
+    cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+    result: dict = {
+        "found":        True,
+        "cj_order_num": cj_order_num,
+        "status":       doc.get("status", "created"),
+        "tracking_num": doc.get("tracking_num"),
+        "carrier":      doc.get("carrier"),
+    }
+
+    # Live-fetch from CJ if not yet delivered/synced
+    if doc.get("status") not in ("delivered", "synced_to_shopify") and cj_order_num:
+        try:
+            from cj_dropship.client import cj_get
+            data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+            if isinstance(data, dict):
+                cj_status    = data.get("orderStatus") or result["status"]
+                tracking_num = data.get("trackNumber") or data.get("trackingNumber") or doc.get("tracking_num")
+                carrier      = data.get("shippingCarrier") or data.get("logisticName") or doc.get("carrier")
+                result.update({"status": cj_status, "tracking_num": tracking_num, "carrier": carrier})
+                await db.cj_order_fulfillments.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"status": cj_status, "tracking_num": tracking_num, "carrier": carrier}},
+                )
+        except Exception:
+            pass
+
+    return result
 
 
 # ── Marketing (Meta Ads drafts, etc.) ──
