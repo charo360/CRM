@@ -1460,27 +1460,6 @@ function IntegrationsPageInner() {
                   <button type="button" onClick={() => setShopifyFormOpen("none")}
                     className="px-2 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50">Cancel</button>
                 </div>
-                <button type="button" onClick={() => setShopifyFormOpen("manual")}
-                  className="w-full text-[10px] text-slate-400 hover:text-slate-600 text-center">Use API key instead</button>
-              </div>
-            ) : shopifyFormOpen === "manual" ? (
-              <div className="space-y-1.5">
-                <input value={shopifyDomain} onChange={(e) => setShopifyDomain(e.target.value)}
-                  placeholder="mystore.myshopify.com"
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-[11px] outline-none focus:ring-1 focus:ring-[#96BF48]"
-                  disabled={shopifyBusy} />
-                <input value={shopifyToken} onChange={(e) => setShopifyToken(e.target.value)}
-                  placeholder="shpat_..." type="password"
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-[11px] font-mono outline-none focus:ring-1 focus:ring-[#96BF48]"
-                  disabled={shopifyBusy} />
-                <div className="flex gap-1.5">
-                  <button type="button" onClick={() => void shopifyConnectDirect()} disabled={shopifyBusy || !shopifyDomain.trim() || !shopifyToken.trim()}
-                    className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-[#5A8E00] hover:bg-[#4a7500] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-                    {shopifyBusy ? <Loader2 size={11} className="animate-spin" /> : "Connect"}
-                  </button>
-                  <button type="button" onClick={() => setShopifyFormOpen("oauth")}
-                    className="px-2 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50">← Back</button>
-                </div>
               </div>
             ) : (
               <button type="button" onClick={() => setShopifyFormOpen("oauth")} disabled={shopifyBusy}
