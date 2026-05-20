@@ -133,17 +133,13 @@ function StockBadge({ qty }: { qty: number }) {
 // ── No connection ─────────────────────────────────────────────────────────────
 
 function NoShopify({
-  shop, setShop, onOAuth, onManual,
-  manualDomain, setManualDomain, manualToken, setManualToken,
+  shop, setShop, onOAuth,
   connecting,
 }: {
   shop: string; setShop: (v: string) => void;
-  onOAuth: () => void; onManual: () => void;
-  manualDomain: string; setManualDomain: (v: string) => void;
-  manualToken: string;  setManualToken:  (v: string) => void;
+  onOAuth: () => void;
   connecting: boolean;
 }) {
-  const [showManual, setShowManual] = useState(false);
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-8 py-16">
       <div className="w-16 h-16 rounded-2xl bg-[#96bf48]/10 border border-[#96bf48]/20 flex items-center justify-center">
@@ -181,41 +177,6 @@ function NoShopify({
           {connecting ? "Connecting…" : "Connect with Shopify"}
         </button>
 
-        {/* Manual fallback */}
-        <button
-          type="button"
-          onClick={() => setShowManual((v) => !v)}
-          className="w-full text-center text-[11px] text-slate-600 hover:text-slate-400 transition-colors pt-1"
-        >
-          {showManual ? "Hide" : "Use API key instead (advanced)"}
-        </button>
-        {showManual && (
-          <div className="space-y-2 pt-1 border-t border-slate-800">
-            <input
-              value={manualDomain}
-              onChange={(e) => setManualDomain(e.target.value)}
-              placeholder="mystore.myshopify.com"
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-[#96bf48]"
-              disabled={connecting}
-            />
-            <input
-              value={manualToken}
-              onChange={(e) => setManualToken(e.target.value)}
-              placeholder="shpat_xxxxxxxxxxxxxxxxxxxx"
-              type="password"
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-[#96bf48] font-mono"
-              disabled={connecting}
-            />
-            <button
-              onClick={onManual}
-              disabled={connecting || !manualDomain.trim() || !manualToken.trim()}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
-            >
-              {connecting ? <Loader2 size={13} className="animate-spin" /> : null}
-              {connecting ? "Connecting…" : "Connect with API key"}
-            </button>
-          </div>
-        )}
       </div>
       <div className="grid grid-cols-2 gap-3 text-left mt-2 max-w-sm">
         {[
@@ -1645,8 +1606,6 @@ function ShopifyPageInner() {
   const [period, setPeriod] = useState<Period>("month");
   const [connecting, setConnecting] = useState(false);
   const [shop, setShop] = useState("");
-  const [manualDomain, setManualDomain] = useState("");
-  const [manualToken, setManualToken] = useState("");
   const searchParams = useSearchParams();
 
   useEffect(() => {
@@ -1718,31 +1677,6 @@ function ShopifyPageInner() {
     }
   }
 
-  async function connectViaManual() {
-    const domain = manualDomain.trim();
-    const token  = manualToken.trim();
-    if (!domain || !token) { toast.error("Enter store domain and API token."); return; }
-    setConnecting(true);
-    try {
-      const authToken = getToken();
-      const res = await fetch("/api/shopify/connect-direct", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${authToken ?? ""}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ domain, token }),
-      });
-      const data = await res.json().catch(() => ({}) as Record<string, unknown>) as Record<string, unknown>;
-      if (!res.ok) {
-        toast.error(typeof data.detail === "string" ? data.detail : "Connection failed — check domain and token.");
-        return;
-      }
-      toast.success(`Connected to ${typeof data.shop_name === "string" ? data.shop_name : domain}!`);
-      setConnected(true);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Connection failed");
-    } finally {
-      setConnecting(false);
-    }
-  }
 
   if (connected === null) {
     return (
@@ -1757,9 +1691,7 @@ function ShopifyPageInner() {
       <div className="flex-1 overflow-y-auto bg-slate-950 text-slate-100">
         <NoShopify
           shop={shop} setShop={setShop}
-          onOAuth={connectViaOAuth} onManual={connectViaManual}
-          manualDomain={manualDomain} setManualDomain={setManualDomain}
-          manualToken={manualToken}   setManualToken={setManualToken}
+          onOAuth={connectViaOAuth}
           connecting={connecting}
         />
       </div>
