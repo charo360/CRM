@@ -326,8 +326,9 @@ SEO_TOOLS: FrozenSet[str] = frozenset({
     "veb_instagram_hashtags", "veb_youtube_research",
     # Blog post management (DB)
     "list_saved_posts", "publish_to_my_site", "delete_blog_post",
-    # Autoblogging (WordPress)
+    # Autoblogging (WordPress + Shopify)
     "list_client_sites", "generate_blog_post", "publish_blog_post",
+    "shopify_publish_blog_post",
     # Content calendar (DB + AI)
     "get_content_calendar", "schedule_content", "generate_content_calendar",
     # SEO overview (DB)
@@ -401,6 +402,7 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_create_discount", "shopify_fulfill_order", "shopify_cancel_order",
     "shopify_adjust_inventory", "shopify_add_product",
     "shopify_refund_order", "shopify_update_price", "shopify_tag_customer",
+    "shopify_publish_blog_post", "generate_blog_post",
 })
 SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "shopify_fulfill_order", "shopify_cancel_order",
@@ -2268,6 +2270,10 @@ When the user wants to create and publish blog content:
 - `list_client_sites` — see all WordPress sites linked to this business.
 - `generate_blog_post` — AI-generate SEO-optimized blog content (does not publish).
 - `publish_blog_post` — publish to WordPress with auto-generated featured image.
+
+### Shopify blogging
+- `generate_blog_post` — generate the article content first.
+- `shopify_publish_blog_post` — publish directly to the connected Shopify store blog. Auto-fetches credentials. No token needed.
 
 ### Content calendar (DB)
 - `get_content_calendar` — view all scheduled content by week.

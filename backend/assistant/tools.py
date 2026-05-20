@@ -11871,6 +11871,79 @@ async def publish_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str,
     return result
 
 
+@tool(
+    name="shopify_publish_blog_post",
+    description=(
+        "Publish a blog article to the connected Shopify store's blog. "
+        "Auto-fetches Shopify credentials — no token needed. "
+        "Use generate_blog_post first to create the content, then call this to publish. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+            "title":      {"type": "string", "description": "Article title"},
+            "content":    {"type": "string", "description": "Article body (HTML or markdown)"},
+            "excerpt":    {"type": "string", "description": "Short summary shown in blog listings (optional)"},
+            "tags":       {"type": "string", "description": "Comma-separated tags e.g. 'seo, tips, marketing'"},
+            "published":  {"type": "boolean", "default": True, "description": "True = live immediately, False = save as draft"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_publish_blog_post(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    import httpx as _httpx
+
+    title   = args["title"]
+    content = args.get("content", "")
+    # Convert markdown to basic HTML paragraphs if not already HTML
+    if content and not content.strip().startswith("<"):
+        lines = content.strip().split("\n\n")
+        content = "".join(f"<p>{p.strip()}</p>" for p in lines if p.strip())
+
+    try:
+        # Get first blog on the store to post into
+        blogs_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                       "/admin/api/2024-01/blogs.json")
+        blogs = blogs_data.get("blogs", [])
+        if not blogs:
+            # Create a default blog if none exists
+            new_blog = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                         "/admin/api/2024-01/blogs.json",
+                                         json={"blog": {"title": "News"}})
+            blog_id = new_blog["blog"]["id"]
+        else:
+            blog_id = blogs[0]["id"]
+
+        article_payload: Dict[str, Any] = {
+            "article": {
+                "title":      title,
+                "body_html":  content,
+                "published":  args.get("published", True),
+            }
+        }
+        if args.get("excerpt"):
+            article_payload["article"]["summary_html"] = args["excerpt"]
+        if args.get("tags"):
+            article_payload["article"]["tags"] = args["tags"]
+
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   f"/admin/api/2024-01/blogs/{blog_id}/articles.json",
+                                   json=article_payload)
+        article = result.get("article", {})
+        return {
+            "success":    True,
+            "article_id": article.get("id"),
+            "title":      article.get("title"),
+            "url":        article.get("url") or f"/blogs/{blogs[0].get('handle', 'news')}/{article.get('handle', '')}",
+            "published":  article.get("published_at") is not None,
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # VEBAPI SEO TOOLS
 # ═════════════════════════════════════════════════════════════════════════════
