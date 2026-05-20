@@ -680,8 +680,8 @@ Rules:
     body: JSON.stringify({ prompt }),
   });
   if (!r.ok) throw new Error("AI generation failed");
-  const data = await r.json() as { draft?: string; content?: string };
-  const text = data.draft ?? data.content ?? "";
+  const data = await r.json() as { reply?: string; draft?: string; content?: string };
+  const text = data.reply ?? data.draft ?? data.content ?? "";
   const match = text.match(/\[[\s\S]*\]/);
   if (!match) throw new Error("AI returned unexpected format — try again");
   return JSON.parse(match[0]) as ProductSuggestion[];
