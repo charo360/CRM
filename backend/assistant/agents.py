@@ -399,20 +399,25 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_get_abandoned_carts", "shopify_get_growth_metrics",
     "shopify_create_discount", "shopify_fulfill_order", "shopify_cancel_order",
     "shopify_adjust_inventory", "shopify_add_product",
+    "shopify_refund_order", "shopify_update_price", "shopify_tag_customer",
 })
 SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "shopify_fulfill_order", "shopify_cancel_order",
+    "shopify_refund_order",
     "list_orders", "update_order_status", "get_sales_pipeline",
     "list_customers", "get_customer", "send_whatsapp_message",
 })
 SHOPIFY_PRODUCTS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_products", "shopify_adjust_inventory", "shopify_add_product",
+    "shopify_update_price", "shopify_tag_customer",
     "list_products", "create_product", "update_product", "delete_product",
+    "list_customers", "get_customer",
 })
 SHOPIFY_ANALYTICS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
-    "get_shopify_analytics", "list_shopify_orders",
+    "get_shopify_analytics", "list_shopify_orders", "list_shopify_products",
     "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
     "get_revenue_trends", "get_top_customers", "get_sales_pipeline",
+    "shopify_tag_customer",
 })
 
 # All integration agents share a minimal base
@@ -1170,8 +1175,11 @@ SHOPIFY_SYSTEM_PROMPT = """You are the **Shopify specialist** inside Zilo Chat. 
 ## Tools — Actions (require confirmation)
 - `shopify_fulfill_order` — fulfill an order (with optional tracking).
 - `shopify_cancel_order` — cancel an order.
+- `shopify_refund_order` — issue a full or partial refund.
 - `shopify_create_discount` — create a discount code (% or fixed, with expiry and usage limit).
 - `shopify_adjust_inventory` — adjust stock levels.
+- `shopify_update_price` — update a variant price and optional compare-at price.
+- `shopify_tag_customer` — tag a customer (vip, wholesale, at-risk, etc.).
 
 ## Autopilot patterns
 When asked to "run on autopilot" or "auto-manage", suggest and create workflows:
@@ -1205,6 +1213,7 @@ Always fetch live data before making any statement about an order.
 - `list_shopify_orders` — view and filter live Shopify orders.
 - `shopify_fulfill_order` — fulfill an order (requires confirmation). Ask for tracking number.
 - `shopify_cancel_order` — cancel an order (requires confirmation). Ask for reason.
+- `shopify_refund_order` — issue a full or partial refund (requires confirmation).
 - `list_customers`, `get_customer` — customer context.
 - `send_whatsapp_message` — notify a customer (requires confirmation).
 - `integrations_status` — confirm Shopify sync is active.

@@ -3054,6 +3054,151 @@ async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": str(e)}
 
 
+@tool(
+    name="shopify_refund_order",
+    description=(
+        "Issue a full or partial refund on a Shopify order. "
+        "Requires Shopify to be connected. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["order_id"],
+        "properties": {
+            "order_id":   {"type": "string",  "description": "Shopify order ID (numeric string)"},
+            "full":       {"type": "boolean", "default": True,  "description": "True = full refund, False = partial"},
+            "amount":     {"type": "number",  "description": "Partial refund amount (only used when full=false)"},
+            "reason":     {"type": "string",  "default": "customer", "description": "Reason: customer | inventory | fraud | declined | other"},
+            "notify":     {"type": "boolean", "default": True,  "description": "Notify customer by email"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_refund_order(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    order_id = str(args["order_id"])
+    try:
+        # Fetch order to get transactions
+        order_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                       f"/admin/api/2024-01/orders/{order_id}.json")
+        order = order_data.get("order", {})
+        transactions = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                         f"/admin/api/2024-01/orders/{order_id}/transactions.json")
+        txns = transactions.get("transactions", [])
+        parent_txn = next((t for t in txns if t.get("kind") in ("sale", "capture") and t.get("status") == "success"), None)
+        if not parent_txn:
+            return {"error": "No successful payment transaction found to refund"}
+
+        total = float(order.get("total_price", 0))
+        amount = total if args.get("full", True) else float(args.get("amount") or total)
+        currency = order.get("currency", "USD")
+
+        payload = {
+            "refund": {
+                "notify": args.get("notify", True),
+                "note": args.get("reason", "customer"),
+                "transactions": [{
+                    "parent_id": parent_txn["id"],
+                    "amount": str(round(amount, 2)),
+                    "kind": "refund",
+                    "gateway": parent_txn.get("gateway", ""),
+                }],
+            }
+        }
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   f"/admin/api/2024-01/orders/{order_id}/refunds.json",
+                                   json=payload)
+        refund = result.get("refund", {})
+        return {
+            "success": True,
+            "refund_id": refund.get("id"),
+            "amount": amount,
+            "currency": currency,
+            "order_id": order_id,
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_update_price",
+    description=(
+        "Update the price (and optional compare-at price) of a Shopify product variant. "
+        "Requires Shopify to be connected. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["variant_id", "price"],
+        "properties": {
+            "variant_id":       {"type": "string", "description": "Shopify variant ID (numeric string)"},
+            "price":            {"type": "string", "description": "New price e.g. '29.99'"},
+            "compare_at_price": {"type": "string", "description": "Optional original/crossed-out price e.g. '49.99'"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_price(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    variant_id = str(args["variant_id"])
+    payload: Dict[str, Any] = {"variant": {"id": variant_id, "price": str(args["price"])}}
+    if args.get("compare_at_price"):
+        payload["variant"]["compare_at_price"] = str(args["compare_at_price"])
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/variants/{variant_id}.json",
+                                   json=payload)
+        v = result.get("variant", {})
+        return {
+            "success": True,
+            "variant_id": variant_id,
+            "price": v.get("price"),
+            "compare_at_price": v.get("compare_at_price"),
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_tag_customer",
+    description=(
+        "Add or replace tags on a Shopify customer. Tags help segment customers for discounts and campaigns. "
+        "Requires Shopify to be connected. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["customer_id", "tags"],
+        "properties": {
+            "customer_id": {"type": "string", "description": "Shopify customer ID (numeric string)"},
+            "tags":        {"type": "string", "description": "Comma-separated tags e.g. 'vip, repeat-buyer, wholesale'"},
+            "merge":       {"type": "boolean", "default": True, "description": "True = add to existing tags, False = replace all tags"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_tag_customer(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    customer_id = str(args["customer_id"])
+    new_tags = str(args["tags"])
+    try:
+        if args.get("merge", True):
+            # Fetch existing tags first
+            cust_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                          f"/admin/api/2024-01/customers/{customer_id}.json")
+            existing = cust_data.get("customer", {}).get("tags", "")
+            existing_set = {t.strip() for t in existing.split(",") if t.strip()}
+            new_set = {t.strip() for t in new_tags.split(",") if t.strip()}
+            merged = ", ".join(sorted(existing_set | new_set))
+            final_tags = merged
+        else:
+            final_tags = new_tags
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/customers/{customer_id}.json",
+                                   json={"customer": {"id": customer_id, "tags": final_tags}})
+        c = result.get("customer", {})
+        return {"success": True, "customer_id": customer_id, "tags": c.get("tags")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # STRIPE TOOLS (Composio packaged actions, REST proxy fallback)
 # ═════════════════════════════════════════════════════════════════════════════
