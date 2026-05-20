@@ -663,9 +663,6 @@ function IntegrationsPageInner() {
   const [cjEmail, setCjEmail] = useState("");
   const [cjApiKey, setCjApiKey] = useState("");
   const [cjBusy, setCjBusy] = useState(false);
-  const [aeAppKey, setAeAppKey] = useState("");
-  const [aeAppSecret, setAeAppSecret] = useState("");
-  const [aeAccessToken, setAeAccessToken] = useState("");
   const [aeBusy, setAeBusy] = useState(false);
 
   const refreshSuppliers = useCallback(() => {
@@ -692,14 +689,33 @@ function IntegrationsPageInner() {
     catch { /* ignore */ } finally { setCjBusy(false); }
   }
 
-  async function connectAE() {
-    if (!aeAppKey.trim() || !aeAppSecret.trim()) return;
+  async function connectAEOAuth() {
     setAeBusy(true);
     try {
-      await supplierApi.connectAliExpress(aeAppKey.trim(), aeAppSecret.trim(), aeAccessToken.trim());
-      setAeAppKey(""); setAeAppSecret(""); setAeAccessToken("");
-      refreshSuppliers();
-      setBanner({ type: "success", msg: "AliExpress connected." });
+      const token = getToken();
+      const res = await fetch("/api/aliexpress/oauth/start", {
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Failed to start AliExpress OAuth" })) as { detail?: string };
+        setBanner({ type: "error", msg: String(err.detail ?? "Failed to start AliExpress OAuth") });
+        return;
+      }
+      const data = await res.json() as { auth_url: string };
+      const popup = window.open(data.auth_url, "ae-connect", "width=980,height=760,noopener,noreferrer");
+      if (!popup) { window.location.href = data.auth_url; return; }
+      setBanner({ type: "success", msg: "Finish connecting in the popup, then return here." });
+      const onMsg = (e: MessageEvent) => {
+        if (e.origin !== window.location.origin) return;
+        if (e.data?.type === "ae_connected") { refreshSuppliers(); setBanner({ type: "success", msg: "AliExpress connected!" }); }
+        if (e.data?.type === "ae_connect_failed") setBanner({ type: "error", msg: e.data.msg || "AliExpress connection failed." });
+        window.removeEventListener("message", onMsg);
+      };
+      window.addEventListener("message", onMsg);
+      const poll = window.setInterval(() => {
+        void refreshSuppliers();
+        if (popup.closed) { window.clearInterval(poll); setTimeout(() => void refreshSuppliers(), 1200); }
+      }, 3000);
     } catch (e) {
       setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect AliExpress." });
     } finally { setAeBusy(false); }
@@ -1590,22 +1606,10 @@ function IntegrationsPageInner() {
                 </button>
               </div>
             ) : (
-              <div className="space-y-1.5">
-                <p className="text-[9px] text-slate-400 leading-snug">Get keys at <a href="https://open.aliexpress.com" target="_blank" rel="noreferrer" className="text-[#E62222] hover:underline">open.aliexpress.com</a></p>
-                <input type="text" value={aeAppKey} onChange={e => setAeAppKey(e.target.value)}
-                  placeholder="App Key" autoComplete="off"
-                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#E62222]" />
-                <input type="password" value={aeAppSecret} onChange={e => setAeAppSecret(e.target.value)}
-                  placeholder="App Secret" autoComplete="off"
-                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#E62222]" />
-                <input type="password" value={aeAccessToken} onChange={e => setAeAccessToken(e.target.value)}
-                  placeholder="Access Token (OAuth)" autoComplete="off"
-                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#E62222]" />
-                <button type="button" onClick={() => void connectAE()} disabled={aeBusy || !aeAppKey.trim() || !aeAppSecret.trim()}
-                  className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#E62222] hover:bg-[#c71c1c] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-                  {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
-                </button>
-              </div>
+              <button type="button" onClick={() => void connectAEOAuth()} disabled={aeBusy}
+                className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#E62222] hover:bg-[#c71c1c] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <><span>Connect AliExpress</span><ExternalLink size={9} /></>}
+              </button>
             )}
           </SmallTile>
 

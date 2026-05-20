@@ -13739,6 +13739,9 @@ class AEConnectBody(BaseModel):
     app_secret: str
     access_token: str = ""
 
+class AEOAuthStateBody(BaseModel):
+    state: str
+
 
 @api_router.get("/supplier-connections")
 async def get_supplier_connections(user=Depends(get_current_user)):
@@ -13820,6 +13823,112 @@ async def disconnect_aliexpress(user=Depends(get_current_user)):
     business_id = user.get("business_id") or str(user["_id"])
     await db.supplier_connections.delete_one({"user_id": business_id, "supplier": "aliexpress"})
     return {"connected": False}
+
+
+# ── AliExpress OAuth flow ─────────────────────────────────────────────────────
+
+@api_router.get("/aliexpress/oauth/start")
+async def ae_oauth_start(user=Depends(get_current_user)):
+    """Generate AliExpress OAuth URL. Requires ALIEXPRESS_APP_KEY in server env."""
+    import urllib.parse
+    app_key = os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    if not app_key:
+        raise HTTPException(503, "ALIEXPRESS_APP_KEY is not configured on the server.")
+    business_id = user.get("business_id") or str(user["_id"])
+    # Sign the state so the callback can't be forged
+    state = hmac.new(
+        os.environ.get("JWT_SECRET", "secret").encode(),
+        business_id.encode(),
+        hashlib.sha256,
+    ).hexdigest()[:16] + "__" + business_id
+    # Store state → business_id mapping (TTL 10 min)
+    from datetime import datetime as _dt
+    await db.ae_oauth_states.update_one(
+        {"state": state},
+        {"$set": {"state": state, "business_id": business_id, "created_at": _dt.utcnow()}},
+        upsert=True,
+    )
+    base_url = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
+    auth_url = (
+        "https://oauth.aliexpress.com/auth"
+        f"?response_type=code"
+        f"&client_id={app_key}"
+        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
+        f"&state={urllib.parse.quote(state, safe='')}"
+        f"&sp=ae&view=web&locale=en_US"
+    )
+    return {"auth_url": auth_url}
+
+
+@api_router.get("/aliexpress/oauth/callback")
+async def ae_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """AliExpress redirects here after the user authorizes. Stores the token and closes the popup."""
+    from starlette.responses import HTMLResponse
+    import urllib.parse
+
+    def _close_popup(ok: bool, msg: str = "") -> HTMLResponse:
+        js_event = "ae_connected" if ok else "ae_connect_failed"
+        return HTMLResponse(f"""<!DOCTYPE html><html><body>
+<script>
+if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},window.location.origin);window.close();}}
+else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}";}}
+</script></body></html>""")
+
+    if error:
+        return _close_popup(False, error)
+    if not code or not state:
+        return _close_popup(False, "Missing code or state")
+
+    # Validate state and look up business_id
+    state_doc = await db.ae_oauth_states.find_one({"state": state})
+    if not state_doc:
+        return _close_popup(False, "Invalid or expired state")
+    business_id = state_doc["business_id"]
+    await db.ae_oauth_states.delete_one({"state": state})
+
+    # Exchange code for access token
+    app_key    = os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    app_secret = os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
+    if not app_key or not app_secret:
+        return _close_popup(False, "Server not configured")
+    base_url     = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.post("https://oauth.aliexpress.com/token", data={
+                "grant_type":    "authorization_code",
+                "code":          code,
+                "client_id":     app_key,
+                "client_secret": app_secret,
+                "redirect_uri":  redirect_uri,
+            })
+        token_data = r.json()
+    except Exception as e:
+        return _close_popup(False, f"Token exchange failed: {e}")
+
+    access_token  = token_data.get("access_token", "")
+    refresh_token = token_data.get("refresh_token", "")
+    if not access_token:
+        return _close_popup(False, token_data.get("error_description", "No access token returned"))
+
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "aliexpress"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "aliexpress",
+            "credentials":  {
+                "app_key":       app_key,
+                "app_secret":    app_secret,
+                "access_token":  access_token,
+                "refresh_token": refresh_token,
+            },
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return _close_popup(True)
 
 
 # ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
