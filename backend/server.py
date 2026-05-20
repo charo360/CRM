@@ -13933,6 +13933,213 @@ async def cj_order_status_endpoint(shopify_order_id: str, user=Depends(get_curre
     return result
 
 
+# ── AliExpress REST endpoints (used by Shopify Products + Orders UI) ─────────
+def _ae_price(raw) -> float:
+    if not raw:
+        return 0.0
+    try:
+        return float(str(raw).strip().split()[0].replace(",", ""))
+    except Exception:
+        return 0.0
+
+
+@api_router.get("/aliexpress/categories")
+async def ae_get_categories_endpoint(user=Depends(get_current_user)):
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    try:
+        data = await ae_get_categories()
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress API error: {e}")
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    categories = [
+        {"id": str(c.get("category_id", "")), "name": c.get("category_name", "")}
+        for c in (cats or []) if c.get("category_id")
+    ]
+    return {"categories": categories}
+
+
+@api_router.get("/aliexpress/products")
+async def ae_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    sort: str = "LAST_VOLUME_DESC",
+    user=Depends(get_current_user),
+):
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    if not keyword and not category_id:
+        raise HTTPException(422, "keyword or category_id required")
+    try:
+        data = await ae_ds_search(
+            keyword=keyword,
+            category_id=category_id or None,
+            min_price=min_price,
+            max_price=max_price,
+            page_size=min(page_size, 50),
+            sort=sort,
+        )
+    except Exception as e:
+        logging.error("[ae/products] error: %s", e, exc_info=True)
+        raise HTTPException(502, f"AliExpress API error: {e}")
+
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    products = []
+    for p in products_raw:
+        cost = _ae_price(p.get("sale_price") or p.get("target_sale_price"))
+        products.append({
+            "ae_pid":          str(p.get("product_id", "")),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", p.get("first_level_category_name", "")),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "detail_url":      p.get("product_detail_url", ""),
+        })
+    return {"products": products, "total": data.get("total_record_count", len(products))}
+
+
+@api_router.post("/aliexpress/fulfill/{shopify_order_id}")
+async def ae_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Trigger AliExpress DS fulfillment for a paid Shopify order."""
+    try:
+        from aliexpress.client import ae_ds_create_order, ae_ds_product_detail
+        from assistant.composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        raise HTTPException(503, f"Module not available: {e}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+
+    try:
+        ord_data = await nango_proxy(business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}.json")
+        order = ord_data.get("order", {})
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Shopify order: {e}")
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+
+    ae_mappings: dict = {}
+    if shopify_pids:
+        async for doc in db.ae_products.find({"user_id": business_id, "shopify_product_id": {"$in": shopify_pids}}):
+            ae_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not ae_mappings:
+        raise HTTPException(422, "No AliExpress-sourced products found in this order")
+
+    ae_product_items = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in ae_mappings:
+            continue
+        ae_pid   = ae_mappings[pid]["ae_pid"]
+        quantity = int(li.get("quantity", 1))
+        sku_id   = None
+        try:
+            detail   = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"))
+            sku_list = detail.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+            if sku_list:
+                sku_id = sku_list[0].get("sku_id")
+        except Exception:
+            pass
+        item: dict = {"product_id": ae_pid, "product_count": quantity}
+        if sku_id:
+            item["sku_id"] = str(sku_id)
+        ae_product_items.append(item)
+
+    if not ae_product_items:
+        raise HTTPException(422, "Could not resolve AliExpress SKU IDs for line items")
+
+    order_payload = {
+        "logistics_address": {
+            "contact_person": f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip(),
+            "mobile_no":      ship.get("phone") or order.get("phone") or "",
+            "address":        ship.get("address1", ""),
+            "city":           ship.get("city", ""),
+            "province":       ship.get("province", ""),
+            "zip":            ship.get("zip", ""),
+            "country":        ship.get("country_code", "US"),
+        },
+        "product_items": ae_product_items,
+    }
+    try:
+        result = await ae_ds_create_order(order_payload)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress order creation failed: {e}")
+
+    from datetime import datetime as _dt
+    ae_order_id = str(result.get("order_id") or result.get("ae_order_id") or f"AE-{shopify_order_id}")
+    await db.ae_order_fulfillments.update_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id},
+        {"$set": {
+            "user_id":          business_id,
+            "shopify_order_id": shopify_order_id,
+            "ae_order_id":      ae_order_id,
+            "status":           "created",
+            "created_at":       _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"success": True, "ae_order_id": ae_order_id, "items": len(ae_product_items)}
+
+
+@api_router.get("/aliexpress/order-status/{shopify_order_id}")
+async def ae_order_status_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Return AliExpress fulfillment status + tracking for a Shopify order."""
+    business_id = user.get("business_id") or str(user["_id"])
+    doc = await db.ae_order_fulfillments.find_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id}
+    )
+    if not doc:
+        return {"found": False}
+
+    ae_order_id = doc.get("ae_order_id")
+    result: dict = {
+        "found":        True,
+        "ae_order_id":  ae_order_id,
+        "status":       doc.get("status", "created"),
+        "tracking_num": doc.get("tracking_num"),
+        "carrier":      doc.get("carrier"),
+    }
+    if doc.get("status") not in ("synced_to_shopify",) and ae_order_id:
+        try:
+            from aliexpress.client import ae_ds_get_order
+            data = await ae_ds_get_order(ae_order_id)
+            order_info = data.get("result", data) if isinstance(data, dict) else {}
+            logistics  = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+            ae_status    = order_info.get("order_status") or result["status"]
+            tracking_num = (logistics[0].get("logistics_no") if logistics else None) or doc.get("tracking_num")
+            carrier      = (logistics[0].get("logistics_company") if logistics else None) or doc.get("carrier")
+            result.update({"status": ae_status, "tracking_num": tracking_num, "carrier": carrier})
+            await db.ae_order_fulfillments.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {"status": ae_status, "tracking_num": tracking_num, "carrier": carrier}},
+            )
+        except Exception:
+            pass
+    return result
+
+
 # ── Marketing (Meta Ads drafts, etc.) ──
 try:
     from marketing.routes import make_marketing_router as _mk_marketing_router

@@ -12551,6 +12551,584 @@ async def shopify_product_analytics(ctx: ToolContext, args: Dict[str, Any]) -> D
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# ALIEXPRESS DROPSHIPPING TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_aliexpress_categories",
+    description=(
+        "Get AliExpress DS product categories with their IDs. "
+        "Use before search_aliexpress_products when the user wants to browse by category."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_aliexpress_categories(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    try:
+        data = await ae_get_categories()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    out = [{"id": str(c.get("category_id", "")), "name": c.get("category_name", "")} for c in (cats or []) if c.get("category_id")]
+    return {"categories": out, "tip": "Pass a category id to search_aliexpress_products as category_id."}
+
+
+@tool(
+    name="search_aliexpress_products",
+    description=(
+        "Search AliExpress DS catalog for real dropship products. "
+        "Returns product ID, title, cost price, sale price suggestion, images, and shipping info. "
+        "Use when a user wants to source products from AliExpress."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword":     {"type": "string",  "description": "Search term e.g. 'bluetooth speaker', 'cat toy'"},
+            "category_id": {"type": "string",  "description": "AliExpress category ID (optional)"},
+            "min_price":   {"type": "number",  "description": "Min cost price USD"},
+            "max_price":   {"type": "number",  "description": "Max cost price USD"},
+            "page_size":   {"type": "integer", "description": "Results to return (default 20, max 50)"},
+            "sort":        {"type": "string",  "description": "SALE_PRICE_ASC | SALE_PRICE_DESC | LAST_VOLUME_DESC (default: LAST_VOLUME_DESC for best sellers)"},
+        },
+    },
+)
+async def search_aliexpress_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    try:
+        data = await ae_ds_search(
+            keyword=args["keyword"],
+            category_id=args.get("category_id"),
+            min_price=args.get("min_price"),
+            max_price=args.get("max_price"),
+            page_size=int(args.get("page_size", 20)),
+            sort=args.get("sort", "LAST_VOLUME_DESC"),
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    # Unwrap products list — AE response structure varies
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    out = []
+    for p in products_raw:
+        cost = float(p.get("sale_price", p.get("target_sale_price", 0)) or 0)
+        out.append({
+            "ae_pid":          str(p.get("product_id", p.get("product_main_image_url", ""))),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", p.get("first_level_category_name", "")),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "currency":        p.get("target_sale_price_currency", "USD"),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "detail_url":      p.get("product_detail_url", ""),
+        })
+    return {
+        "keyword":     args["keyword"],
+        "total_found": data.get("total_record_count", len(out)),
+        "products":    out,
+        "tip":         "Use import_aliexpress_product_to_shopify to add any product to Shopify.",
+    }
+
+
+@tool(
+    name="get_aliexpress_hot_products",
+    description=(
+        "Get best-selling / trending products from AliExpress DS — sorted by order volume. "
+        "Use to find what's selling well right now across AliExpress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword":     {"type": "string",  "description": "Category or niche keyword (optional)"},
+            "category_id": {"type": "string",  "description": "AliExpress category ID (optional)"},
+            "page_size":   {"type": "integer", "description": "Number of results (default 20)"},
+        },
+    },
+)
+async def get_aliexpress_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    keyword = args.get("keyword", "")
+    if not keyword and not args.get("category_id"):
+        keyword = "bestseller"
+    try:
+        data = await ae_ds_search(
+            keyword=keyword,
+            category_id=args.get("category_id"),
+            page_size=int(args.get("page_size", 20)),
+            sort="LAST_VOLUME_DESC",
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    out = []
+    for p in products_raw:
+        cost = float(p.get("sale_price", p.get("target_sale_price", 0)) or 0)
+        out.append({
+            "ae_pid":          str(p.get("product_id", "")),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+        })
+    return {"source": "AliExpress DS — sorted by order volume", "products": out}
+
+
+@tool(
+    name="import_aliexpress_product_to_shopify",
+    description=(
+        "Import an AliExpress DS product into the user's Shopify store. "
+        "Fetches full product detail (images, variants, description) and creates the Shopify listing. "
+        "Stores AliExpress cost price for margin tracking. Requires Shopify + AliExpress configured."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["ae_pid"],
+        "properties": {
+            "ae_pid":         {"type": "string", "description": "AliExpress product ID from search_aliexpress_products"},
+            "sale_price":     {"type": "number", "description": "Selling price in USD (default: 2.5x cost)"},
+            "product_title":  {"type": "string", "description": "Override product title (optional)"},
+            "ship_to_country":{"type": "string", "description": "Target country code e.g. US, GB, ZA (default: US)"},
+        },
+    },
+    destructive=True,
+)
+async def import_aliexpress_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_product_detail
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    ae_pid     = str(args["ae_pid"])
+    ship_to    = args.get("ship_to_country", "US")
+
+    # 1. Fetch full product detail
+    try:
+        raw = await ae_ds_product_detail(ae_pid, ship_to=ship_to)
+    except RuntimeError as e:
+        return {"error": f"AliExpress product fetch failed: {e}"}
+
+    # Unwrap nested response
+    prod = (
+        raw.get("result", raw)
+        if "result" in raw
+        else raw
+    )
+    ae_item = prod.get("ae_item_base_info_dto", prod)
+    ae_sku_list = prod.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+    ae_images   = prod.get("ae_multimedia_info_dto", {}).get("image_urls", "")
+
+    title       = args.get("product_title") or ae_item.get("subject", "")
+    description = ae_item.get("detail", "")
+    images      = [i.strip() for i in ae_images.split(";") if i.strip()][:5] if ae_images else []
+
+    # Cost from first SKU or base price
+    cost_price = 0.0
+    if ae_sku_list:
+        try:
+            cost_price = float(ae_sku_list[0].get("sku_price", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    if not cost_price:
+        try:
+            cost_price = float(ae_item.get("min_activity_amount", ae_item.get("price", 0)) or 0)
+        except (TypeError, ValueError):
+            pass
+
+    sale_price = float(args.get("sale_price") or round(cost_price * 2.5, 2))
+
+    # Build Shopify variants from AliExpress SKUs
+    if ae_sku_list:
+        variants = [
+            {
+                "title":                (s.get("sku_attr", "Default Title") or "Default Title"),
+                "price":                str(sale_price),
+                "compare_at_price":     str(round(sale_price * 1.3, 2)),
+                "inventory_management": "shopify",
+                "inventory_quantity":   int(s.get("sku_available_stock", 50) or 50),
+            }
+            for s in ae_sku_list[:30]
+        ]
+    else:
+        variants = [{
+            "title": "Default Title",
+            "price": str(sale_price),
+            "compare_at_price": str(round(sale_price * 1.3, 2)),
+            "inventory_management": "shopify",
+            "inventory_quantity": 50,
+        }]
+
+    shopify_payload = {
+        "product": {
+            "title":        title,
+            "body_html":    f"<p>{description}</p>" if description else "",
+            "vendor":       "AliExpress",
+            "product_type": ae_item.get("category_id", ""),
+            "status":       "active",
+            "tags":         "dropship,aliexpress",
+            "variants":     variants,
+            "images":       [{"src": img} for img in images if img],
+        }
+    }
+
+    # 2. Create Shopify product
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/products.json",
+                                   json=shopify_payload)
+        shopify_product = result.get("product", {})
+        shopify_id = shopify_product.get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify create failed: {e}"}
+
+    # 3. Store mapping for margin tracking
+    if shopify_id:
+        await ctx.db.ae_products.update_one(
+            {"user_id": ctx.business_id, "ae_pid": ae_pid},
+            {"$set": {
+                "user_id":            ctx.business_id,
+                "shopify_product_id": str(shopify_id),
+                "ae_pid":             ae_pid,
+                "cost_price":         cost_price,
+                "sale_price":         sale_price,
+                "supplier":           "aliexpress",
+                "title":              title,
+                "imported_at":        datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+
+    return {
+        "success":           True,
+        "shopify_product_id": shopify_id,
+        "title":             title,
+        "cost_price":        cost_price,
+        "sale_price":        sale_price,
+        "margin_per_unit":   round(sale_price - cost_price, 2),
+        "margin_pct":        f"{round((sale_price - cost_price) / sale_price * 100, 1)}%" if sale_price else "N/A",
+        "images_imported":   len(images),
+        "variants_imported": len(variants),
+    }
+
+
+@tool(
+    name="aliexpress_fulfill_order",
+    description=(
+        "Fulfill a Shopify order using AliExpress DS. "
+        "Looks up the order shipping address and AliExpress-sourced line items, "
+        "then places the order with AliExpress DS. "
+        "Returns an AliExpress order ID for tracking."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["shopify_order_id"],
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID (numeric)"},
+        },
+    },
+    destructive=True,
+)
+async def aliexpress_fulfill_order(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_create_order, ae_ds_product_detail
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    order_id = str(args["shopify_order_id"])
+
+    # 1. Fetch Shopify order
+    try:
+        ord_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{order_id}.json")
+        order = ord_data.get("order", {})
+    except RuntimeError as e:
+        return {"error": f"Failed to fetch Shopify order: {e}"}
+    if not order:
+        return {"error": "Order not found"}
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+
+    # 2. Find AliExpress-sourced line items
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    ae_mappings: Dict[str, Any] = {}
+    if shopify_pids:
+        async for doc in ctx.db.ae_products.find(
+            {"user_id": ctx.business_id, "shopify_product_id": {"$in": shopify_pids}}
+        ):
+            ae_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not ae_mappings:
+        return {"error": "No AliExpress-sourced products found in this order. Only AliExpress-imported products can be fulfilled via AliExpress."}
+
+    # 3. Build AliExpress DS order payload
+    ae_product_items = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in ae_mappings:
+            continue
+        ae_pid    = ae_mappings[pid]["ae_pid"]
+        quantity  = int(li.get("quantity", 1))
+        # Get sku_id from product detail
+        sku_id = None
+        try:
+            detail    = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"))
+            sku_list  = detail.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+            if sku_list:
+                sku_id = sku_list[0].get("sku_id")
+        except Exception:
+            pass
+        item: Dict[str, Any] = {"product_id": ae_pid, "product_count": quantity}
+        if sku_id:
+            item["sku_id"] = str(sku_id)
+        ae_product_items.append(item)
+
+    if not ae_product_items:
+        return {"error": "Could not resolve AliExpress SKU IDs for order line items"}
+
+    order_payload = {
+        "logistics_address": {
+            "contact_person":  f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip(),
+            "mobile_no":       ship.get("phone") or order.get("phone") or "",
+            "address":         ship.get("address1", ""),
+            "city":            ship.get("city", ""),
+            "province":        ship.get("province", ""),
+            "zip":             ship.get("zip", ""),
+            "country":         ship.get("country_code", "US"),
+        },
+        "product_items": ae_product_items,
+    }
+
+    try:
+        result = await ae_ds_create_order(order_payload)
+    except RuntimeError as e:
+        return {"error": f"AliExpress order creation failed: {e}"}
+
+    ae_order_id = str(result.get("order_id", result.get("ae_order_id", f"AE-{order_id}")))
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "shopify_order_id": order_id},
+        {"$set": {
+            "user_id":          ctx.business_id,
+            "shopify_order_id": order_id,
+            "ae_order_id":      ae_order_id,
+            "status":           "created",
+            "created_at":       datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+
+    return {
+        "success":          True,
+        "ae_order_id":      ae_order_id,
+        "shopify_order_id": order_id,
+        "items_fulfilled":  len(ae_product_items),
+        "next_step":        "Use aliexpress_get_order_status to track, then aliexpress_sync_tracking_to_shopify when shipped.",
+    }
+
+
+@tool(
+    name="aliexpress_get_order_status",
+    description=(
+        "Check the status of an AliExpress DS fulfillment order. "
+        "Returns status, tracking number and carrier when shipped. "
+        "Pass either shopify_order_id (auto-lookup) or ae_order_id."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID for auto-lookup"},
+            "ae_order_id":      {"type": "string", "description": "AliExpress order ID if already known"},
+        },
+    },
+)
+async def aliexpress_get_order_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_get_order
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+
+    ae_order_id = args.get("ae_order_id")
+    if not ae_order_id and args.get("shopify_order_id"):
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": str(args["shopify_order_id"])}
+        )
+        if not doc:
+            return {"error": "No AliExpress fulfillment found. Use aliexpress_fulfill_order first."}
+        ae_order_id = doc.get("ae_order_id")
+
+    if not ae_order_id:
+        return {"error": "Provide shopify_order_id or ae_order_id"}
+
+    try:
+        data = await ae_ds_get_order(ae_order_id)
+    except RuntimeError as e:
+        return {"error": f"AliExpress order status fetch failed: {e}"}
+
+    order_info   = data.get("result", data) if isinstance(data, dict) else {}
+    status       = order_info.get("order_status", "UNKNOWN")
+    logistics    = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+    tracking_num = logistics[0].get("logistics_no") if logistics else None
+    carrier      = logistics[0].get("logistics_company") if logistics else None
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "ae_order_id": ae_order_id},
+        {"$set": {"status": status, "tracking_num": tracking_num, "carrier": carrier, "last_checked": datetime.utcnow()}},
+    )
+
+    return {
+        "ae_order_id":  ae_order_id,
+        "status":       status,
+        "tracking_num": tracking_num,
+        "carrier":      carrier,
+        "shipped":      status in ("FINISH", "IN_CANCEL", "PLACE_ORDER_SUCCESS"),
+        "tip":          "If tracking_num is available, use aliexpress_sync_tracking_to_shopify.",
+    }
+
+
+@tool(
+    name="aliexpress_sync_tracking_to_shopify",
+    description=(
+        "Push AliExpress tracking number to Shopify, triggering the shipping confirmation email to the customer."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID"},
+            "ae_order_id":      {"type": "string", "description": "AliExpress order ID (auto-looked up if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def aliexpress_sync_tracking_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_get_order
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    shopify_order_id = str(args.get("shopify_order_id", ""))
+    ae_order_id      = args.get("ae_order_id")
+
+    if not ae_order_id and shopify_order_id:
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": shopify_order_id}
+        )
+        if not doc:
+            return {"error": "No AliExpress fulfillment found for this order."}
+        ae_order_id = doc.get("ae_order_id")
+
+    if not ae_order_id:
+        return {"error": "Provide shopify_order_id or ae_order_id"}
+
+    # Get tracking from AliExpress
+    try:
+        data = await ae_ds_get_order(ae_order_id)
+    except RuntimeError as e:
+        return {"error": f"AliExpress tracking fetch failed: {e}"}
+
+    order_info   = data.get("result", data) if isinstance(data, dict) else {}
+    logistics    = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+    tracking_num = logistics[0].get("logistics_no") if logistics else None
+    carrier      = logistics[0].get("logistics_company", "") if logistics else ""
+    status       = order_info.get("order_status", "")
+
+    if not tracking_num:
+        return {"success": False, "ae_status": status,
+                "message": "Tracking not yet assigned. Try again when order is shipped."}
+
+    # Resolve shopify_order_id from DB if not provided
+    if not shopify_order_id:
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "ae_order_id": ae_order_id}
+        )
+        shopify_order_id = doc.get("shopify_order_id", "") if doc else ""
+
+    if not shopify_order_id:
+        return {"error": "Could not resolve Shopify order ID. Pass shopify_order_id explicitly."}
+
+    # Push to Shopify fulfillment
+    try:
+        fo_data  = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}/fulfillment_orders.json")
+        open_fos = [fo for fo in fo_data.get("fulfillment_orders", []) if fo.get("status") == "open"]
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment order fetch failed: {e}"}
+
+    if not open_fos:
+        return {"error": "No open Shopify fulfillment orders — may already be fulfilled"}
+
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": [
+                {
+                    "fulfillment_order_id": fo["id"],
+                    "fulfillment_order_line_items": [
+                        {"id": li["id"], "quantity": li["fulfillable_quantity"]}
+                        for li in fo.get("line_items", [])
+                    ],
+                }
+                for fo in open_fos
+            ],
+            "tracking_info": {"number": tracking_num, "company": carrier},
+            "notify_customer": True,
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/fulfillments.json", json=payload)
+        fulfillment_id = result.get("fulfillment", {}).get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment create failed: {e}"}
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "ae_order_id": ae_order_id},
+        {"$set": {
+            "status":                  "synced_to_shopify",
+            "tracking_num":            tracking_num,
+            "carrier":                 carrier,
+            "shopify_fulfillment_id":  str(fulfillment_id),
+            "synced_at":               datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "success":               True,
+        "tracking_num":          tracking_num,
+        "carrier":               carrier,
+        "shopify_order_id":      shopify_order_id,
+        "shopify_fulfillment_id": str(fulfillment_id),
+        "message":               f"Tracking {tracking_num} pushed to Shopify. Customer notified.",
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # AUTOBLOGGING TOOLS (SEO Agent)
 # ═════════════════════════════════════════════════════════════════════════════
 

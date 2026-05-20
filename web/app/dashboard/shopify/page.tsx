@@ -392,6 +392,8 @@ function OrdersTab() {
   const [acting, setActing] = useState<string | null>(null);
   const [cjStatus, setCjStatus] = useState<CJOrderStatus | null>(null);
   const [cjFulfilling, setCjFulfilling] = useState(false);
+  const [aeOrderStatus, setAeOrderStatus] = useState<CJOrderStatus | null>(null);
+  const [aeFulfilling, setAeFulfilling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -417,6 +419,35 @@ function OrdersTab() {
       });
       if (r.ok) setCjStatus(await r.json() as CJOrderStatus);
     } catch { /* silent */ }
+  }
+
+  async function loadAeStatus(orderId: string) {
+    setAeOrderStatus(null);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/aliexpress/order-status/${orderId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) setAeOrderStatus(await r.json() as CJOrderStatus);
+    } catch { /* silent */ }
+  }
+
+  async function fulfillViaAE(order: ShopifyOrder) {
+    setAeFulfilling(true);
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/aliexpress/fulfill/${order.id}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json() as { success?: boolean; ae_order_id?: string; detail?: string };
+      if (!r.ok) throw new Error(data.detail || "AliExpress fulfillment failed");
+      toast.success(`Order sent to AliExpress! Ref: ${data.ae_order_id}`);
+      await loadAeStatus(String(order.id));
+    } catch (e) { toast.error(e instanceof Error ? e.message : "AliExpress fulfillment failed"); }
+    finally { setAeFulfilling(false); }
   }
 
   async function fulfillViaCJ(order: ShopifyOrder) {
@@ -525,8 +556,8 @@ function OrdersTab() {
                     onClick={() => {
                       const next = selected?.id === o.id ? null : o;
                       setSelected(next);
-                      if (next) loadCjStatus(String(next.id));
-                      else setCjStatus(null);
+                      if (next) { loadCjStatus(String(next.id)); loadAeStatus(String(next.id)); }
+                      else { setCjStatus(null); setAeOrderStatus(null); }
                     }}
                     className={cn("border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer", selected?.id === o.id && "bg-slate-100")}
                   >
@@ -645,6 +676,32 @@ function OrdersTab() {
             )}
             <p className="text-[10px] text-slate-600">Placed {fmtDateTime(selected.created_at)}</p>
 
+            {/* AliExpress Fulfillment Status */}
+            {aeOrderStatus?.found && (
+              <div className="border border-slate-200 rounded-xl p-3 space-y-1.5">
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">AliExpress</p>
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "text-[10px] font-semibold px-2 py-0.5 rounded-full border",
+                    aeOrderStatus.status === "FINISH" || aeOrderStatus.status === "synced_to_shopify"
+                      ? "bg-emerald-50 text-emerald-600 border-emerald-200"
+                      : aeOrderStatus.status === "PLACE_ORDER_SUCCESS" || aeOrderStatus.status === "IN_CANCEL"
+                        ? "bg-blue-50 text-blue-600 border-blue-200"
+                        : "bg-amber-50 text-amber-600 border-amber-200"
+                  )}>
+                    {aeOrderStatus.status === "FINISH" ? "Delivered"
+                      : aeOrderStatus.status === "PLACE_ORDER_SUCCESS" ? "Shipped"
+                      : aeOrderStatus.status === "synced_to_shopify" ? "Tracking Synced"
+                      : aeOrderStatus.status ?? "Sent"}
+                  </span>
+                  <span className="text-[10px] text-slate-500">{aeOrderStatus.ae_order_id ?? aeOrderStatus.cj_order_num}</span>
+                </div>
+                {aeOrderStatus.tracking_num && (
+                  <p className="text-[10px] text-slate-500">{aeOrderStatus.carrier} · <span className="font-mono text-slate-700">{aeOrderStatus.tracking_num}</span></p>
+                )}
+              </div>
+            )}
+
             {/* CJ Fulfillment Status */}
             {cjStatus?.found && (
               <div className="border border-slate-200 rounded-xl p-3 space-y-1.5">
@@ -673,7 +730,7 @@ function OrdersTab() {
 
           {/* Actions */}
           <div className="px-4 pb-4 space-y-2 border-t border-slate-200 pt-3">
-            {/* CJ Fulfill button — for paid unfulfilled orders not yet sent to CJ */}
+            {/* Fulfill buttons — CJ and AliExpress for paid unfulfilled orders */}
             {selected.financial_status === "paid" && !selected.fulfillment_status && !cjStatus?.found && (
               <button
                 onClick={() => fulfillViaCJ(selected)}
@@ -681,6 +738,15 @@ function OrdersTab() {
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-50 transition-colors"
               >
                 {cjFulfilling ? <><Loader2 size={13} className="animate-spin" /> Sending to CJ…</> : <><Package size={13} /> Fulfill via CJ</>}
+              </button>
+            )}
+            {selected.financial_status === "paid" && !selected.fulfillment_status && !aeOrderStatus?.found && (
+              <button
+                onClick={() => fulfillViaAE(selected)}
+                disabled={aeFulfilling}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+              >
+                {aeFulfilling ? <><Loader2 size={13} className="animate-spin" /> Sending to AliExpress…</> : <><TrendingUp size={13} /> Fulfill via AliExpress</>}
               </button>
             )}
             {!selected.fulfillment_status && selected.financial_status === "paid" && (
@@ -722,6 +788,20 @@ type CJProduct = {
   is_free_shipping: boolean;
   supplier: string;
   listed_count: number;
+};
+
+// ── AliExpress types ──────────────────────────────────────────────────────────
+type AEProduct = {
+  ae_pid: string;
+  title: string;
+  category: string;
+  cost_price: number;
+  suggested_price: number;
+  image_url: string;
+  orders_count: number;
+  shipping_time: string;
+  store_name: string;
+  detail_url: string;
 };
 
 // ── AI Product Finder types ───────────────────────────────────────────────────
@@ -802,7 +882,7 @@ function ProductsTab() {
 
   // ── AI finder state ─────────────────────────────────────────────────────────
   const [finderOpen, setFinderOpen] = useState(false);
-  const [finderTab, setFinderTab] = useState<"ai" | "cj">("ai");
+  const [finderTab, setFinderTab] = useState<"ai" | "cj" | "ae">("ai");
   const [category, setCategory] = useState("");
   const [keywords, setKeywords] = useState("");
   const [count, setCount] = useState<number>(8);
@@ -819,6 +899,14 @@ function ProductsTab() {
   const [cjResults, setCjResults] = useState<CJProduct[]>([]);
   const [cjImportingIdx, setCjImportingIdx] = useState<number | null>(null);
   const [cjImportedIdxs, setCjImportedIdxs] = useState<Set<number>>(new Set());
+
+  // ── AliExpress source state ──────────────────────────────────────────────────
+  const [aeKeyword, setAeKeyword] = useState("");
+  const [aeMaxPrice, setAeMaxPrice] = useState("");
+  const [aeSearching, setAeSearching] = useState(false);
+  const [aeResults, setAeResults] = useState<AEProduct[]>([]);
+  const [aeImportingIdx, setAeImportingIdx] = useState<number | null>(null);
+  const [aeImportedIdxs, setAeImportedIdxs] = useState<Set<number>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -916,6 +1004,57 @@ function ProductsTab() {
     }
   }
 
+  async function searchAE(keywordOverride?: string) {
+    const kw = keywordOverride ?? aeKeyword;
+    if (!kw.trim()) { toast.error("Enter a search keyword"); return; }
+    setAeSearching(true);
+    setAeResults([]);
+    setAeImportedIdxs(new Set());
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const params = new URLSearchParams({ keyword: kw, page_size: "20" });
+      if (aeMaxPrice) params.set("max_price", aeMaxPrice);
+      const r = await fetch(`${apiBase}/aliexpress/products?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json() as { products: AEProduct[]; total: number };
+      setAeResults(data.products ?? []);
+      if (!data.products?.length) toast.info("No products found — try different keywords");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "AliExpress search failed");
+    } finally {
+      setAeSearching(false);
+    }
+  }
+
+  async function importFromAE(p: AEProduct, idx: number) {
+    setAeImportingIdx(idx);
+    try {
+      await shopPost({
+        action: "create_product",
+        product: {
+          title:        p.title,
+          description:  `Sourced from AliExpress. Category: ${p.category}`,
+          vendor:       p.store_name || "AliExpress",
+          product_type: p.category,
+          price:        String(p.suggested_price),
+          compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
+          tags:         `dropship,aliexpress,${p.category.toLowerCase()}`,
+          variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+        },
+      });
+      setAeImportedIdxs((prev) => new Set(prev).add(idx));
+      toast.success(`"${p.title.slice(0, 40)}" added to Shopify`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setAeImportingIdx(null);
+    }
+  }
+
   async function handleGenerate() {
     if (!category.trim()) { toast.error("Enter a store category first"); return; }
     setGenerating(true);
@@ -1010,6 +1149,15 @@ function ProductsTab() {
               )}
             >
               <span className="flex items-center gap-1.5"><Package size={11} /> Source from CJ</span>
+            </button>
+            <button
+              onClick={() => setFinderTab("ae")}
+              className={cn(
+                "px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-b-2",
+                finderTab === "ae" ? "border-brand text-brand bg-white" : "border-transparent text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <span className="flex items-center gap-1.5"><TrendingUp size={11} /> Source from AliExpress</span>
             </button>
           </div>
 
@@ -1341,6 +1489,130 @@ function ProductsTab() {
                 </div>
               )}
               </div>{/* end scrollable */}
+            </div>
+          )}
+
+          {/* AliExpress Source Panel */}
+          {finderTab === "ae" && (
+            <div className="flex flex-col" style={{maxHeight: "480px"}}>
+              {/* Search bar */}
+              <div className="px-4 pt-4 pb-3 flex flex-wrap gap-2 items-end border-b border-slate-100">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Product keyword</label>
+                  <input
+                    value={aeKeyword}
+                    onChange={(e) => setAeKeyword(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && searchAE(aeKeyword)}
+                    placeholder="e.g. bluetooth speaker, cat toy, gym band..."
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-72"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Max cost (USD)</label>
+                  <input
+                    value={aeMaxPrice}
+                    onChange={(e) => setAeMaxPrice(e.target.value)}
+                    placeholder="e.g. 20"
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-28"
+                  />
+                </div>
+                <button
+                  onClick={() => searchAE(aeKeyword)}
+                  disabled={aeSearching || !aeKeyword.trim()}
+                  className="flex items-center gap-2 px-4 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-medium transition-colors"
+                >
+                  {aeSearching ? <><Loader2 size={12} className="animate-spin" /> Searching…</> : <><Search size={12} /> Search AliExpress</>}
+                </button>
+              </div>
+
+              {/* Results */}
+              <div className="overflow-y-auto flex-1 px-4 py-3">
+                {aeSearching && (
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <div key={i} className="bg-slate-100 rounded-2xl p-3 animate-pulse flex flex-col gap-2">
+                        <div className="h-24 bg-slate-200 rounded-xl" />
+                        <div className="h-3 bg-slate-200 rounded w-3/4" />
+                        <div className="h-2 bg-slate-200 rounded w-1/2" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!aeSearching && aeResults.length > 0 && (
+                  <>
+                    <p className="text-xs text-slate-400 mb-3"><span className="font-semibold text-slate-700">{aeResults.length}</span> products from AliExpress · <span className="text-slate-500">{aeImportedIdxs.size} imported</span></p>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                      {aeResults.map((p, idx) => {
+                        const imported  = aeImportedIdxs.has(idx);
+                        const importing = aeImportingIdx === idx;
+                        const marginPct = p.cost_price > 0 ? Math.round((p.suggested_price - p.cost_price) / p.suggested_price * 100) : 0;
+                        return (
+                          <div key={idx} className={cn("border rounded-2xl p-3 flex flex-col gap-2 transition-all", imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-white hover:border-slate-300")}>
+                            {/* Image */}
+                            <div className="h-24 rounded-xl overflow-hidden bg-slate-100 relative flex-shrink-0">
+                              {p.image_url
+                                ? <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
+                                : <div className="w-full h-full flex items-center justify-center"><TrendingUp size={22} className="text-slate-400" /></div>}
+                              {imported && (
+                                <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl">
+                                  <CheckCircle2 size={20} className="text-emerald-600" />
+                                </div>
+                              )}
+                            </div>
+                            {/* Info */}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
+                              <p className="text-[10px] text-slate-500 truncate">{p.store_name || p.category}</p>
+                              {p.orders_count > 0 && <p className="text-[10px] text-emerald-600 font-medium">{p.orders_count.toLocaleString()} orders</p>}
+                              {p.shipping_time && <p className="text-[10px] text-slate-400">Ships in {p.shipping_time} days</p>}
+                            </div>
+                            {/* Pricing */}
+                            <div className="flex items-center justify-between text-[10px]">
+                              <div>
+                                <p className="text-slate-400 uppercase tracking-wider">Cost</p>
+                                <p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p>
+                              </div>
+                              <div className="text-center">
+                                <p className="text-emerald-600 uppercase tracking-wider font-semibold">{marginPct}% margin</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-slate-400 uppercase tracking-wider">Sell at</p>
+                                <p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p>
+                              </div>
+                            </div>
+                            {/* Import button */}
+                            <button
+                              onClick={() => importFromAE(p, idx)}
+                              disabled={imported || importing}
+                              className={cn(
+                                "w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
+                                imported
+                                  ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default"
+                                  : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50"
+                              )}
+                            >
+                              {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</>
+                              : imported ? <><Check size={11} /> Imported</>
+                              : <><Plus size={11} /> Import to Shopify</>}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {!aeSearching && aeResults.length === 0 && (
+                  <div className="flex flex-col items-center gap-2 text-center py-8">
+                    <TrendingUp size={28} className="text-slate-300 mb-1" />
+                    <p className="text-sm font-medium text-slate-600">Source Real Products from AliExpress</p>
+                    <p className="text-xs text-slate-400 max-w-sm">
+                      Search millions of AliExpress products with real prices, order volumes and shipping estimates. Import any product to Shopify in one click.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
