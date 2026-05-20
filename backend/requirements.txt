@@ -89,6 +89,7 @@ python-dotenv==1.2.1
 python-jose==3.5.0
 python-multipart==0.0.21
 pytokens==0.3.0
+pytrends==4.9.2
 pytz==2025.2
 PyYAML==6.0.3
 referencing==0.37.0

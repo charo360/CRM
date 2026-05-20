@@ -11722,6 +11722,420 @@ async def get_keyword_suggestions(ctx: ToolContext, args: Dict[str, Any]) -> Dic
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# CJDROPSHIPPING + MARKET INTELLIGENCE TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="search_cj_products",
+    description=(
+        "Search CJdropshipping supplier catalog for real products to sell. "
+        "Returns product name, cost price, sale price suggestion, images, shipping time, and CJ product ID. "
+        "Use this when a user wants to find products to source and sell in their Shopify store."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword":      {"type": "string",  "description": "Search term e.g. 'wireless earbuds', 'yoga mat', 'phone case'"},
+            "category_id":  {"type": "string",  "description": "Optional CJ category ID to filter results"},
+            "min_price":    {"type": "number",  "description": "Minimum product cost price in USD"},
+            "max_price":    {"type": "number",  "description": "Maximum product cost price in USD"},
+            "page_size":    {"type": "integer", "description": "Number of results to return (default 20, max 50)"},
+        },
+    },
+)
+async def search_cj_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_post
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    body: Dict[str, Any] = {
+        "productNameEn": args["keyword"],
+        "pageNum":       1,
+        "pageSize":      min(int(args.get("page_size", 20)), 50),
+    }
+    if args.get("category_id"):
+        body["categoryId"] = args["category_id"]
+    if args.get("min_price") is not None:
+        body["priceMin"] = args["min_price"]
+    if args.get("max_price") is not None:
+        body["priceMax"] = args["max_price"]
+
+    try:
+        data = await cj_post("/product/query", body)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    raw_list = data.get("list", []) if isinstance(data, dict) else []
+    products = []
+    for p in raw_list:
+        cost = float(p.get("sellPrice", 0) or 0)
+        products.append({
+            "cj_pid":          p.get("pid", ""),
+            "title":           p.get("productNameEn", ""),
+            "category":        p.get("categoryName", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "currency":        "USD",
+            "image_url":       p.get("productImage", ""),
+            "shipping_time":   p.get("shippingTime", ""),
+            "supplier_score":  p.get("supplierScore", ""),
+            "variants_count":  p.get("variants", 0),
+        })
+
+    return {
+        "keyword":       args["keyword"],
+        "total_found":   data.get("total", len(products)) if isinstance(data, dict) else len(products),
+        "products":      products,
+        "tip": "Use import_cj_product_to_shopify to add any product to the user's Shopify store.",
+    }
+
+
+@tool(
+    name="get_cj_hot_products",
+    description=(
+        "Get trending / hot-selling products from CJdropshipping — products with high order volumes across all CJ stores. "
+        "Use this to show what's selling well in a category right now across the market (not just the user's store)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "category_id": {"type": "string",  "description": "Optional CJ category ID (leave blank for all categories)"},
+            "page_size":   {"type": "integer", "description": "Number of results (default 20)"},
+        },
+    },
+)
+async def get_cj_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    params: Dict[str, Any] = {
+        "pageNum":  1,
+        "pageSize": min(int(args.get("page_size", 20)), 50),
+    }
+    if args.get("category_id"):
+        params["categoryId"] = args["category_id"]
+
+    try:
+        data = await cj_get("/product/hotProductList", params)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    raw_list = data.get("list", []) if isinstance(data, dict) else []
+    products = []
+    for p in raw_list:
+        cost = float(p.get("sellPrice", 0) or 0)
+        products.append({
+            "cj_pid":        p.get("pid", ""),
+            "title":         p.get("productNameEn", ""),
+            "category":      p.get("categoryName", ""),
+            "cost_price":    cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":     p.get("productImage", ""),
+            "orders_30d":    p.get("recentOrders", ""),
+            "shipping_time": p.get("shippingTime", ""),
+        })
+
+    return {
+        "source":   "CJdropshipping hot products",
+        "products": products,
+        "tip": "These are currently high-order-volume products across all CJ stores globally.",
+    }
+
+
+@tool(
+    name="get_market_trends",
+    description=(
+        "Get Google Trends data for product keywords — shows rising/falling search interest over the past 12 months. "
+        "Use this to identify trending product categories before sourcing them. "
+        "Compare multiple keywords to see which has more demand."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keywords"],
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "1–5 product keywords to compare e.g. ['wireless earbuds', 'bone conduction headphones']",
+            },
+            "geo": {"type": "string", "description": "Country code e.g. 'US', 'GB', 'ZA' (default: worldwide)"},
+            "timeframe": {"type": "string", "description": "Timeframe: 'today 12-m' (default), 'today 3-m', 'today 1-m'"},
+        },
+    },
+)
+async def get_market_trends(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        return {"error": "pytrends not installed. Run: pip install pytrends"}
+
+    keywords  = args["keywords"][:5]
+    geo       = args.get("geo", "")
+    timeframe = args.get("timeframe", "today 12-m")
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+
+        def _fetch():
+            pt = TrendReq(hl="en-US", tz=0, timeout=(10, 30))
+            pt.build_payload(keywords, cat=0, timeframe=timeframe, geo=geo, gprop="")
+            interest = pt.interest_over_time()
+            related  = pt.related_queries()
+            return interest, related
+
+        interest_df, related_dict = await loop.run_in_executor(None, _fetch)
+
+        summary = {}
+        if not interest_df.empty:
+            for kw in keywords:
+                if kw in interest_df.columns:
+                    col = interest_df[kw]
+                    summary[kw] = {
+                        "current_interest": int(col.iloc[-1]),
+                        "peak_interest":    int(col.max()),
+                        "avg_interest":     int(col.mean()),
+                        "trend":            "rising" if col.iloc[-1] > col.mean() else "declining",
+                    }
+
+        rising = {}
+        for kw in keywords:
+            kw_data = related_dict.get(kw, {})
+            top = kw_data.get("rising")
+            if top is not None and not top.empty:
+                rising[kw] = top.head(5)["query"].tolist()
+
+        return {
+            "timeframe": timeframe,
+            "geo":       geo or "Worldwide",
+            "keywords":  summary,
+            "rising_related_queries": rising,
+        }
+    except Exception as e:
+        return {"error": f"Google Trends fetch failed: {e}"}
+
+
+@tool(
+    name="import_cj_product_to_shopify",
+    description=(
+        "Import a CJdropshipping product into the user's Shopify store. "
+        "Fetches full product details from CJ (images, variants, description) and creates the Shopify listing. "
+        "Stores the CJ cost price in the database for margin tracking. "
+        "Requires both Shopify and CJdropshipping to be configured. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["cj_pid"],
+        "properties": {
+            "cj_pid":       {"type": "string", "description": "CJ product ID from search_cj_products or get_cj_hot_products"},
+            "sale_price":   {"type": "number", "description": "Price to sell at in your store (USD). Default: 2.5x cost price"},
+            "product_title": {"type": "string", "description": "Override the product title (optional)"},
+        },
+    },
+    destructive=True,
+)
+async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    cj_pid = args["cj_pid"]
+
+    # 1. Fetch full product detail from CJ
+    try:
+        detail = await cj_get(f"/product/query", {"pid": cj_pid})
+        products = detail.get("list", [detail]) if isinstance(detail, dict) else []
+        prod = products[0] if products else detail
+    except RuntimeError as e:
+        return {"error": f"CJ product fetch failed: {e}"}
+
+    cost_price  = float(prod.get("sellPrice", 0) or 0)
+    sale_price  = float(args.get("sale_price") or round(cost_price * 2.5, 2))
+    title       = args.get("product_title") or prod.get("productNameEn", "")
+    description = prod.get("productDescription", "") or prod.get("description", "")
+    images      = prod.get("productImages", []) or ([prod.get("productImage")] if prod.get("productImage") else [])
+
+    # Build variants from CJ variants list
+    cj_variants = prod.get("variants", [])
+    if isinstance(cj_variants, list) and cj_variants:
+        variants = [
+            {
+                "title":                v.get("variantNameEn", "Default Title"),
+                "price":                str(sale_price),
+                "compare_at_price":     str(round(sale_price * 1.3, 2)),
+                "inventory_management": "shopify",
+                "inventory_quantity":   50,
+            }
+            for v in cj_variants[:30]
+        ]
+    else:
+        variants = [{
+            "title": "Default Title",
+            "price": str(sale_price),
+            "compare_at_price": str(round(sale_price * 1.3, 2)),
+            "inventory_management": "shopify",
+            "inventory_quantity": 50,
+        }]
+
+    shopify_payload = {
+        "product": {
+            "title":       title,
+            "body_html":   f"<p>{description}</p>" if description else "",
+            "vendor":      "CJdropshipping",
+            "product_type": prod.get("categoryName", ""),
+            "status":      "active",
+            "tags":        f"dropship,cj,{prod.get('categoryName', '')}",
+            "variants":    variants,
+            "images":      [{"src": img} for img in images[:5] if img],
+        }
+    }
+
+    # 2. Create product in Shopify
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/products.json",
+                                   json=shopify_payload)
+        shopify_product = result.get("product", {})
+        shopify_id = shopify_product.get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify create failed: {e}"}
+
+    # 3. Store CJ cost price mapping in DB for margin tracking
+    if shopify_id:
+        await ctx.db.cj_products.update_one(
+            {"user_id": ctx.business_id, "cj_pid": cj_pid},
+            {"$set": {
+                "user_id":           ctx.business_id,
+                "shopify_product_id": str(shopify_id),
+                "cj_pid":            cj_pid,
+                "cost_price":        cost_price,
+                "sale_price":        sale_price,
+                "supplier":          "cj",
+                "title":             title,
+                "imported_at":       __import__("datetime").datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+
+    return {
+        "success":          True,
+        "shopify_product_id": shopify_id,
+        "title":            title,
+        "cost_price":       cost_price,
+        "sale_price":       sale_price,
+        "margin_per_unit":  round(sale_price - cost_price, 2),
+        "margin_pct":       f"{round((sale_price - cost_price) / sale_price * 100, 1)}%" if sale_price else "N/A",
+        "images_imported":  len(images[:5]),
+        "variants_imported": len(variants),
+    }
+
+
+@tool(
+    name="shopify_product_analytics",
+    description=(
+        "Get per-product sales performance for the Shopify store: units sold, revenue, refund count, "
+        "and profit margin (if the product was sourced via CJdropshipping). "
+        "Use this to identify best sellers, worst performers, and high-margin products."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "days":     {"type": "integer", "description": "Lookback period in days (default 30)"},
+            "limit":    {"type": "integer", "description": "Max products to return (default 20)"},
+            "sort_by":  {"type": "string",  "description": "'revenue' (default), 'units', 'margin', 'refunds'"},
+        },
+    },
+)
+async def shopify_product_analytics(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from .composio_helper import composio_proxy as nango_proxy
+    from datetime import datetime, timedelta
+
+    days  = int(args.get("days", 30))
+    limit = int(args.get("limit", 20))
+    sort_by = args.get("sort_by", "revenue")
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+
+    try:
+        orders_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                        "/admin/api/2024-01/orders.json",
+                                        params={
+                                            "status": "any",
+                                            "financial_status": "paid",
+                                            "created_at_min": since,
+                                            "limit": "250",
+                                            "fields": "id,line_items,refunds,financial_status",
+                                        })
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    orders = orders_data.get("orders", [])
+
+    # Aggregate by product
+    product_stats: Dict[str, Dict] = {}
+    for order in orders:
+        for item in order.get("line_items", []):
+            pid   = str(item.get("product_id", ""))
+            title = item.get("title", "Unknown")
+            qty   = int(item.get("quantity", 0))
+            rev   = float(item.get("price", 0)) * qty
+            key   = pid or title
+
+            if key not in product_stats:
+                product_stats[key] = {
+                    "product_id": pid,
+                    "title":      title,
+                    "units_sold": 0,
+                    "revenue":    0.0,
+                    "refunds":    0,
+                    "cost_price": None,
+                }
+            product_stats[key]["units_sold"] += qty
+            product_stats[key]["revenue"]    += rev
+
+        for refund in order.get("refunds", []):
+            for ri in refund.get("refund_line_items", []):
+                li   = ri.get("line_item", {})
+                pid  = str(li.get("product_id", ""))
+                title = li.get("title", "")
+                key  = pid or title
+                if key in product_stats:
+                    product_stats[key]["refunds"] += int(ri.get("quantity", 1))
+
+    # Enrich with CJ cost prices
+    cj_docs = await ctx.db.cj_products.find({"user_id": ctx.business_id}).to_list(500)
+    cost_map = {str(d["shopify_product_id"]): d["cost_price"] for d in cj_docs if d.get("shopify_product_id")}
+
+    results = []
+    for key, s in product_stats.items():
+        cost = cost_map.get(s["product_id"])
+        margin = round(s["revenue"] - (cost * s["units_sold"]), 2) if cost else None
+        results.append({
+            **s,
+            "revenue":      round(s["revenue"], 2),
+            "cost_price":   cost,
+            "gross_margin": margin,
+            "margin_pct":   f"{round(margin / s['revenue'] * 100, 1)}%" if margin and s["revenue"] else "N/A",
+        })
+
+    sort_keys = {"revenue": "revenue", "units": "units_sold", "margin": "gross_margin", "refunds": "refunds"}
+    sk = sort_keys.get(sort_by, "revenue")
+    results.sort(key=lambda x: (x.get(sk) or 0), reverse=True)
+
+    return {
+        "period_days": days,
+        "products":    results[:limit],
+        "total_products_with_sales": len(results),
+        "note": "gross_margin only available for products sourced via CJdropshipping",
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # AUTOBLOGGING TOOLS (SEO Agent)
 # ═════════════════════════════════════════════════════════════════════════════
 

@@ -403,6 +403,8 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_adjust_inventory", "shopify_add_product",
     "shopify_refund_order", "shopify_update_price", "shopify_tag_customer",
     "shopify_publish_blog_post", "generate_blog_post",
+    "search_cj_products", "get_cj_hot_products", "import_cj_product_to_shopify",
+    "get_market_trends", "shopify_product_analytics",
 })
 SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "shopify_fulfill_order", "shopify_cancel_order",
@@ -415,12 +417,14 @@ SHOPIFY_PRODUCTS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_update_price", "shopify_tag_customer",
     "list_products", "create_product", "update_product", "delete_product",
     "list_customers", "get_customer",
+    "search_cj_products", "get_cj_hot_products", "import_cj_product_to_shopify",
+    "get_market_trends", "shopify_product_analytics",
 })
 SHOPIFY_ANALYTICS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "get_shopify_analytics", "list_shopify_orders", "list_shopify_products",
     "shopify_get_growth_metrics", "shopify_get_abandoned_carts",
     "get_revenue_trends", "get_top_customers", "get_sales_pipeline",
-    "shopify_tag_customer",
+    "shopify_tag_customer", "shopify_product_analytics", "get_market_trends",
 })
 SHOPIFY_CUSTOMERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "get_shopify_analytics",
