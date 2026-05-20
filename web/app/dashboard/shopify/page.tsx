@@ -367,6 +367,7 @@ function OverviewTab({ period, setPeriod }: { period: Period; setPeriod: (p: Per
 type CJOrderStatus = {
   found: boolean;
   cj_order_num?: string;
+  ae_order_id?: string;
   status?: string;
   tracking_num?: string | null;
   carrier?: string | null;
