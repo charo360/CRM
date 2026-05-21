@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Mail, Plus, Send, Trash2, BarChart2, Settings,
   Loader2, CheckCircle2, Clock, FileText, RefreshCw, X,
   Zap, Users, AlertCircle, Eye, Play, Sparkles, Trash,
   BookOpen, Save, ImageIcon, Lightbulb, ChevronDown, ChevronUp,
-  Search, Package,
+  Search, Package, Link2, Video,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { toast } from "sonner";
@@ -40,6 +40,8 @@ type Campaign = {
   sent_at: string;
   created_at: string;
   body_html?: string;
+  recipient_emails?: string[];
+  recipient_tags?: string[];
 };
 
 type Stats = {
@@ -53,6 +55,7 @@ type EmailSettings = {
   from_name: string;
   from_email: string;
   credentials: Record<string, string>;
+  from_addresses?: Array<{ label: string; name: string; email: string }>;
 };
 
 type SavedTemplate = {
@@ -72,6 +75,16 @@ type CatalogProduct = {
 };
 
 type MediaImage = { url: string; label: string; source: "catalog" | "chat" };
+
+type EmailLink = { label: string; url: string };
+
+const DEFAULT_LINKS: EmailLink[] = [
+  { label: "Primary CTA",  url: "" },
+  { label: "Sign Up",      url: "" },
+  { label: "Book a Demo",  url: "" },
+  { label: "Website",      url: "" },
+  { label: "Unsubscribe",  url: "" },
+];
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -596,6 +609,40 @@ function AIGenerateStep({
   const [aiImages, setAiImages] = useState<{ hero: boolean; products: number[] } | null>(null);
   const [showCatalogPicker, setShowCatalogPicker] = useState(false);
   const [mediaTarget, setMediaTarget] = useState<"hero" | number | null>(null);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [links, setLinks] = useState<EmailLink[]>(DEFAULT_LINKS);
+  const [showLinks, setShowLinks] = useState(false);
+  const [savingLinks, setSavingLinks] = useState(false);
+
+  // Load saved link library from settings on mount
+  useEffect(() => {
+    apiGet<{ link_library?: EmailLink[] }>("/email-marketing/settings")
+      .then(s => { if (s.link_library?.length) setLinks(s.link_library); })
+      .catch(() => {});
+  }, []);
+
+  const updateLink = (i: number, k: keyof EmailLink, v: string) =>
+    setLinks(p => p.map((l, idx) => idx === i ? { ...l, [k]: v } : l));
+  const addLink = () => setLinks(p => [...p, { label: "", url: "" }]);
+  const removeLink = (i: number) => setLinks(p => p.filter((_, idx) => idx !== i));
+
+  async function saveLinks() {
+    setSavingLinks(true);
+    try {
+      await apiPost("/email-marketing/link-library", { links });
+      toast.success("Links saved for reuse");
+    } catch { toast.error("Failed to save links"); }
+    finally { setSavingLinks(false); }
+  }
+
+  // Auto-extract YouTube/Vimeo video info from URL
+  const videoInfo = useMemo(() => {
+    if (!videoUrl.trim()) return null;
+    const yt = videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    if (yt) return { type: "youtube" as const, thumbnailUrl: `https://img.youtube.com/vi/${yt[1]}/hqdefault.jpg` };
+    if (/vimeo\.com\/\d+/.test(videoUrl)) return { type: "vimeo" as const, thumbnailUrl: "" };
+    return { type: "other" as const, thumbnailUrl: "" };
+  }, [videoUrl]);
 
   const addProduct = () => {
     if (products.length < 6) setProducts(p => [...p, { name: "", price: "", description: "", image_url: "" }]);
@@ -624,6 +671,8 @@ function AIGenerateStep({
           description, brand, theme,
           logo_url: logoUrl.trim(),
           hero_image_url: heroImageUrl.trim(),
+          video_url: videoUrl.trim(),
+          links: links.filter(l => l.url.trim()),
           products: products.filter(p => p.name.trim()),
         }),
       });
@@ -779,7 +828,83 @@ function AIGenerateStep({
                   </div>
                 )}
               </div>
+              {/* Video */}
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <Video size={11} className="text-slate-400" />
+                  <label className="text-xs font-medium text-slate-600">YouTube / Vimeo URL <span className="text-slate-400 font-normal">(optional)</span></label>
+                </div>
+                <input value={videoUrl} onChange={e => setVideoUrl(e.target.value)}
+                  placeholder="https://youtube.com/watch?v=… or vimeo.com/…"
+                  className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+                {videoInfo && (
+                  <div className="mt-1 relative rounded-lg overflow-hidden border border-slate-200 bg-slate-900" style={{ height: 64 }}>
+                    {videoInfo.thumbnailUrl && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={videoInfo.thumbnailUrl} alt="video thumbnail" className="w-full h-full object-cover opacity-70" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                    )}
+                    <div className="absolute inset-0 flex items-center justify-center gap-2">
+                      <div className="bg-white/90 rounded-full w-8 h-8 flex items-center justify-center">
+                        <Play size={13} className="text-slate-800 ml-0.5" />
+                      </div>
+                      <span className="text-white text-xs font-semibold drop-shadow">
+                        {videoInfo.type === "youtube" ? "YouTube" : videoInfo.type === "vimeo" ? "Vimeo" : "Video"} preview block will appear in email
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
               <p className="text-[11px] text-slate-400">Product image fields appear per-product below ↓</p>
+            </div>
+          )}
+        </div>
+
+        {/* Links */}
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <button onClick={() => setShowLinks(v => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors text-sm">
+            <span className="font-medium text-slate-700 flex items-center gap-2">
+              <Link2 size={14} className="text-slate-400" />
+              Links
+              <span className="text-slate-400 font-normal">(CTA, sign up, demo...)</span>
+              {links.filter(l => l.url.trim()).length > 0 && (
+                <span className={`text-[10px] ${G.badge} px-1.5 py-0.5 rounded-full font-semibold`}>
+                  {links.filter(l => l.url.trim()).length} set
+                </span>
+              )}
+            </span>
+            {showLinks ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+          </button>
+
+          {showLinks && (
+            <div className="px-4 py-4 space-y-3 border-t border-slate-100">
+              <p className="text-[11px] text-slate-400">
+                Add your key URLs once — the AI uses them in buttons, CTAs, footers, and social links instead of placeholders.
+              </p>
+              {links.map((link, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input value={link.label} onChange={e => updateLink(i, "label", e.target.value)}
+                    placeholder="Label"
+                    className={`w-28 shrink-0 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
+                  <input value={link.url} onChange={e => updateLink(i, "url", e.target.value)}
+                    placeholder="https://..."
+                    className={`flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
+                  <button onClick={() => removeLink(i)} className="text-slate-300 hover:text-red-500 shrink-0 transition-colors">
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+              <div className="flex items-center justify-between pt-1">
+                <button onClick={addLink}
+                  className={`flex items-center gap-1 text-xs ${G.text} hover:text-green-800 font-medium`}>
+                  <Plus size={12} /> Add link
+                </button>
+                <button onClick={saveLinks} disabled={savingLinks}
+                  className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 disabled:opacity-50 transition-colors">
+                  {savingLinks ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+                  Save for reuse
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1448,6 +1573,89 @@ function SendModal({ campaign, onClose, onSent }: { campaign: Campaign; onClose:
   );
 }
 
+// ── Recipients Modal ──────────────────────────────────────────────────────────
+
+function RecipientsModal({ campaign, onClose }: { campaign: Campaign; onClose: () => void }) {
+  const [full, setFull] = useState<Campaign | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    apiGet<Campaign>(`/email-marketing/campaigns/${campaign.id}`)
+      .then(d => setFull(d))
+      .catch(() => setFull(campaign))
+      .finally(() => setLoading(false));
+  }, [campaign]);
+
+  const emails = full?.recipient_emails ?? [];
+  const tags   = full?.recipient_tags ?? [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+          <div>
+            <h2 className="text-base font-semibold text-slate-800">Recipients</h2>
+            <p className="text-xs text-slate-400 mt-0.5">{campaign.name}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 size={22} className={`animate-spin ${G.text}`} />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex gap-4 text-sm">
+                <div className={`flex items-center gap-1.5 px-3 py-1.5 ${G.light} ${G.text} rounded-lg font-medium`}>
+                  <CheckCircle2 size={13} /> {campaign.stats.sent} sent
+                </div>
+                {campaign.stats.failed > 0 && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg font-medium">
+                    <AlertCircle size={13} /> {campaign.stats.failed} failed
+                  </div>
+                )}
+              </div>
+              {tags.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Tags</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {tags.map(t => (
+                      <span key={t} className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-full text-xs">{t}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {emails.length > 0 ? (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Email addresses ({emails.length})</p>
+                  <div className="space-y-1 max-h-60 overflow-y-auto">
+                    {emails.map(e => (
+                      <div key={e} className="flex items-center gap-2 px-3 py-2 bg-slate-50 rounded-lg text-sm text-slate-700">
+                        <Mail size={12} className="text-slate-400 shrink-0" />
+                        {e}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-400 text-center py-4">No individual addresses on record</p>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="px-6 py-3 border-t border-slate-100">
+          <button onClick={onClose}
+            className="w-full py-2 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Settings panel ─────────────────────────────────────────────────────────────
 
 const PROVIDERS = [
@@ -1501,6 +1709,18 @@ function SettingsPanel() {
   const setCred = (k: string, v: string) => setSettings(p => ({
     ...p, credentials: { ...p.credentials, [k]: v },
   }));
+
+  const addFromAddress = () => setSettings(p => ({
+    ...p, from_addresses: [...(p.from_addresses ?? []), { label: "", name: "", email: "" }],
+  }));
+  const removeFromAddress = (i: number) => setSettings(p => ({
+    ...p, from_addresses: (p.from_addresses ?? []).filter((_, idx) => idx !== i),
+  }));
+  const setFromAddress = (i: number, k: "label" | "name" | "email", v: string) =>
+    setSettings(p => ({
+      ...p,
+      from_addresses: (p.from_addresses ?? []).map((a, idx) => idx === i ? { ...a, [k]: v } : a),
+    }));
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -1687,6 +1907,7 @@ export default function EmailMarketingPage() {
   const [sendTarget, setSendTarget] = useState<Campaign | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [previewCampaign, setPreviewCampaign] = useState<Campaign | null>(null);
+  const [recipientsTarget, setRecipientsTarget] = useState<Campaign | null>(null);
   const [libraryPrefill, setLibraryPrefill] = useState<{ html: string; subject: string } | null>(null);
 
   const loadData = useCallback(async () => {
@@ -1836,13 +2057,14 @@ export default function EmailMarketingPage() {
                       </td>
                       <td className="px-5 py-4 hidden lg:table-cell">
                         {c.stats.sent > 0 ? (
-                          <div className="flex items-center gap-1 text-sm">
-                            <Users size={13} className="text-slate-400" />
-                            <span className="text-slate-700">{c.stats.sent.toLocaleString()}</span>
+                          <button onClick={() => setRecipientsTarget(c)}
+                            className="flex items-center gap-1 text-sm group hover:text-indigo-600 transition-colors">
+                            <Users size={13} className="text-slate-400 group-hover:text-indigo-500" />
+                            <span className="text-slate-700 group-hover:text-indigo-600">{c.stats.sent.toLocaleString()}</span>
                             {c.stats.failed > 0 && (
                               <span className="text-red-500 text-xs">({c.stats.failed} failed)</span>
                             )}
-                          </div>
+                          </button>
                         ) : <span className="text-xs text-slate-400">—</span>}
                       </td>
                       <td className="px-5 py-4 hidden lg:table-cell">
@@ -1851,16 +2073,18 @@ export default function EmailMarketingPage() {
                         </span>
                       </td>
                       <td className="px-5 py-4">
-                        <div className="flex items-center gap-1 justify-end">
+                        <div className="flex items-center gap-1.5 justify-end">
                           <button onClick={() => previewCampaignHtml(c)}
                             className="p-1.5 text-slate-400 hover:text-slate-700 transition-colors" title="Preview">
                             <Eye size={14} />
                           </button>
-                          {c.status === "draft" && (
+                          {c.status === "draft" ? (
                             <button onClick={() => setSendTarget(c)}
                               className={`flex items-center gap-1.5 px-3 py-1.5 ${G.light} ${G.text} rounded-lg text-xs font-medium hover:bg-green-100 transition-colors`}>
                               <Play size={11} /> Send
                             </button>
+                          ) : (
+                            <span className="inline-block w-[62px]" />
                           )}
                           <button onClick={() => deleteCampaign(c.id)} disabled={deleting === c.id}
                             className="p-1.5 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50">
@@ -1901,6 +2125,9 @@ export default function EmailMarketingPage() {
       )}
       {sendTarget && (
         <SendModal campaign={sendTarget} onClose={() => setSendTarget(null)} onSent={loadData} />
+      )}
+      {recipientsTarget && (
+        <RecipientsModal campaign={recipientsTarget} onClose={() => setRecipientsTarget(null)} />
       )}
       {previewCampaign?.body_html && (
         <EmailPreviewModal

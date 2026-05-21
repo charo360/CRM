@@ -114,6 +114,13 @@ function analyzeEmailType(description: string, products: Product[], heroImageUrl
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
+type EmailLink = { label: string; url: string };
+
+function extractYouTubeThumbnail(url: string): string {
+  const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return m ? `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg` : "";
+}
+
 function buildPrompt(
   description: string,
   brand: string,
@@ -122,16 +129,52 @@ function buildPrompt(
   logoUrl: string,
   heroImageUrl: string,
   analysis: EmailAnalysis,
+  links: EmailLink[],
+  videoUrl: string,
 ): string {
   const accent    = THEME_COLORS[theme] ?? "#009b3a";
   const dark      = THEME_DARK[theme]   ?? "#007a2e";
   const brandName = brand || "the brand";
   const { design_level, framework, email_type } = analysis;
 
-  // Allowed image URLs
+  // ── Link library ──────────────────────────────────────────────────────────
+  const filledLinks = links.filter(l => l.url.trim());
+  const primaryCtaUrl = filledLinks.find(l =>
+    /primary|cta|main|shop|buy|get started|start/i.test(l.label)
+  )?.url ?? filledLinks[0]?.url ?? "";
+
+  const linksGuide = filledLinks.length > 0
+    ? `LINKS — use these real URLs for ALL buttons and CTAs (never write {{CTA_URL}} when real URLs are given):\n${filledLinks.map(l => `  • ${l.label}: ${l.url}`).join("\n")}\nThe most important CTA should use: ${primaryCtaUrl}`
+    : `CTA URL: use the placeholder {{CTA_URL}} for all main CTA buttons.`;
+
+  // ── Video block ───────────────────────────────────────────────────────────
+  const videoThumb = videoUrl.trim() ? extractYouTubeThumbnail(videoUrl.trim()) : "";
+  const videoBlockSpec = videoUrl.trim() && design_level !== "plain"
+    ? `
+VIDEO BLOCK — include this section directly after the hero banner:
+  <mj-section background-url="${videoThumb || ""}" background-size="cover" background-color="#0f172a" padding="64px 0">
+    <mj-column>
+      <mj-text align="center" padding="0">
+        <a href="${videoUrl.trim()}" style="display:inline-flex;align-items:center;justify-content:center;width:72px;height:72px;background:rgba(255,255,255,0.95);border-radius:50%;text-decoration:none;box-shadow:0 4px 28px rgba(0,0,0,0.5);">
+          <span style="font-size:30px;margin-left:5px;color:#0f172a;">▶</span>
+        </a>
+      </mj-text>
+      <mj-spacer height="14px" />
+      <mj-text align="center" color="#ffffff" font-size="14px" font-weight="600" letter-spacing="0.5px" padding="0">▶ Watch the video</mj-text>
+    </mj-column>
+  </mj-section>
+If the background image above is empty, use background-color="${accent}" instead.`
+    : "";
+
+  const videoLinkForPlain = videoUrl.trim() && design_level === "plain"
+    ? `\n\nInclude a simple inline text link to the video: "▶ Watch here: ${videoUrl.trim()}"`
+    : "";
+
+  // ── Allowed image URLs ────────────────────────────────────────────────────
   const allowedUrls: string[] = [];
   if (logoUrl)      allowedUrls.push(`"${logoUrl}" (logo)`);
   if (heroImageUrl && design_level !== "plain") allowedUrls.push(`"${heroImageUrl}" (hero banner)`);
+  if (videoThumb && design_level !== "plain")   allowedUrls.push(`"${videoThumb}" (video thumbnail — use ONLY inside the VIDEO BLOCK section bg)`);
   products.forEach((p, i) => {
     if (p.image_url && design_level !== "plain") allowedUrls.push(`"${p.image_url}" (product ${i+1}: ${p.name})`);
   });
@@ -173,7 +216,7 @@ COPY RULES:
 • Write genuinely — no corporate jargon, no exclamation-mark spam
 • Subject line: write 3 subject line options as HTML comments at the very top: <!-- SUBJECT: option1 | option2 | option3 -->
 • Personalisation token: use {{FIRST_NAME}} as the greeting if appropriate
-• CTA href: {{CTA_URL}}
+• ${linksGuide}${videoLinkForPlain}
 
 OUTPUT: ONLY raw MJML XML starting with <mjml> and ending with </mjml>. Nothing else.`.trim();
   }
@@ -208,13 +251,16 @@ LAYOUT:
    • Bold 26px headline (${accent} first word or accent underline via <span>)
    • 16px #374151 body paragraph — ${frameworkGuide[framework]}
    • mj-spacer 20px
-   • <mj-button background-color="${accent}" border-radius="8px" font-size="15px" padding="12px 32px" href="{{CTA_URL}}">CTA BUTTON</mj-button>
+   • <mj-button background-color="${accent}" border-radius="8px" font-size="15px" padding="12px 32px" href="${primaryCtaUrl || "{{CTA_URL}}"}">CTA BUTTON</mj-button>
 
-3. CONTENT SECTION: 2-3 short content blocks (mj-section bg="#ffffff" with mj-divider between each)
+${videoBlockSpec ? `2b.${videoBlockSpec}\n\n` : ""}3. CONTENT SECTION: 2-3 short content blocks (mj-section bg="#ffffff" with mj-divider between each)
    • Each: small bold label (${accent} color, 11px uppercase), heading 18px, 14px body text
 
 4. FOOTER: mj-section bg="#f9fafb" padding="24px"
    • 12px #9ca3af centred text, unsubscribe + view-in-browser links in ${accent}
+
+LINKS:
+${linksGuide}
 
 COPY RULES:
 • ${frameworkGuide[framework]}
@@ -280,7 +326,7 @@ REQUIRED SECTIONS:
 
 2. ${heroSpec}
 
-3. BENEFITS BAR: mj-section bg="#ffffff" padding="22px 16px"
+${videoBlockSpec ? `2b.${videoBlockSpec}\n` : ""}3. BENEFITS BAR: mj-section bg="#ffffff" padding="22px 16px"
    • 3 mj-columns — each: emoji (32px), bold 14px stat, 12px #6b7280 label
    • Pick 3 benefits that genuinely match this campaign (shipping, guarantee, social proof, speed, quality, savings…)
 
@@ -294,12 +340,16 @@ ${productCards}
    • Bold 24px white headline (urgency/benefit)
    • 15px white/80% supporting line
    • mj-spacer 20px
-   • <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">BUTTON</mj-button>
+   • <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="${primaryCtaUrl || "{{CTA_URL}}"}">BUTTON</mj-button>
 
 LAST. FOOTER: mj-section bg="#f9fafb" padding="26px 24px"
    • © 2025 ${brandName}. All rights reserved. — 12px #9ca3af
    • Unsubscribe · View in browser — 12px ${accent}
    • "Sent with ♥ by Zilo" — 11px #d1d5db
+${filledLinks.length > 1 ? `   • Include additional links in the footer: ${filledLinks.slice(1).map(l => `${l.label} (${l.url})`).join(", ")}` : ""}
+
+LINKS:
+${linksGuide}
 
 COPY RULES:
 • ${frameworkGuide[framework]}
@@ -378,6 +428,8 @@ export async function POST(req: NextRequest) {
     theme?: string;
     logo_url?: string;
     hero_image_url?: string;
+    video_url?: string;
+    links?: EmailLink[];
   };
   try {
     body = await req.json();
@@ -392,6 +444,8 @@ export async function POST(req: NextRequest) {
     theme = "zilo",
     logo_url = "",
     hero_image_url: userHeroUrl = "",
+    video_url = "",
+    links = [],
   } = body;
 
   if (!description.trim()) {
@@ -428,8 +482,8 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // 3. Build the MJML prompt with all available images
-  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim(), heroImageUrl, analysis);
+  // 3. Build the MJML prompt with all available images + links + video
+  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim(), heroImageUrl, analysis, links, video_url);
 
   // 4. Call Claude to write the MJML
   try {

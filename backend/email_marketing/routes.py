@@ -24,6 +24,11 @@ class EmailSettings(BaseModel):
     from_name: str = ""
     from_email: str = ""
     credentials: Dict[str, Any] = {}
+    link_library: List[Dict[str, str]] = []  # [{label, url}, ...]
+
+
+class LinkLibraryUpdate(BaseModel):
+    links: List[Dict[str, str]] = []
 
 
 class CampaignCreate(BaseModel):
@@ -132,12 +137,13 @@ def make_email_marketing_router(get_current_user, db):
         await db.email_settings.update_one(
             {"user_id": user_id},
             {"$set": {
-                "user_id":     user_id,
-                "provider":    body.provider,
-                "from_name":   body.from_name,
-                "from_email":  body.from_email,
-                "credentials": body.credentials,
-                "updated_at":  _now(),
+                "user_id":      user_id,
+                "provider":     body.provider,
+                "from_name":    body.from_name,
+                "from_email":   body.from_email,
+                "credentials":  body.credentials,
+                "link_library": body.link_library,
+                "updated_at":   _now(),
             }},
             upsert=True,
         )
@@ -459,6 +465,19 @@ def make_email_marketing_router(get_current_user, db):
             return {"url": url}
         except RuntimeError as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    # ── Link library ─────────────────────────────────────────────────────────
+
+    @router.post("/link-library")
+    async def save_link_library(body: LinkLibraryUpdate, user=Depends(get_current_user)):
+        """Save / overwrite the user's reusable email link library."""
+        user_id = _uid(user)
+        await db.email_settings.update_one(
+            {"user_id": user_id},
+            {"$set": {"link_library": body.links, "updated_at": _now()}},
+            upsert=True,
+        )
+        return {"ok": True}
 
     # ── Stats ──────────────────────────────────────────────────────────────────
 
