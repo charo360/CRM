@@ -4,29 +4,115 @@ const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api";
 
 type Product = { name: string; price: string; description: string; image_url?: string };
 
+// ── Colour maps ───────────────────────────────────────────────────────────────
+
 const THEME_COLORS: Record<string, string> = {
-  zilo:   "#009b3a",
-  indigo: "#6366f1",
-  red:    "#ef4444",
-  green:  "#10b981",
-  blue:   "#3b82f6",
-  amber:  "#f59e0b",
-  dark:   "#0f172a",
-  purple: "#8b5cf6",
-  orange: "#f97316",
+  zilo: "#009b3a", indigo: "#6366f1", red: "#ef4444", green: "#10b981",
+  blue: "#3b82f6", amber: "#f59e0b", dark: "#0f172a", purple: "#8b5cf6", orange: "#f97316",
+};
+const THEME_DARK: Record<string, string> = {
+  zilo: "#007a2e", indigo: "#4f46e5", red: "#dc2626", green: "#059669",
+  blue: "#2563eb", amber: "#d97706", dark: "#020617", purple: "#7c3aed", orange: "#ea580c",
 };
 
-const THEME_DARK: Record<string, string> = {
-  zilo:   "#007a2e",
-  indigo: "#4f46e5",
-  red:    "#dc2626",
-  green:  "#059669",
-  blue:   "#2563eb",
-  amber:  "#d97706",
-  dark:   "#020617",
-  purple: "#7c3aed",
-  orange: "#ea580c",
+// ── Email type intelligence ───────────────────────────────────────────────────
+
+export type DesignLevel = "rich" | "moderate" | "plain";
+export type CopyFramework = "AIDA" | "PAS" | "BAB" | "storytelling" | "direct";
+
+export type EmailAnalysis = {
+  email_type: string;
+  design_level: DesignLevel;
+  framework: CopyFramework;
+  tip: string;
+  images_recommendation: string;
 };
+
+function analyzeEmailType(description: string, products: Product[], heroImageUrl: string): EmailAnalysis {
+  const d = description.toLowerCase();
+
+  // ── Plain text triggers ───────────────────────────────────────────────────
+  const isWinBack    = /win.back|miss you|haven.t heard|come back|we.ve missed|re.engage|lapsed/i.test(d);
+  const isPersonal   = /personal|from the (ceo|founder|team)|just wanted|checking in|hey |hi ,/i.test(d);
+  const isTransact   = /receipt|order confirm|password|reset|shipping|delivered|invoice|account/i.test(d);
+  const isColdOutr   = /cold|outreach|first email|introduction|reach out/i.test(d);
+
+  // ── Moderate triggers (clean design, no heavy visuals) ────────────────────
+  const isNewsletter = /newsletter|digest|weekly|monthly|roundup|curated|reading|links/i.test(d);
+  const isWelcome    = /welcome|onboard|getting started|new member|new subscriber|thank you for joining/i.test(d);
+  const isAnnounce   = /announce|feature update|changelog|new release|launch|product update|we.re excited/i.test(d);
+  const isEducation  = /tips|guide|how to|learn|tutorial|course|webinar|educational/i.test(d);
+
+  // ── Rich triggers (full visual design) ───────────────────────────────────
+  const isSale       = /sale|discount|off|promo|deal|coupon|flash|limited time|only.*hours|save/i.test(d);
+  const isProduct    = products.length > 0 || /product|collection|shop|store|catalog|new arrival/i.test(d);
+  const isSeasonal   = /black friday|cyber monday|christmas|holiday|halloween|mother.s day|valentine|summer|winter/i.test(d);
+  const isEvent      = /event|conference|webinar|live|concert|festival|invitation|rsvp/i.test(d);
+
+  // ── Decide design level ───────────────────────────────────────────────────
+  let design_level: DesignLevel = "moderate";
+  if (isTransact || isWinBack || isPersonal || isColdOutr) design_level = "plain";
+  else if (isSale || isSeasonal || isEvent || (isProduct && products.length > 0)) design_level = "rich";
+  else if (isNewsletter || isWelcome || isAnnounce || isEducation) design_level = "moderate";
+
+  // ── Override: if user provided hero/product images, bump to rich ──────────
+  const hasImages = heroImageUrl || products.some(p => p.image_url);
+  if (hasImages && design_level !== "plain") design_level = "rich";
+
+  // ── Pick copywriting framework ────────────────────────────────────────────
+  let framework: CopyFramework = "AIDA";
+  if (isWinBack || isPersonal || isColdOutr) framework = "storytelling";
+  else if (isSale || isProduct || isSeasonal) framework = "AIDA";
+  else if (isNewsletter || isEducation) framework = "direct";
+  else if (isAnnounce) framework = "BAB";
+  else if (/problem|struggle|challenge|pain|frustrat/i.test(d)) framework = "PAS";
+
+  // ── Build email_type label ────────────────────────────────────────────────
+  let email_type = "Promotional";
+  if (isTransact)   email_type = "Transactional";
+  else if (isWinBack)  email_type = "Win-back";
+  else if (isPersonal) email_type = "Personal / Founder";
+  else if (isColdOutr) email_type = "Cold outreach";
+  else if (isWelcome)  email_type = "Welcome";
+  else if (isNewsletter) email_type = "Newsletter";
+  else if (isAnnounce)  email_type = "Product announcement";
+  else if (isEducation) email_type = "Educational";
+  else if (isSeasonal)  email_type = "Seasonal campaign";
+  else if (isEvent)     email_type = "Event invitation";
+  else if (isSale)      email_type = "Flash sale";
+
+  // ── Marketing tip ─────────────────────────────────────────────────────────
+  const tips: Record<string, string> = {
+    "Transactional":        "Transactional emails get 8× higher open rates than promos. Keep them clean and functional — no heavy design needed.",
+    "Win-back":             "Plain-text win-back emails from a 'real person' convert up to 40% better than designed ones. Authenticity wins.",
+    "Personal / Founder":   "Looks like a personal email — plain text with a direct voice will feel more genuine and drive more replies.",
+    "Cold outreach":        "Cold emails should look like they came from a person, not a brand. Plain text, short, one clear ask.",
+    "Welcome":              "Welcome emails have 4× the open rate of regular campaigns. A clean design with a clear next step outperforms flashy.",
+    "Newsletter":           "Newsletters work best with a clean reading layout — focus on content hierarchy over heavy visuals.",
+    "Product announcement": "Announcements do well with a Before-After-Bridge (BAB) structure — where you were, where you are now, what that means for the reader.",
+    "Educational":          "Educational emails convert best when they lead with value immediately. Use direct, benefit-first copy.",
+    "Seasonal campaign":    "Seasonal emails are the place to go bold — rich color, urgency, and product visuals drive click-through.",
+    "Event invitation":     "Event emails should create FOMO fast. Date, benefit, and CTA above the fold.",
+    "Flash sale":           "Flash sale emails live and die by urgency. Big price, big button, short copy — AIDA in 5 seconds.",
+    "Promotional":          "Great promo emails lead with the offer, not the brand. Show the value first, then who it's from.",
+  };
+
+  const imagesNotes: Record<DesignLevel, string> = {
+    rich:     "Images will make this email pop — use your hero and product photos for maximum impact.",
+    moderate: "A few brand visuals help, but great copy is more important than heavy imagery for this type.",
+    plain:    "Images would actually hurt this email. The plain, personal look is what makes it work.",
+  };
+
+  return {
+    email_type,
+    design_level,
+    framework,
+    tip: tips[email_type] ?? tips["Promotional"],
+    images_recommendation: imagesNotes[design_level],
+  };
+}
+
+// ── Prompt builder ────────────────────────────────────────────────────────────
 
 function buildPrompt(
   description: string,
@@ -35,140 +121,195 @@ function buildPrompt(
   theme: string,
   logoUrl: string,
   heroImageUrl: string,
+  analysis: EmailAnalysis,
 ): string {
-  const accent = THEME_COLORS[theme] ?? "#009b3a";
-  const dark   = THEME_DARK[theme]   ?? "#007a2e";
+  const accent    = THEME_COLORS[theme] ?? "#009b3a";
+  const dark      = THEME_DARK[theme]   ?? "#007a2e";
   const brandName = brand || "the brand";
+  const { design_level, framework, email_type } = analysis;
 
-  // ── Logo block ──────────────────────────────────────────────────────────────
-  const logoBlock = logoUrl
-    ? `<mj-image src="${logoUrl}" width="150px" alt="${brandName}" align="center" padding="0 0 6px 0" />`
-    : `<mj-text align="center" padding="0"><span style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:26px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;">${brandName}</span></mj-text>`;
-
-  // ── Allowed external URLs list ───────────────────────────────────────────────
+  // Allowed image URLs
   const allowedUrls: string[] = [];
   if (logoUrl)      allowedUrls.push(`"${logoUrl}" (logo)`);
-  if (heroImageUrl) allowedUrls.push(`"${heroImageUrl}" (hero banner)`);
-  products.forEach((p, i) => { if (p.image_url) allowedUrls.push(`"${p.image_url}" (product ${i+1}: ${p.name})`); });
+  if (heroImageUrl && design_level !== "plain") allowedUrls.push(`"${heroImageUrl}" (hero banner)`);
+  products.forEach((p, i) => {
+    if (p.image_url && design_level !== "plain") allowedUrls.push(`"${p.image_url}" (product ${i+1}: ${p.name})`);
+  });
   const urlRules = allowedUrls.length
-    ? `ALLOWED external image URLs (use EXACTLY as written, these are the ONLY ones permitted):\n${allowedUrls.map(u => "  • " + u).join("\n")}`
-    : "NO external image URLs are allowed — use emoji/color placeholders instead.";
+    ? `These are the ONLY external image URLs you may use:\n${allowedUrls.map(u => "  • " + u).join("\n")}`
+    : "Do NOT use any external image URLs.";
 
-  // ── Hero section spec ────────────────────────────────────────────────────────
-  const heroSpec = heroImageUrl
-    ? `HERO BANNER — use background-url="${heroImageUrl}" on the mj-section:
-• <mj-section background-url="${heroImageUrl}" background-size="cover" background-position="center center" background-color="${accent}" padding="60px 40px">
-• Add a semi-transparent dark overlay using mj-text with <div style="background:rgba(0,0,0,0.45);margin:-20px;padding:40px 20px;border-radius:0;">…text…</div>
-• Large bold white headline (36px, font-weight:800) — campaign-specific, punchy
-• White subtext (18px, opacity:0.9) — one compelling sentence
-• White pill button: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">CTA TEXT</mj-button>`
-    : `HERO BANNER — full-width color block:
-• <mj-section background-color="${accent}" padding="52px 40px">
-• Large bold white headline (36px, font-weight:800) — campaign-specific, punchy
-• White subtext (18px, opacity 80%) — one compelling sentence
-• <mj-spacer height="20px" />
-• White pill button: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">CTA TEXT</mj-button>`;
+  // Framework copy guidance
+  const frameworkGuide: Record<CopyFramework, string> = {
+    AIDA: `Write using AIDA: Attention (bold headline that stops the scroll) → Interest (what's in it for them) → Desire (make them want it) → Action (one clear CTA).`,
+    PAS:  `Write using PAS: Problem (name the pain the reader feels) → Agitate (make them feel the cost of inaction) → Solution (position the offer as the clear answer).`,
+    BAB:  `Write using BAB: Before (reader's current frustrating state) → After (vivid picture of life after the solution) → Bridge (your product/service is that bridge).`,
+    storytelling: `Write in a personal, conversational tone — like a message from a real person. Short sentences. Empathy first. One clear, low-friction ask at the end.`,
+    direct: `Write direct, benefit-first copy. Lead with the most valuable thing immediately. No warm-up. Every sentence earns its place.`,
+  };
 
-  // ── Products spec ────────────────────────────────────────────────────────────
-  const realProducts = products.filter(p => p.name.trim());
-  const hasProducts  = realProducts.length > 0;
-  const productLayout = realProducts.length === 2 ? "TWO-COLUMN side by side" :
-                        realProducts.length === 3 ? "THREE-COLUMN side by side" :
-                        "ONE-COLUMN stacked (full-width cards)";
+  // ── PLAIN TEXT email ──────────────────────────────────────────────────────
+  if (design_level === "plain") {
+    return `You are an elite email copywriter and marketing strategist. Write a ${email_type} email.
 
-  const productDetails = realProducts.map((p, i) => {
-    const lines = [`  Product ${i+1}: "${p.name}"`];
-    if (p.price)     lines.push(`    price: "${p.price}"`);
-    if (p.description) lines.push(`    description: "${p.description}"`);
-    if (p.image_url)  lines.push(`    image: USE <mj-image src="${p.image_url}" width="100%" border-radius="12px 12px 0 0" padding="0" alt="${p.name}" />`);
-    else              lines.push(`    image: USE a large thematically-relevant emoji (52px centered) as placeholder — no <mj-image>`);
-    return lines.join("\n");
-  }).join("\n");
+BRIEF: ${description}
+BRAND: ${brandName}
+EMAIL TYPE: ${email_type}
+COPY FRAMEWORK: ${frameworkGuide[framework]}
 
-  const productSection = hasProducts ? `
-SECTION — PRODUCTS (layout: ${productLayout})
-• Outer mj-section: background-color="#f4f4f5", padding="32px 16px"
-• Section heading: bold 22px #111827 centered, campaign-relevant sub-heading (e.g. "Featured Products", "Shop the Collection")
-• mj-spacer height="16px"
-${realProducts.length <= 3 ? `• Use ${realProducts.length} mj-column(s) in one mj-section, container-background-color="#ffffff" for each` : `• Stack one product per mj-section row`}
-Each product card:
-${productDetails}
-  - Product name: bold 17px #111827, align="center", padding="12px 16px 4px"
-  - Price: <span style="background:${accent};color:#fff;font-size:14px;font-weight:700;padding:4px 14px;border-radius:20px;display:inline-block;"> shown in centered mj-text
-  - Description: 13px #6b7280 centered, padding="6px 16px 10px", line-height:1.5
-  - Bottom accent bar: <div style="height:4px;background:${accent};border-radius:0 0 12px 12px;margin:0 0 0 0;"></div> inside mj-text
-  - "Shop Now →": <a href="{{CTA_URL}}" style="color:${accent};font-weight:700;font-size:14px;text-decoration:none;display:block;text-align:center;padding:0 0 16px;">Shop Now →</a>
-` : "";
+Generate a COMPLETE, VALID MJML 4 email that looks like a personal plain-text message — NOT a marketing flyer.
 
-  return `You are the world's best email marketing designer specialising in MJML 4.
-Generate a COMPLETE, PRODUCTION-READY, VISUALLY STUNNING MJML 4 email — Fortune-500 quality.
-Study the brief carefully and write real, campaign-specific marketing copy throughout. Zero placeholder text.
+DESIGN RULES (strict):
+• Background: #ffffff everywhere — no colored sections, no colored header strip
+• Font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif — 15px, color #111827, line-height 1.8
+• Single column, max-width 580px, padding 40px 32px
+• ${logoUrl ? `Logo: small <mj-image src="${logoUrl}" width="100px" align="left" padding="0 0 28px 0" /> — left-aligned for a personal feel` : "No logo — purely text"}
+• NO hero image, NO colored backgrounds, NO big buttons, NO product cards, NO decorative elements
+• The CTA is a simple inline text link styled: color:${accent};font-weight:600;text-decoration:underline;
+• Footer: tiny 12px #9ca3af text only — unsubscribe link, no design
 
-===== CAMPAIGN BRIEF =====
-Brand          : ${brandName}
-Campaign purpose: ${description}
-Accent colour  : ${accent}
-Dark accent    : ${dark}
-${logoUrl       ? `Logo image URL  : ${logoUrl}` : "Logo            : text-only (no image URL provided)"}
-${heroImageUrl  ? `Hero image URL  : ${heroImageUrl}` : "Hero            : colour block (no hero image URL provided)"}
-Products       : ${realProducts.length ? `${realProducts.length} — layout: ${productLayout}` : "none — general promotional email"}
-==========================
+COPY RULES:
+• ${frameworkGuide[framework]}
+• Write genuinely — no corporate jargon, no exclamation-mark spam
+• Subject line: write 3 subject line options as HTML comments at the very top: <!-- SUBJECT: option1 | option2 | option3 -->
+• Personalisation token: use {{FIRST_NAME}} as the greeting if appropriate
+• CTA href: {{CTA_URL}}
+
+OUTPUT: ONLY raw MJML XML starting with <mjml> and ending with </mjml>. Nothing else.`.trim();
+  }
+
+  // ── MODERATE design email ──────────────────────────────────────────────────
+  if (design_level === "moderate") {
+    const logoBlock = logoUrl
+      ? `<mj-image src="${logoUrl}" width="130px" alt="${brandName}" align="center" padding="0 0 4px 0" />`
+      : `<mj-text align="center" padding="0"><span style="font-size:22px;font-weight:800;color:#ffffff;">${brandName}</span></mj-text>`;
+
+    return `You are an elite email designer and marketing strategist. Generate a clean, professional ${email_type} email.
+
+BRIEF: ${description}
+BRAND: ${brandName}
+EMAIL TYPE: ${email_type}
+COPY FRAMEWORK: ${frameworkGuide[framework]}
+
+DESIGN PHILOSOPHY: Clean, content-first. No heavy visuals. Strong typography, ample whitespace, one clear CTA.
+${urlRules}
 
 ━━━━━━━━━━━━━━━━━━━━━━━
 DESIGN SYSTEM
 ━━━━━━━━━━━━━━━━━━━━━━━
-Font      : -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif
-Body bg   : #f4f4f5   |   Card bg: #ffffff   |   Email width: 600px
-Primary   : #111827   |   Muted: #6b7280     |   Border: #e5e7eb
-Card style: border-radius:12px, border:1px solid #e5e7eb, overflow:hidden via container-background-color
+Font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif
+Background: #f4f4f5 | Card: #ffffff | Accent: ${accent} | Muted: #6b7280
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REQUIRED LAYOUT (exact order)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LAYOUT:
+1. HEADER: mj-section bg="${accent}" padding="20px 0"
+   • ${logoBlock}
 
-SECTION 1 — HEADER STRIP
-• mj-section background-color="${accent}", padding="20px 0 16px"
-• Single centered column
-• ${logoBlock}
-• Optional: 13px white italic tagline below brand name if brand is known
+2. INTRO: mj-section bg="#ffffff" padding="40px 32px"
+   • Bold 26px headline (${accent} first word or accent underline via <span>)
+   • 16px #374151 body paragraph — ${frameworkGuide[framework]}
+   • mj-spacer 20px
+   • <mj-button background-color="${accent}" border-radius="8px" font-size="15px" padding="12px 32px" href="{{CTA_URL}}">CTA BUTTON</mj-button>
 
-SECTION 2 — ${heroSpec}
+3. CONTENT SECTION: 2-3 short content blocks (mj-section bg="#ffffff" with mj-divider between each)
+   • Each: small bold label (${accent} color, 11px uppercase), heading 18px, 14px body text
 
-SECTION 3 — BENEFITS BAR
-• mj-section background-color="#ffffff", padding="24px 20px"
-• Three mj-columns, each containing: large emoji (34px), bold short stat/benefit text (14px #111827), tiny grey label (12px #6b7280)
-• Choose 3 benefits relevant to this specific campaign (free shipping, returns policy, social proof, speed, quality, etc.)
+4. FOOTER: mj-section bg="#f9fafb" padding="24px"
+   • 12px #9ca3af centred text, unsubscribe + view-in-browser links in ${accent}
 
-${productSection}
-SECTION — CTA STRIP
-• mj-section background-color="${accent}", padding="48px 32px"
-• Bold 24px white headline — urgency/benefit statement specific to the campaign
-• 15px white/80% subtext — supporting one-liner
-• mj-spacer height="20px"
-• <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">BUTTON TEXT</mj-button>
+COPY RULES:
+• ${frameworkGuide[framework]}
+• Write real campaign-specific copy — no placeholders
+• Subject line options as first comment: <!-- SUBJECT: opt1 | opt2 | opt3 -->
 
-SECTION — FOOTER
-• mj-section background-color="#f9fafb", padding="28px 24px"
-• "© 2025 ${brandName}. All rights reserved." — 12px #9ca3af centered
-• mj-spacer height="6px"
-• <a href="{{UNSUBSCRIBE_URL}}" style="color:${accent};font-size:12px;text-decoration:none;">Unsubscribe</a> &nbsp;·&nbsp; <a href="{{VIEW_IN_BROWSER_URL}}" style="color:${accent};font-size:12px;text-decoration:none;">View in browser</a>
-• mj-spacer height="6px"
-• "Sent with ♥ by Zilo" — 11px #d1d5db
+OUTPUT: ONLY raw MJML XML from <mjml> to </mjml>. Nothing else.`.trim();
+  }
 
-━━━━━━━━━━━━━━━━━━
-ABSOLUTE RULES
-━━━━━━━━━━━━━━━━━━
-1. Output ONLY raw MJML XML. Nothing before <mjml>, nothing after </mjml>. No markdown.
-2. Response MUST start with <mjml> and end with </mjml> — no exceptions.
-3. Use <mj-head><mj-attributes> to set global font-family and button defaults.
-4. ONLY valid MJML 4 components: mj-section, mj-column, mj-text, mj-button, mj-image, mj-spacer, mj-divider.
-5. Every mj-section MUST have a background-color attribute.
-6. ${urlRules}
-7. No Google Fonts, no external CSS, no <link> tags.
-8. Write REAL compelling marketing copy for every headline, subtext, and CTA — tailored precisely to the campaign brief. No "Lorem ipsum", no "[Your headline here]".
-9. The final email MUST look genuinely stunning — bold, colorful, visually compelling, campaign-specific.
-`.trim();
+  // ── RICH design email ──────────────────────────────────────────────────────
+  const logoBlock = logoUrl
+    ? `<mj-image src="${logoUrl}" width="150px" alt="${brandName}" align="center" padding="0 0 6px 0" />`
+    : `<mj-text align="center" padding="0"><span style="font-size:26px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;">${brandName}</span></mj-text>`;
+
+  const heroSpec = heroImageUrl
+    ? `HERO: <mj-section background-url="${heroImageUrl}" background-size="cover" background-position="center" background-color="${accent}" padding="60px 40px">
+   • Semi-transparent overlay via mj-text: <div style="background:rgba(0,0,0,0.42);margin:-20px;padding:50px 24px;text-align:center;">
+   • White bold headline 38px (font-weight:900) — punchy, campaign-specific
+   • White 17px subtext, opacity:0.9
+   • </div>
+   • <mj-spacer height="24px"/>
+   • White pill CTA: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">`
+    : `HERO: <mj-section background-color="${accent}" padding="56px 40px">
+   • Bold white headline 38px (font-weight:900)
+   • White 17px subtext
+   • <mj-spacer height="22px"/>
+   • White pill CTA: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">`;
+
+  const realProducts = products.filter(p => p.name.trim());
+  const productLayout = realProducts.length === 2 ? "TWO-COLUMN" : realProducts.length === 3 ? "THREE-COLUMN" : "SINGLE-COLUMN";
+
+  const productCards = realProducts.map((p, i) => {
+    const imgLine = p.image_url
+      ? `   - TOP: <mj-image src="${p.image_url}" width="100%" padding="0" alt="${p.name}" />`
+      : `   - TOP: large relevant emoji (54px centered) inside mj-text — pick a highly relevant emoji for "${p.name}"`;
+    return `  Product ${i+1}: "${p.name}"${p.price ? ` | $${p.price}` : ""}${p.description ? ` | ${p.description}` : ""}
+${imgLine}
+   - NAME: bold 17px #111827 centered
+   - PRICE: ${accent} badge <span style="background:${accent};color:#fff;font-size:14px;font-weight:700;padding:4px 14px;border-radius:20px;">${p.price || "View price"}</span>
+   - DESC: 13px #6b7280 centered, line-height:1.5
+   - CTA LINK: <a href="{{CTA_URL}}" style="color:${accent};font-weight:700;font-size:14px;text-decoration:none;">Shop Now →</a>
+   - BOTTOM BAR: <div style="height:4px;background:${accent};border-radius:0 0 12px 12px;"></div>`;
+  }).join("\n");
+
+  return `You are the world's best email designer AND marketing strategist. Generate a complete ${email_type} email.
+
+BRIEF: ${description}
+BRAND: ${brandName}
+EMAIL TYPE: ${email_type}
+COPY FRAMEWORK: ${frameworkGuide[framework]}
+${urlRules}
+
+━━━━━━━━━━━━━━━━━━━
+DESIGN SYSTEM
+━━━━━━━━━━━━━━━━━━━
+Font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif
+Body bg: #f4f4f5 | Cards: #ffffff | Accent: ${accent} | Dark accent: ${dark}
+Card style: border-radius:12px, border:1px solid #e5e7eb
+
+REQUIRED SECTIONS:
+1. HEADER: mj-section bg="${accent}" padding="20px 0"
+   • ${logoBlock}
+
+2. ${heroSpec}
+
+3. BENEFITS BAR: mj-section bg="#ffffff" padding="22px 16px"
+   • 3 mj-columns — each: emoji (32px), bold 14px stat, 12px #6b7280 label
+   • Pick 3 benefits that genuinely match this campaign (shipping, guarantee, social proof, speed, quality, savings…)
+
+${realProducts.length > 0 ? `4. PRODUCTS (${productLayout} layout):
+   mj-section bg="#f4f4f5" padding="28px 14px"
+   • Section subheading: bold 20px #111827 centered
+   • mj-spacer 14px
+${productCards}
+
+5. ` : "4. "}CTA STRIP: mj-section bg="${accent}" padding="48px 32px"
+   • Bold 24px white headline (urgency/benefit)
+   • 15px white/80% supporting line
+   • mj-spacer 20px
+   • <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">BUTTON</mj-button>
+
+LAST. FOOTER: mj-section bg="#f9fafb" padding="26px 24px"
+   • © 2025 ${brandName}. All rights reserved. — 12px #9ca3af
+   • Unsubscribe · View in browser — 12px ${accent}
+   • "Sent with ♥ by Zilo" — 11px #d1d5db
+
+COPY RULES:
+• ${frameworkGuide[framework]}
+• Write REAL compelling copy specific to this campaign. Zero placeholders.
+• Subject options as first comment: <!-- SUBJECT: opt1 | opt2 | opt3 -->
+
+OUTPUT: ONLY raw MJML XML from <mjml> to </mjml>. Nothing else.`.trim();
 }
+
+// ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get("authorization") ?? "";
@@ -200,7 +341,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "description is required" }, { status: 400 });
   }
 
-  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim(), hero_image_url.trim());
+  // Run local heuristic analysis first (fast, no AI needed)
+  const analysis = analyzeEmailType(description, products, hero_image_url.trim());
+
+  const prompt = buildPrompt(
+    description, brand, products, theme,
+    logo_url.trim(), hero_image_url.trim(), analysis,
+  );
 
   try {
     const res = await fetch(`${BACKEND}/assistant/ai-draft`, {
@@ -214,23 +361,26 @@ export async function POST(req: NextRequest) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as { detail?: string };
-      return NextResponse.json(
-        { error: err.detail ?? "AI service error" },
-        { status: res.status },
-      );
+      return NextResponse.json({ error: err.detail ?? "AI service error" }, { status: res.status });
     }
 
     const data = await res.json() as { reply?: string };
     let mjml = (data.reply ?? "").trim();
 
-    // Strip any accidental markdown fences
+    // Strip accidental markdown fences
     mjml = mjml.replace(/^```(?:mjml|xml|html)?\s*/i, "").replace(/\s*```$/i, "").trim();
 
     if (!mjml.startsWith("<mjml>")) {
       return NextResponse.json({ error: "AI did not return valid MJML" }, { status: 502 });
     }
 
-    return NextResponse.json({ mjml });
+    // Extract subject line options from AI comment if present
+    const subjectMatch = mjml.match(/<!--\s*SUBJECT:\s*([^>]+?)-->/i);
+    const subjectOptions = subjectMatch
+      ? subjectMatch[1].split("|").map(s => s.trim()).filter(Boolean)
+      : [];
+
+    return NextResponse.json({ mjml, analysis, subject_options: subjectOptions });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

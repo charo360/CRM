@@ -5,7 +5,7 @@ import {
   Mail, Plus, Send, Trash2, BarChart2, Settings,
   Loader2, CheckCircle2, Clock, FileText, RefreshCw, X,
   Zap, Users, AlertCircle, Eye, Play, Sparkles, Trash,
-  BookOpen, Save, ImageIcon,
+  BookOpen, Save, ImageIcon, Lightbulb, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { toast } from "sonner";
@@ -384,6 +384,9 @@ function AIGenerateStep({
   const [status, setStatus] = useState("");
   const [generatedHtml, setGeneratedHtml] = useState("");
   const [generatedSubject, setGeneratedSubject] = useState("");
+  const [analysis, setAnalysis] = useState<{ email_type: string; design_level: string; framework: string; tip: string; images_recommendation: string } | null>(null);
+  const [subjectOptions, setSubjectOptions] = useState<string[]>([]);
+  const [showImages, setShowImages] = useState(false);
 
   const addProduct = () => {
     if (products.length < 6) setProducts(p => [...p, { name: "", price: "", description: "", image_url: "" }]);
@@ -396,7 +399,9 @@ function AIGenerateStep({
     if (!description.trim()) { toast.error("Describe your email first"); return; }
     setGenerating(true);
     setGeneratedHtml("");
-    setStatus("Asking AI to write your template…");
+    setAnalysis(null);
+    setSubjectOptions([]);
+    setStatus("Analyzing your campaign…");
     try {
       const token = getToken();
       const aiRes = await fetch("/api/email-marketing/ai-generate", {
@@ -417,13 +422,15 @@ function AIGenerateStep({
         toast.error(err.error ?? "AI generation failed");
         return;
       }
-      const { mjml } = await aiRes.json() as { mjml: string };
+      const aiData = await aiRes.json() as { mjml: string; analysis?: typeof analysis; subject_options?: string[] };
+      if (aiData.analysis) setAnalysis(aiData.analysis);
+      if (aiData.subject_options?.length) setSubjectOptions(aiData.subject_options);
 
       setStatus("Compiling to responsive HTML…");
       const renderRes = await fetch("/api/email-marketing/render-mjml", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mjml }),
+        body: JSON.stringify({ mjml: aiData.mjml }),
       });
       if (!renderRes.ok) {
         const err = await renderRes.json() as { error?: string };
@@ -431,10 +438,11 @@ function AIGenerateStep({
         return;
       }
       const { html } = await renderRes.json() as { html: string };
-      const subjectLine = description.length > 60 ? description.slice(0, 57) + "…" : description;
+      // Pick best subject: first AI suggestion or truncated description
+      const bestSubject = aiData.subject_options?.[0] ?? (description.length > 60 ? description.slice(0, 57) + "…" : description);
       setGeneratedHtml(html);
-      setGeneratedSubject(subjectLine);
-      toast.success("AI template ready!");
+      setGeneratedSubject(bestSubject);
+      toast.success("Email ready!");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Something went wrong");
     } finally {
@@ -451,9 +459,48 @@ function AIGenerateStep({
           <Sparkles size={20} className={`${G.text} shrink-0 mt-0.5`} />
           <div>
             <p className="text-sm font-semibold text-green-900">AI Email Generator</p>
-            <p className="text-xs text-green-700 mt-0.5">Describe your campaign and add products — Claude writes the full responsive template.</p>
+            <p className="text-xs text-green-700 mt-0.5">Describe your campaign — the AI decides the design, layout, and copy approach automatically.</p>
           </div>
         </div>
+
+        {/* Marketing guru recommendation card */}
+        {analysis && (
+          <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 space-y-2">
+            <div className="flex items-start gap-2">
+              <Lightbulb size={16} className="text-amber-500 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="text-xs font-bold text-amber-800">Marketing tip</span>
+                  <span className="text-[10px] bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full font-semibold">{analysis.email_type}</span>
+                  <span className="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full font-semibold">{analysis.framework}</span>
+                  <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-semibold", analysis.design_level === "plain" ? "bg-slate-200 text-slate-700" : analysis.design_level === "moderate" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700")}>
+                    {analysis.design_level === "plain" ? "Plain text" : analysis.design_level === "moderate" ? "Clean design" : "Rich design"}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-700 leading-relaxed">{analysis.tip}</p>
+                {analysis.images_recommendation && (
+                  <p className="text-xs text-amber-600 mt-1 italic">{analysis.images_recommendation}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* AI-suggested subject lines */}
+        {subjectOptions.length > 0 && (
+          <div className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2">
+            <p className="text-xs font-semibold text-slate-600">AI subject line suggestions — click to use:</p>
+            <div className="space-y-1">
+              {subjectOptions.map((s, i) => (
+                <button key={i} onClick={() => setGeneratedSubject(s)}
+                  className={cn("w-full text-left text-xs px-3 py-2 rounded-lg border transition-colors",
+                    generatedSubject === s ? `${G.light} ${G.border} ${G.text} font-medium` : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100")}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Description */}
         <div className="space-y-1">
@@ -486,16 +533,33 @@ function AIGenerateStep({
           </div>
         </div>
 
-        {/* Hero image */}
-        <div className="space-y-1">
-          <label className="text-sm font-medium text-slate-700">Hero / banner image URL <span className="text-slate-400 font-normal">(optional — makes a big visual impact)</span></label>
-          <input value={heroImageUrl} onChange={e => setHeroImageUrl(e.target.value)}
-            placeholder="https://yoursite.com/banner.jpg"
-            className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
-          {heroImageUrl.trim() && (
-            <div className="mt-1 rounded-lg overflow-hidden border border-slate-200 bg-slate-100" style={{ height: 64 }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={heroImageUrl} alt="hero preview" className="w-full h-full object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+        {/* Images toggle */}
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <button onClick={() => setShowImages(v => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors text-sm">
+            <span className="font-medium text-slate-700 flex items-center gap-2">
+              <ImageIcon size={14} className="text-slate-400" />
+              Add images <span className="text-slate-400 font-normal">(optional — AI decides if they fit)</span>
+            </span>
+            {showImages ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+          </button>
+
+          {showImages && (
+            <div className="px-4 py-4 space-y-3 border-t border-slate-100">
+              {/* Hero image */}
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-600">Hero / banner image URL</label>
+                <input value={heroImageUrl} onChange={e => setHeroImageUrl(e.target.value)}
+                  placeholder="https://yoursite.com/banner.jpg"
+                  className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+                {heroImageUrl.trim() && (
+                  <div className="mt-1 rounded-lg overflow-hidden border border-slate-200 bg-slate-100" style={{ height: 60 }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={heroImageUrl} alt="hero preview" className="w-full h-full object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  </div>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-400">Product image fields appear per-product below ↓</p>
             </div>
           )}
         </div>
@@ -551,15 +615,17 @@ function AIGenerateStep({
               <input value={p.description} onChange={e => setProduct(i, "description", e.target.value)}
                 placeholder="Short description (optional)"
                 className={`w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
-              <div className="flex items-center gap-2">
-                <input value={p.image_url} onChange={e => setProduct(i, "image_url", e.target.value)}
-                  placeholder="Product image URL (optional)"
-                  className={`flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
-                {p.image_url.trim() && (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img src={p.image_url} alt="product" className="h-8 w-8 object-cover rounded border border-slate-200 bg-white shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                )}
-              </div>
+              {showImages && (
+                <div className="flex items-center gap-2">
+                  <input value={p.image_url} onChange={e => setProduct(i, "image_url", e.target.value)}
+                    placeholder="Product image URL (optional)"
+                    className={`flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
+                  {p.image_url.trim() && (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img src={p.image_url} alt="product" className="h-8 w-8 object-cover rounded border border-slate-200 bg-white shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
