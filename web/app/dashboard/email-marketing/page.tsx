@@ -376,6 +376,7 @@ function AIGenerateStep({
 }) {
   const [description, setDescription] = useState("");
   const [brand, setBrand] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
   const [theme, setTheme] = useState("zilo");
   const [products, setProducts] = useState<Product[]>([{ name: "", price: "", description: "" }]);
   const [generating, setGenerating] = useState(false);
@@ -405,6 +406,7 @@ function AIGenerateStep({
         },
         body: JSON.stringify({
           description, brand, theme,
+          logo_url: logoUrl.trim(),
           products: products.filter(p => p.name.trim()),
         }),
       });
@@ -459,7 +461,7 @@ function AIGenerateStep({
             className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring} resize-none`} />
         </div>
 
-        {/* Brand + Theme row */}
+        {/* Brand + Logo row */}
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <label className="text-sm font-medium text-slate-700">Brand / company name</label>
@@ -468,18 +470,36 @@ function AIGenerateStep({
               className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
           </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Colour theme</label>
-            <div className="flex flex-wrap gap-2 pt-1">
-              {THEMES.map(t => (
-                <button key={t.id} onClick={() => setTheme(t.id)}
-                  title={t.label}
-                  className={cn(
-                    "w-7 h-7 rounded-full border-2 transition-all",
-                    theme === t.id ? "border-slate-700 scale-110" : "border-transparent hover:scale-105"
-                  )}
-                  style={{ backgroundColor: t.color }} />
-              ))}
-            </div>
+            <label className="text-sm font-medium text-slate-700">Logo URL <span className="text-slate-400 font-normal">(optional)</span></label>
+            <input value={logoUrl} onChange={e => setLogoUrl(e.target.value)}
+              placeholder="https://yoursite.com/logo.png"
+              className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+            {logoUrl.trim() && (
+              <div className="mt-1 flex items-center gap-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={logoUrl} alt="logo preview" className="h-8 max-w-[100px] object-contain rounded border border-slate-200 bg-white p-1" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <span className="text-[10px] text-green-600 font-medium">Logo loaded</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Theme row */}
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">Colour theme</label>
+          <div className="flex flex-wrap gap-2 pt-0.5">
+            {THEMES.map(t => (
+              <button key={t.id} onClick={() => setTheme(t.id)}
+                title={t.label}
+                className={cn(
+                  "w-7 h-7 rounded-full border-2 transition-all",
+                  theme === t.id ? "border-slate-700 scale-110 shadow-md" : "border-transparent hover:scale-105"
+                )}
+                style={{ backgroundColor: t.color }} />
+            ))}
+            <span className="text-xs text-slate-400 self-center ml-1">
+              {THEMES.find(t => t.id === theme)?.label}
+            </span>
           </div>
         </div>
 
