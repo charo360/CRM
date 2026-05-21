@@ -387,6 +387,7 @@ function AIGenerateStep({
   const [analysis, setAnalysis] = useState<{ email_type: string; design_level: string; framework: string; tip: string; images_recommendation: string } | null>(null);
   const [subjectOptions, setSubjectOptions] = useState<string[]>([]);
   const [showImages, setShowImages] = useState(false);
+  const [aiImages, setAiImages] = useState<{ hero: boolean; products: number[] } | null>(null);
 
   const addProduct = () => {
     if (products.length < 6) setProducts(p => [...p, { name: "", price: "", description: "", image_url: "" }]);
@@ -401,7 +402,8 @@ function AIGenerateStep({
     setGeneratedHtml("");
     setAnalysis(null);
     setSubjectOptions([]);
-    setStatus("Analyzing your campaign…");
+    setAiImages(null);
+    setStatus("Analyzing campaign type…");
     try {
       const token = getToken();
       const aiRes = await fetch("/api/email-marketing/ai-generate", {
@@ -422,11 +424,15 @@ function AIGenerateStep({
         toast.error(err.error ?? "AI generation failed");
         return;
       }
-      const aiData = await aiRes.json() as { mjml: string; analysis?: typeof analysis; subject_options?: string[] };
-      if (aiData.analysis) setAnalysis(aiData.analysis);
+      const aiData = await aiRes.json() as { mjml: string; analysis?: typeof analysis; subject_options?: string[]; ai_images?: { hero: boolean; products: number[] } };
+      if (aiData.analysis) {
+        setAnalysis(aiData.analysis);
+        // Show contextual status while compiling
+        const level = aiData.analysis.design_level;
+        setStatus(level === "rich" ? "Compiling rich email with AI visuals…" : level === "plain" ? "Composing plain-text email…" : "Compiling clean design…");
+      }
       if (aiData.subject_options?.length) setSubjectOptions(aiData.subject_options);
-
-      setStatus("Compiling to responsive HTML…");
+      if (aiData.ai_images) setAiImages(aiData.ai_images);
       const renderRes = await fetch("/api/email-marketing/render-mjml", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -634,7 +640,18 @@ function AIGenerateStep({
         {generatedHtml && (
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <div className={`${G.light} px-4 py-2 flex items-center justify-between border-b ${G.lb}`}>
-              <span className={`text-xs font-semibold ${G.text}`}>Generated preview</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`text-xs font-semibold ${G.text}`}>Generated preview</span>
+                {aiImages && (aiImages.hero || aiImages.products.length > 0) && (
+                  <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
+                    <Sparkles size={9} />
+                    {[
+                      aiImages.hero ? "AI hero" : "",
+                      aiImages.products.length ? `${aiImages.products.length} AI product image${aiImages.products.length > 1 ? "s" : ""}` : "",
+                    ].filter(Boolean).join(" · ")}
+                  </span>
+                )}
+              </div>
               <span className="text-xs text-slate-400">Scroll to see full email</span>
             </div>
             <div className="max-h-48 overflow-y-auto">

@@ -340,6 +340,22 @@ def make_email_marketing_router(get_current_user, db):
         await db.email_templates.delete_one({"_id": ObjectId(template_id), "user_id": user_id})
         return {"ok": True}
 
+    # ── AI Image Generation ────────────────────────────────────────────────────
+
+    class ImageGenRequest(BaseModel):
+        prompt: str
+        image_type: str = "hero"   # hero | product
+
+    @router.post("/generate-image")
+    async def generate_email_image(body: ImageGenRequest, user=Depends(get_current_user)):
+        """Generate a marketing image via Gemini Imagen 3, upload to ImgBB, return URL."""
+        from .image_gen import generate_marketing_image
+        try:
+            url = await generate_marketing_image(body.prompt, body.image_type)
+            return {"url": url}
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     # ── Stats ──────────────────────────────────────────────────────────────────
 
     @router.get("/stats")

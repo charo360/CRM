@@ -309,7 +309,64 @@ COPY RULES:
 OUTPUT: ONLY raw MJML XML from <mjml> to </mjml>. Nothing else.`.trim();
 }
 
+// ── Image prompt builders ─────────────────────────────────────────────────────
+
+function heroImagePrompt(emailType: string, description: string, brand: string, accent: string): string {
+  const moods: Record<string, string> = {
+    "Flash sale":           "Dynamic urgency. Vibrant saturated colors. Shopping excitement. Studio product lighting.",
+    "Seasonal campaign":    "Festive warm atmosphere. Seasonal mood. Celebratory and rich.",
+    "Event invitation":     "Elegant venue or atmospheric scene. Upscale, premium feel. Soft bokeh.",
+    "Product announcement": "Clean studio reveal aesthetic. Minimalist. Exciting product focus.",
+    "Welcome":              "Warm, friendly, optimistic. Soft natural daylight. Inviting.",
+    "Newsletter":           "Clean editorial lifestyle. Professional workspace or lifestyle scene.",
+    "Promotional":          "Bold commercial photography. Eye-catching. Modern and aspirational.",
+  };
+  const mood = moods[emailType] ?? "Professional, modern, aspirational commercial photography.";
+  return (
+    `${mood} ` +
+    `Wide landscape hero banner image for a ${emailType} email campaign. ` +
+    `Topic: ${description}. Brand: ${brand}. Color palette inspired by ${accent}. ` +
+    `Photorealistic. High resolution. No text, no words, no logos, no watermarks.`
+  );
+}
+
+function productImagePrompt(name: string, desc: string, emailType: string, accent: string): string {
+  return (
+    `Professional product photography. Clean white or very light studio background. ` +
+    `Perfect studio lighting. Square format. ` +
+    `Product: ${name}. ${desc ? `Details: ${desc}. ` : ""}` +
+    `Style: modern commercial ${emailType.toLowerCase()} campaign imagery. ` +
+    `Color accent reference: ${accent}. ` +
+    `Photorealistic. High resolution. No text, no watermarks, no logos.`
+  );
+}
+
+async function generateImage(
+  prompt: string,
+  imageType: "hero" | "product",
+  auth: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${BACKEND}/email-marketing/generate-image`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(auth ? { Authorization: auth } : {}),
+      },
+      body: JSON.stringify({ prompt, image_type: imageType }),
+    });
+    if (!res.ok) return null;
+    const { url } = await res.json() as { url?: string };
+    return url ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────
+
+// Image gen + MJML compile can take 60–120s for rich emails
+export const maxDuration = 180;
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get("authorization") ?? "";
@@ -331,24 +388,50 @@ export async function POST(req: NextRequest) {
   const {
     description = "",
     brand = "",
-    products = [],
+    products: rawProducts = [],
     theme = "zilo",
     logo_url = "",
-    hero_image_url = "",
+    hero_image_url: userHeroUrl = "",
   } = body;
 
   if (!description.trim()) {
     return NextResponse.json({ error: "description is required" }, { status: 400 });
   }
 
-  // Run local heuristic analysis first (fast, no AI needed)
-  const analysis = analyzeEmailType(description, products, hero_image_url.trim());
+  const accent = THEME_COLORS[theme] ?? "#009b3a";
 
-  const prompt = buildPrompt(
-    description, brand, products, theme,
-    logo_url.trim(), hero_image_url.trim(), analysis,
-  );
+  // 1. Classify the campaign (local, instant)
+  const analysis = analyzeEmailType(description, rawProducts, userHeroUrl.trim());
 
+  // 2. Auto-generate images for rich emails when user didn't provide them
+  let heroImageUrl = userHeroUrl.trim();
+  const products   = rawProducts.map(p => ({ ...p }));
+  const aiImages: { hero: boolean; products: number[] } = { hero: false, products: [] };
+
+  if (analysis.design_level === "rich") {
+    const heroTask = !heroImageUrl
+      ? generateImage(heroImagePrompt(analysis.email_type, description, brand, accent), "hero", auth)
+      : Promise.resolve<string | null>(null);
+
+    const productTasks = products.map((p, i) =>
+      p.name.trim() && !p.image_url?.trim()
+        ? generateImage(productImagePrompt(p.name, p.description, analysis.email_type, accent), "product", auth)
+        : Promise.resolve<string | null>(null)
+    );
+
+    // Run all image generation in parallel
+    const [heroUrl, ...productUrls] = await Promise.all([heroTask, ...productTasks]);
+
+    if (heroUrl) { heroImageUrl = heroUrl; aiImages.hero = true; }
+    productUrls.forEach((url, i) => {
+      if (url) { products[i] = { ...products[i], image_url: url }; aiImages.products.push(i); }
+    });
+  }
+
+  // 3. Build the MJML prompt with all available images
+  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim(), heroImageUrl, analysis);
+
+  // 4. Call Claude to write the MJML
   try {
     const res = await fetch(`${BACKEND}/assistant/ai-draft`, {
       method: "POST",
@@ -366,21 +449,24 @@ export async function POST(req: NextRequest) {
 
     const data = await res.json() as { reply?: string };
     let mjml = (data.reply ?? "").trim();
-
-    // Strip accidental markdown fences
     mjml = mjml.replace(/^```(?:mjml|xml|html)?\s*/i, "").replace(/\s*```$/i, "").trim();
 
     if (!mjml.startsWith("<mjml>")) {
       return NextResponse.json({ error: "AI did not return valid MJML" }, { status: 502 });
     }
 
-    // Extract subject line options from AI comment if present
+    // Extract subject options from AI comment <!-- SUBJECT: a | b | c -->
     const subjectMatch = mjml.match(/<!--\s*SUBJECT:\s*([^>]+?)-->/i);
     const subjectOptions = subjectMatch
       ? subjectMatch[1].split("|").map(s => s.trim()).filter(Boolean)
       : [];
 
-    return NextResponse.json({ mjml, analysis, subject_options: subjectOptions });
+    return NextResponse.json({
+      mjml,
+      analysis,
+      subject_options: subjectOptions,
+      ai_images: aiImages,  // tells frontend which images were AI-generated
+    });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
