@@ -63,7 +63,8 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
 
     @router.get("/settings")
     async def get_settings(user=Depends(get_current_user)):
-        doc = await db.email_settings.find_one({"user_id": user["id"]})
+        uid = user.get("business_id", user["_id"])
+        doc = await db.email_settings.find_one({"user_id": uid})
         if not doc:
             return {"provider": "platform", "from_name": "", "from_email": "", "credentials": {}}
         creds = dict(doc.get("credentials") or {})
@@ -79,10 +80,11 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
 
     @router.post("/settings")
     async def save_settings(body: SettingsSave, user=Depends(get_current_user)):
+        uid = user.get("business_id", user["_id"])
         await db.email_settings.update_one(
-            {"user_id": user["id"]},
+            {"user_id": uid},
             {"$set": {
-                "user_id":     user["id"],
+                "user_id":     uid,
                 "provider":    body.provider,
                 "from_name":   body.from_name,
                 "from_email":  body.from_email,
@@ -117,8 +119,9 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
 
     @router.get("/campaigns")
     async def list_campaigns(user=Depends(get_current_user)):
+        uid = user.get("business_id", user["_id"])
         docs = await db.email_campaigns.find(
-            {"user_id": user["id"]}, {"body_html": 0}
+            {"user_id": uid}, {"body_html": 0}
         ).sort("created_at", -1).limit(100).to_list(100)
         return {
             "campaigns": [
@@ -138,9 +141,10 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
 
     @router.post("/campaigns")
     async def create_campaign(body: CampaignCreate, user=Depends(get_current_user)):
+        uid = user.get("business_id", user["_id"])
         now = datetime.now(timezone.utc)
         doc = {
-            "user_id":          user["id"],
+            "user_id":          uid,
             "name":             body.name,
             "subject":          body.subject,
             "from_name":        body.from_name,
@@ -159,8 +163,9 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
 
     @router.get("/campaigns/{campaign_id}")
     async def get_campaign(campaign_id: str, user=Depends(get_current_user)):
+        uid = user.get("business_id", user["_id"])
         doc = await db.email_campaigns.find_one(
-            {"_id": ObjectId(campaign_id), "user_id": user["id"]}
+            {"_id": ObjectId(campaign_id), "user_id": uid}
         )
         if not doc:
             raise HTTPException(status_code=404, detail="Campaign not found")
@@ -174,8 +179,9 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
         if not updates:
             raise HTTPException(status_code=400, detail="Nothing to update")
         updates["updated_at"] = datetime.now(timezone.utc)
+        uid = user.get("business_id", user["_id"])
         res = await db.email_campaigns.update_one(
-            {"_id": ObjectId(campaign_id), "user_id": user["id"]},
+            {"_id": ObjectId(campaign_id), "user_id": uid},
             {"$set": updates},
         )
         if res.matched_count == 0:
@@ -184,8 +190,9 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
 
     @router.delete("/campaigns/{campaign_id}")
     async def delete_campaign(campaign_id: str, user=Depends(get_current_user)):
+        uid = user.get("business_id", user["_id"])
         res = await db.email_campaigns.delete_one(
-            {"_id": ObjectId(campaign_id), "user_id": user["id"]}
+            {"_id": ObjectId(campaign_id), "user_id": uid}
         )
         if res.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Campaign not found")
@@ -194,13 +201,14 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
     @router.post("/campaigns/{campaign_id}/send")
     async def send_campaign(campaign_id: str, body: SendRequest,
                              user=Depends(get_current_user)):
+        uid = user.get("business_id", user["_id"])
         doc = await db.email_campaigns.find_one(
-            {"_id": ObjectId(campaign_id), "user_id": user["id"]}
+            {"_id": ObjectId(campaign_id), "user_id": uid}
         )
         if not doc:
             raise HTTPException(status_code=404, detail="Campaign not found")
 
-        settings_doc = await db.email_settings.find_one({"user_id": user["id"]})
+        settings_doc = await db.email_settings.find_one({"user_id": uid})
         settings: Dict[str, Any] = dict(settings_doc) if settings_doc else {"provider": "platform"}
         if doc.get("from_name"):
             settings["from_name"] = doc["from_name"]
@@ -223,12 +231,12 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
         recipients: set = set(doc.get("recipient_emails") or [])
         for tag in (doc.get("recipient_tags") or []):
             async for c in db.contacts.find(
-                {"user_id": user["id"], "tags": tag}, {"email": 1}
+                {"user_id": uid, "tags": tag}, {"email": 1}
             ):
                 if c.get("email"):
                     recipients.add(c["email"])
             async for c in db.customers.find(
-                {"user_id": user["id"], "tags": tag}, {"email": 1}
+                {"user_id": uid, "tags": tag}, {"email": 1}
             ):
                 if c.get("email"):
                     recipients.add(c["email"])
@@ -264,7 +272,7 @@ def make_email_marketing_router(get_current_user: Callable, db: Any) -> APIRoute
 
     @router.get("/stats")
     async def get_stats(user=Depends(get_current_user)):
-        uid = user["id"]
+        uid = user.get("business_id", user["_id"])
         total     = await db.email_campaigns.count_documents({"user_id": uid})
         sent      = await db.email_campaigns.count_documents({"user_id": uid, "status": "sent"})
         draft     = await db.email_campaigns.count_documents({"user_id": uid, "status": "draft"})
