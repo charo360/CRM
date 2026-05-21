@@ -1,0 +1,20 @@
+name = "Zilo"
+client_id = "9028ae942a53a12b1ccd8a4f4ea6a465"
+application_url = "https://zilo.pro/"
+embedded = false
+
+[access_scopes]
+scopes = "read_analytics,read_assigned_fulfillment_orders,read_customers,write_customers,read_price_rules,write_price_rules,read_discounts,write_discounts,write_draft_orders,read_draft_orders,read_fulfillments,write_fulfillments,read_gift_cards,write_gift_cards,write_inventory,read_inventory,read_locations,write_marketing_events,read_marketing_events,read_merchant_managed_fulfillment_orders,read_orders,write_orders,read_payment_terms,read_products,write_products,read_reports,read_returns,write_returns,read_shipping"
+
+[auth]
+redirect_urls = ["https://crm-1-pnfo.onrender.com/api/shopify/oauth/callback"]
+
+[webhooks]
+api_version = "2026-04"
+
+[[webhooks.subscriptions]]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "https://zilo.pro/api/shopify/webhooks"
+
+[pos]
+embedded = false
