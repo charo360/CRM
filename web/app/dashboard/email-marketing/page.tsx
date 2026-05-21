@@ -260,9 +260,9 @@ function CreateCampaignModal({ onClose, onCreated }: { onClose: () => void; onCr
         recipient_emails: form.recipient_emails ? form.recipient_emails.split(",").map(e => e.trim()).filter(Boolean) : [],
         recipient_tags:   form.recipient_tags   ? form.recipient_tags.split(",").map(t => t.trim()).filter(Boolean)   : [],
       };
-      const res = await apiPost<{ id: string }>("/api/email-marketing/campaigns", payload);
+      const res = await apiPost<{ id: string }>("/email-marketing/campaigns", payload);
       if (sendNow) {
-        await apiPost(`/api/email-marketing/campaigns/${res.id}/send`, {});
+        await apiPost(`/email-marketing/campaigns/${res.id}/send`, {});
         toast.success("Campaign sent!");
       } else {
         toast.success("Campaign saved as draft");
@@ -419,7 +419,7 @@ function SendModal({ campaign, onClose, onSent }: { campaign: Campaign; onClose:
     if (!testEmail) { toast.error("Enter a test email address"); return; }
     setLoading(true);
     try {
-      await apiPost(`/api/email-marketing/campaigns/${campaign.id}/send`, { test_email: testEmail });
+      await apiPost(`/email-marketing/campaigns/${campaign.id}/send`, { test_email: testEmail });
       toast.success(`Test sent to ${testEmail}`);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Test send failed");
@@ -430,7 +430,7 @@ function SendModal({ campaign, onClose, onSent }: { campaign: Campaign; onClose:
     setLoading(true);
     try {
       const res = await apiPost<{ sent: number; failed: number; status: string }>(
-        `/api/email-marketing/campaigns/${campaign.id}/send`, {}
+        `/email-marketing/campaigns/${campaign.id}/send`, {}
       );
       toast.success(`Sent to ${res.sent} recipients`);
       onSent();
@@ -497,7 +497,7 @@ function SettingsPanel() {
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {
-    apiGet<Settings>("/api/email-marketing/settings")
+    apiGet<Settings>("/email-marketing/settings")
       .then(d => setSettings(d))
       .catch(() => {});
   }, []);
@@ -505,7 +505,7 @@ function SettingsPanel() {
   async function save() {
     setSaving(true);
     try {
-      await apiPost("/api/email-marketing/settings", settings);
+      await apiPost("/email-marketing/settings", settings);
       toast.success("Settings saved");
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Save failed");
@@ -516,7 +516,7 @@ function SettingsPanel() {
     if (!testEmail) { toast.error("Enter a test email address"); return; }
     setTesting(true);
     try {
-      const res = await apiPost<{ ok: boolean; message: string }>("/api/email-marketing/settings/test", {
+      const res = await apiPost<{ ok: boolean; message: string }>("/email-marketing/settings/test", {
         ...settings, test_email: testEmail,
       });
       toast.success(res.message);
@@ -682,8 +682,8 @@ export default function EmailMarketingPage() {
     setLoading(true);
     try {
       const [c, s] = await Promise.all([
-        apiGet<{ campaigns: Campaign[] }>("/api/email-marketing/campaigns"),
-        apiGet<Stats>("/api/email-marketing/stats"),
+        apiGet<{ campaigns: Campaign[] }>("/email-marketing/campaigns"),
+        apiGet<Stats>("/email-marketing/stats"),
       ]);
       setCampaigns(c.campaigns);
       setStats(s);
@@ -699,7 +699,7 @@ export default function EmailMarketingPage() {
   async function deleteCampaign(id: string) {
     setDeleting(id);
     try {
-      await apiDelete(`/api/email-marketing/campaigns/${id}`);
+      await apiDelete(`/email-marketing/campaigns/${id}`);
       setCampaigns(p => p.filter(c => c.id !== id));
       toast.success("Campaign deleted");
     } catch (e: unknown) {
