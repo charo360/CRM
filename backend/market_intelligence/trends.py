@@ -10,6 +10,19 @@ from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
+# pytrends 4.9.2 uses urllib3's old `method_whitelist` param (renamed to
+# `allowed_methods` in urllib3 2.0). Patch it once at import time.
+try:
+    from urllib3.util.retry import Retry as _Retry
+    _orig_retry_init = _Retry.__init__
+    def _patched_retry_init(self, *args, **kwargs):
+        if "method_whitelist" in kwargs:
+            kwargs["allowed_methods"] = kwargs.pop("method_whitelist")
+        _orig_retry_init(self, *args, **kwargs)
+    _Retry.__init__ = _patched_retry_init
+except Exception:
+    pass
+
 
 async def get_interest_over_time(
     keyword: str,
