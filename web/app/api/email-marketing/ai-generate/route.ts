@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api";
 
-type Product = { name: string; price: string; description: string };
+type Product = { name: string; price: string; description: string; image_url?: string };
 
 const THEME_COLORS: Record<string, string> = {
   zilo:   "#009b3a",
@@ -34,141 +34,173 @@ function buildPrompt(
   products: Product[],
   theme: string,
   logoUrl: string,
+  heroImageUrl: string,
 ): string {
   const accent = THEME_COLORS[theme] ?? "#009b3a";
   const dark   = THEME_DARK[theme]   ?? "#007a2e";
-
   const brandName = brand || "the brand";
 
+  // ── Logo block ──────────────────────────────────────────────────────────────
   const logoBlock = logoUrl
     ? `<mj-image src="${logoUrl}" width="150px" alt="${brandName}" align="center" padding="0 0 6px 0" />`
     : `<mj-text align="center" padding="0"><span style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:26px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;">${brandName}</span></mj-text>`;
 
-  const productLines = products.filter(p => p.name.trim());
-  const hasProducts = productLines.length > 0;
+  // ── Allowed external URLs list ───────────────────────────────────────────────
+  const allowedUrls: string[] = [];
+  if (logoUrl)      allowedUrls.push(`"${logoUrl}" (logo)`);
+  if (heroImageUrl) allowedUrls.push(`"${heroImageUrl}" (hero banner)`);
+  products.forEach((p, i) => { if (p.image_url) allowedUrls.push(`"${p.image_url}" (product ${i+1}: ${p.name})`); });
+  const urlRules = allowedUrls.length
+    ? `ALLOWED external image URLs (use EXACTLY as written, these are the ONLY ones permitted):\n${allowedUrls.map(u => "  • " + u).join("\n")}`
+    : "NO external image URLs are allowed — use emoji/color placeholders instead.";
 
-  const productBlock = hasProducts
-    ? productLines.map((p, i) =>
-        `Product ${i + 1}: name="${p.name}"${p.price ? `, price="${p.price}"` : ""}${p.description ? `, description="${p.description}"` : ""}`
-      ).join("\n")
-    : "No specific products — general promotional / brand email.";
+  // ── Hero section spec ────────────────────────────────────────────────────────
+  const heroSpec = heroImageUrl
+    ? `HERO BANNER — use background-url="${heroImageUrl}" on the mj-section:
+• <mj-section background-url="${heroImageUrl}" background-size="cover" background-position="center center" background-color="${accent}" padding="60px 40px">
+• Add a semi-transparent dark overlay using mj-text with <div style="background:rgba(0,0,0,0.45);margin:-20px;padding:40px 20px;border-radius:0;">…text…</div>
+• Large bold white headline (36px, font-weight:800) — campaign-specific, punchy
+• White subtext (18px, opacity:0.9) — one compelling sentence
+• White pill button: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">CTA TEXT</mj-button>`
+    : `HERO BANNER — full-width color block:
+• <mj-section background-color="${accent}" padding="52px 40px">
+• Large bold white headline (36px, font-weight:800) — campaign-specific, punchy
+• White subtext (18px, opacity 80%) — one compelling sentence
+• <mj-spacer height="20px" />
+• White pill button: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">CTA TEXT</mj-button>`;
 
-  // decide layout hint for products
-  const productLayout = productLines.length === 2 ? "TWO-COLUMN (side by side)" :
-                        productLines.length === 3 ? "THREE-COLUMN (side by side)" :
-                        "ONE-COLUMN stacked";
+  // ── Products spec ────────────────────────────────────────────────────────────
+  const realProducts = products.filter(p => p.name.trim());
+  const hasProducts  = realProducts.length > 0;
+  const productLayout = realProducts.length === 2 ? "TWO-COLUMN side by side" :
+                        realProducts.length === 3 ? "THREE-COLUMN side by side" :
+                        "ONE-COLUMN stacked (full-width cards)";
 
-  return `You are the world's best email marketing designer. You specialise in MJML 4 (the responsive email framework).
-Your job: produce a COMPLETE, PRODUCTION-READY, VISUALLY STUNNING MJML 4 email template.
-Fortune-500 quality — the kind of email that wins awards and gets clicks.
+  const productDetails = realProducts.map((p, i) => {
+    const lines = [`  Product ${i+1}: "${p.name}"`];
+    if (p.price)     lines.push(`    price: "${p.price}"`);
+    if (p.description) lines.push(`    description: "${p.description}"`);
+    if (p.image_url)  lines.push(`    image: USE <mj-image src="${p.image_url}" width="100%" border-radius="12px 12px 0 0" padding="0" alt="${p.name}" />`);
+    else              lines.push(`    image: USE a large thematically-relevant emoji (52px centered) as placeholder — no <mj-image>`);
+    return lines.join("\n");
+  }).join("\n");
+
+  const productSection = hasProducts ? `
+SECTION — PRODUCTS (layout: ${productLayout})
+• Outer mj-section: background-color="#f4f4f5", padding="32px 16px"
+• Section heading: bold 22px #111827 centered, campaign-relevant sub-heading (e.g. "Featured Products", "Shop the Collection")
+• mj-spacer height="16px"
+${realProducts.length <= 3 ? `• Use ${realProducts.length} mj-column(s) in one mj-section, container-background-color="#ffffff" for each` : `• Stack one product per mj-section row`}
+Each product card:
+${productDetails}
+  - Product name: bold 17px #111827, align="center", padding="12px 16px 4px"
+  - Price: <span style="background:${accent};color:#fff;font-size:14px;font-weight:700;padding:4px 14px;border-radius:20px;display:inline-block;"> shown in centered mj-text
+  - Description: 13px #6b7280 centered, padding="6px 16px 10px", line-height:1.5
+  - Bottom accent bar: <div style="height:4px;background:${accent};border-radius:0 0 12px 12px;margin:0 0 0 0;"></div> inside mj-text
+  - "Shop Now →": <a href="{{CTA_URL}}" style="color:${accent};font-weight:700;font-size:14px;text-decoration:none;display:block;text-align:center;padding:0 0 16px;">Shop Now →</a>
+` : "";
+
+  return `You are the world's best email marketing designer specialising in MJML 4.
+Generate a COMPLETE, PRODUCTION-READY, VISUALLY STUNNING MJML 4 email — Fortune-500 quality.
+Study the brief carefully and write real, campaign-specific marketing copy throughout. Zero placeholder text.
 
 ===== CAMPAIGN BRIEF =====
-Brand / company : ${brandName}
+Brand          : ${brandName}
 Campaign purpose: ${description}
-Accent colour   : ${accent}
-Dark accent     : ${dark}
-${logoUrl ? `Logo image URL  : ${logoUrl}` : "Logo            : text-based (no image URL)"}
-Products        : ${productLines.length ? `${productLines.length} product(s) — layout: ${productLayout}` : "none — general email"}
-${productBlock}
+Accent colour  : ${accent}
+Dark accent    : ${dark}
+${logoUrl       ? `Logo image URL  : ${logoUrl}` : "Logo            : text-only (no image URL provided)"}
+${heroImageUrl  ? `Hero image URL  : ${heroImageUrl}` : "Hero            : colour block (no hero image URL provided)"}
+Products       : ${realProducts.length ? `${realProducts.length} — layout: ${productLayout}` : "none — general promotional email"}
 ==========================
 
 ━━━━━━━━━━━━━━━━━━━━━━━
-DESIGN SYSTEM (mandatory)
+DESIGN SYSTEM
 ━━━━━━━━━━━━━━━━━━━━━━━
-Font stack  : -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif
-Body bg     : #f4f4f5
-Card bg     : #ffffff
-Primary text: #111827
-Muted text  : #6b7280
-Email width : 600px
-Padding     : 20px column padding throughout
+Font      : -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif
+Body bg   : #f4f4f5   |   Card bg: #ffffff   |   Email width: 600px
+Primary   : #111827   |   Muted: #6b7280     |   Border: #e5e7eb
+Card style: border-radius:12px, border:1px solid #e5e7eb, overflow:hidden via container-background-color
 
-━━━━━━━━━━━━━━━━━━━━━
-REQUIRED LAYOUT (in order)
-━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REQUIRED LAYOUT (exact order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 SECTION 1 — HEADER STRIP
-• mj-section background-color="${accent}", padding="24px 0"
+• mj-section background-color="${accent}", padding="20px 0 16px"
 • Single centered column
-• ${logoUrl
-    ? `Logo: <mj-image src="${logoUrl}" width="150px" alt="${brandName}" align="center" padding="0 0 4px 0" />`
-    : `Brand name: bold 26px white text`}
-• Thin white separator line or spacer below
+• ${logoBlock}
+• Optional: 13px white italic tagline below brand name if brand is known
 
-SECTION 2 — HERO BANNER
-• mj-section background-color="${accent}", padding="48px 40px 52px"
-• Large bold white headline (32px, font-weight:800, line-height:1.2) — write a punchy, campaign-specific headline based on the brief
-• White subtext (17px, opacity-80, margin-top:12px) — one compelling sentence about the offer
-• Centered "Shop Now" / CTA pill button: background-color="#ffffff", color="${accent}", border-radius="50px", font-size="16px", font-weight="700", padding="14px 40px", inner-padding="0", href="{{CTA_URL}}" — add margin-top:24px via a mj-spacer
+SECTION 2 — ${heroSpec}
 
-SECTION 3 — TRUST / HIGHLIGHT BAR (skip if products section follows)
+SECTION 3 — BENEFITS BAR
 • mj-section background-color="#ffffff", padding="24px 20px"
-• Three mini stat/benefit items in a 3-column row using mj-column: each with a large emoji (36px), bold number/text, small grey label — things relevant to the brand/campaign (e.g. "Free shipping", "30-day returns", "10,000+ customers")
+• Three mj-columns, each containing: large emoji (34px), bold short stat/benefit text (14px #111827), tiny grey label (12px #6b7280)
+• Choose 3 benefits relevant to this specific campaign (free shipping, returns policy, social proof, speed, quality, etc.)
 
-${hasProducts ? `SECTION 4 — PRODUCTS
-Layout: ${productLayout}
-• mj-section background-color="#f4f4f5", padding="32px 20px"
-• Section heading: bold 22px #111827 centred, "Featured Products" or campaign-relevant heading
-• mj-spacer height="16px"
-${productLines.length <= 3 ? `• Use ${productLines.length} mj-column(s) side by side inside one mj-section` : `• Stack products one per row`}
-Each product card (implemented as mj-column with inner content):
-  - White card area: padding="0", background-color="#ffffff", border-radius="12px", border="1px solid #e5e7eb" (use container-background-color on mj-column)
-  - TOP ACCENT BAR: <mj-text padding="0"><div style="height:5px;background:${accent};border-radius:12px 12px 0 0;margin:0;"></div></mj-text>
-  - PRODUCT EMOJI: <mj-text align="center" padding="20px 16px 8px"><span style="font-size:52px;display:block;text-align:center;">RELEVANT_EMOJI</span></mj-text> — choose a highly relevant emoji for each product
-  - PRODUCT NAME: mj-text, bold 17px #111827, align="center", padding="0 16px 4px"
-  ${productLines.some(p => p.price) ? `  - PRICE BADGE: mj-text, align="center", padding="0 16px 8px" — <span style="background:${accent};color:#fff;font-size:15px;font-weight:700;padding:4px 14px;border-radius:20px;">${accent}</span>` : ""}
-  - DESCRIPTION: mj-text, 13px #6b7280, align="center", padding="0 16px 12px", line-height:1.5
-  - SHOP LINK: <mj-text align="center" padding="0 16px 20px"><a href="{{CTA_URL}}" style="color:${accent};font-weight:700;font-size:14px;text-decoration:none;">Shop Now →</a></mj-text>
-
-` : ""}
-SECTION ${hasProducts ? 5 : 4} — CTA SECTION
-• mj-section background-color="#ffffff", padding="48px 32px"
-• Centred 20px bold #111827 headline: write a persuasive urgency/benefit statement
-• 15px #6b7280 body text: supporting sentence
+${productSection}
+SECTION — CTA STRIP
+• mj-section background-color="${accent}", padding="48px 32px"
+• Bold 24px white headline — urgency/benefit statement specific to the campaign
+• 15px white/80% subtext — supporting one-liner
 • mj-spacer height="20px"
-• mj-button background-color="${accent}" color="#ffffff" border-radius="8px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}" inner-padding="0"
+• <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">BUTTON TEXT</mj-button>
 
-SECTION ${hasProducts ? 6 : 5} — FOOTER
-• mj-section background-color="#f9fafb", padding="32px 24px"
-• "© 2025 ${brandName}. All rights reserved." — 12px #9ca3af, centred
-• mj-spacer height="8px"
-• Links row: <a href="{{UNSUBSCRIBE_URL}}" style="color:${accent};font-size:12px;text-decoration:none;">Unsubscribe</a> &nbsp;·&nbsp; <a href="{{VIEW_IN_BROWSER_URL}}" style="color:${accent};font-size:12px;text-decoration:none;">View in browser</a>
-• mj-spacer height="8px"
+SECTION — FOOTER
+• mj-section background-color="#f9fafb", padding="28px 24px"
+• "© 2025 ${brandName}. All rights reserved." — 12px #9ca3af centered
+• mj-spacer height="6px"
+• <a href="{{UNSUBSCRIBE_URL}}" style="color:${accent};font-size:12px;text-decoration:none;">Unsubscribe</a> &nbsp;·&nbsp; <a href="{{VIEW_IN_BROWSER_URL}}" style="color:${accent};font-size:12px;text-decoration:none;">View in browser</a>
+• mj-spacer height="6px"
 • "Sent with ♥ by Zilo" — 11px #d1d5db
 
 ━━━━━━━━━━━━━━━━━━
 ABSOLUTE RULES
 ━━━━━━━━━━━━━━━━━━
-1. Output ONLY raw MJML XML. No markdown fences, no explanation, nothing before <mjml> or after </mjml>.
-2. Response MUST start exactly with <mjml> and end exactly with </mjml>.
-3. Use <mj-head><mj-attributes> to set global font-family, font-size defaults, and mj-button defaults.
+1. Output ONLY raw MJML XML. Nothing before <mjml>, nothing after </mjml>. No markdown.
+2. Response MUST start with <mjml> and end with </mjml> — no exceptions.
+3. Use <mj-head><mj-attributes> to set global font-family and button defaults.
 4. ONLY valid MJML 4 components: mj-section, mj-column, mj-text, mj-button, mj-image, mj-spacer, mj-divider.
-5. ${logoUrl ? `"${logoUrl}" is the ONLY external URL allowed as an image src.` : "Zero external image URLs — no img src pointing to the web."}
-6. No Google Fonts, no external CSS, no <link> tags.
-7. Every mj-section MUST have a background-color attribute.
-8. Write REAL, compelling marketing copy — headlines, subtext, CTAs — tailored to the campaign brief. No placeholder text like "Lorem ipsum" or generic "[Insert text]".
-9. Product emojis must be thematically relevant (🎧 for headphones, 👟 for shoes, 💄 for beauty, etc.).
-10. The final email must be genuinely beautiful, professional, and campaign-specific.
+5. Every mj-section MUST have a background-color attribute.
+6. ${urlRules}
+7. No Google Fonts, no external CSS, no <link> tags.
+8. Write REAL compelling marketing copy for every headline, subtext, and CTA — tailored precisely to the campaign brief. No "Lorem ipsum", no "[Your headline here]".
+9. The final email MUST look genuinely stunning — bold, colorful, visually compelling, campaign-specific.
 `.trim();
 }
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get("authorization") ?? "";
 
-  let body: { description?: string; brand?: string; products?: Product[]; theme?: string; logo_url?: string };
+  let body: {
+    description?: string;
+    brand?: string;
+    products?: Product[];
+    theme?: string;
+    logo_url?: string;
+    hero_image_url?: string;
+  };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { description = "", brand = "", products = [], theme = "zilo", logo_url = "" } = body;
+  const {
+    description = "",
+    brand = "",
+    products = [],
+    theme = "zilo",
+    logo_url = "",
+    hero_image_url = "",
+  } = body;
 
   if (!description.trim()) {
     return NextResponse.json({ error: "description is required" }, { status: 400 });
   }
 
-  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim());
+  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim(), hero_image_url.trim());
 
   try {
     const res = await fetch(`${BACKEND}/assistant/ai-draft`, {

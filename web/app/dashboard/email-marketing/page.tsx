@@ -353,7 +353,7 @@ function LibraryPanel({ onUseTemplate }: { onUseTemplate: (html: string, subject
 
 // ── AI Generate Step ──────────────────────────────────────────────────────────
 
-type Product = { name: string; price: string; description: string };
+type Product = { name: string; price: string; description: string; image_url: string };
 
 const THEMES = [
   { id: "zilo",   label: "Zilo Green", color: "#009b3a" },
@@ -377,15 +377,16 @@ function AIGenerateStep({
   const [description, setDescription] = useState("");
   const [brand, setBrand] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
+  const [heroImageUrl, setHeroImageUrl] = useState("");
   const [theme, setTheme] = useState("zilo");
-  const [products, setProducts] = useState<Product[]>([{ name: "", price: "", description: "" }]);
+  const [products, setProducts] = useState<Product[]>([{ name: "", price: "", description: "", image_url: "" }]);
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState("");
   const [generatedHtml, setGeneratedHtml] = useState("");
   const [generatedSubject, setGeneratedSubject] = useState("");
 
   const addProduct = () => {
-    if (products.length < 6) setProducts(p => [...p, { name: "", price: "", description: "" }]);
+    if (products.length < 6) setProducts(p => [...p, { name: "", price: "", description: "", image_url: "" }]);
   };
   const removeProduct = (i: number) => setProducts(p => p.filter((_, idx) => idx !== i));
   const setProduct = (i: number, k: keyof Product, v: string) =>
@@ -407,6 +408,7 @@ function AIGenerateStep({
         body: JSON.stringify({
           description, brand, theme,
           logo_url: logoUrl.trim(),
+          hero_image_url: heroImageUrl.trim(),
           products: products.filter(p => p.name.trim()),
         }),
       });
@@ -484,6 +486,20 @@ function AIGenerateStep({
           </div>
         </div>
 
+        {/* Hero image */}
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">Hero / banner image URL <span className="text-slate-400 font-normal">(optional — makes a big visual impact)</span></label>
+          <input value={heroImageUrl} onChange={e => setHeroImageUrl(e.target.value)}
+            placeholder="https://yoursite.com/banner.jpg"
+            className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+          {heroImageUrl.trim() && (
+            <div className="mt-1 rounded-lg overflow-hidden border border-slate-200 bg-slate-100" style={{ height: 64 }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={heroImageUrl} alt="hero preview" className="w-full h-full object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+            </div>
+          )}
+        </div>
+
         {/* Theme row */}
         <div className="space-y-1">
           <label className="text-sm font-medium text-slate-700">Colour theme</label>
@@ -535,6 +551,15 @@ function AIGenerateStep({
               <input value={p.description} onChange={e => setProduct(i, "description", e.target.value)}
                 placeholder="Short description (optional)"
                 className={`w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
+              <div className="flex items-center gap-2">
+                <input value={p.image_url} onChange={e => setProduct(i, "image_url", e.target.value)}
+                  placeholder="Product image URL (optional)"
+                  className={`flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
+                {p.image_url.trim() && (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img src={p.image_url} alt="product" className="h-8 w-8 object-cover rounded border border-slate-200 bg-white shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                )}
+              </div>
             </div>
           ))}
         </div>
