@@ -685,11 +685,13 @@ function SendModal({ campaign, onClose, onSent }: { campaign: Campaign; onClose:
 // ── Settings panel ─────────────────────────────────────────────────────────────
 
 const PROVIDERS = [
-  { value: "platform", label: "Zilo Platform (recommended)", desc: "Built-in email via Resend. Zero setup required." },
-  { value: "sendgrid", label: "SendGrid",    desc: "Use your own SendGrid API key." },
-  { value: "brevo",    label: "Brevo",       desc: "Use your own Brevo (Sendinblue) API key." },
-  { value: "mailgun",  label: "Mailgun",     desc: "Use your own Mailgun account." },
-  { value: "smtp",     label: "Custom SMTP", desc: "Any SMTP server (Gmail, Outlook, etc.)." },
+  { value: "platform",   label: "Zilo Platform (recommended)", desc: "Built-in email via Resend. Zero setup required." },
+  { value: "mailchimp",  label: "Mailchimp",  desc: "Send via Mailchimp Transactional (Mandrill). Requires a Mailchimp Transactional API key." },
+  { value: "klaviyo",    label: "Klaviyo",    desc: "Send via your Klaviyo account using the SMTP relay. Needs your Public and Private API keys." },
+  { value: "sendgrid",   label: "SendGrid",   desc: "Use your own SendGrid API key." },
+  { value: "brevo",      label: "Brevo",      desc: "Use your own Brevo (Sendinblue) API key." },
+  { value: "mailgun",    label: "Mailgun",    desc: "Use your own Mailgun account." },
+  { value: "smtp",       label: "Custom SMTP", desc: "Any SMTP server (Gmail, Outlook, etc.)." },
 ];
 
 function SettingsPanel() {
@@ -780,6 +782,43 @@ function SettingsPanel() {
           </div>
 
           {/* Provider-specific credentials */}
+          {settings.provider === "mailchimp" && (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Mailchimp Transactional API Key</label>
+                <input type="password" value={settings.credentials.api_key ?? ""}
+                  onChange={e => setCred("api_key", e.target.value)}
+                  placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-us1"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                <p className="text-xs text-slate-400">
+                  This is your <strong>Mailchimp Transactional</strong> key (formerly Mandrill) — not your regular Mailchimp API key.
+                  Find it at <span className="font-mono">mailchimp.com → Transactional → Settings → SMTP &amp; API Info</span>.
+                </p>
+              </div>
+            </div>
+          )}
+          {settings.provider === "klaviyo" && (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Klaviyo Public API Key</label>
+                <input value={settings.credentials.public_key ?? ""}
+                  onChange={e => setCred("public_key", e.target.value)}
+                  placeholder="pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Klaviyo Private API Key</label>
+                <input type="password" value={settings.credentials.private_key ?? ""}
+                  onChange={e => setCred("private_key", e.target.value)}
+                  placeholder="sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                <p className="text-xs text-slate-400">
+                  Find your keys at <span className="font-mono">Klaviyo → Settings → API Keys</span>.
+                  Create a Private Key with <em>Full Access</em>.
+                </p>
+              </div>
+            </div>
+          )}
           {settings.provider === "sendgrid" && (
             <div className="space-y-1">
               <label className="text-sm font-medium text-slate-700">SendGrid API Key</label>

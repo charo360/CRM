@@ -8,6 +8,8 @@ Supported providers:
   sendgrid  — user's own SendGrid API key
   brevo     — user's own Brevo (ex-Sendinblue) API key
   mailgun   — user's own Mailgun API key + domain
+  mailchimp — Mailchimp Transactional (Mandrill) API key
+  klaviyo   — Klaviyo SMTP relay (public key + private key)
 """
 from __future__ import annotations
 
@@ -157,6 +159,70 @@ async def _send_via_mailgun(
     return {"provider": "mailgun", "id": resp.get("id"), "status": "sent"}
 
 
+# ── Mailchimp Transactional (Mandrill) ───────────────────────────────────────
+
+async def _send_via_mailchimp(
+    api_key: str,
+    from_email: str,
+    from_name: str,
+    to: List[str],
+    subject: str,
+    html: str,
+    text: str = "",
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "key": api_key,
+        "message": {
+            "html": html,
+            "subject": subject,
+            "from_email": from_email,
+            "from_name": from_name,
+            "to": [{"email": e, "type": "to"} for e in to],
+        },
+    }
+    if text:
+        payload["message"]["text"] = text
+    async with httpx.AsyncClient(timeout=30) as hc:
+        r = await hc.post("https://mandrillapp.com/api/1.0/messages/send", json=payload)
+    if not r.is_success:
+        raise RuntimeError(f"Mailchimp/Mandrill error {r.status_code}: {r.text[:200]}")
+    results = r.json()
+    rejected = [x for x in results if x.get("status") in ("rejected", "invalid")]
+    if rejected and len(rejected) == len(to):
+        raise RuntimeError(
+            f"Mailchimp rejected all recipients: {rejected[0].get('reject_reason', 'unknown')}"
+        )
+    return {"provider": "mailchimp", "status": "sent", "id": results[0].get("_id") if results else None}
+
+
+# ── Klaviyo (SMTP relay) ──────────────────────────────────────────────────────
+
+async def _send_via_klaviyo(
+    public_key: str,
+    private_key: str,
+    from_email: str,
+    from_name: str,
+    to: List[str],
+    subject: str,
+    html: str,
+    text: str = "",
+) -> Dict[str, Any]:
+    """Send via Klaviyo's SMTP relay (smtp.klaviyo.com:587).
+    Username = Public API Key, Password = Private API Key.
+    """
+    import asyncio
+    result = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: _send_via_smtp_sync(
+            "smtp.klaviyo.com", 587,
+            public_key, private_key,
+            True,
+            from_email, from_name, to, subject, html, text,
+        ),
+    )
+    return {**result, "provider": "klaviyo"}
+
+
 # ── SMTP ──────────────────────────────────────────────────────────────────────
 
 def _send_via_smtp_sync(
@@ -232,6 +298,14 @@ async def send_email(
     if provider == "mailgun":
         return await _send_via_mailgun(
             creds["api_key"], creds["domain"], from_email, from_name, to, subject, html, text
+        )
+
+    if provider == "mailchimp":
+        return await _send_via_mailchimp(creds["api_key"], from_email, from_name, to, subject, html, text)
+
+    if provider == "klaviyo":
+        return await _send_via_klaviyo(
+            creds["public_key"], creds["private_key"], from_email, from_name, to, subject, html, text
         )
 
     if provider == "smtp":
