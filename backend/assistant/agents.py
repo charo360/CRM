@@ -70,6 +70,7 @@ GMAIL_AGENT_ID             = "gmail"
 MICROSOFT_AGENT_ID         = "microsoft"
 GOOGLE_CALENDAR_AGENT_ID   = "google_calendar"
 TELEGRAM_AGENT_ID          = "telegram"
+EMAIL_MARKETING_AGENT_ID   = "email_marketing"
 
 # ── Tool allowlists ────────────────────────────────────────────────────────────
 
@@ -458,6 +459,14 @@ SHOPIFY_CUSTOMERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_customers", "get_customer", "get_top_customers",
     "send_whatsapp_message",
 })
+
+EMAIL_MARKETING_TOOLS: FrozenSet[str] = frozenset({
+    "get_owner_info", "integrations_status",
+    "list_email_campaigns", "create_email_campaign", "send_email_campaign",
+    "get_email_campaign_stats", "configure_email_provider",
+    "list_customers", "get_customer", "list_shopify_customers",
+    "send_whatsapp_message", "generate_document",
+}) | _WEB_TOOLS
 
 # All integration agents share a minimal base
 _INTEGRATION_BASE: FrozenSet[str] = frozenset({
@@ -1449,6 +1458,42 @@ Always use tools before quoting any number.
 
 ## Style
 Lead with the key number. Tables for period comparisons. Always benchmark conversion rate vs 1.4% (Shopify avg) and 2.5% (industry). Flag revenue at risk and suggest specific recovery actions.
+"""
+
+EMAIL_MARKETING_SYSTEM_PROMPT = """You are the **Email Marketing specialist** inside Zilo Chat. You help users create, manage, and send email campaigns to their contacts and customers.
+
+## Your expertise
+- Creating campaigns with compelling subject lines and HTML email bodies.
+- Targeting contacts by tag (e.g. "vip", "newsletter", "shopify-customers") or explicit email list.
+- Choosing the right email provider: platform (built-in, zero setup) vs SendGrid/Brevo/Mailgun/SMTP.
+- Analysing campaign performance: sent, failed, open rates.
+- Writing professional, conversion-focused email copy for any niche.
+
+## Tools
+- `list_email_campaigns` — show all campaigns and their status.
+- `create_email_campaign` — create a campaign with name, subject, HTML body, and recipients.
+- `send_email_campaign` — send a campaign; use `test_email` first to preview.
+- `get_email_campaign_stats` — overview: sent count, failures, drafts.
+- `configure_email_provider` — set up provider (default: platform/Resend, zero config).
+
+## Workflow for creating a campaign
+1. Ask: goal (promo, newsletter, win-back), audience (tags or specific addresses), tone.
+2. Generate subject line + full HTML email body. Show both to the user.
+3. Call `create_email_campaign` with the content and recipients.
+4. Offer a test send first, then confirm before sending to full list.
+5. Call `send_email_campaign` with `test_email` first, then without it for the full send.
+
+## Provider setup
+- **Platform (default)**: zero setup. Always recommend this unless user specifically wants their own.
+- **User's own provider**: use `configure_email_provider` with API key / SMTP credentials.
+
+## Email copy style
+- Subject lines: emoji + urgency/benefit, 40-60 chars, suggest A/B variants.
+- Body: personal greeting, clear value prop, one CTA button, unsubscribe footer.
+- Write in the business's brand voice when context is available.
+
+## Style
+Always confirm before calling `send_email_campaign` for full list sends. Show recipient count before sending. Use table format for campaign history.
 """
 
 STRIPE_SYSTEM_PROMPT = """You are the **Stripe specialist** inside Zilo Chat. Your domain is Stripe payment processing and subscription management.
@@ -3498,6 +3543,13 @@ AGENT_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
 
     # ── Email marketing ────────────────────────────────────────────────────────
+    EMAIL_MARKETING_AGENT_ID: {
+        "label": "Email Marketing",
+        "description": "Create and send email campaigns, manage provider settings, view campaign stats",
+        "allowed_tools": EMAIL_MARKETING_TOOLS,
+        "use_default_system_prompt": False,
+        "system_prompt": EMAIL_MARKETING_SYSTEM_PROMPT,
+    },
     KLAVIYO_AGENT_ID: {
         "label": "Klaviyo",
         "description": "Klaviyo email flows, campaigns, segments, Shopify integration",

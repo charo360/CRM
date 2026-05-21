@@ -15581,3 +15581,250 @@ async def get_cj_hot_products_tool(keyword: str = "", limit: int = 10, **kwargs)
         return {"products": products, "keyword": keyword}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ── Email Marketing tools ──────────────────────────────────────────────────────
+
+@tool(
+    name="list_email_campaigns",
+    description=(
+        "List all email marketing campaigns for this business. "
+        "Returns name, subject, status (draft/scheduled/sent), recipient count, and send stats. "
+        "Use to show the user their campaign history or check what's pending."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def list_email_campaigns(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        docs = await ctx.db.email_campaigns.find(
+            {"user_id": ctx.business_id},
+            {"body_html": 0},
+        ).sort("created_at", -1).limit(50).to_list(50)
+        campaigns = []
+        for d in docs:
+            campaigns.append({
+                "id":         str(d.get("_id", "")),
+                "name":       d.get("name", ""),
+                "subject":    d.get("subject", ""),
+                "status":     d.get("status", "draft"),
+                "recipients": len(d.get("recipient_emails", [])),
+                "stats":      d.get("stats", {}),
+                "sent_at":    str(d.get("sent_at", "")),
+                "created_at": str(d.get("created_at", "")),
+            })
+        return {"campaigns": campaigns, "total": len(campaigns)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="create_email_campaign",
+    description=(
+        "Create a new email marketing campaign. "
+        "Can target specific email addresses or all contacts with certain tags. "
+        "Returns a campaign_id to use with send_email_campaign."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["name", "subject", "body_html"],
+        "properties": {
+            "name":             {"type": "string", "description": "Internal campaign name (e.g. 'June Flash Sale')"},
+            "subject":          {"type": "string", "description": "Email subject line"},
+            "body_html":        {"type": "string", "description": "Full HTML body of the email"},
+            "body_text":        {"type": "string", "description": "Plain text fallback (optional)"},
+            "recipient_emails": {"type": "array", "items": {"type": "string"}, "description": "Explicit list of recipient email addresses"},
+            "recipient_tags":   {"type": "array", "items": {"type": "string"}, "description": "Send to all contacts/customers with these tags"},
+            "from_name":        {"type": "string", "description": "Sender display name (overrides account default)"},
+            "from_email":       {"type": "string", "description": "Sender address (overrides account default)"},
+        },
+    },
+)
+async def create_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        doc = {
+            "user_id":          ctx.business_id,
+            "name":             args["name"],
+            "subject":          args["subject"],
+            "from_name":        args.get("from_name", ""),
+            "from_email":       args.get("from_email", ""),
+            "body_html":        args["body_html"],
+            "body_text":        args.get("body_text", ""),
+            "recipient_emails": args.get("recipient_emails", []),
+            "recipient_tags":   args.get("recipient_tags", []),
+            "status":           "draft",
+            "stats":            {"sent": 0, "failed": 0},
+            "created_at":       _dt.now(_tz.utc),
+            "updated_at":       _dt.now(_tz.utc),
+        }
+        result = await ctx.db.email_campaigns.insert_one(doc)
+        return {
+            "success":     True,
+            "campaign_id": str(result.inserted_id),
+            "name":        args["name"],
+            "status":      "draft",
+            "tip":         "Use send_email_campaign to send it now.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="send_email_campaign",
+    description=(
+        "Send an email campaign to all its recipients. "
+        "Pass campaign_id from create_email_campaign or list_email_campaigns. "
+        "Pass test_email to send a test first. "
+        "This action cannot be undone — emails cannot be unsent."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["campaign_id"],
+        "properties": {
+            "campaign_id": {"type": "string", "description": "Campaign ID"},
+            "test_email":  {"type": "string", "description": "If provided, sends a test to this address only"},
+        },
+    },
+    destructive=True,
+)
+async def send_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from bson import ObjectId
+        from email_marketing.client import send_email as _send_one, send_bulk as _send_bulk
+        from datetime import datetime as _dt, timezone as _tz
+
+        cid = args["campaign_id"]
+        doc = await ctx.db.email_campaigns.find_one(
+            {"_id": ObjectId(cid), "user_id": ctx.business_id}
+        )
+        if not doc:
+            return {"error": f"Campaign {cid} not found"}
+
+        s_doc = await ctx.db.email_settings.find_one({"user_id": ctx.business_id})
+        settings: Dict[str, Any] = dict(s_doc) if s_doc else {"provider": "platform"}
+        if doc.get("from_name"):
+            settings["from_name"] = doc["from_name"]
+        if doc.get("from_email"):
+            settings["from_email"] = doc["from_email"]
+
+        if args.get("test_email"):
+            await _send_one(settings, to=[args["test_email"]],
+                            subject=f"[TEST] {doc['subject']}",
+                            html=doc["body_html"], text=doc.get("body_text", ""))
+            return {"success": True, "test": True, "sent_to": args["test_email"]}
+
+        recipients: set = set(doc.get("recipient_emails") or [])
+        for tag in (doc.get("recipient_tags") or []):
+            async for c in ctx.db.contacts.find({"user_id": ctx.business_id, "tags": tag}, {"email": 1}):
+                if c.get("email"):
+                    recipients.add(c["email"])
+            async for c in ctx.db.customers.find({"user_id": ctx.business_id, "tags": tag}, {"email": 1}):
+                if c.get("email"):
+                    recipients.add(c["email"])
+        recipients_list = [e for e in recipients if e and "@" in e]
+        if not recipients_list:
+            return {"error": "No valid recipients found. Add email addresses or set recipient_tags."}
+
+        await ctx.db.email_campaigns.update_one(
+            {"_id": ObjectId(cid)},
+            {"$set": {"status": "sending", "updated_at": _dt.now(_tz.utc)}},
+        )
+        result = await _send_bulk(settings, recipients=recipients_list,
+                                   subject=doc["subject"], html=doc["body_html"],
+                                   text=doc.get("body_text", ""))
+        final_status = "sent" if result["failed"] == 0 else "partial"
+        await ctx.db.email_campaigns.update_one(
+            {"_id": ObjectId(cid)},
+            {"$set": {"status": final_status, "sent_at": _dt.now(_tz.utc),
+                      "stats": result, "updated_at": _dt.now(_tz.utc)}},
+        )
+        return {"success": True, "status": final_status, **result, "campaign": doc.get("name", "")}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="get_email_campaign_stats",
+    description="Get send statistics for all email campaigns: totals by status, emails sent, emails failed.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_email_campaign_stats(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        uid = ctx.business_id
+        total     = await ctx.db.email_campaigns.count_documents({"user_id": uid})
+        sent      = await ctx.db.email_campaigns.count_documents({"user_id": uid, "status": "sent"})
+        draft     = await ctx.db.email_campaigns.count_documents({"user_id": uid, "status": "draft"})
+        scheduled = await ctx.db.email_campaigns.count_documents({"user_id": uid, "status": "scheduled"})
+        pipeline = [
+            {"$match": {"user_id": uid, "status": {"$in": ["sent", "partial"]}}},
+            {"$group": {"_id": None, "emails_sent": {"$sum": "$stats.sent"}, "emails_failed": {"$sum": "$stats.failed"}}},
+        ]
+        agg = await ctx.db.email_campaigns.aggregate(pipeline).to_list(1)
+        totals = agg[0] if agg else {}
+        return {
+            "campaigns":     {"total": total, "sent": sent, "draft": draft, "scheduled": scheduled},
+            "emails_sent":   totals.get("emails_sent", 0),
+            "emails_failed": totals.get("emails_failed", 0),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="configure_email_provider",
+    description=(
+        "Set up the email sending provider for this business. "
+        "Options: 'platform' (Zilo built-in Resend, zero setup), "
+        "'sendgrid', 'brevo', 'mailgun', 'smtp'. "
+        "Always default to 'platform' unless user requests their own provider."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["provider"],
+        "properties": {
+            "provider":   {"type": "string",  "description": "platform | sendgrid | brevo | mailgun | smtp"},
+            "from_name":  {"type": "string",  "description": "Sender display name"},
+            "from_email": {"type": "string",  "description": "Sender email address"},
+            "api_key":    {"type": "string",  "description": "API key for sendgrid/brevo/mailgun"},
+            "domain":     {"type": "string",  "description": "Domain for mailgun"},
+            "smtp_host":  {"type": "string",  "description": "SMTP hostname"},
+            "smtp_port":  {"type": "integer", "description": "SMTP port (587 or 465)"},
+            "smtp_user":  {"type": "string",  "description": "SMTP username"},
+            "smtp_pass":  {"type": "string",  "description": "SMTP password"},
+        },
+    },
+)
+async def configure_email_provider(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        provider = args["provider"].lower()
+        creds: Dict[str, Any] = {}
+        if provider in ("sendgrid", "brevo"):
+            creds["api_key"] = args.get("api_key", "")
+        elif provider == "mailgun":
+            creds["api_key"] = args.get("api_key", "")
+            creds["domain"]  = args.get("domain", "")
+        elif provider == "smtp":
+            creds = {
+                "host":     args.get("smtp_host", ""),
+                "port":     args.get("smtp_port", 587),
+                "username": args.get("smtp_user", ""),
+                "password": args.get("smtp_pass", ""),
+                "use_tls":  True,
+            }
+        await ctx.db.email_settings.update_one(
+            {"user_id": ctx.business_id},
+            {"$set": {
+                "user_id":     ctx.business_id,
+                "provider":    provider,
+                "from_name":   args.get("from_name", ""),
+                "from_email":  args.get("from_email", ""),
+                "credentials": creds,
+                "updated_at":  _dt.now(_tz.utc),
+            }},
+            upsert=True,
+        )
+        return {"success": True, "provider": provider,
+                "message": f"Email provider set to {provider}."}
+    except Exception as e:
+        return {"error": str(e)}
