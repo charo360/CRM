@@ -16135,6 +16135,15 @@ try:
 except Exception as _ge:
     logging.error("[growth] failed to mount: %s", _ge)
 
+# ── Email Marketing ───────────────────────────────────────────────────────────
+try:
+    from email_marketing.routes import make_email_marketing_router as _mk_email_mktg_router
+    _email_mktg_router = _mk_email_mktg_router(get_current_user, db)
+    api_router.include_router(_email_mktg_router)
+    logging.info("[email-marketing] routes mounted at /api/email-marketing/*")
+except Exception as _eme:
+    logging.error("[email-marketing] failed to mount routes: %s", _eme)
+
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)
 

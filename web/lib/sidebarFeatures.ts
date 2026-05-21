@@ -35,6 +35,7 @@ export const SIDEBAR_FEATURE_DEFAULTS: Record<string, boolean> = {
   nav_nps: false,
   nav_social_inbox: false,
   nav_email: false,
+  nav_email_marketing: false,
   nav_calendar: false,
   nav_shopify: false,
   nav_design_templates: false,
@@ -81,6 +82,7 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
   "/dashboard/nps": "nav_nps",
   "/dashboard/social-inbox": "nav_social_inbox",
   "/dashboard/email": "nav_email",
+  "/dashboard/email-marketing": "nav_email_marketing",
   "/dashboard/calendar": "nav_calendar",
   "/dashboard/shopify": "nav_shopify",
   "/dashboard/design-templates": "nav_design_templates",
@@ -190,6 +192,7 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
     title: "Productivity",
     items: [
       { key: "nav_email", label: "Email Inbox", description: "Gmail or Outlook inbox with AI draft & auto-reply" },
+      { key: "nav_email_marketing", label: "Email Marketing", description: "Create and send email campaigns to your contacts" },
       { key: "nav_calendar", label: "Calendar", description: "Google or Outlook calendar with event management" },
       { key: "nav_shopify", label: "Shopify", description: "Orders, inventory, customers, abandoned carts & discounts" },
     { key: "nav_design_templates", label: "Design library", description: "Chat-generated graphics, PDFs, and decks plus optional manual template metadata" },

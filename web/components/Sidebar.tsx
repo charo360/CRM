@@ -142,6 +142,7 @@ export default function Sidebar() {
 
   const productivityNav = [
     { href: "/dashboard/email", label: "Email", icon: Mail },
+    { href: "/dashboard/email-marketing", label: "Email Marketing", icon: Megaphone },
     { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDays },
     { href: "/dashboard/shopify", label: "Shopify", icon: ShoppingBag },
     { href: "/dashboard/smart-discovery", label: "Smart Discovery", icon: Radar },
