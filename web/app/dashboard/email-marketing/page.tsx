@@ -174,7 +174,16 @@ function SaveToLibraryModal({
   const [subject, setSubject] = useState(defaultSubject);
   const [saving, setSaving] = useState(false);
 
-  const CATS = ["Newsletter","Promotional","Seasonal","Onboarding","Retention","Growth","E-commerce","Transactional","Events","News","Feedback","Custom"];
+  const CAT_GROUPS: { group: string; options: string[] }[] = [
+    { group: "Marketing",    options: ["Newsletter","Promotional","Seasonal","News"] },
+    { group: "Onboarding",   options: ["Onboarding","Welcome"] },
+    { group: "Retention",    options: ["Retention","Win-back","Feedback"] },
+    { group: "E-commerce",   options: ["E-commerce","Abandoned Cart"] },
+    { group: "Transactional",options: ["Transactional","Order Confirmation","Shipping","Receipt","Password Reset","Payment"] },
+    { group: "Events",       options: ["Events"] },
+    { group: "Growth",       options: ["Growth","Referral"] },
+    { group: "Other",        options: ["Custom"] },
+  ];
 
   async function save() {
     if (!name.trim()) { toast.error("Template name is required"); return; }
@@ -210,7 +219,11 @@ function SaveToLibraryModal({
             <label className="text-sm font-medium text-slate-700">Category</label>
             <select value={category} onChange={e => setCategory(e.target.value)}
               className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`}>
-              {CATS.map(c => <option key={c}>{c}</option>)}
+              {CAT_GROUPS.map(g => (
+                <optgroup key={g.group} label={g.group}>
+                  {g.options.map(c => <option key={c} value={c}>{c}</option>)}
+                </optgroup>
+              ))}
             </select>
           </div>
           <div className="space-y-1">
@@ -255,7 +268,10 @@ function MiniEmailPreview({ html }: { html: string }) {
   );
 }
 
-function LibraryPanel({ onUseTemplate }: { onUseTemplate: (html: string, subject: string) => void }) {
+function LibraryPanel({ onUseTemplate, refreshKey }: {
+  onUseTemplate: (html: string, subject: string) => void;
+  refreshKey?: number;
+}) {
   const [templates, setTemplates] = useState<SavedTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -271,7 +287,7 @@ function LibraryPanel({ onUseTemplate }: { onUseTemplate: (html: string, subject
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshKey]);
 
   async function deleteTemplate(id: string) {
     setDeleting(id);
@@ -1305,11 +1321,12 @@ function VariableFiller({
 // ── Create Campaign Modal ─────────────────────────────────────────────────────
 
 function CreateCampaignModal({
-  onClose, onCreated,
+  onClose, onCreated, onTemplateSaved,
   prefillHtml, prefillSubject,
 }: {
   onClose: () => void;
   onCreated: () => void;
+  onTemplateSaved?: () => void;
   prefillHtml?: string;
   prefillSubject?: string;
 }) {
@@ -1523,7 +1540,7 @@ function CreateCampaignModal({
           html={saveLibraryTarget.html}
           defaultSubject={saveLibraryTarget.subject}
           onClose={() => setSaveLibraryTarget(null)}
-          onSaved={() => setSaveLibraryTarget(null)}
+          onSaved={() => { setSaveLibraryTarget(null); onTemplateSaved?.(); }}
         />
       )}
     </>
@@ -1996,6 +2013,7 @@ export default function EmailMarketingPage() {
   const [previewCampaign, setPreviewCampaign] = useState<Campaign | null>(null);
   const [recipientsTarget, setRecipientsTarget] = useState<Campaign | null>(null);
   const [libraryPrefill, setLibraryPrefill] = useState<{ html: string; subject: string } | null>(null);
+  const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -2190,6 +2208,7 @@ export default function EmailMarketingPage() {
         {/* Library tab */}
         {tab === "library" && (
           <LibraryPanel
+            refreshKey={libraryRefreshKey}
             onUseTemplate={(html, subject) => {
               setLibraryPrefill({ html, subject });
               setShowCreate(true);
@@ -2206,6 +2225,7 @@ export default function EmailMarketingPage() {
         <CreateCampaignModal
           onClose={() => { setShowCreate(false); setLibraryPrefill(null); }}
           onCreated={loadData}
+          onTemplateSaved={() => setLibraryRefreshKey(k => k + 1)}
           prefillHtml={libraryPrefill?.html}
           prefillSubject={libraryPrefill?.subject}
         />

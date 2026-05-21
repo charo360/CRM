@@ -3,6 +3,8 @@ import {
   mjmlAnnouncement, mjmlAbandonedCart, mjmlOrderConfirmation,
   mjmlEventInvitation, mjmlReferral, mjmlFeedback,
   mjmlHolidaySale, mjmlProductShowcase,
+  mjmlShippingNotification, mjmlPasswordReset,
+  mjmlReceiptInvoice, mjmlPaymentFailed,
 } from "./mjml-templates";
 
 export type TemplateVar = {
@@ -607,6 +609,93 @@ export const EMAIL_TEMPLATES: EmailTemplate[] = [
       { key: "FEATURE_2",       label: "Feature 2",         placeholder: "Free express shipping",   defaultValue: "Free express shipping on all orders" },
       { key: "FEATURE_3",       label: "Feature 3",         placeholder: "30-day money back",       defaultValue: "30-day money-back guarantee" },
       { key: "CTA_URL",         label: "Shop link",         placeholder: "https://yourstore.com",   defaultValue: "#" },
+    ],
+  },
+
+  // ── Transactional ────────────────────────────────────────────────────────────
+
+  {
+    id: "mjml-shipping-notification",
+    name: "Shipping Notification (MJML)",
+    category: "Transactional",
+    description: "Shipped order alert with tracking number, carrier, estimated delivery, and shipment summary",
+    thumbnail: "📦",
+    defaultSubject: "📦 Your order #{{ORDER_NUMBER}} has shipped!",
+    html: "",
+    type: "mjml",
+    mjmlSource: mjmlShippingNotification,
+    variables: [
+      { key: "ORDER_NUMBER",         label: "Order number",         placeholder: "12345",                           defaultValue: "12345" },
+      { key: "CARRIER",              label: "Carrier",              placeholder: "FedEx",                           defaultValue: "FedEx" },
+      { key: "TRACKING_NUMBER",      label: "Tracking number",      placeholder: "794644792798",                    defaultValue: "794644792798" },
+      { key: "TRACKING_URL",         label: "Tracking link",        placeholder: "https://tracking.fedex.com/...",  defaultValue: "#" },
+      { key: "DELIVERY_DATE",        label: "Est. delivery date",   placeholder: "Friday, May 24",                  defaultValue: "Friday, May 24" },
+      { key: "SHIPPING_ADDRESS",     label: "Shipping address",     placeholder: "123 Main St, City, ST 12345",     defaultValue: "123 Main St, City, ST 12345", multiline: true },
+      { key: "ORDER_ITEMS_SUMMARY",  label: "Items summary",        placeholder: "1× Blue T-Shirt (M), 2× Socks",  defaultValue: "1× Product Name", multiline: true },
+    ],
+  },
+
+  {
+    id: "mjml-password-reset",
+    name: "Password Reset (MJML)",
+    category: "Transactional",
+    description: "Secure password reset with expiry warning, IP details, and didn't-request disclaimer",
+    thumbnail: "🔐",
+    defaultSubject: "Reset your {{COMPANY_NAME}} password",
+    html: "",
+    type: "mjml",
+    mjmlSource: mjmlPasswordReset,
+    variables: [
+      { key: "COMPANY_NAME",  label: "Company name",     placeholder: "Zilo",                              defaultValue: "Your Company" },
+      { key: "RESET_URL",     label: "Reset link",       placeholder: "https://yourapp.com/reset/token",   defaultValue: "#" },
+      { key: "EXPIRY_HOURS",  label: "Link expires in",  placeholder: "24",                                defaultValue: "24" },
+      { key: "REQUEST_IP",    label: "Request IP",       placeholder: "192.168.1.1",                       defaultValue: "Unknown" },
+      { key: "REQUEST_TIME",  label: "Request time",     placeholder: "May 21, 2026 at 3:42 PM",           defaultValue: "Just now" },
+    ],
+  },
+
+  {
+    id: "mjml-receipt-invoice",
+    name: "Receipt / Invoice (MJML)",
+    category: "Transactional",
+    description: "Full purchase receipt with line-item table, subtotal/tax/total breakdown, and shipping address",
+    thumbnail: "🧾",
+    defaultSubject: "Your receipt from {{COMPANY_NAME}} — Order #{{INVOICE_NUMBER}}",
+    html: "",
+    type: "mjml",
+    mjmlSource: mjmlReceiptInvoice,
+    variables: [
+      { key: "COMPANY_NAME",    label: "Company name",    placeholder: "Zilo Store",           defaultValue: "Your Company" },
+      { key: "INVOICE_NUMBER",  label: "Invoice/Order #", placeholder: "INV-2026-0042",        defaultValue: "INV-0001" },
+      { key: "INVOICE_DATE",    label: "Invoice date",    placeholder: "May 21, 2026",          defaultValue: "Today" },
+      { key: "CUSTOMER_NAME",   label: "Customer name",   placeholder: "John",                 defaultValue: "Valued Customer" },
+      { key: "ORDER_ITEMS",     label: "Line items (HTML <tr> rows)", placeholder: "<tr><td style=\"padding:12px 16px;\">Product</td><td style=\"padding:12px 16px;text-align:center;\">1</td><td style=\"padding:12px 16px;text-align:right;\">$29.00</td></tr>", defaultValue: "<tr><td style=\"padding:12px 16px;border-bottom:1px solid #f3f4f6;\">Sample Product</td><td style=\"padding:12px 16px;text-align:center;border-bottom:1px solid #f3f4f6;\">1</td><td style=\"padding:12px 16px;text-align:right;border-bottom:1px solid #f3f4f6;\">$29.00</td></tr>", multiline: true },
+      { key: "SUBTOTAL",        label: "Subtotal",        placeholder: "$29.00",               defaultValue: "$29.00" },
+      { key: "SHIPPING_COST",   label: "Shipping",        placeholder: "$0.00",                defaultValue: "FREE" },
+      { key: "TAX",             label: "Tax",             placeholder: "$2.32",                defaultValue: "$0.00" },
+      { key: "TOTAL",           label: "Total",           placeholder: "$31.32",               defaultValue: "$29.00" },
+      { key: "SHIPPING_ADDRESS",label: "Shipping address",placeholder: "123 Main St...",       defaultValue: "123 Main St, City, ST 12345", multiline: true },
+      { key: "CTA_URL",         label: "View invoice link",placeholder: "https://...",         defaultValue: "#" },
+    ],
+  },
+
+  {
+    id: "mjml-payment-failed",
+    name: "Payment Failed (MJML)",
+    category: "Transactional",
+    description: "Payment failure alert with failure reason, order hold notice, and update payment CTA",
+    thumbnail: "⚠️",
+    defaultSubject: "⚠️ Payment failed for order #{{ORDER_NUMBER}} — action required",
+    html: "",
+    type: "mjml",
+    mjmlSource: mjmlPaymentFailed,
+    variables: [
+      { key: "CUSTOMER_NAME",   label: "Customer name",    placeholder: "John",                    defaultValue: "Valued Customer" },
+      { key: "ORDER_NUMBER",    label: "Order number",     placeholder: "12345",                   defaultValue: "12345" },
+      { key: "ORDER_TOTAL",     label: "Amount due",       placeholder: "$49.99",                  defaultValue: "$49.99" },
+      { key: "FAILURE_REASON",  label: "Failure reason",   placeholder: "Card was declined",       defaultValue: "Your card was declined. Please check your card details or try a different payment method." },
+      { key: "HOLD_HOURS",      label: "Hold duration (hrs)", placeholder: "48",                  defaultValue: "48" },
+      { key: "CTA_URL",         label: "Update payment link", placeholder: "https://...",          defaultValue: "#" },
     ],
   },
 ];

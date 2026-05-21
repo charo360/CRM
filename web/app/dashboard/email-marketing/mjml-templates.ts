@@ -632,6 +632,285 @@ export const mjmlHolidaySale = `
   </mj-body>
 </mjml>`.trim();
 
+// ── 13. Shipping Notification ─────────────────────────────────────────────────
+
+export const mjmlShippingNotification = `
+<mjml>
+  <mj-head>
+    <mj-attributes>
+      <mj-all font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" />
+      <mj-text color="#374151" font-size="15px" line-height="1.7" />
+      <mj-button background-color="#0ea5e9" border-radius="8px" font-size="14px" font-weight="700" padding="14px 32px" color="#ffffff" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#f0f9ff">
+    <mj-section background-color="#0ea5e9" padding="40px 32px">
+      <mj-column>
+        <mj-text color="#ffffff" font-size="36px" align="center" padding="0">📦</mj-text>
+        <mj-text color="#ffffff" font-size="22px" font-weight="800" align="center" padding-top="8px" padding-bottom="0">Your order is on its way!</mj-text>
+        <mj-text color="#bae6fd" font-size="14px" align="center" padding-top="6px" padding-bottom="0">Order #{{ORDER_NUMBER}} has shipped via {{CARRIER}}</mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding="36px 32px">
+      <mj-column>
+        <mj-text color="#4b5563" padding-bottom="20px">
+          Great news! Your package is on its way. Here are your shipping details:
+        </mj-text>
+
+        <mj-text background-color="#f0f9ff" border-radius="12px" padding="20px 24px" border="1px solid #bae6fd">
+          <table cellpadding="0" cellspacing="0" style="width:100%">
+            <tr>
+              <td style="padding-bottom:12px;width:50%;vertical-align:top;">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Tracking Number</p>
+                <p style="margin:0;font-weight:700;color:#0ea5e9;font-size:15px;font-family:monospace;">{{TRACKING_NUMBER}}</p>
+              </td>
+              <td style="padding-bottom:12px;vertical-align:top;">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Carrier</p>
+                <p style="margin:0;font-weight:700;color:#111827;font-size:15px;">{{CARRIER}}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="vertical-align:top;">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Estimated Delivery</p>
+                <p style="margin:0;font-weight:700;color:#111827;font-size:15px;">{{DELIVERY_DATE}}</p>
+              </td>
+              <td style="vertical-align:top;">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Shipping To</p>
+                <p style="margin:0;color:#374151;font-size:14px;line-height:1.5;">{{SHIPPING_ADDRESS}}</p>
+              </td>
+            </tr>
+          </table>
+        </mj-text>
+
+        <mj-text background-color="#f9fafb" border-radius="12px" padding="16px 24px" border="1px solid #e5e7eb">
+          <p style="margin:0 0 10px;font-size:13px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">Items in this shipment</p>
+          <p style="margin:0;font-size:14px;color:#374151;line-height:1.6;">{{ORDER_ITEMS_SUMMARY}}</p>
+        </mj-text>
+
+        <mj-spacer height="24px" />
+        <mj-button href="{{TRACKING_URL}}" align="center">Track My Package →</mj-button>
+        <mj-spacer height="12px" />
+        <mj-text color="#9ca3af" font-size="12px" align="center" padding="0">
+          Tracking may take up to 24 hours to update after shipment.
+        </mj-text>
+      </mj-column>
+    </mj-section>
+    ${footer("#0ea5e9")}
+  </mj-body>
+</mjml>`.trim();
+
+// ── 14. Password Reset ────────────────────────────────────────────────────────
+
+export const mjmlPasswordReset = `
+<mjml>
+  <mj-head>
+    <mj-attributes>
+      <mj-all font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" />
+      <mj-text color="#374151" font-size="15px" line-height="1.7" />
+      <mj-button background-color="#374151" border-radius="8px" font-size="14px" font-weight="700" padding="14px 32px" color="#ffffff" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#f9fafb">
+    <mj-section background-color="#111827" padding="40px 32px">
+      <mj-column>
+        <mj-text color="#ffffff" font-size="32px" align="center" padding="0">🔐</mj-text>
+        <mj-text color="#ffffff" font-size="22px" font-weight="800" align="center" padding-top="8px" padding-bottom="0">Password Reset Request</mj-text>
+        <mj-text color="#9ca3af" font-size="14px" align="center" padding-top="6px" padding-bottom="0">{{COMPANY_NAME}} · Account Security</mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding="36px 32px">
+      <mj-column>
+        <mj-text color="#4b5563" padding-bottom="20px">
+          We received a request to reset the password for your {{COMPANY_NAME}} account. Click the button below to choose a new password:
+        </mj-text>
+
+        <mj-button href="{{RESET_URL}}" align="center">Reset My Password</mj-button>
+
+        <mj-text color="#6b7280" font-size="13px" align="center" padding="16px 0">
+          This link expires in <strong>{{EXPIRY_HOURS}} hours</strong>.
+        </mj-text>
+
+        <mj-text background-color="#fef3c7" border-radius="10px" padding="16px 20px" border="1px solid #fde68a">
+          <p style="margin:0;font-size:14px;color:#92400e;line-height:1.6;">
+            ⚠️ <strong>Didn't request this?</strong> You can safely ignore this email. Your password will not change until you click the link above. If you're concerned, please contact our support team immediately.
+          </p>
+        </mj-text>
+
+        <mj-text background-color="#f9fafb" border-radius="10px" padding="16px 20px" border="1px solid #e5e7eb">
+          <table cellpadding="0" cellspacing="0" style="width:100%">
+            <tr>
+              <td style="padding-bottom:6px;">
+                <p style="margin:0;font-size:12px;color:#9ca3af;">Request made from IP address</p>
+                <p style="margin:0;font-size:13px;font-weight:600;color:#374151;font-family:monospace;">{{REQUEST_IP}}</p>
+              </td>
+              <td style="text-align:right;padding-bottom:6px;vertical-align:top;">
+                <p style="margin:0;font-size:12px;color:#9ca3af;">Request time</p>
+                <p style="margin:0;font-size:13px;font-weight:600;color:#374151;">{{REQUEST_TIME}}</p>
+              </td>
+            </tr>
+          </table>
+        </mj-text>
+
+        <mj-text color="#9ca3af" font-size="12px" align="center" padding="16px 0 0">
+          If the button above doesn't work, copy and paste this URL into your browser:<br/>
+          <a href="{{RESET_URL}}" style="color:#374151;word-break:break-all;">{{RESET_URL}}</a>
+        </mj-text>
+      </mj-column>
+    </mj-section>
+    ${footer("#374151")}
+  </mj-body>
+</mjml>`.trim();
+
+// ── 15. Receipt / Invoice ─────────────────────────────────────────────────────
+
+export const mjmlReceiptInvoice = `
+<mjml>
+  <mj-head>
+    <mj-attributes>
+      <mj-all font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" />
+      <mj-text color="#374151" font-size="15px" line-height="1.7" />
+      <mj-button background-color="#10b981" border-radius="8px" font-size="14px" font-weight="700" padding="14px 32px" color="#ffffff" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#f9fafb">
+    <mj-section background-color="#111827" padding="32px">
+      <mj-column width="60%">
+        <mj-text color="#ffffff" font-size="22px" font-weight="800" padding="0">{{COMPANY_NAME}}</mj-text>
+        <mj-text color="#9ca3af" font-size="13px" padding-top="4px" padding-bottom="0">Receipt / Invoice</mj-text>
+      </mj-column>
+      <mj-column width="40%">
+        <mj-text color="#9ca3af" font-size="12px" align="right" padding="0">
+          <strong style="color:#ffffff;font-size:15px;">#{{INVOICE_NUMBER}}</strong><br/>
+          {{INVOICE_DATE}}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding="28px 32px 0">
+      <mj-column>
+        <mj-text color="#111827" font-size="15px" padding-bottom="20px">
+          Hi <strong>{{CUSTOMER_NAME}}</strong>, here's your receipt for your recent purchase. Thank you for your business!
+        </mj-text>
+
+        <mj-text background-color="#f9fafb" border-radius="10px" padding="0" border="1px solid #e5e7eb">
+          <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="background:#f3f4f6;">
+                <th style="padding:12px 16px;text-align:left;font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #e5e7eb;">Item</th>
+                <th style="padding:12px 16px;text-align:center;font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #e5e7eb;">Qty</th>
+                <th style="padding:12px 16px;text-align:right;font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid #e5e7eb;">Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{ORDER_ITEMS}}
+            </tbody>
+          </table>
+        </mj-text>
+
+        <mj-spacer height="1px" />
+
+        <mj-text background-color="#f9fafb" border-radius="10px" padding="16px 20px" border="1px solid #e5e7eb">
+          <table cellpadding="0" cellspacing="0" style="width:100%">
+            <tr>
+              <td style="padding-bottom:8px;color:#6b7280;font-size:14px;">Subtotal</td>
+              <td style="padding-bottom:8px;text-align:right;color:#374151;font-size:14px;">{{SUBTOTAL}}</td>
+            </tr>
+            <tr>
+              <td style="padding-bottom:8px;color:#6b7280;font-size:14px;">Shipping</td>
+              <td style="padding-bottom:8px;text-align:right;color:#374151;font-size:14px;">{{SHIPPING_COST}}</td>
+            </tr>
+            <tr>
+              <td style="padding-bottom:8px;color:#6b7280;font-size:14px;">Tax</td>
+              <td style="padding-bottom:8px;text-align:right;color:#374151;font-size:14px;">{{TAX}}</td>
+            </tr>
+            <tr style="border-top:2px solid #e5e7eb;">
+              <td style="padding-top:10px;font-weight:800;color:#111827;font-size:16px;">Total</td>
+              <td style="padding-top:10px;text-align:right;font-weight:800;color:#111827;font-size:18px;">{{TOTAL}}</td>
+            </tr>
+          </table>
+        </mj-text>
+
+        <mj-text background-color="#f9fafb" border-radius="10px" padding="16px 20px" border="1px solid #e5e7eb">
+          <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">Shipped To</p>
+          <p style="margin:0;font-size:14px;color:#374151;line-height:1.6;">{{SHIPPING_ADDRESS}}</p>
+        </mj-text>
+
+        <mj-spacer height="24px" />
+        <mj-button href="{{CTA_URL}}" align="center">View Full Invoice →</mj-button>
+        <mj-spacer height="16px" />
+      </mj-column>
+    </mj-section>
+    ${footer("#10b981")}
+  </mj-body>
+</mjml>`.trim();
+
+// ── 16. Payment Failed ────────────────────────────────────────────────────────
+
+export const mjmlPaymentFailed = `
+<mjml>
+  <mj-head>
+    <mj-attributes>
+      <mj-all font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" />
+      <mj-text color="#374151" font-size="15px" line-height="1.7" />
+      <mj-button background-color="#ef4444" border-radius="8px" font-size="14px" font-weight="700" padding="14px 32px" color="#ffffff" />
+    </mj-attributes>
+  </mj-head>
+  <mj-body background-color="#fff5f5">
+    <mj-section background-color="#dc2626" padding="40px 32px">
+      <mj-column>
+        <mj-text color="#ffffff" font-size="32px" align="center" padding="0">⚠️</mj-text>
+        <mj-text color="#ffffff" font-size="22px" font-weight="800" align="center" padding-top="8px" padding-bottom="0">Payment Failed</mj-text>
+        <mj-text color="#fca5a5" font-size="14px" align="center" padding-top="6px" padding-bottom="0">Order #{{ORDER_NUMBER}} · Action required</mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding="36px 32px">
+      <mj-column>
+        <mj-text color="#4b5563" padding-bottom="16px">
+          Hi <strong>{{CUSTOMER_NAME}}</strong>, we were unable to process the payment for your recent order. Please update your payment method to complete your purchase.
+        </mj-text>
+
+        <mj-text background-color="#fef2f2" border-radius="10px" padding="16px 20px" border="1px solid #fecaca">
+          <table cellpadding="0" cellspacing="0" style="width:100%">
+            <tr>
+              <td style="padding-bottom:8px;width:50%;vertical-align:top;">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Order</p>
+                <p style="margin:0;font-weight:700;color:#111827;font-size:15px;">#{{ORDER_NUMBER}}</p>
+              </td>
+              <td style="padding-bottom:8px;vertical-align:top;">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Amount Due</p>
+                <p style="margin:0;font-weight:800;color:#dc2626;font-size:17px;">{{ORDER_TOTAL}}</p>
+              </td>
+            </tr>
+            <tr>
+              <td colspan="2">
+                <p style="margin:0 0 2px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;">Reason</p>
+                <p style="margin:0;font-size:14px;color:#374151;">{{FAILURE_REASON}}</p>
+              </td>
+            </tr>
+          </table>
+        </mj-text>
+
+        <mj-text background-color="#fffbeb" border-radius="10px" padding="14px 18px" border="1px solid #fde68a">
+          <p style="margin:0;font-size:14px;color:#92400e;">
+            🕐 <strong>Your order is on hold.</strong> We'll keep it reserved for {{HOLD_HOURS}} hours. After that, items may go back to stock.
+          </p>
+        </mj-text>
+
+        <mj-spacer height="24px" />
+        <mj-button href="{{CTA_URL}}" align="center">Update Payment Method →</mj-button>
+        <mj-spacer height="12px" />
+        <mj-text color="#9ca3af" font-size="12px" align="center" padding="0">
+          Need help? Reply to this email or contact our support team.
+        </mj-text>
+      </mj-column>
+    </mj-section>
+    ${footer("#dc2626")}
+  </mj-body>
+</mjml>`.trim();
+
 // ── 12. Product Showcase ──────────────────────────────────────────────────────
 
 export const mjmlProductShowcase = `
