@@ -4,6 +4,84 @@ const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api";
 
 type Product = { name: string; price: string; description: string; image_url?: string };
 
+// ── ESP merge-tag registry ────────────────────────────────────────────────────
+
+type EspTokens = {
+  firstName:   string;
+  lastName:    string;
+  email:       string;
+  unsubscribe: string;
+  viewBrowser: string;
+  name:        string;   // display label for prompts
+  notes:       string;   // provider-specific design advice
+};
+
+const ESP_TOKENS: Record<string, EspTokens> = {
+  platform: {
+    name: "Zilo Platform",
+    firstName:   "{{FIRST_NAME}}",
+    lastName:    "{{LAST_NAME}}",
+    email:       "{{EMAIL}}",
+    unsubscribe: "{{UNSUBSCRIBE_URL}}",
+    viewBrowser: "{{VIEW_BROWSER_URL}}",
+    notes: "Standard HTML email. MJML renders well.",
+  },
+  mailchimp: {
+    name: "Mailchimp (Mandrill)",
+    firstName:   "*|FNAME|*",
+    lastName:    "*|LNAME|*",
+    email:       "*|EMAIL|*",
+    unsubscribe: "*|UNSUB|*",
+    viewBrowser: "*|ARCHIVE|*",
+    notes: "Mailchimp blocks external CSS. Avoid background-image on <div> (use mj-section bg instead). Keep image-to-text ratio ~60:40 to avoid spam filters. All merge tags use *|TAG|* syntax.",
+  },
+  klaviyo: {
+    name: "Klaviyo",
+    firstName:   "{{ first_name }}",
+    lastName:    "{{ last_name }}",
+    email:       "{{ email }}",
+    unsubscribe: "{% unsubscribe_link %}",
+    viewBrowser: "{{ view_in_browser_url }}",
+    notes: "Klaviyo renders complex HTML well. Supports Jinja2-style conditionals: {% if first_name %}Hi {{ first_name }}{% else %}Hi there{% endif %}. Use {{ organization.name }} for brand name if needed.",
+  },
+  sendgrid: {
+    name: "SendGrid",
+    firstName:   "{{{first_name}}}",
+    lastName:    "{{{last_name}}}",
+    email:       "{{{email}}}",
+    unsubscribe: "{{{unsubscribe}}}",
+    viewBrowser: "{{{weblink}}}",
+    notes: "SendGrid uses triple-brace {{{var}}} for HTML-safe substitution. Avoid inline event handlers. Test through SendGrid's Email Validation API.",
+  },
+  brevo: {
+    name: "Brevo (Sendinblue)",
+    firstName:   "{{contact.FIRSTNAME}}",
+    lastName:    "{{contact.LASTNAME}}",
+    email:       "{{contact.EMAIL}}",
+    unsubscribe: "{unsubscribe}",
+    viewBrowser: "{mirror}",
+    notes: "Brevo renders HTML reliably. Use {{contact.ATTRIBUTE_NAME}} for custom attributes. Brevo automatically appends the unsubscribe footer if {unsubscribe} is present.",
+  },
+  mailgun: {
+    name: "Mailgun",
+    firstName:   "%recipient.first_name%",
+    lastName:    "%recipient.last_name%",
+    email:       "%recipient.email%",
+    unsubscribe: "%unsubscribe_url%",
+    viewBrowser: "",
+    notes: "Mailgun uses %recipient.variable% syntax for batch personalization. Keep HTML under 100KB. Avoid JavaScript.",
+  },
+  smtp: {
+    name: "Custom SMTP",
+    firstName:   "{{FIRST_NAME}}",
+    lastName:    "{{LAST_NAME}}",
+    email:       "{{EMAIL}}",
+    unsubscribe: "{{UNSUBSCRIBE_URL}}",
+    viewBrowser: "{{VIEW_BROWSER_URL}}",
+    notes: "Custom SMTP — placeholders will be replaced server-side. Use simple {{VAR}} syntax that your templating layer can parse.",
+  },
+};
+
 // ── Colour maps ───────────────────────────────────────────────────────────────
 
 const THEME_COLORS: Record<string, string> = {
@@ -131,11 +209,23 @@ function buildPrompt(
   analysis: EmailAnalysis,
   links: EmailLink[],
   videoUrl: string,
+  provider: string,
 ): string {
   const accent    = THEME_COLORS[theme] ?? "#009b3a";
   const dark      = THEME_DARK[theme]   ?? "#007a2e";
   const brandName = brand || "the brand";
   const { design_level, framework, email_type } = analysis;
+
+  // ── ESP token lookup ──────────────────────────────────────────────────────
+  const esp = ESP_TOKENS[provider] ?? ESP_TOKENS.platform;
+  const espHeader = `EMAIL PROVIDER: ${esp.name}
+MERGE TAG SYNTAX — use these EXACT tokens for personalization (wrong syntax breaks the ESP):
+  • First name: ${esp.firstName}
+  • Last name:  ${esp.lastName}
+  • Email:      ${esp.email}
+  • Unsubscribe link: ${esp.unsubscribe}
+  ${esp.viewBrowser ? `• View in browser: ${esp.viewBrowser}` : ""}
+ESP NOTES: ${esp.notes}`;
 
   // ── Link library ──────────────────────────────────────────────────────────
   const filledLinks = links.filter(l => l.url.trim());
@@ -199,6 +289,7 @@ BRIEF: ${description}
 BRAND: ${brandName}
 EMAIL TYPE: ${email_type}
 COPY FRAMEWORK: ${frameworkGuide[framework]}
+${espHeader}
 
 Generate a COMPLETE, VALID MJML 4 email that looks like a personal plain-text message — NOT a marketing flyer.
 
@@ -209,13 +300,13 @@ DESIGN RULES (strict):
 • ${logoUrl ? `Logo: small <mj-image src="${logoUrl}" width="100px" align="left" padding="0 0 28px 0" /> — left-aligned for a personal feel` : "No logo — purely text"}
 • NO hero image, NO colored backgrounds, NO big buttons, NO product cards, NO decorative elements
 • The CTA is a simple inline text link styled: color:${accent};font-weight:600;text-decoration:underline;
-• Footer: tiny 12px #9ca3af text only — unsubscribe link, no design
+• Footer: tiny 12px #9ca3af text only — <a href="${esp.unsubscribe}">Unsubscribe</a>${esp.viewBrowser ? ` · <a href="${esp.viewBrowser}">View in browser</a>` : ""}
 
 COPY RULES:
 • ${frameworkGuide[framework]}
 • Write genuinely — no corporate jargon, no exclamation-mark spam
 • Subject line: write 3 subject line options as HTML comments at the very top: <!-- SUBJECT: option1 | option2 | option3 -->
-• Personalisation token: use {{FIRST_NAME}} as the greeting if appropriate
+• Greeting: use ${esp.firstName} where appropriate (e.g. "Hi ${esp.firstName},")
 • ${linksGuide}${videoLinkForPlain}
 
 OUTPUT: ONLY raw MJML XML starting with <mjml> and ending with </mjml>. Nothing else.`.trim();
@@ -233,6 +324,7 @@ BRIEF: ${description}
 BRAND: ${brandName}
 EMAIL TYPE: ${email_type}
 COPY FRAMEWORK: ${frameworkGuide[framework]}
+${espHeader}
 
 DESIGN PHILOSOPHY: Clean, content-first. No heavy visuals. Strong typography, ample whitespace, one clear CTA.
 ${urlRules}
@@ -257,7 +349,8 @@ ${videoBlockSpec ? `2b.${videoBlockSpec}\n\n` : ""}3. CONTENT SECTION: 2-3 short
    • Each: small bold label (${accent} color, 11px uppercase), heading 18px, 14px body text
 
 4. FOOTER: mj-section bg="#f9fafb" padding="24px"
-   • 12px #9ca3af centred text, unsubscribe + view-in-browser links in ${accent}
+   • 12px #9ca3af centred text
+   • <a href="${esp.unsubscribe}" style="color:${accent};">Unsubscribe</a>${esp.viewBrowser ? ` · <a href="${esp.viewBrowser}" style="color:${accent};">View in browser</a>` : ""}
 
 LINKS:
 ${linksGuide}
@@ -265,6 +358,7 @@ ${linksGuide}
 COPY RULES:
 • ${frameworkGuide[framework]}
 • Write real campaign-specific copy — no placeholders
+• Greeting: use ${esp.firstName} where appropriate
 • Subject line options as first comment: <!-- SUBJECT: opt1 | opt2 | opt3 -->
 
 OUTPUT: ONLY raw MJML XML from <mjml> to </mjml>. Nothing else.`.trim();
@@ -311,6 +405,7 @@ BRIEF: ${description}
 BRAND: ${brandName}
 EMAIL TYPE: ${email_type}
 COPY FRAMEWORK: ${frameworkGuide[framework]}
+${espHeader}
 ${urlRules}
 
 ━━━━━━━━━━━━━━━━━━━
@@ -344,9 +439,9 @@ ${productCards}
 
 LAST. FOOTER: mj-section bg="#f9fafb" padding="26px 24px"
    • © 2025 ${brandName}. All rights reserved. — 12px #9ca3af
-   • Unsubscribe · View in browser — 12px ${accent}
+   • <a href="${esp.unsubscribe}" style="color:${accent};">Unsubscribe</a>${esp.viewBrowser ? ` · <a href="${esp.viewBrowser}" style="color:${accent};">View in browser</a>` : ""} — 12px
    • "Sent with ♥ by Zilo" — 11px #d1d5db
-${filledLinks.length > 1 ? `   • Include additional links in the footer: ${filledLinks.slice(1).map(l => `${l.label} (${l.url})`).join(", ")}` : ""}
+${filledLinks.length > 1 ? `   • Additional footer links: ${filledLinks.slice(1).map(l => `<a href="${l.url}" style="color:${accent};">${l.label}</a>`).join(" · ")}` : ""}
 
 LINKS:
 ${linksGuide}
@@ -354,6 +449,7 @@ ${linksGuide}
 COPY RULES:
 • ${frameworkGuide[framework]}
 • Write REAL compelling copy specific to this campaign. Zero placeholders.
+• Greeting: use ${esp.firstName} where appropriate (e.g. "Hi ${esp.firstName},")
 • Subject options as first comment: <!-- SUBJECT: opt1 | opt2 | opt3 -->
 
 OUTPUT: ONLY raw MJML XML from <mjml> to </mjml>. Nothing else.`.trim();
@@ -430,6 +526,7 @@ export async function POST(req: NextRequest) {
     hero_image_url?: string;
     video_url?: string;
     links?: EmailLink[];
+    provider?: string;
   };
   try {
     body = await req.json();
@@ -446,6 +543,7 @@ export async function POST(req: NextRequest) {
     hero_image_url: userHeroUrl = "",
     video_url = "",
     links = [],
+    provider = "platform",
   } = body;
 
   if (!description.trim()) {
@@ -482,8 +580,8 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // 3. Build the MJML prompt with all available images + links + video
-  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim(), heroImageUrl, analysis, links, video_url);
+  // 3. Build the MJML prompt with all available images + links + video + provider
+  const prompt = buildPrompt(description, brand, products, theme, logo_url.trim(), heroImageUrl, analysis, links, video_url, provider);
 
   // 4. Call Claude to write the MJML
   try {

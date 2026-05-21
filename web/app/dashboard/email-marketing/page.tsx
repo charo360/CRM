@@ -613,11 +613,15 @@ function AIGenerateStep({
   const [links, setLinks] = useState<EmailLink[]>(DEFAULT_LINKS);
   const [showLinks, setShowLinks] = useState(false);
   const [savingLinks, setSavingLinks] = useState(false);
+  const [provider, setProvider] = useState("platform");
 
-  // Load saved link library from settings on mount
+  // Load saved link library + configured ESP provider from settings on mount
   useEffect(() => {
-    apiGet<{ link_library?: EmailLink[] }>("/email-marketing/settings")
-      .then(s => { if (s.link_library?.length) setLinks(s.link_library); })
+    apiGet<{ link_library?: EmailLink[]; provider?: string }>("/email-marketing/settings")
+      .then(s => {
+        if (s.link_library?.length) setLinks(s.link_library);
+        if (s.provider) setProvider(s.provider);
+      })
       .catch(() => {});
   }, []);
 
@@ -668,7 +672,7 @@ function AIGenerateStep({
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          description, brand, theme,
+          description, brand, theme, provider,
           logo_url: logoUrl.trim(),
           hero_image_url: heroImageUrl.trim(),
           video_url: videoUrl.trim(),
@@ -863,7 +867,7 @@ function AIGenerateStep({
         <div className="border border-slate-200 rounded-xl overflow-hidden">
           <button onClick={() => setShowLinks(v => !v)}
             className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors text-sm">
-            <span className="font-medium text-slate-700 flex items-center gap-2">
+            <span className="font-medium text-slate-700 flex items-center gap-2 flex-wrap">
               <Link2 size={14} className="text-slate-400" />
               Links
               <span className="text-slate-400 font-normal">(CTA, sign up, demo...)</span>
@@ -873,13 +877,35 @@ function AIGenerateStep({
                 </span>
               )}
             </span>
-            {showLinks ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* ESP badge */}
+              <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium border border-slate-200 hidden sm:block">
+                {provider === "mailchimp" ? "Mailchimp tags" :
+                 provider === "klaviyo"   ? "Klaviyo tags" :
+                 provider === "sendgrid"  ? "SendGrid tags" :
+                 provider === "brevo"     ? "Brevo tags" :
+                 provider === "mailgun"   ? "Mailgun tags" :
+                 provider === "smtp"      ? "SMTP tags" :
+                 "Zilo tags"}
+              </span>
+              {showLinks ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+            </div>
           </button>
 
           {showLinks && (
             <div className="px-4 py-4 space-y-3 border-t border-slate-100">
+              <div className={`${G.light} border ${G.lb} rounded-lg px-3 py-2 text-[11px] text-green-700`}>
+                <strong>ESP:</strong> {
+                  provider === "mailchimp" ? "Mailchimp — using *|FNAME|* and *|UNSUB|* merge tags" :
+                  provider === "klaviyo"   ? "Klaviyo — using {{ first_name }} and {% unsubscribe_link %} tags" :
+                  provider === "sendgrid"  ? "SendGrid — using {{{first_name}}} and {{{unsubscribe}}} tags" :
+                  provider === "brevo"     ? "Brevo — using {{contact.FIRSTNAME}} and {unsubscribe} tags" :
+                  provider === "mailgun"   ? "Mailgun — using %recipient.first_name% and %unsubscribe_url% tags" :
+                  "Zilo / SMTP — using {{FIRST_NAME}} and {{UNSUBSCRIBE_URL}} placeholders"
+                }. <span className="text-green-600">Change in Settings → Email Provider.</span>
+              </div>
               <p className="text-[11px] text-slate-400">
-                Add your key URLs once — the AI uses them in buttons, CTAs, footers, and social links instead of placeholders.
+                Add your key URLs once — the AI uses them in all buttons, CTAs, and footers.
               </p>
               {links.map((link, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -1890,6 +1916,67 @@ function SettingsPanel() {
             {saving ? <Loader2 size={14} className="animate-spin" /> : null}
             Save
           </button>
+        </div>
+      </div>
+
+      {/* From Addresses */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold text-slate-800">From Addresses</h3>
+            <p className="text-sm text-slate-500 mt-0.5">Save multiple sender identities for different purposes</p>
+          </div>
+          <button onClick={addFromAddress}
+            className={`flex items-center gap-1.5 px-3 py-1.5 ${G.light} ${G.text} rounded-lg text-xs font-medium hover:bg-green-100 transition-colors`}>
+            <Plus size={13} /> Add address
+          </button>
+        </div>
+        <div className="p-6 space-y-3">
+          {(settings.from_addresses ?? []).length === 0 ? (
+            <p className="text-sm text-slate-400 text-center py-4">
+              No saved addresses yet. Click &quot;Add address&quot; to create one.
+            </p>
+          ) : (
+            (settings.from_addresses ?? []).map((a, i) => (
+              <div key={i} className="border border-slate-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-500">Address {i + 1}</span>
+                  <button onClick={() => removeFromAddress(i)} className="text-slate-400 hover:text-red-500 transition-colors">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-slate-600">Purpose / label</label>
+                    <input value={a.label} onChange={e => setFromAddress(i, "label", e.target.value)}
+                      placeholder="e.g. Newsletter"
+                      className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-slate-600">Display name</label>
+                    <input value={a.name} onChange={e => setFromAddress(i, "name", e.target.value)}
+                      placeholder="Your Brand"
+                      className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-slate-600">Email address</label>
+                    <input value={a.email} onChange={e => setFromAddress(i, "email", e.target.value)}
+                      placeholder="hello@zilo.pro"
+                      className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+          {(settings.from_addresses ?? []).length > 0 && (
+            <div className="pt-2 flex justify-end">
+              <button onClick={save} disabled={saving}
+                className={`px-5 py-2 ${G.bg} ${G.hover} text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-2 transition-colors`}>
+                {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+                Save addresses
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
