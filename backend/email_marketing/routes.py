@@ -340,18 +340,122 @@ def make_email_marketing_router(get_current_user, db):
         await db.email_templates.delete_one({"_id": ObjectId(template_id), "user_id": user_id})
         return {"ok": True}
 
-    # ── AI Image Generation ────────────────────────────────────────────────────
+    # ── Catalog products (for email product picker) ───────────────────────────
+
+    @router.get("/catalog-products")
+    async def get_catalog_products(q: str = "", limit: int = 60, user=Depends(get_current_user)):
+        """Return the user's product catalog (including Shopify-synced) for email content."""
+        user_id = _uid(user)
+        query: Dict = {"user_id": user_id}
+        if q.strip():
+            query["$or"] = [
+                {"name":        {"$regex": q.strip(), "$options": "i"}},
+                {"description": {"$regex": q.strip(), "$options": "i"}},
+                {"category":    {"$regex": q.strip(), "$options": "i"}},
+            ]
+        docs = await db.products.find(
+            query,
+            {"name": 1, "price": 1, "discount_price": 1, "description": 1,
+             "image_url": 1, "images": 1, "category": 1, "in_stock": 1,
+             "shopify_product_id": 1},
+        ).sort("updated_at", -1).limit(limit).to_list(limit)
+
+        products = []
+        for d in docs:
+            products.append({
+                "id":          str(d.get("_id", "")),
+                "name":        d.get("name", ""),
+                "price":       str(d.get("discount_price") or d.get("price") or ""),
+                "description": (d.get("description") or "")[:200],
+                "image_url":   d.get("image_url", ""),
+                "images":      (d.get("images") or [])[:5],
+                "category":    d.get("category", ""),
+                "in_stock":    d.get("in_stock", True),
+                "source":      "shopify" if d.get("shopify_product_id") else "catalog",
+            })
+        return {"products": products}
+
+    # ── Media library (catalog images + chat-shared images) ───────────────────
+
+    @router.get("/media-library")
+    async def get_media_library(limit: int = 120, user=Depends(get_current_user)):
+        """Return images from catalog and customer chat history for email use."""
+        import re
+        user_id = _uid(user)
+        images: List[Dict] = []
+        seen: set = set()
+
+        def _add(url: str, label: str, source: str):
+            if url and url.startswith("http") and url not in seen:
+                seen.add(url)
+                images.append({"url": url, "label": label, "source": source})
+
+        # Product catalog images
+        async for p in db.products.find(
+            {"user_id": user_id},
+            {"name": 1, "image_url": 1, "images": 1},
+        ).sort("updated_at", -1).limit(100):
+            name = p.get("name", "Product")
+            if p.get("image_url"):
+                _add(p["image_url"], name, "catalog")
+            for img in (p.get("images") or []):
+                _add(img, name, "catalog")
+
+        # Chat-shared images: scan recent conversation messages
+        img_re = re.compile(
+            r'https?://\S+\.(?:jpg|jpeg|png|webp|gif|avif)(?:[?#]\S*)?',
+            re.IGNORECASE,
+        )
+        async for conv in db.assistant_conversations.find(
+            {"user_id": user_id},
+            {"messages": {"$slice": -100}},
+        ).sort("updated_at", -1).limit(30):
+            for msg in (conv.get("messages") or []):
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    for url in img_re.findall(content):
+                        _add(url, "Chat image", "chat")
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "image_url":
+                                url = (block.get("image_url") or {}).get("url", "")
+                                if url.startswith("http"):
+                                    _add(url, "Chat image", "chat")
+
+        return {"images": images[:limit]}
+
+    # ── AI Image Generation via OpenRouter ────────────────────────────────────
 
     class ImageGenRequest(BaseModel):
         prompt: str
-        image_type: str = "hero"   # hero | product
+        image_type: str = "hero"            # hero | product
+        existing_image_url: str = ""        # if set → enhance rather than generate
+        logo_url: str = ""
+        accent_color: str = ""
+        quality: str = "fast"               # fast | pro
 
     @router.post("/generate-image")
     async def generate_email_image(body: ImageGenRequest, user=Depends(get_current_user)):
-        """Generate a marketing image via Gemini Imagen 3, upload to ImgBB, return URL."""
-        from .image_gen import generate_marketing_image
+        """Generate or enhance a marketing image via OpenRouter. Returns {url}."""
+        from .image_gen import generate_email_image as _gen, enhance_product_image as _enh
         try:
-            url = await generate_marketing_image(body.prompt, body.image_type)
+            if body.existing_image_url.strip():
+                url = await _enh(
+                    body.existing_image_url.strip(),
+                    body.prompt,
+                    body.logo_url,
+                    body.accent_color,
+                    body.quality,
+                )
+            else:
+                url = await _gen(
+                    body.prompt,
+                    body.image_type,
+                    body.logo_url,
+                    body.accent_color,
+                    body.quality,
+                )
             return {"url": url}
         except RuntimeError as e:
             raise HTTPException(status_code=500, detail=str(e))
