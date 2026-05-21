@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
       // A customer has requested their data from the merchant's store.
       // Log the request — no personal data is stored in Zilo beyond what
       // the merchant imports, so we acknowledge and take no action.
-      console.log(`[shopify-webhook] customers/data_request shop=${shop} customer_id=${payload.customer?.id}`);
+      console.log(`[shopify-webhook] customers/data_request shop=${shop} customer_id=${(payload.customer as { id?: unknown } | undefined)?.id}`);
       break;
     }
 
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
       // A customer has requested erasure of their data.
       // Zilo does not independently store Shopify customer PII,
       // so we acknowledge the request.
-      console.log(`[shopify-webhook] customers/redact shop=${shop} customer_id=${payload.customer?.id}`);
+      console.log(`[shopify-webhook] customers/redact shop=${shop} customer_id=${(payload.customer as { id?: unknown } | undefined)?.id}`);
       break;
     }
 
