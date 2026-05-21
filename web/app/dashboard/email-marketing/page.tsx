@@ -6,6 +6,7 @@ import {
   Loader2, CheckCircle2, Clock, FileText, RefreshCw, X,
   Zap, Users, AlertCircle, Eye, Play, Sparkles, Trash,
   BookOpen, Save, ImageIcon, Lightbulb, ChevronDown, ChevronUp,
+  Search, Package,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { toast } from "sonner";
@@ -64,6 +65,13 @@ type SavedTemplate = {
 };
 
 type Tab = "campaigns" | "library" | "settings";
+
+type CatalogProduct = {
+  id: string; name: string; price: string; description: string;
+  image_url: string; category: string; source: "catalog" | "shopify";
+};
+
+type MediaImage = { url: string; label: string; source: "catalog" | "chat" };
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -351,6 +359,204 @@ function LibraryPanel({ onUseTemplate }: { onUseTemplate: (html: string, subject
   );
 }
 
+// ── Catalog Picker Modal ──────────────────────────────────────────────────────
+
+function CatalogPickerModal({
+  onClose, onSelect,
+}: {
+  onClose: () => void;
+  onSelect: (products: { name: string; price: string; description: string; image_url: string }[]) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<CatalogProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const fetchProducts = useCallback(async (search: string) => {
+    setLoading(true);
+    try {
+      const data = await apiGet<{ products: CatalogProduct[] }>(
+        `/email-marketing/catalog-products${search ? `?q=${encodeURIComponent(search)}` : ""}`
+      );
+      setItems(data.products ?? []);
+    } catch { toast.error("Failed to load catalog"); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchProducts(""); }, [fetchProducts]);
+
+  useEffect(() => {
+    const t = setTimeout(() => fetchProducts(q), 350);
+    return () => clearTimeout(t);
+  }, [q, fetchProducts]);
+
+  function toggle(id: string) {
+    setSelected(prev => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id); else s.add(id);
+      return s;
+    });
+  }
+
+  function confirm() {
+    const picked = items
+      .filter(p => selected.has(p.id))
+      .map(p => ({ name: p.name, price: p.price, description: p.description, image_url: p.image_url }));
+    onSelect(picked);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-2">
+            <Package size={16} className={G.text} />
+            <h2 className="text-base font-semibold text-slate-800">Import from Catalog</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+        </div>
+        <div className="px-4 py-3 border-b border-slate-100 shrink-0">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={q} onChange={e => setQ(e.target.value)}
+              placeholder="Search products…"
+              className={`w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 size={24} className={`animate-spin ${G.text}`} />
+            </div>
+          ) : items.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <Package size={32} className="text-slate-300 mb-2" />
+              <p className="text-sm text-slate-400">No products found</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {items.map(p => (
+                <button key={p.id} onClick={() => toggle(p.id)}
+                  className={cn(
+                    "text-left border-2 rounded-xl overflow-hidden transition-all",
+                    selected.has(p.id) ? `${G.border} shadow-sm bg-[#f0fdf4]` : "border-slate-200 hover:border-slate-300 bg-white"
+                  )}>
+                  <div className="aspect-square bg-slate-100 overflow-hidden">
+                    {p.image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Package size={28} className="text-slate-300" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-2.5">
+                    <div className="text-xs font-semibold text-slate-800 truncate">{p.name}</div>
+                    {p.price && <div className={`text-xs ${G.text} font-medium`}>{p.price.startsWith("$") ? p.price : `$${p.price}`}</div>}
+                    <div className="flex items-center justify-between mt-1">
+                      <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium",
+                        p.source === "shopify" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600")}>
+                        {p.source === "shopify" ? "Shopify" : "Catalog"}
+                      </span>
+                      {selected.has(p.id) && <CheckCircle2 size={13} className={G.text} />}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between shrink-0">
+          <span className="text-xs text-slate-500">{selected.size} selected</span>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+            <button onClick={confirm} disabled={selected.size === 0}
+              className={`px-5 py-2 ${G.bg} ${G.hover} text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors`}>
+              Add {selected.size > 0 ? `${selected.size} product${selected.size > 1 ? "s" : ""}` : "products"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Media Library Modal ───────────────────────────────────────────────────────
+
+function MediaLibraryModal({
+  title = "Pick an image",
+  onClose, onPick,
+}: {
+  title?: string;
+  onClose: () => void;
+  onPick: (url: string) => void;
+}) {
+  const [images, setImages] = useState<MediaImage[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    apiGet<{ images: MediaImage[] }>("/email-marketing/media-library")
+      .then(d => setImages(d.images ?? []))
+      .catch(() => toast.error("Failed to load media library"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-2">
+            <ImageIcon size={16} className={G.text} />
+            <h2 className="text-base font-semibold text-slate-800">{title}</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 size={24} className={`animate-spin ${G.text}`} />
+            </div>
+          ) : images.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <ImageIcon size={32} className="text-slate-300 mb-2" />
+              <p className="text-sm text-slate-500 font-medium mb-1">No images yet</p>
+              <p className="text-xs text-slate-400 max-w-xs">
+                Add products with images to your catalog, or share product photos in chat — they'll appear here.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+              {images.map((img, i) => (
+                <button key={i} onClick={() => { onPick(img.url); onClose(); }}
+                  className="group relative aspect-square rounded-xl overflow-hidden border-2 border-slate-200 hover:border-[#009b3a] transition-all">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={img.url} alt={img.label}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                    onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                    <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-white text-xs font-semibold text-slate-800 px-2 py-1 rounded-full shadow">Use</span>
+                  </div>
+                  <div className="absolute bottom-1 left-1">
+                    <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-medium",
+                      img.source === "catalog" ? "bg-slate-800/70 text-white" : "bg-blue-600/80 text-white")}>
+                      {img.source}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="px-6 py-3 border-t border-slate-100 text-xs text-slate-400 shrink-0">
+          {images.length} image{images.length !== 1 ? "s" : ""} from catalog and customer chats
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── AI Generate Step ──────────────────────────────────────────────────────────
 
 type Product = { name: string; price: string; description: string; image_url: string };
@@ -388,6 +594,8 @@ function AIGenerateStep({
   const [subjectOptions, setSubjectOptions] = useState<string[]>([]);
   const [showImages, setShowImages] = useState(false);
   const [aiImages, setAiImages] = useState<{ hero: boolean; products: number[] } | null>(null);
+  const [showCatalogPicker, setShowCatalogPicker] = useState(false);
+  const [mediaTarget, setMediaTarget] = useState<"hero" | number | null>(null);
 
   const addProduct = () => {
     if (products.length < 6) setProducts(p => [...p, { name: "", price: "", description: "", image_url: "" }]);
@@ -554,7 +762,13 @@ function AIGenerateStep({
             <div className="px-4 py-4 space-y-3 border-t border-slate-100">
               {/* Hero image */}
               <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-600">Hero / banner image URL</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-slate-600">Hero / banner image URL</label>
+                  <button onClick={() => setMediaTarget("hero")}
+                    className={`flex items-center gap-1 text-[11px] ${G.text} hover:text-green-800 font-medium`}>
+                    <ImageIcon size={10} /> Pick from library
+                  </button>
+                </div>
                 <input value={heroImageUrl} onChange={e => setHeroImageUrl(e.target.value)}
                   placeholder="https://yoursite.com/banner.jpg"
                   className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
@@ -591,14 +805,20 @@ function AIGenerateStep({
 
         {/* Products */}
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <label className="text-sm font-medium text-slate-700">Products to feature <span className="text-slate-400 font-normal">(optional, up to 6)</span></label>
-            {products.length < 6 && (
-              <button onClick={addProduct}
-                className={`flex items-center gap-1 text-xs ${G.text} hover:text-green-800 font-medium`}>
-                <Plus size={12} /> Add product
+            <div className="flex items-center gap-2">
+              <button onClick={() => setShowCatalogPicker(true)}
+                className={`flex items-center gap-1 text-xs ${G.text} hover:text-green-800 font-medium border ${G.border} px-2 py-1 rounded-lg ${G.light}`}>
+                <Package size={11} /> Catalog
               </button>
-            )}
+              {products.length < 6 && (
+                <button onClick={addProduct}
+                  className={`flex items-center gap-1 text-xs ${G.text} hover:text-green-800 font-medium`}>
+                  <Plus size={12} /> Add product
+                </button>
+              )}
+            </div>
           </div>
           {products.map((p, i) => (
             <div key={i} className="border border-slate-200 rounded-xl p-3 space-y-2 bg-slate-50">
@@ -622,14 +842,23 @@ function AIGenerateStep({
                 placeholder="Short description (optional)"
                 className={`w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
               {showImages && (
-                <div className="flex items-center gap-2">
-                  <input value={p.image_url} onChange={e => setProduct(i, "image_url", e.target.value)}
-                    placeholder="Product image URL (optional)"
-                    className={`flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
-                  {p.image_url.trim() && (
-                    /* eslint-disable-next-line @next/next/no-img-element */
-                    <img src={p.image_url} alt="product" className="h-8 w-8 object-cover rounded border border-slate-200 bg-white shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                  )}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-slate-500">Product image</span>
+                    <button onClick={() => setMediaTarget(i)}
+                      className={`flex items-center gap-1 text-[11px] ${G.text} hover:text-green-800 font-medium`}>
+                      <ImageIcon size={10} /> Pick from library
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input value={p.image_url} onChange={e => setProduct(i, "image_url", e.target.value)}
+                      placeholder="Image URL (optional)"
+                      className={`flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 ${G.ring} bg-white`} />
+                    {p.image_url.trim() && (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={p.image_url} alt="product" className="h-8 w-8 object-cover rounded border border-slate-200 bg-white shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -699,6 +928,38 @@ function AIGenerateStep({
           )}
         </div>
       </div>
+
+      {/* Catalog picker modal */}
+      {showCatalogPicker && (
+        <CatalogPickerModal
+          onClose={() => setShowCatalogPicker(false)}
+          onSelect={picked => {
+            const slots = Math.max(0, 6 - products.filter(p => p.name.trim()).length);
+            const toAdd = picked.slice(0, slots);
+            const filled = products.filter(p => p.name.trim());
+            setProducts([...filled, ...toAdd].slice(0, 6));
+            if (toAdd.length > 0) {
+              setShowImages(true);
+              toast.success(`${toAdd.length} product${toAdd.length > 1 ? "s" : ""} imported`);
+            }
+          }}
+        />
+      )}
+
+      {/* Media library modal */}
+      {mediaTarget !== null && (
+        <MediaLibraryModal
+          title={mediaTarget === "hero" ? "Pick hero / banner image" : `Pick image for product ${typeof mediaTarget === "number" ? mediaTarget + 1 : ""}`}
+          onClose={() => setMediaTarget(null)}
+          onPick={url => {
+            if (mediaTarget === "hero") {
+              setHeroImageUrl(url);
+            } else if (typeof mediaTarget === "number") {
+              setProduct(mediaTarget, "image_url", url);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
