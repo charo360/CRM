@@ -2,9 +2,9 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Mail, Plus, Send, Trash2, BarChart2, Settings, ChevronRight,
+  Mail, Plus, Send, Trash2, BarChart2, Settings,
   Loader2, CheckCircle2, Clock, FileText, RefreshCw, X,
-  Zap, Users, AlertCircle, Eye, Play,
+  Zap, Users, AlertCircle, Eye, Play, Sparkles, Trash,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { toast } from "sonner";
@@ -85,6 +85,185 @@ function StatusBadge({ status }: { status: Campaign["status"] }) {
 
 // ── Create Campaign Modal ─────────────────────────────────────────────────────
 
+// ── AI Generate Step ──────────────────────────────────────────────────────────
+
+type Product = { name: string; price: string; description: string };
+
+const THEMES = [
+  { id: "indigo", label: "Indigo",  color: "#6366f1" },
+  { id: "red",    label: "Red",     color: "#ef4444" },
+  { id: "green",  label: "Green",   color: "#10b981" },
+  { id: "blue",   label: "Blue",    color: "#3b82f6" },
+  { id: "amber",  label: "Amber",   color: "#f59e0b" },
+  { id: "purple", label: "Purple",  color: "#8b5cf6" },
+  { id: "orange", label: "Orange",  color: "#f97316" },
+  { id: "dark",   label: "Dark",    color: "#0f172a" },
+];
+
+function AIGenerateStep({
+  onApply, onBack,
+}: {
+  onApply: (html: string, subject: string) => void;
+  onBack: () => void;
+}) {
+  const [description, setDescription] = useState("");
+  const [brand, setBrand] = useState("");
+  const [theme, setTheme] = useState("indigo");
+  const [products, setProducts] = useState<Product[]>([{ name: "", price: "", description: "" }]);
+  const [generating, setGenerating] = useState(false);
+  const [status, setStatus] = useState("");
+
+  const addProduct = () => {
+    if (products.length < 6) setProducts(p => [...p, { name: "", price: "", description: "" }]);
+  };
+  const removeProduct = (i: number) => setProducts(p => p.filter((_, idx) => idx !== i));
+  const setProduct = (i: number, k: keyof Product, v: string) =>
+    setProducts(p => p.map((item, idx) => idx === i ? { ...item, [k]: v } : item));
+
+  async function generate() {
+    if (!description.trim()) { toast.error("Describe your email first"); return; }
+    setGenerating(true);
+    setStatus("Asking AI to write your template…");
+    try {
+      const token = getToken();
+      const aiRes = await fetch("/api/email-marketing/ai-generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          description, brand, theme,
+          products: products.filter(p => p.name.trim()),
+        }),
+      });
+      if (!aiRes.ok) {
+        const err = await aiRes.json() as { error?: string };
+        toast.error(err.error ?? "AI generation failed");
+        return;
+      }
+      const { mjml } = await aiRes.json() as { mjml: string };
+
+      setStatus("Compiling to responsive HTML…");
+      const renderRes = await fetch("/api/email-marketing/render-mjml", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mjml }),
+      });
+      if (!renderRes.ok) {
+        const err = await renderRes.json() as { error?: string };
+        toast.error("MJML compile error: " + (err.error ?? "unknown"));
+        return;
+      }
+      const { html } = await renderRes.json() as { html: string };
+      const subjectLine = description.length > 60 ? description.slice(0, 57) + "…" : description;
+      onApply(html, subjectLine);
+      toast.success("AI template applied!");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setGenerating(false);
+      setStatus("");
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+        {/* Intro banner */}
+        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-100 rounded-xl p-4 flex gap-3">
+          <Sparkles size={20} className="text-indigo-500 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-indigo-800">AI Email Generator</p>
+            <p className="text-xs text-indigo-600 mt-0.5">Describe your campaign and add products — Claude writes the full responsive template.</p>
+          </div>
+        </div>
+
+        {/* Description */}
+        <div className="space-y-1">
+          <label className="text-sm font-medium text-slate-700">Describe your email *</label>
+          <textarea value={description} onChange={e => setDescription(e.target.value)}
+            rows={3} placeholder="e.g. Flash sale email promoting our summer collection with 30% off, urgency tone, ends Sunday"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+        </div>
+
+        {/* Brand + Theme row */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Brand / company name</label>
+            <input value={brand} onChange={e => setBrand(e.target.value)}
+              placeholder="Your Brand"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium text-slate-700">Colour theme</label>
+            <div className="flex flex-wrap gap-2 pt-1">
+              {THEMES.map(t => (
+                <button key={t.id} onClick={() => setTheme(t.id)}
+                  title={t.label}
+                  className={cn(
+                    "w-7 h-7 rounded-full border-2 transition-all",
+                    theme === t.id ? "border-slate-700 scale-110" : "border-transparent hover:scale-105"
+                  )}
+                  style={{ backgroundColor: t.color }} />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Products */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium text-slate-700">Products to feature <span className="text-slate-400 font-normal">(optional, up to 6)</span></label>
+            {products.length < 6 && (
+              <button onClick={addProduct}
+                className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium">
+                <Plus size={12} /> Add product
+              </button>
+            )}
+          </div>
+          {products.map((p, i) => (
+            <div key={i} className="border border-slate-200 rounded-xl p-3 space-y-2 bg-slate-50">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500">Product {i + 1}</span>
+                {products.length > 1 && (
+                  <button onClick={() => removeProduct(i)} className="text-slate-400 hover:text-red-500">
+                    <Trash size={13} />
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input value={p.name} onChange={e => setProduct(i, "name", e.target.value)}
+                  placeholder="Product name"
+                  className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" />
+                <input value={p.price} onChange={e => setProduct(i, "price", e.target.value)}
+                  placeholder="Price (e.g. $49.99)"
+                  className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" />
+              </div>
+              <input value={p.description} onChange={e => setProduct(i, "description", e.target.value)}
+                placeholder="Short description (optional)"
+                className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="border-t border-slate-100 px-6 py-3 flex justify-between items-center gap-3">
+        <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-700">← Back</button>
+        <div className="flex items-center gap-3">
+          {status && <p className="text-xs text-indigo-600 animate-pulse">{status}</p>}
+          <button onClick={generate} disabled={generating || !description.trim()}
+            className="flex items-center gap-2 px-5 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+            {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            {generating ? "Generating…" : "Generate template"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Template Picker ───────────────────────────────────────────────────────────
 
 const CATEGORY_ORDER = [
@@ -93,10 +272,11 @@ const CATEGORY_ORDER = [
 ];
 
 function TemplatePicker({
-  onSelect, onBack,
+  onSelect, onBack, onAiGenerate,
 }: {
   onSelect: (tpl: EmailTemplate) => void;
   onBack: () => void;
+  onAiGenerate: () => void;
 }) {
   const categories = CATEGORY_ORDER.filter(c =>
     EMAIL_TEMPLATES.some(t => t.category === c)
@@ -106,42 +286,53 @@ function TemplatePicker({
   const filtered = EMAIL_TEMPLATES.filter(t => t.category === activeCategory);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Category tabs */}
-      <div className="flex gap-1 px-6 pt-4 flex-wrap">
+    <div className="flex h-full overflow-hidden">
+      {/* Vertical category sidebar */}
+      <div className="w-44 shrink-0 border-r border-slate-100 flex flex-col overflow-y-auto py-3 px-2 gap-0.5">
+        {/* AI Generate button */}
+        <button onClick={onAiGenerate}
+          className="w-full flex items-center gap-2 px-3 py-2.5 mb-1 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:from-indigo-700 hover:to-purple-700 transition-all">
+          <Sparkles size={13} className="shrink-0" />
+          <span className="text-xs font-semibold leading-tight">Generate with AI</span>
+        </button>
+        <div className="border-t border-slate-100 my-1" />
         {categories.map(c => (
           <button key={c} onClick={() => setActiveCategory(c)}
             className={cn(
-              "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
+              "w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition-colors",
               activeCategory === c
                 ? "bg-indigo-600 text-white"
-                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                : "text-slate-600 hover:bg-slate-100"
             )}>
             {c}
           </button>
         ))}
+        <div className="mt-auto pt-3 px-1">
+          <p className="text-[10px] text-slate-400">{EMAIL_TEMPLATES.length} templates</p>
+        </div>
       </div>
 
       {/* Template grid */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 grid grid-cols-2 gap-3">
-        {filtered.map(tpl => (
-          <button key={tpl.id} onClick={() => onSelect(tpl)}
-            className="text-left border border-slate-200 rounded-xl p-4 hover:border-indigo-400 hover:shadow-md transition-all group">
-            <div className="text-3xl mb-2">{tpl.thumbnail}</div>
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="text-sm font-semibold text-slate-800 leading-tight">{tpl.name.replace(" (MJML)", "")}</span>
-              {tpl.type === "mjml" && (
-                <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-full border border-indigo-200">MJML</span>
-              )}
-            </div>
-            <p className="text-xs text-slate-500 leading-relaxed">{tpl.description}</p>
-          </button>
-        ))}
-      </div>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 gap-3 content-start">
+          {filtered.map(tpl => (
+            <button key={tpl.id} onClick={() => onSelect(tpl)}
+              className="text-left border border-slate-200 rounded-xl p-4 hover:border-indigo-400 hover:shadow-md transition-all">
+              <div className="text-3xl mb-2">{tpl.thumbnail}</div>
+              <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                <span className="text-sm font-semibold text-slate-800 leading-tight">{tpl.name.replace(" (MJML)", "")}</span>
+                {tpl.type === "mjml" && (
+                  <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-full border border-indigo-200">MJML</span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 leading-relaxed">{tpl.description}</p>
+            </button>
+          ))}
+        </div>
 
-      <div className="border-t border-slate-100 px-6 py-3 flex justify-between items-center">
-        <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-700">← Back</button>
-        <p className="text-xs text-slate-400">{EMAIL_TEMPLATES.length} templates available</p>
+        <div className="border-t border-slate-100 px-4 py-3 flex justify-start">
+          <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-700">← Back</button>
+        </div>
       </div>
     </div>
   );
@@ -236,7 +427,7 @@ function VariableFiller({
 // ── Create Campaign Modal ─────────────────────────────────────────────────────
 
 function CreateCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [step, setStep] = useState<"form" | "template-pick" | "template-vars">("form");
+  const [step, setStep] = useState<"form" | "template-pick" | "template-vars" | "ai-generate">("form");
   const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplate | null>(null);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({
@@ -282,18 +473,31 @@ function CreateCampaignModal({ onClose, onCreated }: { onClose: () => void; onCr
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <h2 className="text-lg font-semibold text-slate-800">
-            {step === "form" ? "New Campaign" : step === "template-pick" ? "Choose a Template" : "Customize Template"}
+            {step === "form" ? "New Campaign" : step === "template-pick" ? "Choose a Template" : step === "ai-generate" ? "AI Email Generator" : "Customize Template"}
           </h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
             <X size={20} />
           </button>
         </div>
 
+        {/* AI Generate step */}
+        {step === "ai-generate" && (
+          <AIGenerateStep
+            onApply={(html, subject) => {
+              set("body_html", html);
+              if (!form.subject) set("subject", subject);
+              setStep("form");
+            }}
+            onBack={() => setStep("template-pick")}
+          />
+        )}
+
         {/* Template picker step */}
         {step === "template-pick" && (
           <TemplatePicker
             onSelect={tpl => { setSelectedTemplate(tpl); setStep("template-vars"); }}
             onBack={() => setStep("form")}
+            onAiGenerate={() => setStep("ai-generate")}
           />
         )}
 
