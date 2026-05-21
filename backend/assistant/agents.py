@@ -458,6 +458,7 @@ SHOPIFY_CUSTOMERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "shopify_check_low_stock",
     "list_customers", "get_customer", "get_top_customers",
     "send_whatsapp_message",
+    "list_klaviyo_flows", "get_klaviyo_metrics",
 })
 
 EMAIL_MARKETING_TOOLS: FrozenSet[str] = frozenset({
