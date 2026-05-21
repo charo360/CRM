@@ -9,6 +9,7 @@ import {
 import { getToken } from "@/lib/auth";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { EMAIL_TEMPLATES, EmailTemplate, TemplateVar, applyVars } from "./templates";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,8 +85,159 @@ function StatusBadge({ status }: { status: Campaign["status"] }) {
 
 // ── Create Campaign Modal ─────────────────────────────────────────────────────
 
+// ── Template Picker ───────────────────────────────────────────────────────────
+
+const CATEGORY_ORDER = [
+  "Newsletter","Promotional","Seasonal","Onboarding","Retention","Growth",
+  "E-commerce","Transactional","Events","News","Feedback",
+];
+
+function TemplatePicker({
+  onSelect, onBack,
+}: {
+  onSelect: (tpl: EmailTemplate) => void;
+  onBack: () => void;
+}) {
+  const categories = CATEGORY_ORDER.filter(c =>
+    EMAIL_TEMPLATES.some(t => t.category === c)
+  );
+  const [activeCategory, setActiveCategory] = useState<string>(categories[0] ?? "");
+
+  const filtered = EMAIL_TEMPLATES.filter(t => t.category === activeCategory);
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Category tabs */}
+      <div className="flex gap-1 px-6 pt-4 flex-wrap">
+        {categories.map(c => (
+          <button key={c} onClick={() => setActiveCategory(c)}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
+              activeCategory === c
+                ? "bg-indigo-600 text-white"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            )}>
+            {c}
+          </button>
+        ))}
+      </div>
+
+      {/* Template grid */}
+      <div className="flex-1 overflow-y-auto px-6 py-4 grid grid-cols-2 gap-3">
+        {filtered.map(tpl => (
+          <button key={tpl.id} onClick={() => onSelect(tpl)}
+            className="text-left border border-slate-200 rounded-xl p-4 hover:border-indigo-400 hover:shadow-md transition-all group">
+            <div className="text-3xl mb-2">{tpl.thumbnail}</div>
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-sm font-semibold text-slate-800 leading-tight">{tpl.name.replace(" (MJML)", "")}</span>
+              {tpl.type === "mjml" && (
+                <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-full border border-indigo-200">MJML</span>
+              )}
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">{tpl.description}</p>
+          </button>
+        ))}
+      </div>
+
+      <div className="border-t border-slate-100 px-6 py-3 flex justify-between items-center">
+        <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-700">← Back</button>
+        <p className="text-xs text-slate-400">{EMAIL_TEMPLATES.length} templates available</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Variable Filler ───────────────────────────────────────────────────────────
+
+function VariableFiller({
+  template, onApply, onBack,
+}: {
+  template: EmailTemplate;
+  onApply: (html: string, subject: string) => void;
+  onBack: () => void;
+}) {
+  const [vars, setVars] = useState<Record<string, string>>(
+    Object.fromEntries(template.variables.map(v => [v.key, v.defaultValue]))
+  );
+  const [compiling, setCompiling] = useState(false);
+
+  const setVar = (k: string, v: string) => setVars(p => ({ ...p, [k]: v }));
+
+  async function handleApply() {
+    setCompiling(true);
+    try {
+      let html = "";
+      if (template.type === "mjml" && template.mjmlSource) {
+        const res = await fetch("/api/email-marketing/render-mjml", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mjml: template.mjmlSource }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          toast.error("Failed to compile template: " + (err.error ?? "Unknown error"));
+          return;
+        }
+        const data = await res.json();
+        html = applyVars(data.html, vars);
+      } else {
+        html = applyVars(template.html, vars);
+      }
+      const subject = applyVars(template.defaultSubject, vars);
+      onApply(html, subject);
+    } catch {
+      toast.error("Failed to apply template");
+    } finally {
+      setCompiling(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="px-6 pt-4 pb-2 flex items-center gap-2">
+        <span className="text-2xl">{template.thumbnail}</span>
+        <div>
+          <div className="text-sm font-semibold text-slate-800">{template.name}</div>
+          <div className="text-xs text-slate-500">{template.description}</div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-6 py-3 space-y-3">
+        {template.variables.map((v: TemplateVar) => (
+          <div key={v.key} className="space-y-1">
+            <label className="text-xs font-medium text-slate-700">{v.label}</label>
+            {v.multiline ? (
+              <textarea value={vars[v.key] ?? ""}
+                onChange={e => setVar(v.key, e.target.value)}
+                placeholder={v.placeholder} rows={3}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+            ) : (
+              <input value={vars[v.key] ?? ""}
+                onChange={e => setVar(v.key, e.target.value)}
+                placeholder={v.placeholder}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="border-t border-slate-100 px-6 py-3 flex gap-2 justify-between items-center">
+        <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-700">← Back</button>
+        <button onClick={handleApply} disabled={compiling}
+          className="flex items-center gap-2 px-5 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">
+          {compiling ? <Loader2 size={14} className="animate-spin" /> : null}
+          Use this template →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Create Campaign Modal ─────────────────────────────────────────────────────
+
 function CreateCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [step, setStep] = useState<"form" | "preview">("form");
+  const [step, setStep] = useState<"form" | "template-pick" | "template-vars">("form");
+  const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplate | null>(null);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({
     name: "", subject: "", from_name: "", from_email: "",
@@ -129,96 +281,129 @@ function CreateCampaignModal({ onClose, onCreated }: { onClose: () => void; onCr
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-          <h2 className="text-lg font-semibold text-slate-800">New Campaign</h2>
+          <h2 className="text-lg font-semibold text-slate-800">
+            {step === "form" ? "New Campaign" : step === "template-pick" ? "Choose a Template" : "Customize Template"}
+          </h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
             <X size={20} />
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Campaign name *</label>
-              <input value={form.name} onChange={e => set("name", e.target.value)}
-                placeholder="e.g. June Flash Sale"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">Subject line *</label>
-              <input value={form.subject} onChange={e => set("subject", e.target.value)}
-                placeholder="e.g. 🔥 50% off this weekend only"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            </div>
-          </div>
+        {/* Template picker step */}
+        {step === "template-pick" && (
+          <TemplatePicker
+            onSelect={tpl => { setSelectedTemplate(tpl); setStep("template-vars"); }}
+            onBack={() => setStep("form")}
+          />
+        )}
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">From name</label>
-              <input value={form.from_name} onChange={e => set("from_name", e.target.value)}
-                placeholder="Your Brand"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-slate-700">From email</label>
-              <input value={form.from_email} onChange={e => set("from_email", e.target.value)}
-                placeholder="hello@yourdomain.com"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            </div>
-          </div>
+        {/* Variable filler step */}
+        {step === "template-vars" && selectedTemplate && (
+          <VariableFiller
+            template={selectedTemplate}
+            onApply={(html, subject) => {
+              set("body_html", html);
+              if (!form.subject) set("subject", subject);
+              setStep("form");
+            }}
+            onBack={() => setStep("template-pick")}
+          />
+        )}
 
-          <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Recipients — emails (comma-separated)</label>
-            <input value={form.recipient_emails} onChange={e => set("recipient_emails", e.target.value)}
-              placeholder="alice@example.com, bob@example.com"
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Recipients — contact tags (comma-separated)</label>
-            <input value={form.recipient_tags} onChange={e => set("recipient_tags", e.target.value)}
-              placeholder="vip, newsletter, shopify-customers"
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            <p className="text-xs text-slate-400">Sends to all contacts/customers with these tags</p>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-sm font-medium text-slate-700">Email body (HTML) *</label>
-            <textarea value={form.body_html} onChange={e => set("body_html", e.target.value)}
-              rows={8} placeholder="<p>Hello! Here's our latest offer...</p>"
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
-          </div>
-
-          {/* Preview */}
-          {form.body_html && (
-            <div className="border border-slate-200 rounded-lg overflow-hidden">
-              <div className="bg-slate-50 px-4 py-2 flex items-center gap-2 text-xs text-slate-500 font-medium border-b border-slate-200">
-                <Eye size={13} /> Preview
+        {/* Main form step */}
+        {step === "form" && (
+          <>
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Campaign name *</label>
+                  <input value={form.name} onChange={e => set("name", e.target.value)}
+                    placeholder="e.g. June Flash Sale"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Subject line *</label>
+                  <input value={form.subject} onChange={e => set("subject", e.target.value)}
+                    placeholder="e.g. 🔥 50% off this weekend only"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
               </div>
-              <div className="p-4 max-h-48 overflow-y-auto"
-                dangerouslySetInnerHTML={{ __html: form.body_html }} />
-            </div>
-          )}
-        </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 gap-3">
-          <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-700 transition-colors">
-            Cancel
-          </button>
-          <div className="flex gap-2">
-            <button onClick={() => handleCreate(false)} disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50">
-              {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-              Save draft
-            </button>
-            <button onClick={() => handleCreate(true)} disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50">
-              {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-              Send now
-            </button>
-          </div>
-        </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">From name</label>
+                  <input value={form.from_name} onChange={e => set("from_name", e.target.value)}
+                    placeholder="Your Brand"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">From email</label>
+                  <input value={form.from_email} onChange={e => set("from_email", e.target.value)}
+                    placeholder="hello@yourdomain.com"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Recipients — emails (comma-separated)</label>
+                <input value={form.recipient_emails} onChange={e => set("recipient_emails", e.target.value)}
+                  placeholder="alice@example.com, bob@example.com"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Recipients — contact tags (comma-separated)</label>
+                <input value={form.recipient_tags} onChange={e => set("recipient_tags", e.target.value)}
+                  placeholder="vip, newsletter, shopify-customers"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                <p className="text-xs text-slate-400">Sends to all contacts/customers with these tags</p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-700">Email body (HTML) *</label>
+                  <button onClick={() => setStep("template-pick")}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-medium hover:bg-indigo-100 transition-colors border border-indigo-200">
+                    <FileText size={12} /> Browse templates
+                  </button>
+                </div>
+                <textarea value={form.body_html} onChange={e => set("body_html", e.target.value)}
+                  rows={8} placeholder="<p>Hello! Here's our latest offer...</p>"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+              </div>
+
+              {/* Preview */}
+              {form.body_html && (
+                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="bg-slate-50 px-4 py-2 flex items-center gap-2 text-xs text-slate-500 font-medium border-b border-slate-200">
+                    <Eye size={13} /> Preview
+                  </div>
+                  <div className="p-4 max-h-48 overflow-y-auto"
+                    dangerouslySetInnerHTML={{ __html: form.body_html }} />
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 gap-3">
+              <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-700 transition-colors">
+                Cancel
+              </button>
+              <div className="flex gap-2">
+                <button onClick={() => handleCreate(false)} disabled={loading}
+                  className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50">
+                  {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                  Save draft
+                </button>
+                <button onClick={() => handleCreate(true)} disabled={loading}
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50">
+                  {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                  Send now
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
