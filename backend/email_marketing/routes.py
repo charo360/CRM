@@ -161,6 +161,11 @@ def make_email_marketing_router(get_current_user, db):
         for k in ("provider", "from_name", "from_email", "credentials"):
             if body.get(k):
                 settings[k] = body[k]
+        # Auto-fill from_name with business name when using Zilo platform sending
+        if not settings.get("from_name") and (settings.get("provider") or "platform") in ("platform", "resend"):
+            user_doc = await db.users.find_one({"_id": user_id})
+            if user_doc and user_doc.get("business_name"):
+                settings["from_name"] = user_doc["business_name"]
         try:
             await send_email(
                 settings,
@@ -253,6 +258,14 @@ def make_email_marketing_router(get_current_user, db):
             settings["from_name"] = doc["from_name"]
         if doc.get("from_email"):
             settings["from_email"] = doc["from_email"]
+        # Fetch user doc once — used for from_name fallback + reply_to
+        user_doc = await db.users.find_one({"_id": user_id})
+        # Auto-fill from_name with business name when using Zilo platform sending
+        if not settings.get("from_name") and (settings.get("provider") or "platform") in ("platform", "resend"):
+            if user_doc and user_doc.get("business_name"):
+                settings["from_name"] = user_doc["business_name"]
+        # reply-to = client's own email so customer replies land in their inbox
+        reply_to = (user_doc or {}).get("email", "")
 
         # Test send
         if body.test_email:
@@ -263,6 +276,7 @@ def make_email_marketing_router(get_current_user, db):
                     subject=f"[TEST] {doc['subject']}",
                     html=doc["body_html"],
                     text=doc.get("body_text", ""),
+                    reply_to=reply_to,
                 )
                 return {"ok": True, "test": True, "sent_to": body.test_email}
             except Exception as e:
@@ -288,6 +302,7 @@ def make_email_marketing_router(get_current_user, db):
             subject=doc["subject"],
             html=doc["body_html"],
             text=doc.get("body_text", ""),
+            reply_to=reply_to,
         )
 
         final_status = "sent" if result["failed"] == 0 else "partial"

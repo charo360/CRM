@@ -6553,16 +6553,7 @@ async def s3_image_proxy(key_path: str):
         from fastapi.responses import StreamingResponse as _StreamingResponse
         import io as _io
 
-        from botocore.config import Config as _BotoConfig
-        _region = os.environ.get("AWS_REGION", "us-east-1")
-        s3 = boto3.client(
-            "s3",
-            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-            region_name=_region,
-            endpoint_url=f"https://s3.{_region}.amazonaws.com",
-            config=_BotoConfig(signature_version="s3v4"),
-        )
+        s3 = S3Handler.get_s3_client()
         obj = s3.get_object(Bucket=bucket, Key=key)
         content_type = obj.get("ContentType") or "application/octet-stream"
         body = obj["Body"].read()
@@ -16046,6 +16037,32 @@ async def download_proxy(
         path_ext = parsed.path.rsplit(".", 1)[-1].lower()
         if path_ext in ("pdf", "docx", "pptx", "png", "jpg", "jpeg", "gif", "webp", "csv", "txt"):
             safe_name += f".{path_ext}"
+
+    # Try server-side S3 client download first to avoid expired or LLM-mangled presigned URLs
+    expected_bucket = (os.environ.get("AWS_BUCKET_NAME") or "").strip()
+    if expected_bucket and os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        try:
+            bucket, key = S3Handler.parse_s3_source_to_bucket_key(s3_url)
+            use_bucket = bucket or expected_bucket
+            if use_bucket.lower() == expected_bucket.lower() and key:
+                import asyncio
+                s3 = S3Handler.get_s3_client()
+                logging.info("[download-proxy] attempting direct S3 fetch: bucket=%s key=%s", use_bucket, key)
+                
+                def _s3_get():
+                    return s3.get_object(Bucket=use_bucket, Key=key)
+                
+                obj = await asyncio.get_event_loop().run_in_executor(None, _s3_get)
+                content = obj["Body"].read()
+                content_type = obj.get("ContentType") or "application/octet-stream"
+                logging.info("[download-proxy] direct S3 fetch succeeded: bucket=%s key=%s length=%d", use_bucket, key, len(content))
+                return Response(
+                    content=content,
+                    media_type=content_type,
+                    headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+                )
+        except Exception as s3_exc:
+            logging.warning("[download-proxy] direct S3 fetch failed: %s. Falling back to HTTP client.", s3_exc)
 
     try:
         import httpx

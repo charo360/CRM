@@ -18,6 +18,7 @@ const TURBO_ROOT = process.env.VERCEL
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: TURBO_ROOT,
+  transpilePackages: ["mjml"],
   turbopack: {
     root: TURBO_ROOT,
   },

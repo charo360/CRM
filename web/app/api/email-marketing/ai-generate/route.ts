@@ -376,12 +376,12 @@ OUTPUT: ONLY raw MJML XML from <mjml> to </mjml>. Nothing else.`.trim();
    • White 17px subtext, opacity:0.9
    • </div>
    • <mj-spacer height="24px"/>
-   • White pill CTA: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">`
+   • White pill CTA: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="${primaryCtaUrl || '{{CTA_URL}}'}">`
     : `HERO: <mj-section background-color="${accent}" padding="56px 40px">
    • Bold white headline 38px (font-weight:900)
    • White 17px subtext
    • <mj-spacer height="22px"/>
-   • White pill CTA: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="{{CTA_URL}}">`;
+   • White pill CTA: <mj-button background-color="#ffffff" color="${accent}" border-radius="50px" font-size="16px" font-weight="700" padding="14px 40px" href="${primaryCtaUrl || '{{CTA_URL}}'}">`;
 
   const realProducts = products.filter(p => p.name.trim());
   const productLayout = realProducts.length === 2 ? "TWO-COLUMN" : realProducts.length === 3 ? "THREE-COLUMN" : "SINGLE-COLUMN";
@@ -395,7 +395,7 @@ ${imgLine}
    - NAME: bold 17px #111827 centered
    - PRICE: ${accent} badge <span style="background:${accent};color:#fff;font-size:14px;font-weight:700;padding:4px 14px;border-radius:20px;">${p.price || "View price"}</span>
    - DESC: 13px #6b7280 centered, line-height:1.5
-   - CTA LINK: <a href="{{CTA_URL}}" style="color:${accent};font-weight:700;font-size:14px;text-decoration:none;">Shop Now →</a>
+   - CTA LINK: <a href="${primaryCtaUrl || '{{CTA_URL}}'}" style="color:${accent};font-weight:700;font-size:14px;text-decoration:none;">Shop Now →</a>
    - BOTTOM BAR: <div style="height:4px;background:${accent};border-radius:0 0 12px 12px;"></div>`;
   }).join("\n");
 

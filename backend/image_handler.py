@@ -367,8 +367,10 @@ class S3Handler:
                 aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                 aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
                 region_name=region,
-                endpoint_url=f'https://s3.{region}.amazonaws.com',
-                config=Config(signature_version='s3v4'),
+                config=Config(
+                    signature_version='s3v4',
+                    s3={'addressing_style': 'virtual'}
+                ),
             )
         except Exception as e:
             logger.error(f"Failed to create S3 client: {e}")

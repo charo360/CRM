@@ -331,6 +331,7 @@ async def send_bulk(
     html: str,
     text: str = "",
     batch_size: int = 50,
+    reply_to: str = "",
 ) -> Dict[str, Any]:
     """Send to a large list in batches (avoids rate limits)."""
     import asyncio
@@ -339,7 +340,7 @@ async def send_bulk(
     for i in range(0, len(recipients), batch_size):
         batch = recipients[i : i + batch_size]
         try:
-            await send_email(settings, batch, subject, html, text)
+            await send_email(settings, batch, subject, html, text, reply_to=reply_to)
             sent += len(batch)
         except Exception as e:
             failed += len(batch)
