@@ -9,6 +9,7 @@ import {
   Search, Package, Link2, Video,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { EMAIL_TEMPLATES, EmailTemplate, TemplateVar, applyVars } from "./templates";
@@ -88,30 +89,6 @@ const DEFAULT_LINKS: EmailLink[] = [
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-function authHeaders(): Record<string, string> {
-  const t = getToken();
-  return t ? { Authorization: `Bearer ${t}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
-}
-
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
-
-async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, { headers: authHeaders() });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? r.statusText);
-  return r.json();
-}
-
-async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, { method: "POST", headers: authHeaders(), body: JSON.stringify(body) });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? r.statusText);
-  return r.json();
-}
-
-async function apiDelete(path: string) {
-  const r = await fetch(`${BASE}${path}`, { method: "DELETE", headers: authHeaders() });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? r.statusText);
-}
-
 // ── Status badge ──────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: Campaign["status"] }) {
@@ -189,7 +166,7 @@ function SaveToLibraryModal({
     if (!name.trim()) { toast.error("Template name is required"); return; }
     setSaving(true);
     try {
-      await apiPost("/email-marketing/templates", { name: name.trim(), category, subject, body_html: html });
+      await api.post("/email-marketing/templates", { name: name.trim(), category, subject, body_html: html });
       toast.success("Template saved to library!");
       onSaved();
       onClose();
@@ -281,7 +258,7 @@ function LibraryPanel({ onUseTemplate, refreshKey }: {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await apiGet<{ templates: SavedTemplate[] }>("/email-marketing/templates");
+      const data = await api.get<{ templates: SavedTemplate[] }>("/email-marketing/templates");
       setTemplates(data.templates ?? []);
     } catch { toast.error("Failed to load template library"); }
     finally { setLoading(false); }
@@ -292,7 +269,7 @@ function LibraryPanel({ onUseTemplate, refreshKey }: {
   async function deleteTemplate(id: string) {
     setDeleting(id);
     try {
-      await apiDelete(`/email-marketing/templates/${id}`);
+      await api.delete(`/email-marketing/templates/${id}`);
       setTemplates(p => p.filter(t => t.id !== id));
       toast.success("Template deleted");
     } catch (e: unknown) {
@@ -404,7 +381,7 @@ function CatalogPickerModal({
   const fetchProducts = useCallback(async (search: string) => {
     setLoading(true);
     try {
-      const data = await apiGet<{ products: CatalogProduct[] }>(
+      const data = await api.get<{ products: CatalogProduct[] }>(
         `/email-marketing/catalog-products${search ? `?q=${encodeURIComponent(search)}` : ""}`
       );
       setItems(data.products ?? []);
@@ -526,7 +503,7 @@ function MediaLibraryModal({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    apiGet<{ images: MediaImage[] }>("/email-marketing/media-library")
+    api.get<{ images: MediaImage[] }>("/email-marketing/media-library")
       .then(d => setImages(d.images ?? []))
       .catch(() => toast.error("Failed to load media library"))
       .finally(() => setLoading(false));
@@ -638,7 +615,7 @@ function AIGenerateStep({
 
   // Load saved link library + configured ESP provider from settings on mount
   useEffect(() => {
-    apiGet<{ link_library?: EmailLink[]; provider?: string }>("/email-marketing/settings")
+    api.get<{ link_library?: EmailLink[]; provider?: string }>("/email-marketing/settings")
       .then(s => {
         if (s.link_library?.length) setLinks(s.link_library);
         if (s.provider) setProvider(s.provider);
@@ -654,7 +631,7 @@ function AIGenerateStep({
   async function saveLinks() {
     setSavingLinks(true);
     try {
-      await apiPost("/email-marketing/link-library", { links });
+      await api.post("/email-marketing/link-library", { links });
       toast.success("Links saved for reuse");
     } catch { toast.error("Failed to save links"); }
     finally { setSavingLinks(false); }
@@ -1445,9 +1422,9 @@ function CreateCampaignModal({
         recipient_emails: form.recipient_emails ? form.recipient_emails.split(",").map(e => e.trim()).filter(Boolean) : [],
         recipient_tags:   form.recipient_tags   ? form.recipient_tags.split(",").map(t => t.trim()).filter(Boolean)   : [],
       };
-      const res = await apiPost<{ id: string }>("/email-marketing/campaigns", payload);
+      const res = await api.post<{ id: string }>("/email-marketing/campaigns", payload);
       if (sendNow) {
-        await apiPost(`/email-marketing/campaigns/${res.id}/send`, {});
+        await api.post(`/email-marketing/campaigns/${res.id}/send`, {});
         toast.success("Campaign sent!");
       } else {
         toast.success("Campaign saved as draft");
@@ -1647,7 +1624,7 @@ function SendModal({ campaign, onClose, onSent }: { campaign: Campaign; onClose:
     if (!testEmail) { toast.error("Enter a test email address"); return; }
     setLoading(true);
     try {
-      await apiPost(`/email-marketing/campaigns/${campaign.id}/send`, { test_email: testEmail });
+      await api.post(`/email-marketing/campaigns/${campaign.id}/send`, { test_email: testEmail });
       toast.success(`Test sent to ${testEmail}`);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Test send failed");
@@ -1657,7 +1634,7 @@ function SendModal({ campaign, onClose, onSent }: { campaign: Campaign; onClose:
   async function handleSend() {
     setLoading(true);
     try {
-      const res = await apiPost<{ sent: number; failed: number; status: string }>(
+      const res = await api.post<{ sent: number; failed: number; status: string }>(
         `/email-marketing/campaigns/${campaign.id}/send`, {}
       );
       toast.success(`Sent to ${res.sent} recipients`);
@@ -1714,7 +1691,7 @@ function RecipientsModal({ campaign, onClose }: { campaign: Campaign; onClose: (
 
   useEffect(() => {
     setLoading(true);
-    apiGet<Campaign>(`/email-marketing/campaigns/${campaign.id}`)
+    api.get<Campaign>(`/email-marketing/campaigns/${campaign.id}`)
       .then(d => setFull(d))
       .catch(() => setFull(campaign))
       .finally(() => setLoading(false));
@@ -1810,7 +1787,7 @@ function SettingsPanel() {
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {
-    apiGet<EmailSettings>("/email-marketing/settings")
+    api.get<EmailSettings>("/email-marketing/settings")
       .then(d => setSettings(d))
       .catch(() => {});
   }, []);
@@ -1818,7 +1795,7 @@ function SettingsPanel() {
   async function save() {
     setSaving(true);
     try {
-      await apiPost("/email-marketing/settings", settings);
+      await api.post("/email-marketing/settings", settings);
       toast.success("Settings saved");
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Save failed");
@@ -1829,7 +1806,7 @@ function SettingsPanel() {
     if (!testEmail) { toast.error("Enter a test email address"); return; }
     setTesting(true);
     try {
-      const res = await apiPost<{ ok: boolean; message: string }>("/email-marketing/settings/test", {
+      const res = await api.post<{ ok: boolean; message: string }>("/email-marketing/settings/test", {
         ...settings, test_email: testEmail,
       });
       toast.success(res.message);
@@ -2090,6 +2067,314 @@ function SettingsPanel() {
   );
 }
 
+// ── Campaigns table ───────────────────────────────────────────────────────────
+
+const STATUS_FILTERS: { id: "all" | Campaign["status"]; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "draft", label: "Drafts" },
+  { id: "scheduled", label: "Scheduled" },
+  { id: "sending", label: "Sending" },
+  { id: "sent", label: "Sent" },
+  { id: "partial", label: "Partial" },
+];
+
+function formatCampaignWhen(iso: string | undefined, fallback?: string) {
+  const raw = iso || fallback;
+  if (!raw) return { short: "—", full: "" };
+  const d = new Date(raw);
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dayDiff = Math.round((startOfToday.getTime() - startOfDate.getTime()) / 86_400_000);
+  const full = d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  if (dayDiff === 0) return { short: "Today", full };
+  if (dayDiff === 1) return { short: "Yesterday", full };
+  if (dayDiff < 7) return { short: `${dayDiff}d ago`, full };
+  return {
+    short: d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+    }),
+    full,
+  };
+}
+
+function audienceLabel(c: Campaign): string {
+  if (c.stats.sent > 0 || c.stats.failed > 0) {
+    const total = c.stats.sent + c.stats.failed;
+    return total.toLocaleString();
+  }
+  const emails = c.recipient_emails?.length ?? 0;
+  const tags = c.recipient_tags?.length ?? 0;
+  if (emails === 0 && tags === 0) return "—";
+  const parts: string[] = [];
+  if (emails) parts.push(`${emails} email${emails !== 1 ? "s" : ""}`);
+  if (tags) parts.push(`${tags} tag${tags !== 1 ? "s" : ""}`);
+  return parts.join(" · ");
+}
+
+function CampaignsTable({
+  campaigns,
+  deleting,
+  onPreview,
+  onSend,
+  onDelete,
+  onViewRecipients,
+}: {
+  campaigns: Campaign[];
+  deleting: string | null;
+  onPreview: (c: Campaign) => void;
+  onSend: (c: Campaign) => void;
+  onDelete: (id: string) => void;
+  onViewRecipients: (c: Campaign) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | Campaign["status"]>("all");
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return campaigns.filter(c => {
+      if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (!q) return true;
+      return c.name.toLowerCase().includes(q) || c.subject.toLowerCase().includes(q);
+    });
+  }, [campaigns, query, statusFilter]);
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: campaigns.length };
+    for (const c of campaigns) counts[c.status] = (counts[c.status] ?? 0) + 1;
+    return counts;
+  }, [campaigns]);
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-800">Your campaigns</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {filtered.length === campaigns.length
+              ? `${campaigns.length} campaign${campaigns.length !== 1 ? "s" : ""}`
+              : `${filtered.length} of ${campaigns.length} shown`}
+          </p>
+        </div>
+        <div className="relative w-full sm:w-72">
+          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search name or subject…"
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-brand focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand/20"
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 overflow-x-auto border-b border-slate-100 px-4 py-3 sm:px-5">
+        {STATUS_FILTERS.map(f => {
+          const count = statusCounts[f.id] ?? 0;
+          if (f.id !== "all" && count === 0) return null;
+          return (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setStatusFilter(f.id)}
+              className={cn(
+                "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                statusFilter === f.id
+                  ? `${G.bg} text-white shadow-sm`
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800",
+              )}
+            >
+              {f.label}
+              <span className={cn("ml-1.5 tabular-nums", statusFilter === f.id ? "text-white/80" : "text-slate-400")}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center px-6 py-14 text-center">
+          <Search size={28} className="mb-3 text-slate-300" />
+          <p className="text-sm font-medium text-slate-600">No campaigns match your filters</p>
+          <p className="mt-1 text-xs text-slate-400">Try a different search or clear the status filter.</p>
+          {(query || statusFilter !== "all") && (
+            <button
+              type="button"
+              onClick={() => { setQuery(""); setStatusFilter("all"); }}
+              className={`mt-4 text-xs font-medium ${G.text} hover:underline`}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+            <colgroup>
+              <col className="w-[34%]" />
+              <col className="w-[12%]" />
+              <col className="w-[14%]" />
+              <col className="w-[18%]" />
+              <col className="w-[12%]" />
+              <col className="w-[10%]" />
+            </colgroup>
+            <thead className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-3 sm:px-5">Campaign</th>
+                <th className="hidden px-4 py-3 md:table-cell">Status</th>
+                <th className="px-4 py-3">Audience</th>
+                <th className="hidden px-4 py-3 lg:table-cell">Delivery</th>
+                <th className="hidden px-4 py-3 sm:table-cell">Updated</th>
+                <th className="px-4 py-3 text-right sm:px-5">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filtered.map(c => {
+                const when = formatCampaignWhen(c.sent_at, c.created_at);
+                const audience = audienceLabel(c);
+                const delivered = c.stats.sent;
+                const failed = c.stats.failed;
+                const totalAttempted = delivered + failed;
+                const successRate = totalAttempted > 0 ? Math.round((delivered / totalAttempted) * 100) : 0;
+                const canViewRecipients = delivered > 0;
+
+                return (
+                  <tr key={c.id} className="group transition-colors hover:bg-slate-50/80">
+                    <td className="px-4 py-3.5 sm:px-5">
+                      <div className="flex min-w-0 items-start gap-3">
+                        <div
+                          className={cn(
+                            "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-xs font-bold uppercase",
+                            c.status === "sent" ? "bg-green-100 text-green-700"
+                              : c.status === "partial" ? "bg-orange-100 text-orange-700"
+                              : c.status === "scheduled" ? "bg-blue-100 text-blue-700"
+                              : c.status === "sending" ? "bg-yellow-100 text-yellow-700"
+                              : `${G.light} ${G.text}`,
+                          )}
+                        >
+                          {c.name.trim().charAt(0) || "E"}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium text-slate-900" title={c.name}>
+                            {c.name}
+                          </p>
+                          <p className="mt-0.5 truncate text-xs text-slate-500" title={c.subject}>
+                            {c.subject || "No subject line"}
+                          </p>
+                          <div className="mt-1.5 md:hidden">
+                            <StatusBadge status={c.status} />
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="hidden px-4 py-3.5 md:table-cell">
+                      <StatusBadge status={c.status} />
+                    </td>
+                    <td className="px-4 py-3.5">
+                      {canViewRecipients ? (
+                        <button
+                          type="button"
+                          onClick={() => onViewRecipients(c)}
+                          className="group/aud inline-flex items-center gap-1.5 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-indigo-50"
+                          title="View recipients"
+                        >
+                          <Users size={13} className="text-slate-400 group-hover/aud:text-indigo-500" />
+                          <span className="font-medium tabular-nums text-slate-700 group-hover/aud:text-indigo-700">
+                            {audience}
+                          </span>
+                        </button>
+                      ) : (
+                        <div className="flex items-center gap-1.5 text-slate-600">
+                          <Users size={13} className="shrink-0 text-slate-400" />
+                          <span className="truncate text-xs sm:text-sm">{audience}</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="hidden px-4 py-3.5 lg:table-cell">
+                      {totalAttempted > 0 ? (
+                        <div className="min-w-0">
+                          <div className="flex items-center justify-between gap-2 text-xs">
+                            <span className="font-medium tabular-nums text-slate-700">
+                              {delivered.toLocaleString()} delivered
+                            </span>
+                            {failed > 0 && (
+                              <span className="shrink-0 text-red-500">{failed} failed</span>
+                            )}
+                          </div>
+                          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              className={cn(
+                                "h-full rounded-full transition-all",
+                                failed > 0 ? "bg-amber-400" : "bg-green-500",
+                              )}
+                              style={{ width: `${successRate}%` }}
+                            />
+                          </div>
+                          <p className="mt-1 text-[11px] tabular-nums text-slate-400">{successRate}% success</p>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">Not sent yet</span>
+                      )}
+                    </td>
+                    <td className="hidden px-4 py-3.5 sm:table-cell">
+                      <span className="text-xs text-slate-600" title={when.full}>
+                        {when.short}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3.5 sm:px-5">
+                      <div className="flex items-center justify-end gap-0.5 opacity-90 transition-opacity group-hover:opacity-100">
+                        <button
+                          type="button"
+                          onClick={() => onPreview(c)}
+                          title="Preview email"
+                          className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                        >
+                          <Eye size={14} />
+                        </button>
+                        {(c.status === "draft" || c.status === "scheduled") && (
+                          <button
+                            type="button"
+                            onClick={() => onSend(c)}
+                            title={c.status === "scheduled" ? "Send now" : "Send campaign"}
+                            className={`ml-0.5 flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${G.light} ${G.text} hover:bg-green-100`}
+                          >
+                            <Play size={11} /> Send
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onDelete(c.id)}
+                          disabled={deleting === c.id}
+                          title="Delete campaign"
+                          className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500 disabled:opacity-50"
+                        >
+                          {deleting === c.id ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function EmailMarketingPage() {
@@ -2109,8 +2394,8 @@ export default function EmailMarketingPage() {
     setLoading(true);
     try {
       const [c, s] = await Promise.all([
-        apiGet<{ campaigns: Campaign[] }>("/email-marketing/campaigns"),
-        apiGet<Stats>("/email-marketing/stats"),
+        api.get<{ campaigns: Campaign[] }>("/email-marketing/campaigns"),
+        api.get<Stats>("/email-marketing/stats"),
       ]);
       setCampaigns(c.campaigns);
       setStats(s);
@@ -2126,7 +2411,7 @@ export default function EmailMarketingPage() {
   async function deleteCampaign(id: string) {
     setDeleting(id);
     try {
-      await apiDelete(`/email-marketing/campaigns/${id}`);
+      await api.delete(`/email-marketing/campaigns/${id}`);
       setCampaigns(p => p.filter(c => c.id !== id));
       toast.success("Campaign deleted");
     } catch (e: unknown) {
@@ -2137,7 +2422,7 @@ export default function EmailMarketingPage() {
   async function previewCampaignHtml(campaign: Campaign) {
     if (campaign.body_html) { setPreviewCampaign(campaign); return; }
     try {
-      const full = await apiGet<Campaign>(`/email-marketing/campaigns/${campaign.id}`);
+      const full = await api.get<Campaign>(`/email-marketing/campaigns/${campaign.id}`);
       setPreviewCampaign({ ...campaign, body_html: full.body_html });
     } catch {
       toast.error("Could not load campaign preview");
@@ -2212,87 +2497,36 @@ export default function EmailMarketingPage() {
 
         {/* Campaigns tab */}
         {tab === "campaigns" && (
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            {loading ? (
-              <div className="flex items-center justify-center py-16">
-                <Loader2 size={24} className={`animate-spin ${G.text}`} />
+          loading ? (
+            <div className="flex items-center justify-center rounded-2xl border border-slate-200 bg-white py-16 shadow-sm">
+              <Loader2 size={24} className={`animate-spin ${G.text}`} />
+            </div>
+          ) : campaigns.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 py-16 text-center">
+              <div className={`mb-4 flex h-16 w-16 items-center justify-center rounded-2xl ${G.light}`}>
+                <Mail size={28} className={G.text} />
               </div>
-            ) : campaigns.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <div className={`w-16 h-16 ${G.light} rounded-2xl flex items-center justify-center mb-4`}>
-                  <Mail size={28} className={G.text} />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-700 mb-1">No campaigns yet</h3>
-                <p className="text-sm text-slate-400 mb-5 max-w-xs">Create your first email campaign to reach your customers and grow your business.</p>
-                <button onClick={() => setShowCreate(true)}
-                  className={`flex items-center gap-2 px-5 py-2.5 ${G.bg} ${G.hover} text-white rounded-xl text-sm font-medium transition-colors`}>
-                  <Plus size={15} /> Create campaign
-                </button>
-              </div>
-            ) : (
-              <table className="w-full">
-                <thead>
-                  <tr className="bg-slate-50 text-left">
-                    <th className="px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Campaign</th>
-                    <th className="px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:table-cell">Status</th>
-                    <th className="px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:table-cell">Sent</th>
-                    <th className="px-5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hidden lg:table-cell">Date</th>
-                    <th className="px-5 py-3" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {campaigns.map(c => (
-                    <tr key={c.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-5 py-4">
-                        <div className="font-medium text-slate-800 text-sm">{c.name}</div>
-                        <div className="text-xs text-slate-400 mt-0.5 truncate max-w-xs">{c.subject}</div>
-                      </td>
-                      <td className="px-5 py-4 hidden md:table-cell">
-                        <StatusBadge status={c.status} />
-                      </td>
-                      <td className="px-5 py-4 hidden lg:table-cell">
-                        {c.stats.sent > 0 ? (
-                          <button onClick={() => setRecipientsTarget(c)}
-                            className="flex items-center gap-1 text-sm group hover:text-indigo-600 transition-colors">
-                            <Users size={13} className="text-slate-400 group-hover:text-indigo-500" />
-                            <span className="text-slate-700 group-hover:text-indigo-600">{c.stats.sent.toLocaleString()}</span>
-                            {c.stats.failed > 0 && (
-                              <span className="text-red-500 text-xs">({c.stats.failed} failed)</span>
-                            )}
-                          </button>
-                        ) : <span className="text-xs text-slate-400">—</span>}
-                      </td>
-                      <td className="px-5 py-4 hidden lg:table-cell">
-                        <span className="text-xs text-slate-400">
-                          {c.sent_at ? new Date(c.sent_at).toLocaleDateString() : new Date(c.created_at).toLocaleDateString()}
-                        </span>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-1.5 justify-end">
-                          <button onClick={() => previewCampaignHtml(c)}
-                            className="p-1.5 text-slate-400 hover:text-slate-700 transition-colors" title="Preview">
-                            <Eye size={14} />
-                          </button>
-                          {c.status === "draft" ? (
-                            <button onClick={() => setSendTarget(c)}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 ${G.light} ${G.text} rounded-lg text-xs font-medium hover:bg-green-100 transition-colors`}>
-                              <Play size={11} /> Send
-                            </button>
-                          ) : (
-                            <span className="inline-block w-[62px]" />
-                          )}
-                          <button onClick={() => deleteCampaign(c.id)} disabled={deleting === c.id}
-                            className="p-1.5 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50">
-                            {deleting === c.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+              <h3 className="mb-1 text-lg font-semibold text-slate-700">No campaigns yet</h3>
+              <p className="mb-5 max-w-xs text-sm text-slate-400">
+                Create your first email campaign to reach your customers and grow your business.
+              </p>
+              <button
+                onClick={() => setShowCreate(true)}
+                className={`flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium text-white transition-colors ${G.bg} ${G.hover}`}
+              >
+                <Plus size={15} /> Create campaign
+              </button>
+            </div>
+          ) : (
+            <CampaignsTable
+              campaigns={campaigns}
+              deleting={deleting}
+              onPreview={previewCampaignHtml}
+              onSend={setSendTarget}
+              onDelete={deleteCampaign}
+              onViewRecipients={setRecipientsTarget}
+            />
+          )
         )}
 
         {/* Library tab */}
