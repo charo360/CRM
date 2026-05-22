@@ -974,23 +974,33 @@ async def _fetch_image_bytes(url: str) -> Optional[bytes]:
 
 
 _SLIDE_IMAGE_QUALITY_SUFFIX = (
-    " — ultra-high resolution, award-winning commercial photography, "
-    "shot on Hasselblad medium format, masterful composition using rule of thirds, "
-    "dramatic volumetric lighting, deep rich shadows, vibrant yet refined color grading, "
-    "razor-sharp focus, 16:9 widescreen aspect ratio, "
-    "absolutely NO text, NO watermarks, NO logos, NO UI elements, NO people unless explicitly required, "
-    "professional stock photo quality, editorial magazine cover standard."
+    " — ultra-clean professional background for a business presentation slide, widescreen 16:9. "
+    "Real-world cinematic photography: soft depth of field, natural light, calm and breathable. "
+    "Muted mid-tones so white text reads clearly on top. "
+    "NO geometric shapes, NO waves, NO abstract patterns, NO gradients, NO UI elements, "
+    "NO text, NO watermarks, NO logos, NO borders anywhere in the image."
+)
+
+_DESIGNED_SLIDE_QUALITY_SUFFIX = (
+    " — Render this as a complete, flat presentation slide image, widescreen 16:9 ratio. "
+    "Style: premium Canva/Google Slides quality — clean sans-serif fonts (Inter, Montserrat, or Helvetica Neue), "
+    "bold title at top, bullet points below with generous line spacing. "
+    "Every single word must be PERFECTLY SPELLED exactly as given — render each letter precisely, no hallucinated words. "
+    "Ample whitespace, refined color palette, tasteful brand accents. "
+    "No laptop frames, no screen chrome, no UI borders — just the flat slide as projected on screen. "
+    "The design must look like it came from a professional design agency, not a template tool."
 )
 
 _SLIDE_STYLE_MAP = {
-    "title":   "Wide establishing cinematic shot, epic sense of scale, hero composition, "
-               "golden-hour or blue-hour lighting, extreme depth of field.",
-    "content": "Clean abstract backdrop, high-contrast geometric or organic texture, "
-               "muted mid-tones so white text reads clearly, tasteful bokeh or blur.",
-    "data":    "Sleek dark-room ambience, glowing neon accent lines, tech-forward atmosphere, "
-               "shallow depth of field, professional product photography lighting.",
-    "closing": "Bold wide panoramic vista, sunrise or city skyline at dusk, "
-               "inspiring aspirational mood, warm amber and deep blue tones.",
+    "title":   "Sweeping cinematic landscape — mountain range, modern city skyline, or vast ocean at golden hour. "
+               "Epic scale, dramatic natural lighting, deep depth of field, open negative space. "
+               "NO dollar signs, NO currency symbols, NO icons, NO floating symbols, NO charts, NO UI elements, NO data visualizations.",
+    "content": "Clean architectural interior or calm natural scene — marble surface, glass office, forest path. "
+               "Soft natural light, muted tones, breathable — nothing busy or artificial.",
+    "data":    "Dark polished surface — black marble, dark wood desk, or night city reflection. "
+               "Minimal, authoritative, premium feel. No geometric shapes, no patterns.",
+    "closing": "Wide open panoramic — sunrise over city, coastline at dusk, or aerial landscape. "
+               "Warm amber and deep blue natural tones, inspiring and aspirational.",
 }
 
 
@@ -1000,11 +1010,15 @@ async def _gen_slide_image(
     logo_url: Optional[str] = None,
     quality: str = "pro",
     slide_role: str = "content",
+    ai_designed: bool = True,
 ) -> Optional[str]:
     """Generate one landscape Gemini image for a slide at award-winning quality."""
     try:
-        style_hint = _SLIDE_STYLE_MAP.get(slide_role, _SLIDE_STYLE_MAP["content"])
-        full_prompt = f"{style_hint} {slide_prompt}{_SLIDE_IMAGE_QUALITY_SUFFIX}"
+        if ai_designed:
+            full_prompt = f"{slide_prompt}{_DESIGNED_SLIDE_QUALITY_SUFFIX}"
+        else:
+            style_hint = _SLIDE_STYLE_MAP.get(slide_role, _SLIDE_STYLE_MAP["content"])
+            full_prompt = f"{style_hint} {slide_prompt}{_SLIDE_IMAGE_QUALITY_SUFFIX}"
         from nano_banana_service import generate_creative_image
         result = await generate_creative_image(
             prompt=full_prompt,
@@ -1027,6 +1041,7 @@ def _add_visual_slide(
     body_lines: List[str],
     brand_color_hex: str = "",
     is_title_slide: bool = False,
+    ai_designed: bool = False,
 ) -> None:
     """Add one slide: full-bleed background image + text overlay."""
     import io as _io
@@ -1047,6 +1062,10 @@ def _add_visual_slide(
         except Exception:
             pass  # fall through to solid bg if image fails
 
+    if ai_designed and image_bytes:
+        # Gemini rendered the complete slide — no pptx elements needed
+        return
+
     # Semi-transparent dark overlay using a shape (pptx doesn't support true opacity
     # on fills, so we use a very dark near-black with alpha via theme trick — use
     # a solid rectangle at 55% lightness equivalent via dark colour)
@@ -1063,7 +1082,7 @@ def _add_visual_slide(
             srgb = solidFill.find('{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr')
             if srgb is not None:
                 alpha = _et.SubElement(srgb, '{http://schemas.openxmlformats.org/drawingml/2006/main}alpha')
-                alpha.set('val', '60000')  # 60 000 / 100 000 = 60% opaque → 40% transparent
+                alpha.set('val', '50000')  # 50% opaque → 50% transparent — lets background breathe
     except Exception:
         pass
 
@@ -1123,10 +1142,12 @@ async def create_visual_presentation_async(
     brand_color: str = "",
     logo_url: Optional[str] = None,
     quality: str = "fast",
+    ai_designed: bool = True,
 ) -> Dict[str, Any]:
     """
     Build a PPTX where every slide has a **Gemini-generated full-bleed background image**
-    with the slide title and bullet points overlaid on a semi-transparent dark panel.
+    with the slide title and bullet points overlaid on a semi-transparent dark panel (or
+    fully AI-designed slide images if ai_designed=True).
 
     slides_plan — list of dicts, each with:
         title (str)        : slide headline
@@ -1141,14 +1162,7 @@ async def create_visual_presentation_async(
 
     async def _bounded_gen(sd: Dict[str, Any]) -> Optional[str]:
         async with sem:
-            raw = (sd.get("image_prompt") or "").strip()
-            if not raw:
-                raw = (
-                    f"Abstract, atmospheric, textured background for a professional business "
-                    f"presentation slide titled '{sd.get('title', topic)}'. "
-                    f"Minimal, sophisticated, no clutter."
-                )
-            # Determine slide role for style hint
+            # Determine slide role for style hint/prompt building
             if sd.get("is_title"):
                 role = "title"
             elif any(kw in (sd.get("title") or "").lower() for kw in ("thank", "next step", "contact", "cta", "call to action", "conclusion")):
@@ -1157,7 +1171,72 @@ async def create_visual_presentation_async(
                 role = "data"
             else:
                 role = "content"
-            return await _gen_slide_image(raw, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role)
+
+            raw = (sd.get("image_prompt") or sd.get("image_concept") or "").strip()
+            if ai_designed:
+                title = (sd.get("title") or "").strip()
+                body_lines = sd.get("body") or []
+                bullets_text = ""
+                if body_lines:
+                    bullets_text = "Bullets: " + ", ".join(f"'{b}'" for b in body_lines)
+
+                bullets_str = "\n".join(f"• {b}" for b in body_lines) if body_lines else ""
+
+                if role == "title":
+                    prompt = (
+                        f"Design a complete widescreen 16:9 presentation COVER slide for '{business_name}'.\n"
+                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
+                        f"SUBTITLE TEXT (render exactly): \"{business_name}\"\n"
+                        f"Background: {raw or 'dramatic cinematic landscape — mountain, skyline, or ocean at golden hour. Real photography, no geometric shapes, no waves, no patterns'}.\n"
+                        f"Layout: large bold title in the upper or center area, subtitle below in lighter weight. "
+                        f"Generous whitespace, high contrast so text pops clearly.\n"
+                        f"Font: clean premium sans-serif (Inter, Montserrat, or Helvetica Neue). "
+                        f"No watermarks, no laptop frames, no UI chrome, no geometric decorations — flat slide only. "
+                        f"NO dollar signs, NO currency symbols ($), NO floating icons, NO data charts, NO emoji."
+                    )
+                elif role == "closing":
+                    prompt = (
+                        f"Design a complete widescreen 16:9 presentation CLOSING slide.\n"
+                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
+                        f"BODY TEXT (render exactly):\n{bullets_str}\n"
+                        f"Background: {raw or 'wide panoramic sunrise or coastline at dusk. Real photography, no geometric shapes, no waves, no patterns'}.\n"
+                        f"Layout: bold title, body text below with generous line spacing. "
+                        f"Open, breathable, high contrast text.\n"
+                        f"Font: clean premium sans-serif. "
+                        f"No watermarks, no laptop frames, no UI chrome, no geometric decorations — flat slide only."
+                    )
+                elif role == "data":
+                    prompt = (
+                        f"Design a complete widescreen 16:9 presentation DATA/METRICS slide.\n"
+                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
+                        f"BODY TEXT (render exactly):\n{bullets_str}\n"
+                        f"Background: {raw or 'dark polished surface — black marble or dark wood. Real photography, no geometric shapes, no waves, no glowing lines, no patterns'}.\n"
+                        f"Layout: bold title at top, stats/bullets below with clear hierarchy and generous spacing. "
+                        f"Minimal, authoritative, numbers easy to read.\n"
+                        f"Font: clean premium sans-serif. "
+                        f"No watermarks, no laptop frames, no UI chrome, no geometric decorations — flat slide only."
+                    )
+                else:  # content
+                    prompt = (
+                        f"Design a complete widescreen 16:9 presentation CONTENT slide.\n"
+                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
+                        f"BODY TEXT (render exactly, each bullet on its own line):\n{bullets_str}\n"
+                        f"Background: {raw or 'clean architectural interior or calm natural scene — marble, glass office, or soft forest. Real photography, no geometric shapes, no waves, no patterns'}.\n"
+                        f"Layout: bold title at top, bullet points below with generous line spacing. "
+                        f"Ample whitespace, high contrast text, never cluttered.\n"
+                        f"Font: clean premium sans-serif (Inter, Montserrat, or Helvetica Neue). "
+                        f"No watermarks, no laptop frames, no UI chrome, no geometric decorations — flat slide only."
+                    )
+                return await _gen_slide_image(prompt, brand_color=brand_color, logo_url=logo_url, quality=quality, slide_role=role, ai_designed=True)
+            else:
+                if not raw:
+                    raw = (
+                        f"Cinematic real-world background for a professional business presentation slide "
+                        f"titled '{sd.get('title', topic)}'. "
+                        f"Natural photography — architecture, landscape, or calm environment. "
+                        f"No geometric shapes, no waves, no abstract patterns, minimal and sophisticated."
+                    )
+                return await _gen_slide_image(raw, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role, ai_designed=False)
 
     image_urls: List[Optional[str]] = await asyncio.gather(
         *[_bounded_gen(sd) for sd in slides_plan]
@@ -1185,6 +1264,7 @@ async def create_visual_presentation_async(
             body_lines=sd.get("body") or [],
             brand_color_hex=brand_color,
             is_title_slide=bool(is_title),
+            ai_designed=ai_designed,
         )
 
     # Step 4 — save locally then upload to S3
@@ -1222,6 +1302,7 @@ async def create_visual_presentation_async(
         "slide_count": slide_count,
         "images_generated": generated_count,
         "topic": topic,
+        "ai_designed": ai_designed,
         # Return slides + image URLs so the caller can pass them back for per-slide regeneration
         "slides": slides_plan,
         "image_urls": [u or "" for u in image_urls],
@@ -1236,6 +1317,8 @@ async def regenerate_single_slide_async(
     brand_color: str = "",
     quality: str = "pro",
     topic: str = "",
+    logo_url: Optional[str] = None,
+    ai_designed: bool = False,
 ) -> Dict[str, Any]:
     """
     Regenerate ONE slide's background image based on new instructions,
@@ -1270,7 +1353,45 @@ async def regenerate_single_slide_async(
     else:
         role = "content"
 
-    new_url = await _gen_slide_image(refined_prompt, brand_color=brand_color, quality=quality, slide_role=role)
+    if ai_designed:
+        title = (sd.get("title") or "").strip()
+        body_lines = sd.get("body") or []
+        bullets_text = ""
+        if body_lines:
+            bullets_text = "Bullets: " + ", ".join(f"'{b}'" for b in body_lines)
+
+        if role == "title":
+            prompt = (
+                f"A complete, professionally designed presentation COVER slide. "
+                f"Title: '{title}'. Subtitle/business: '{topic}'. "
+                f"Style/Background/Changes: {refined_prompt}. "
+                f"Elegant corporate layout, bold title, readable high-contrast typography, brand accents."
+            )
+        elif role == "closing":
+            prompt = (
+                f"A complete, professionally designed presentation CLOSING/CTA slide. "
+                f"Title: '{title}'. Details: '{', '.join(body_lines)}'. "
+                f"Style/Background/Changes: {refined_prompt}. "
+                f"Strong CTA layout, clean typography, readable content, brand elements."
+            )
+        elif role == "data":
+            prompt = (
+                f"A complete, professionally designed presentation DATA/METRIC slide. "
+                f"Title: '{title}'. Data: '{', '.join(body_lines)}'. "
+                f"Style/Background/Changes: {refined_prompt}. "
+                f"Premium slide highlighting key stats or figures, clean fonts, balanced negative space."
+            )
+        else: # content
+            prompt = (
+                f"A complete, professionally designed presentation CONTENT slide. "
+                f"Title: '{title}'. {bullets_text}. "
+                f"Style/Background/Changes: {refined_prompt}. "
+                f"Widescreen layout with bold title at top, clean readable bullet points, brand accents."
+            )
+        new_url = await _gen_slide_image(prompt, brand_color=brand_color, logo_url=logo_url, quality=quality, slide_role=role, ai_designed=True)
+    else:
+        new_url = await _gen_slide_image(refined_prompt, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role, ai_designed=False)
+
     if not new_url:
         return {"error": "Image generation failed for this slide. Please try again."}
 
@@ -1302,6 +1423,7 @@ async def regenerate_single_slide_async(
             body_lines=sd_item.get("body") or [],
             brand_color_hex=brand_color,
             is_title_slide=bool(is_title),
+            ai_designed=ai_designed,
         )
 
     filename = f"visual-pptx-{uuid.uuid4().hex[:8]}.pptx"
@@ -1338,6 +1460,7 @@ async def regenerate_single_slide_async(
         "regenerated_slide_index": slide_index,
         "regenerated_slide_title": sd.get("title", f"Slide {slide_index + 1}"),
         "topic": topic,
+        "ai_designed": ai_designed,
         "slides": updated_slides,
         "image_urls": [u or "" for u in updated_urls],
     }

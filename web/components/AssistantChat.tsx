@@ -37,6 +37,10 @@ import {
   PencilLine,
   UserPlus,
   RefreshCw,
+  Eye,
+  Mail,
+  Save,
+  BookTemplate,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { TemplateGallery } from "@/components/TemplateGallery";
@@ -45,6 +49,7 @@ import { downloadAsset } from "@/lib/utils";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
 
 interface Props {
   conversationId?: string | null;
@@ -1581,6 +1586,190 @@ function InlineForm({
   );
 }
 
+// ── Email HTML detection + preview ──────────────────────────────────────────
+
+function extractEmailHtml(content: string): string | null {
+  const blockMatch = content.match(/```(?:html)?\s*([\s\S]*?)\s*```/i);
+  if (blockMatch) {
+    const inner = blockMatch[1].trim();
+    if (/<!DOCTYPE html/i.test(inner) || /<html[\s>]/i.test(inner)) return inner;
+  }
+  const trimmed = content.trim();
+  if (/^<!DOCTYPE html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) return trimmed;
+  return null;
+}
+
+const API_BASE_EMAIL = process.env.NEXT_PUBLIC_API_URL ?? "";
+
+function EmailChatPreviewModal({
+  html,
+  onClose,
+  onRequestChange,
+}: {
+  html: string;
+  onClose: () => void;
+  onRequestChange: (msg: string) => void;
+}) {
+  const [tab, setTab] = useState<"desktop" | "mobile">("desktop");
+  const [saveMode, setSaveMode] = useState<"campaign" | "template" | null>(null);
+  const [name, setName] = useState("");
+  const [subject, setSubject] = useState("");
+  const [changeText, setChangeText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  async function saveItem() {
+    if (!name.trim()) { toast.error("Enter a name first"); return; }
+    setSaving(true);
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      if (saveMode === "campaign") {
+        await fetch(`${API_BASE_EMAIL}/api/email-marketing/campaigns`, {
+          method: "POST", headers,
+          body: JSON.stringify({ name: name.trim(), subject: subject.trim() || name.trim(), body_html: html }),
+        });
+        setSaved("Campaign saved as draft!");
+        toast.success("Draft campaign created — find it in Email Marketing");
+      } else {
+        await fetch(`${API_BASE_EMAIL}/api/email-marketing/templates`, {
+          method: "POST", headers,
+          body: JSON.stringify({ name: name.trim(), subject: subject.trim() || name.trim(), body_html: html, category: "AI Generated" }),
+        });
+        setSaved("Saved to template library!");
+        toast.success("Saved to Email Marketing → Library");
+      }
+    } catch {
+      toast.error("Save failed — check your connection");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center">
+              <Mail size={16} className="text-indigo-600" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Email Preview</p>
+              <p className="text-xs text-slate-400">Review, request changes, or save your AI-generated email</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setTab("desktop")}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                tab === "desktop" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"
+              }`}>Desktop</button>
+            <button onClick={() => setTab("mobile")}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                tab === "mobile" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"
+              }`}>Mobile</button>
+            <button onClick={onClose} className="ml-2 text-slate-400 hover:text-slate-600">
+              <XIcon size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex flex-1 min-h-0">
+          {/* Preview iframe */}
+          <div className="flex-1 bg-slate-100 flex items-center justify-center p-4 overflow-auto">
+            <div className={`bg-white shadow-lg rounded overflow-hidden ${
+              tab === "mobile" ? "w-[375px]" : "w-full max-w-[640px]"
+            } h-full`}>
+              <iframe
+                srcDoc={html}
+                className="w-full h-full border-0"
+                sandbox="allow-same-origin"
+                title="Email Preview"
+              />
+            </div>
+          </div>
+
+          {/* Actions sidebar */}
+          <div className="w-72 shrink-0 border-l border-slate-100 flex flex-col p-4 gap-4 overflow-y-auto">
+            {/* Request Changes */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Request Changes</p>
+              <textarea
+                value={changeText}
+                onChange={e => setChangeText(e.target.value)}
+                placeholder="e.g. Make the headline bigger, change button colour to green, add a discount code..."
+                rows={4}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+              <button
+                onClick={() => {
+                  if (!changeText.trim()) return;
+                  onRequestChange(`Please update the email with these changes: ${changeText.trim()}`);
+                  onClose();
+                }}
+                disabled={!changeText.trim()}
+                className="w-full py-2 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-slate-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-2">
+                <Send size={13} /> Send to Zilo
+              </button>
+            </div>
+
+            <div className="border-t border-slate-100" />
+
+            {/* Save */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Save Email</p>
+              {saved ? (
+                <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
+                  <CheckCircle2 size={15} /> {saved}
+                </div>
+              ) : (
+                <>
+                  <div className="flex gap-2">
+                    <button onClick={() => setSaveMode("campaign")}
+                      className={`flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-colors ${
+                        saveMode === "campaign"
+                          ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                          : "border-slate-200 text-slate-600 hover:border-slate-300"
+                      }`}>
+                      <Save size={12} className="inline mr-1" />Campaign
+                    </button>
+                    <button onClick={() => setSaveMode("template")}
+                      className={`flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-colors ${
+                        saveMode === "template"
+                          ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                          : "border-slate-200 text-slate-600 hover:border-slate-300"
+                      }`}>
+                      <BookTemplate size={12} className="inline mr-1" />Template
+                    </button>
+                  </div>
+                  {saveMode && (
+                    <div className="space-y-2">
+                      <input value={name} onChange={e => setName(e.target.value)}
+                        placeholder={saveMode === "campaign" ? "Campaign name" : "Template name"}
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+                      <input value={subject} onChange={e => setSubject(e.target.value)}
+                        placeholder="Subject line (optional)"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+                      <button onClick={saveItem} disabled={saving || !name.trim()}
+                        className="w-full py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-2">
+                        {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                        {saving ? "Saving…" : `Save ${saveMode === "campaign" ? "Draft Campaign" : "to Library"}`}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   onSuggestionSend,
@@ -1592,7 +1781,13 @@ function MessageBubble({
 }) {
   const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
   const [showWaPicker, setShowWaPicker] = useState(false);
+  const [showEmailPreview, setShowEmailPreview] = useState(false);
   const [editingUserPrompt, setEditingUserPrompt] = useState(false);
+
+  const emailHtml = useMemo(() => {
+    if (msg.role !== "assistant") return null;
+    return extractEmailHtml(msg.content ?? "");
+  }, [msg.role, msg.content]);
   const [editedUserPrompt, setEditedUserPrompt] = useState(msg.content ?? "");
   const [checkedOptions, setCheckedOptions] = useState<Set<string>>(new Set());
   const [describeText, setDescribeText] = useState("");
@@ -1947,6 +2142,27 @@ function MessageBubble({
                   Send via WhatsApp
                 </button>
               </div>
+            )}
+            {emailHtml && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEmailPreview(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100 hover:border-indigo-300 transition-colors"
+                >
+                  <Eye size={11} /> Preview Email · Approve or Request Changes
+                </button>
+              </div>
+            )}
+            {showEmailPreview && emailHtml && (
+              <EmailChatPreviewModal
+                html={emailHtml}
+                onClose={() => setShowEmailPreview(false)}
+                onRequestChange={(text) => {
+                  setShowEmailPreview(false);
+                  onSuggestionSend?.(text);
+                }}
+              />
             )}
             {showWaPicker && msg.content && (
               <WhatsAppPickerModal

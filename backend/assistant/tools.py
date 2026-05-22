@@ -5396,7 +5396,7 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
     description=(
         "STEP 1 of 2 — Plan a visual presentation deck and present the full outline to the user "
         "for review and approval BEFORE any images are generated. "
-        "This avoids wasting Gemini image credits on a deck the user hasn't approved. "
+        "This avoids generating a full deck before the user has approved the content. "
         "Call this first whenever a user asks for a presentation, pitch deck, or slideshow. "
         "It returns a structured slide-by-slide plan showing: slide title, bullet points, "
         "and the image concept for each slide. "
@@ -5473,8 +5473,8 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
     description=(
         "STEP 2 of 2 — Generate the actual visual PowerPoint (.pptx) ONLY after the user has "
         "approved the plan from plan_visual_presentation. "
-        "Each slide gets a unique Gemini AI-generated full-bleed background image (award-winning, "
-        "cinematic quality), with the slide title and bullets overlaid on a semi-transparent panel. "
+        "Each slide gets a unique Gemini AI-generated full-bleed background image with title/bullets "
+        "overlaid on a panel, OR a complete AI-designed slide image including layout and text if ai_designed=True. "
         "Never call this tool speculatively — only after explicit user approval of the slide plan. "
         "Pass the exact slides array from the approved plan, enriched with a detailed image_prompt "
         "per slide (expand image_concept into a rich, specific generation prompt)."
@@ -5515,6 +5515,10 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "enum": ["fast", "pro"],
                 "description": "'pro' for final delivery (recommended), 'fast' for draft preview.",
             },
+            "ai_designed": {
+                "type": "boolean",
+                "description": "True = Gemini designs the complete slide including layout, text, and visuals (default, recommended). False = background image only with pptx text overlay.",
+            },
         },
         "required": ["topic", "slides"],
     },
@@ -5526,18 +5530,21 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
     slides_plan = args.get("slides") or []
     brand_color = (args.get("brand_color") or "").strip()
     quality     = (args.get("quality") or "pro").strip()
+    ai_designed = bool(args.get("ai_designed", True))
 
     if not slides_plan:
         return {"error": "slides list is required — pass the approved plan from plan_visual_presentation."}
     if len(slides_plan) > 15:
         slides_plan = slides_plan[:15]
 
-    # Auto-fetch brand color + business name from owner info
+    # Auto-fetch brand color, logo + business name from owner info
+    logo_url = None
     try:
         owner = await get_owner_info(ctx, {})
         if not brand_color:
             brand_color = owner.get("brand_primary_color") or ""
         business_name = str(owner.get("business_name") or "My Business").strip()
+        logo_url = owner.get("default_logo_url") or None
     except Exception:
         business_name = "My Business"
 
@@ -5546,7 +5553,9 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
         slides_plan=slides_plan,
         business_name=business_name,
         brand_color=brand_color,
+        logo_url=logo_url,
         quality=quality,
+        ai_designed=ai_designed,
     )
 
     if not result.get("success"):
@@ -5558,6 +5567,7 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
         "slide_count": result["slide_count"],
         "images_generated": result["images_generated"],
         "topic": topic,
+        "ai_designed": result.get("ai_designed", ai_designed),
         "slides": result.get("slides", slides_plan),
         "image_urls": result.get("image_urls", []),
     }
@@ -5615,6 +5625,10 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "enum": ["fast", "pro"],
                 "description": "'pro' for final quality (default), 'fast' for quick preview.",
             },
+            "ai_designed": {
+                "type": "boolean",
+                "description": "True = Gemini designs the complete slide (default, recommended). False = background-only with pptx text overlay.",
+            },
         },
         "required": ["slide_index", "instruction", "slides", "image_urls"],
     },
@@ -5629,6 +5643,7 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
     topic        = (args.get("topic") or "Presentation").strip()
     brand_color  = (args.get("brand_color") or "").strip()
     quality      = (args.get("quality") or "pro").strip()
+    ai_designed  = bool(args.get("ai_designed", True))
 
     if not slides_plan:
         return {"error": "slides array is required — pass it from the previous create_visual_presentation result."}
@@ -5637,10 +5652,13 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
     if not instruction:
         return {"error": "instruction is required — describe what to change on this slide."}
 
-    if not brand_color:
+    logo_url = None
+    if not brand_color or ai_designed:
         try:
             owner = await get_owner_info(ctx, {})
-            brand_color = owner.get("brand_primary_color") or ""
+            if not brand_color:
+                brand_color = owner.get("brand_primary_color") or ""
+            logo_url = owner.get("default_logo_url") or None
         except Exception:
             pass
 
@@ -5652,6 +5670,8 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
         brand_color=brand_color,
         quality=quality,
         topic=topic,
+        logo_url=logo_url,
+        ai_designed=ai_designed,
     )
 
     if not result.get("success"):
@@ -5665,6 +5685,7 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
         "regenerated_slide_index": result["regenerated_slide_index"],
         "regenerated_slide_title": result["regenerated_slide_title"],
         "topic": topic,
+        "ai_designed": result.get("ai_designed", ai_designed),
         "slides": result["slides"],
         "image_urls": result["image_urls"],
     }
@@ -6972,7 +6993,7 @@ async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "boolean",
                 "description": (
                     "Set to true ONLY when the user explicitly chooses the premium AI-designed option. "
-                    "Uses the create-pdf-slides endpoint which costs ~100 credits per slide — warn the user before calling. "
+                    "Uses the 2Slides template endpoint. Prefer create_visual_presentation (Gemini-powered, no credits) for new decks. "
                     "Produces a fully AI-designed deck with no template selection required. Default: false."
                 ),
             },
@@ -15622,20 +15643,21 @@ async def list_email_campaigns(ctx: ToolContext, args: Dict[str, Any]) -> Dict[s
     description=(
         "Create a new email marketing campaign. "
         "Can target specific email addresses or all contacts with certain tags. "
-        "Returns a campaign_id to use with send_email_campaign."
+        "Use generate_email_campaign_content first to draft the subject and body, "
+        "then call this to save it. Returns a campaign_id to use with send_email_campaign."
     ),
     parameters={
         "type": "object",
         "required": ["name", "subject", "body_html"],
         "properties": {
-            "name":             {"type": "string", "description": "Internal campaign name (e.g. 'June Flash Sale')"},
-            "subject":          {"type": "string", "description": "Email subject line"},
-            "body_html":        {"type": "string", "description": "Full HTML body of the email"},
-            "body_text":        {"type": "string", "description": "Plain text fallback (optional)"},
-            "recipient_emails": {"type": "array", "items": {"type": "string"}, "description": "Explicit list of recipient email addresses"},
-            "recipient_tags":   {"type": "array", "items": {"type": "string"}, "description": "Send to all contacts/customers with these tags"},
-            "from_name":        {"type": "string", "description": "Sender display name (overrides account default)"},
-            "from_email":       {"type": "string", "description": "Sender address (overrides account default)"},
+            "name":              {"type": "string",  "description": "Internal campaign name (e.g. 'June Flash Sale')"},
+            "subject":           {"type": "string",  "description": "Email subject line"},
+            "body_html":         {"type": "string",  "description": "Full HTML body of the email"},
+            "body_text":         {"type": "string",  "description": "Plain text fallback (optional)"},
+            "recipient_emails":  {"type": "array", "items": {"type": "string"}, "description": "Explicit list of recipient email addresses"},
+            "recipient_tags":    {"type": "array", "items": {"type": "string"}, "description": "Send to all contacts/customers with these tags"},
+            "from_name":         {"type": "string",  "description": "Sender display name (overrides account default)"},
+            "from_email":        {"type": "string",  "description": "Sender address (overrides account default)"},
         },
     },
 )
@@ -15663,7 +15685,7 @@ async def create_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[
             "campaign_id": str(result.inserted_id),
             "name":        args["name"],
             "status":      "draft",
-            "tip":         "Use send_email_campaign to send it now.",
+            "tip":         "Use send_email_campaign to send it now or schedule_email_campaign to send later.",
         }
     except Exception as e:
         return {"error": str(e)}
@@ -15674,46 +15696,96 @@ async def create_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[
     description=(
         "Send an email campaign to all its recipients. "
         "Pass campaign_id from create_email_campaign or list_email_campaigns. "
-        "Pass test_email to send a test first. "
-        "This action cannot be undone — emails cannot be unsent."
+        "Use preview_only=true to get a preview of the email (subject, from, to, body snippet) without sending — always do this first so the user can see it. "
+        "Omit test_email to auto-send the test to the owner's signup email. "
+        "This is a destructive action — emails cannot be unsent."
     ),
     parameters={
         "type": "object",
         "required": ["campaign_id"],
         "properties": {
-            "campaign_id": {"type": "string", "description": "Campaign ID"},
-            "test_email":  {"type": "string", "description": "If provided, sends a test to this address only"},
+            "campaign_id":  {"type": "string",  "description": "Campaign ID from create_email_campaign"},
+            "test_email":   {"type": "string",  "description": "Test recipient — leave empty to use the owner's signup email automatically"},
+            "preview_only": {"type": "boolean", "description": "If true, return a preview of the email without sending. Use this first to show the user what will be sent."},
         },
     },
     destructive=True,
 )
 async def send_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     try:
+        import re as _re
         from bson import ObjectId
-        from email_marketing.client import send_email as _send_one, send_bulk as _send_bulk
+        from email_marketing.client import send_email, send_bulk
         from datetime import datetime as _dt, timezone as _tz
 
-        cid = args["campaign_id"]
+        campaign_id = args["campaign_id"]
         doc = await ctx.db.email_campaigns.find_one(
-            {"_id": ObjectId(cid), "user_id": ctx.business_id}
+            {"_id": ObjectId(campaign_id), "user_id": ctx.business_id}
         )
         if not doc:
-            return {"error": f"Campaign {cid} not found"}
+            return {"error": f"Campaign {campaign_id} not found"}
 
-        s_doc = await ctx.db.email_settings.find_one({"user_id": ctx.business_id})
-        settings: Dict[str, Any] = dict(s_doc) if s_doc else {"provider": "platform"}
+        settings_doc = await ctx.db.email_settings.find_one({"user_id": ctx.business_id})
+        settings: Dict[str, Any] = dict(settings_doc) if settings_doc else {"provider": "platform"}
+        provider = (settings.get("provider") or "platform").lower()
+        # Only apply per-campaign from_name; never override from_email on platform provider
+        # (platform always uses the verified Resend domain — arbitrary addresses cause failures)
         if doc.get("from_name"):
             settings["from_name"] = doc["from_name"]
-        if doc.get("from_email"):
+        if doc.get("from_email") and provider not in ("platform", "resend"):
             settings["from_email"] = doc["from_email"]
+        # Fetch user doc once — for from_name fallback + reply_to + from_email slug
+        user_doc = await ctx.db.users.find_one({"_id": ctx.business_id})
+        business_name = (user_doc or {}).get("business_name", "") if user_doc else ""
+        owner_email   = (user_doc or {}).get("email", "") if user_doc else ""
+        # Auto-fill from_name with business name when using Zilo platform sending
+        if not settings.get("from_name") and provider in ("platform", "resend"):
+            if business_name:
+                settings["from_name"] = business_name
+        # Generate per-user from_email as {slug}@zilo.pro for platform sends
+        if provider in ("platform", "resend") and not settings.get("from_email"):
+            slug = _re.sub(r"[^a-z0-9]+", "-", business_name.lower()).strip("-") if business_name else "noreply"
+            settings["from_email"] = f"{slug}@zilo.pro"
+        # reply-to = client's own email so customer replies land in their inbox
+        reply_to = owner_email
 
-        if args.get("test_email"):
-            await _send_one(settings, to=[args["test_email"]],
-                            subject=f"[TEST] {doc['subject']}",
-                            html=doc["body_html"], text=doc.get("body_text", ""))
-            return {"success": True, "test": True, "sent_to": args["test_email"]}
+        # Build a preview snippet (strip HTML tags, first 200 chars)
+        body_snippet = _re.sub(r"<[^>]+>", " ", doc.get("body_html", ""))
+        body_snippet = " ".join(body_snippet.split())[:200]
 
-        recipients: set = set(doc.get("recipient_emails") or [])
+        # Preview-only mode — return details without sending
+        if args.get("preview_only"):
+            return {
+                "preview": True,
+                "subject":      doc["subject"],
+                "from":         f"{settings.get('from_name', '')} <{settings.get('from_email', '')}>",
+                "reply_to":     reply_to,
+                "recipient_count": len(doc.get("recipient_emails", [])),
+                "recipient_tags":  doc.get("recipient_tags", []),
+                "body_snippet": body_snippet,
+                "campaign_id":  campaign_id,
+            }
+
+        # Test send — auto-default to owner's signup email when test_email not supplied
+        if "test_email" in args:
+            send_to = args["test_email"] or owner_email
+            if not send_to:
+                return {"error": "No test email address available — please provide one."}
+            from_display = f"{settings.get('from_name', '')} <{settings.get('from_email', '')}>".strip()
+            await send_email(settings, to=[send_to], subject=f"[TEST] {doc['subject']}",
+                             html=doc["body_html"], text=doc.get("body_text", ""),
+                             reply_to=reply_to)
+            return {
+                "success": True, "test": True,
+                "sent_to":  send_to,
+                "from":     from_display,
+                "reply_to": reply_to,
+                "subject":  doc["subject"],
+                "preview":  body_snippet,
+            }
+
+        # Collect recipients
+        recipients = set(doc.get("recipient_emails", []))
         for tag in (doc.get("recipient_tags") or []):
             async for c in ctx.db.contacts.find({"user_id": ctx.business_id, "tags": tag}, {"email": 1}):
                 if c.get("email"):
@@ -15721,49 +15793,53 @@ async def send_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[st
             async for c in ctx.db.customers.find({"user_id": ctx.business_id, "tags": tag}, {"email": 1}):
                 if c.get("email"):
                     recipients.add(c["email"])
-        recipients_list = [e for e in recipients if e and "@" in e]
-        if not recipients_list:
+        recipients = [e for e in recipients if e and "@" in e]
+        if not recipients:
             return {"error": "No valid recipients found. Add email addresses or set recipient_tags."}
 
         await ctx.db.email_campaigns.update_one(
-            {"_id": ObjectId(cid)},
+            {"_id": ObjectId(campaign_id)},
             {"$set": {"status": "sending", "updated_at": _dt.now(_tz.utc)}},
         )
-        result = await _send_bulk(settings, recipients=recipients_list,
-                                   subject=doc["subject"], html=doc["body_html"],
-                                   text=doc.get("body_text", ""))
+        result = await send_bulk(settings, recipients=recipients,
+                                  subject=doc["subject"], html=doc["body_html"],
+                                  text=doc.get("body_text", ""), reply_to=reply_to)
         final_status = "sent" if result["failed"] == 0 else "partial"
         await ctx.db.email_campaigns.update_one(
-            {"_id": ObjectId(cid)},
+            {"_id": ObjectId(campaign_id)},
             {"$set": {"status": final_status, "sent_at": _dt.now(_tz.utc),
-                      "stats": result, "updated_at": _dt.now(_tz.utc)}},
+                      "stats": {"sent": result["sent"], "failed": result["failed"]},
+                      "updated_at": _dt.now(_tz.utc)}},
         )
-        return {"success": True, "status": final_status, **result, "campaign": doc.get("name", "")}
+        return {
+            "success": True, "status": final_status,
+            "sent": result["sent"], "failed": result["failed"],
+            "campaign": doc.get("name", ""),
+        }
     except Exception as e:
         return {"error": str(e)}
 
 
 @tool(
     name="get_email_campaign_stats",
-    description="Get send statistics for all email campaigns: totals by status, emails sent, emails failed.",
+    description="Get send statistics for all email campaigns: total sent, failed, campaign breakdown.",
     parameters={"type": "object", "properties": {}},
 )
 async def get_email_campaign_stats(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        uid = ctx.business_id
-        total     = await ctx.db.email_campaigns.count_documents({"user_id": uid})
-        sent      = await ctx.db.email_campaigns.count_documents({"user_id": uid, "status": "sent"})
-        draft     = await ctx.db.email_campaigns.count_documents({"user_id": uid, "status": "draft"})
-        scheduled = await ctx.db.email_campaigns.count_documents({"user_id": uid, "status": "scheduled"})
+        total       = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id})
+        sent        = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id, "status": "sent"})
+        draft       = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id, "status": "draft"})
+        scheduled   = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id, "status": "scheduled"})
         pipeline = [
-            {"$match": {"user_id": uid, "status": {"$in": ["sent", "partial"]}}},
+            {"$match": {"user_id": ctx.business_id, "status": {"$in": ["sent", "partial"]}}},
             {"$group": {"_id": None, "emails_sent": {"$sum": "$stats.sent"}, "emails_failed": {"$sum": "$stats.failed"}}},
         ]
         agg = await ctx.db.email_campaigns.aggregate(pipeline).to_list(1)
         totals = agg[0] if agg else {}
         return {
-            "campaigns":     {"total": total, "sent": sent, "draft": draft, "scheduled": scheduled},
-            "emails_sent":   totals.get("emails_sent", 0),
+            "campaigns": {"total": total, "sent": sent, "draft": draft, "scheduled": scheduled},
+            "emails_sent": totals.get("emails_sent", 0),
             "emails_failed": totals.get("emails_failed", 0),
         }
     except Exception as e:
@@ -15774,19 +15850,21 @@ async def get_email_campaign_stats(ctx: ToolContext, args: Dict[str, Any]) -> Di
     name="configure_email_provider",
     description=(
         "Set up the email sending provider for this business. "
-        "Options: 'platform' (Zilo built-in Resend, zero setup), "
-        "'sendgrid', 'brevo', 'mailgun', 'smtp'. "
-        "Always default to 'platform' unless user requests their own provider."
+        "Options: 'platform' (Zilo's built-in Resend — zero setup), "
+        "'sendgrid' (user's own API key), 'brevo' (user's Brevo API key), "
+        "'mailgun' (user's Mailgun API key + domain), "
+        "'smtp' (user's own SMTP server credentials). "
+        "Always use 'platform' as the default unless the user specifically wants their own provider."
     ),
     parameters={
         "type": "object",
         "required": ["provider"],
         "properties": {
             "provider":   {"type": "string",  "description": "platform | sendgrid | brevo | mailgun | smtp"},
-            "from_name":  {"type": "string",  "description": "Sender display name"},
+            "from_name":  {"type": "string",  "description": "Sender display name (e.g. 'My Brand')"},
             "from_email": {"type": "string",  "description": "Sender email address"},
             "api_key":    {"type": "string",  "description": "API key for sendgrid/brevo/mailgun"},
-            "domain":     {"type": "string",  "description": "Domain for mailgun"},
+            "domain":     {"type": "string",  "description": "Domain for mailgun (e.g. mg.mybrand.com)"},
             "smtp_host":  {"type": "string",  "description": "SMTP hostname"},
             "smtp_port":  {"type": "integer", "description": "SMTP port (587 or 465)"},
             "smtp_user":  {"type": "string",  "description": "SMTP username"},
@@ -15824,7 +15902,10 @@ async def configure_email_provider(ctx: ToolContext, args: Dict[str, Any]) -> Di
             }},
             upsert=True,
         )
-        return {"success": True, "provider": provider,
-                "message": f"Email provider set to {provider}."}
+        return {
+            "success":  True,
+            "provider": provider,
+            "message":  f"Email provider set to {provider}. Use send_email_campaign to test it.",
+        }
     except Exception as e:
         return {"error": str(e)}

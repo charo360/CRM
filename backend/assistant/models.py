@@ -76,8 +76,8 @@ MODEL_REGISTRY: Dict[str, Dict[str, str]] = {
     "deepseek-v4-flash":       {"provider": "deepseek",  "model": "deepseek-v4-flash",         "label": "DeepSeek V4 Flash (fast)"},
     "claude-sonnet-4.6":       {"provider": "anthropic", "model": "claude-sonnet-4-6",         "label": "Claude Sonnet 4.6"},
     "claude-3.5-sonnet":       {"provider": "anthropic", "model": "claude-3-5-sonnet-latest",  "label": "Claude 3.5 Sonnet"},
-    "grok-4.20":               {"provider": "grok",      "model": "grok-4.20",                 "label": "Grok 4.20"},
-    "grok-4.20-reasoning":     {"provider": "grok",      "model": "grok-4.20-reasoning",       "label": "Grok 4.20 Reasoning"},
+    "grok-4.3":                {"provider": "grok",      "model": "grok-4.3",                  "label": "Grok 4.3"},
+    "grok-4-0709":             {"provider": "grok",      "model": "grok-4-0709",               "label": "Grok 4 (0709)"},
 }
 
 DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-v4-pro")
