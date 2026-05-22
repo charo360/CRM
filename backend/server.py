@@ -12118,7 +12118,8 @@ async def startup_tasks():
             await _sem_init()
         except Exception as _e:
             logging.warning(f"[startup] semantic_router init failed: {_e}")
-    asyncio.create_task(_warm_semantic_router())
+    import asyncio as _asyncio_mod
+    _asyncio_mod.create_task(_warm_semantic_router())
 
     # Inject DB into composio_service for direct Shopify credential lookups
     try:
