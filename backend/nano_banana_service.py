@@ -47,7 +47,7 @@ _MAX_RETRIES_PER_KEY = 2  # attempts per key before moving to the next
 
 # Model IDs on OpenRouter — image generation (modalities: ["image","text"])
 NANO_BANANA_2   = "google/gemini-3.1-flash-image-preview"   # Nano Banana 2 — fast
-NANO_BANANA_PRO = "google/gemini-3-pro-image-preview"        # Nano Banana Pro — highest quality
+NANO_BANANA_PRO = "google/gemini-3.1-flash-image-preview"     # Switched to flash — same as NANO_BANANA_2
 
 # Aspect ratio → OpenRouter image_config value
 _ASPECT_MAP: Dict[str, str] = {

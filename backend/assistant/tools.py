@@ -5517,7 +5517,7 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
             },
             "ai_designed": {
                 "type": "boolean",
-                "description": "If True (default), generates the entire slide (layout, text, colors, content) as a single designed image, skipping standard text overlays. If False, generates a template version with text overlays.",
+                "description": "True = Gemini designs the complete slide including layout, text, and visuals (default, recommended). False = background image only with pptx text overlay.",
             },
         },
         "required": ["topic", "slides"],
@@ -5627,7 +5627,7 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
             },
             "ai_designed": {
                 "type": "boolean",
-                "description": "If True (default), regenerates the slide as a fully designed AI image instead of background-only. If False, regenerates background image with standard overlays.",
+                "description": "True = Gemini designs the complete slide (default, recommended). False = background-only with pptx text overlay.",
             },
         },
         "required": ["slide_index", "instruction", "slides", "image_urls"],
@@ -6880,8 +6880,10 @@ async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="browse_presentation_themes",
     description=(
-        "DEPRECATED — do not use. Presentation themes are no longer required. "
-        "Use create_presentation or plan_visual_presentation instead — they generate fully AI-designed slides automatically. "
+        "Browse and search the 2Slides template library to show the user available presentation themes. "
+        "Call this when the user wants to pick a template before generating a presentation. "
+        "Returns a list of themes with names, descriptions, preview URLs, and IDs. "
+        "The UI will automatically display a visual template gallery picker below your message. "
         "Just call this tool and say something brief like 'Here are X templates — click one to select it.' "
         "Do NOT describe each template in detail — the visual gallery shows everything. "
         "When the user picks one, they'll send you the template ID to use in create_presentation."
@@ -6937,12 +6939,12 @@ async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="create_presentation",
     description=(
-        "Create a stunning, fully AI-designed PowerPoint presentation (.pptx). "
-        "Gemini generates each slide as a complete, professionally designed image — layout, typography, "
-        "colors, and content all in one. No external credits or services required. "
-        "Pass a detailed prompt with business context, key messages, and tone. "
-        "Optionally set n_slides (default 8, max 15) and quality ('fast' for preview, 'pro' for final). "
-        "Always include the business name and brand context for on-brand output."
+        "Create a stunning, professional PowerPoint presentation (.pptx) using AI. "
+        "Generates beautifully designed slides with real templates — far better than basic layouts. "
+        "Pass a detailed prompt describing the presentation topic, business context, key points, and tone. "
+        "Optionally pass n_slides (default 10), style_query to find a matching theme (e.g. 'modern dark', "
+        "'startup pitch', 'marketing', 'minimal'), or reference_image_url to clone a design style from any image. "
+        "Always include the business name, product, and brand context in the prompt for on-brand output."
     ),
     parameters={
         "type": "object",
@@ -6956,100 +6958,125 @@ async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": (
                     "Detailed description of what the presentation should cover. "
-                    "Include: business name, product/service, target audience, key messages, tone, "
-                    "and sections needed (e.g. problem, solution, features, pricing, CTA). "
+                    "Include: business name, product/service, target audience, key messages, tone (professional/casual/bold), "
+                    "and any specific sections needed (e.g. problem, solution, pricing, CTA). "
+                    "Example: 'Create a 10-slide pitch deck for Zilo, a CRM platform for small businesses. "
+                    "Cover: problem, solution, features, pricing, and a strong CTA. Tone: modern and confident.'"
                 ),
             },
             "n_slides": {
                 "type": "integer",
-                "description": "Number of slides. Default 8, range 5–15.",
+                "description": "Number of slides to generate. Default is 5. Range: 5–15.",
             },
-            "quality": {
+            "style_query": {
                 "type": "string",
-                "enum": ["fast", "pro"],
-                "description": "'pro' for final delivery (default), 'fast' for quick preview.",
+                "description": (
+                    "EITHER a theme ID from browse_presentation_themes (e.g. 'st-1759636199694-mw3250rt0') "
+                    "OR a keyword to search for a theme (e.g. 'modern dark', 'startup pitch', 'marketing'). "
+                    "ALWAYS pass the theme ID directly when the user has picked one from browse_presentation_themes. "
+                    "If omitted, a professional default theme is auto-selected."
+                ),
+            },
+            "reference_image_url": {
+                "type": "string",
+                "description": (
+                    "Optional URL of a slide image to clone the design style from. "
+                    "The AI will generate content matching that visual style exactly. "
+                    "Use when the user wants a specific look they've seen."
+                ),
+            },
+            "language": {
+                "type": "string",
+                "description": "Language for the presentation content. Default: 'en'.",
+            },
+            "premium_ai_design": {
+                "type": "boolean",
+                "description": (
+                    "Set to true ONLY when the user explicitly chooses the premium AI-designed option. "
+                    "Uses the create-pdf-slides endpoint which costs ~100 credits per slide — warn the user before calling. "
+                    "Produces a fully AI-designed deck with no template selection required. Default: false."
+                ),
             },
         },
     },
 )
 async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    import anthropic as _anthropic
-    import json as _json
-    from presentation_service import create_visual_presentation_async
+    from twoslides_service import generate_presentation, search_themes
 
-    title       = (args.get("title") or "Presentation").strip()
-    prompt      = (args.get("prompt") or title).strip()
-    n_slides    = min(max(int(args.get("n_slides") or 8), 5), 15)
-    quality     = (args.get("quality") or "pro").strip()
+    title = args.get("title", "Presentation")
+    prompt = args.get("prompt", title)
+    n_slides = int(args.get("n_slides") or 5)
+    style_query = args.get("style_query", "")
+    reference_image_url = args.get("reference_image_url")
+    language = args.get("language", "en")
+    premium_ai_design = bool(args.get("premium_ai_design", False))
 
-    # Fetch owner info for brand context
-    brand_color   = ""
-    logo_url      = None
-    business_name = "My Business"
+    # Enrich prompt with business context
     try:
         owner = await ctx.db.users.find_one({"_id": ctx.business_id})
         if owner:
-            business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business").strip()
-            brand_color   = owner.get("brand_primary_color") or ""
-            logo_url      = owner.get("default_logo_url") or None
-            if business_name and business_name not in prompt:
-                prompt = f"Business: {business_name}. {prompt}"
+            biz_name = owner.get("business_name") or owner.get("owner_name") or ""
+            brand_color = owner.get("brand_primary_color") or ""
+            if biz_name and biz_name not in prompt:
+                prompt = f"Business: {biz_name}. {prompt}"
     except Exception:
         pass
 
-    # Use Claude Haiku to generate a structured slide plan from the prompt
-    try:
-        _client = _anthropic.Anthropic()
-        _resp = _client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=3000,
-            system=(
-                "You are a presentation planning expert. Given a topic and brief, produce a slide-by-slide plan. "
-                "Return ONLY a valid JSON array — no markdown, no explanation, no code fences. "
-                "Each element must have exactly these keys: "
-                "title (string), body (array of 3–5 short bullet strings), "
-                "image_concept (string — one sentence describing the ideal background/visual for this slide), "
-                "is_title (boolean — true only for the first cover slide)."
-            ),
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Create a {n_slides}-slide presentation plan.\n"
-                    f"Title: {title}\n"
-                    f"Details: {prompt}\n\n"
-                    f"Return exactly {n_slides} slides as a JSON array."
-                ),
-            }],
-        )
-        raw = _resp.content[0].text.strip()
-        # Strip accidental markdown fences
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        slides_plan = _json.loads(raw.strip())
-        if not isinstance(slides_plan, list) or not slides_plan:
-            raise ValueError("empty plan")
-    except Exception as _e:
-        logger.warning("[create_presentation] slide planning failed: %s", _e)
-        return {"error": "Could not generate slide plan. Please try again or use plan_visual_presentation for more control."}
+    # If style_query looks like a theme ID (starts with 'st-'), use it directly
+    theme_id = None
+    if style_query:
+        if style_query.startswith("st-"):
+            theme_id = style_query
+            logger.info("[create_presentation] using direct theme ID: %s", theme_id)
+        else:
+            themes = await search_themes(style_query)
+            if themes:
+                theme_id = themes[0].get("id") or themes[0].get("themeId")
+                logger.info("[create_presentation] using theme: %s for query '%s'", theme_id, style_query)
 
-    # Generate the PPTX with fully AI-designed slides
-    result = await create_visual_presentation_async(
-        topic=title,
-        slides_plan=slides_plan,
-        business_name=business_name,
-        brand_color=brand_color,
-        logo_url=logo_url,
-        quality=quality,
-        ai_designed=True,
+    result = await generate_presentation(
+        prompt=prompt,
+        theme_id=theme_id,
+        n_slides=n_slides,
+        language=language,
+        design_style=style_query or None,
+        reference_image_url=reference_image_url,
+        use_ai_design=premium_ai_design,
     )
 
-    if not result.get("success"):
-        return {"error": result.get("error", "Presentation generation failed.")}
+    if result.get("error"):
+        return {"error": result["error"]}
 
-    url       = result.get("url", "")
-    thumb_url = result.get("thumbnail_url", "")
+    temp_url = result.get("download_url")
+    thumb_url = result.get("thumbnail_url")
+    job_id = result.get("job_id")
+
+    # Re-upload to permanent S3 storage — 2Slides pre-signed URLs expire in ~1 hour
+    url = temp_url
+    if temp_url:
+        try:
+            import base64
+            import uuid
+            import httpx as _httpx
+            from image_handler import S3Handler
+
+            async with _httpx.AsyncClient(timeout=60) as _client:
+                dl = await _client.get(temp_url)
+                dl.raise_for_status()
+                file_bytes = dl.content
+
+            b64 = base64.b64encode(file_bytes).decode()
+            s3_name = f"pptx-{uuid.uuid4().hex[:8]}.pptx"
+            permanent_url = await S3Handler.upload_file(
+                b64,
+                s3_name,
+                content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+            if permanent_url:
+                url = permanent_url
+                logger.info("[create_presentation] re-uploaded to S3: %s", url)
+        except Exception:
+            logger.exception("[create_presentation] S3 re-upload failed, using temp URL")
 
     if url:
         try:
@@ -7057,7 +7084,7 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
             await insert_saved_design(
                 ctx.db,
                 ctx.business_id,
-                name=title[:200],
+                name=(title or "Presentation")[:200],
                 asset_kind="pptx",
                 file_url=url,
                 thumbnail_url=thumb_url,
@@ -7072,13 +7099,14 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
         md_parts.append(f"![{title}]({thumb_url})")
     if url:
         md_parts.append(f"📊 **[Download Presentation: {title}]({url})**")
+    markdown = "\n\n".join(md_parts)
 
     return {
-        "success":       True,
-        "pptx_url":      url,
+        "success": True,
+        "pptx_url": url,
         "thumbnail_url": thumb_url,
-        "slide_count":   result.get("slide_count", len(slides_plan)),
-        "markdown":      "\n\n".join(md_parts),
+        "job_id": job_id,
+        "markdown": markdown,
     }
 
 
@@ -15700,14 +15728,8 @@ async def send_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[st
         settings_doc = await ctx.db.email_settings.find_one({"user_id": ctx.business_id})
         settings: Dict[str, Any] = dict(settings_doc) if settings_doc else {"provider": "platform"}
         provider = (settings.get("provider") or "platform").lower()
-        # Fall back to platform if third-party provider has no credentials stored
-        # (prevents KeyError on missing api_key / credentials causing confusing errors)
-        if provider not in ("platform", "resend"):
-            creds_check = settings.get("credentials") or {}
-            if not creds_check or not creds_check.get("api_key"):
-                provider = "platform"
-                settings["provider"] = "platform"
         # Only apply per-campaign from_name; never override from_email on platform provider
+        # (platform always uses the verified Resend domain — arbitrary addresses cause failures)
         if doc.get("from_name"):
             settings["from_name"] = doc["from_name"]
         if doc.get("from_email") and provider not in ("platform", "resend"):
