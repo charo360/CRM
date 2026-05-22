@@ -974,12 +974,11 @@ async def _fetch_image_bytes(url: str) -> Optional[bytes]:
 
 
 _SLIDE_IMAGE_QUALITY_SUFFIX = (
-    " — ultra-high resolution, award-winning commercial photography, "
-    "shot on Hasselblad medium format, masterful composition using rule of thirds, "
-    "dramatic volumetric lighting, deep rich shadows, vibrant yet refined color grading, "
-    "razor-sharp focus, 16:9 widescreen aspect ratio, "
-    "absolutely NO text, NO watermarks, NO logos, NO UI elements, NO people unless explicitly required, "
-    "professional stock photo quality, editorial magazine cover standard."
+    " 16:9 widescreen. "
+    "CRITICAL: absolutely NO text, NO letters, NO words, NO numbers, NO watermarks, NO logos, "
+    "NO UI elements, NO charts, NO icons, NO people. "
+    "Pure abstract or photographic background only — the slide text will be added on top separately. "
+    "Muted, professional, minimal. High resolution, sharp."
 )
 
 _DESIGNED_SLIDE_QUALITY_SUFFIX = (
@@ -992,14 +991,28 @@ _DESIGNED_SLIDE_QUALITY_SUFFIX = (
 )
 
 _SLIDE_STYLE_MAP = {
-    "title":   "Wide establishing cinematic shot, epic sense of scale, hero composition, "
-               "golden-hour or blue-hour lighting, extreme depth of field.",
-    "content": "Clean abstract backdrop, high-contrast geometric or organic texture, "
-               "muted mid-tones so white text reads clearly, tasteful bokeh or blur.",
-    "data":    "Sleek dark-room ambience, glowing neon accent lines, tech-forward atmosphere, "
-               "shallow depth of field, professional product photography lighting.",
-    "closing": "Bold wide panoramic vista, sunrise or city skyline at dusk, "
-               "inspiring aspirational mood, warm amber and deep blue tones.",
+    "title": (
+        "Ultra-clean, minimal abstract background for a professional presentation cover slide. "
+        "Soft gradient or subtle geometric pattern. Muted, desaturated tones. "
+        "Very low visual noise — the background must NOT compete with overlaid text. "
+        "No people, no objects, no logos, no text, no recognisable shapes. "
+        "Photorealistic texture or soft bokeh at most."
+    ),
+    "content": (
+        "Minimal, abstract background for a corporate presentation content slide. "
+        "Subtle texture or soft gradient — extremely understated so white text on top is fully legible. "
+        "Dark or deeply muted tones preferred. No text, no UI elements, no objects, no faces."
+    ),
+    "data": (
+        "Clean, dark, minimal tech background — very subtle circuit-board texture or soft dark gradient. "
+        "Almost no visual elements so data and numbers overlaid on top read clearly. "
+        "No text, no charts, no icons, no UI elements."
+    ),
+    "closing": (
+        "Wide, calm, inspiring abstract background — soft horizon line, gentle gradient from dark to slightly lighter. "
+        "Extremely minimal. No text, no people, no objects. "
+        "Must feel aspirational but not distract from overlaid text."
+    ),
 }
 
 
@@ -1009,7 +1022,7 @@ async def _gen_slide_image(
     logo_url: Optional[str] = None,
     quality: str = "pro",
     slide_role: str = "content",
-    ai_designed: bool = True,
+    ai_designed: bool = False,
 ) -> Optional[str]:
     """Generate one landscape Gemini image for a slide at award-winning quality."""
     try:
@@ -1040,7 +1053,7 @@ def _add_visual_slide(
     body_lines: List[str],
     brand_color_hex: str = "",
     is_title_slide: bool = False,
-    ai_designed: bool = True,
+    ai_designed: bool = False,
 ) -> None:
     """Add one slide: full-bleed background image + text overlay."""
     import io as _io
@@ -1142,7 +1155,7 @@ async def create_visual_presentation_async(
     brand_color: str = "",
     logo_url: Optional[str] = None,
     quality: str = "fast",
-    ai_designed: bool = True,
+    ai_designed: bool = False,
 ) -> Dict[str, Any]:
     """
     Build a PPTX where every slide has a **Gemini-generated full-bleed background image**
@@ -1299,7 +1312,7 @@ async def regenerate_single_slide_async(
     quality: str = "pro",
     topic: str = "",
     logo_url: Optional[str] = None,
-    ai_designed: bool = True,
+    ai_designed: bool = False,
 ) -> Dict[str, Any]:
     """
     Regenerate ONE slide's background image based on new instructions,
