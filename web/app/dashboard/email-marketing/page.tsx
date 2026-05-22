@@ -13,19 +13,19 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { EMAIL_TEMPLATES, EmailTemplate, TemplateVar, applyVars } from "./templates";
 
-// ── Brand green tokens ────────────────────────────────────────────────────────
+// ── Brand tokens (uses Tailwind brand CSS vars from globals.css) ─────────────
 const G = {
-  bg:     "bg-[#009b3a]",
-  hover:  "hover:bg-[#007a2e]",
-  text:   "text-[#009b3a]",
-  border: "border-[#009b3a]",
-  ring:   "focus:ring-[#009b3a]",
-  light:  "bg-[#f0fdf4]",
-  lb:     "border-[#bbf7d0]",
-  badge:  "bg-[#dcfce7] text-[#166534]",
-  icon:   "bg-[#009b3a]",
-  sel:    "border-[#009b3a] bg-[#f0fdf4]",
-  tab:    "text-[#009b3a]",
+  bg:     "bg-brand",
+  hover:  "hover:bg-brand-dark",
+  text:   "text-brand-dark",
+  border: "border-brand",
+  ring:   "focus:ring-brand",
+  light:  "bg-green-50",
+  lb:     "border-green-200",
+  badge:  "bg-green-100 text-green-800",
+  icon:   "bg-brand",
+  sel:    "border-brand bg-green-50",
+  tab:    "text-brand-dark",
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -145,12 +145,12 @@ function EmailPreviewModal({ html, title, onClose }: { html: string; title: stri
             <X size={20} />
           </button>
         </div>
-        <div className="flex-1 overflow-hidden bg-slate-100 p-4">
+        <div className="flex-1 overflow-y-auto bg-slate-100 p-4">
           <iframe
             srcDoc={html}
             sandbox="allow-same-origin"
-            className="w-full h-full rounded-xl border border-slate-200 bg-white"
-            style={{ minHeight: "60vh" }}
+            className="w-full rounded-xl border border-slate-200 bg-white"
+            style={{ minHeight: "800px", height: "800px" }}
             title="Email preview"
           />
         </div>
@@ -630,6 +630,11 @@ function AIGenerateStep({
   const [showLinks, setShowLinks] = useState(false);
   const [savingLinks, setSavingLinks] = useState(false);
   const [provider, setProvider] = useState("platform");
+  const [editMode, setEditMode] = useState<"preview" | "code">("preview");
+  const [editedHtml, setEditedHtml] = useState("");
+
+  // Sync editedHtml whenever a new email is generated
+  useEffect(() => { setEditedHtml(generatedHtml); setEditMode("preview"); }, [generatedHtml]);
 
   // Load saved link library + configured ESP provider from settings on mount
   useEffect(() => {
@@ -1032,12 +1037,12 @@ function AIGenerateStep({
           ))}
         </div>
 
-        {/* Mini preview of generated template */}
+        {/* Mini preview / editor of generated template */}
         {generatedHtml && (
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <div className={`${G.light} px-4 py-2 flex items-center justify-between border-b ${G.lb}`}>
               <div className="flex items-center gap-2 flex-wrap">
-                <span className={`text-xs font-semibold ${G.text}`}>Generated preview</span>
+                <span className={`text-xs font-semibold ${G.text}`}>Generated email</span>
                 {aiImages && (aiImages.hero || aiImages.products.length > 0) && (
                   <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
                     <Sparkles size={9} />
@@ -1048,17 +1053,50 @@ function AIGenerateStep({
                   </span>
                 )}
               </div>
-              <span className="text-xs text-slate-400">Scroll to see full email</span>
+              {/* Preview / Edit HTML toggle */}
+              <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5">
+                <button onClick={() => setEditMode("preview")}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                    editMode === "preview" ? `${G.bg} text-white` : "text-slate-500 hover:bg-slate-100"
+                  }`}>
+                  Preview
+                </button>
+                <button onClick={() => setEditMode("code")}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                    editMode === "code" ? `${G.bg} text-white` : "text-slate-500 hover:bg-slate-100"
+                  }`}>
+                  Edit HTML
+                </button>
+              </div>
             </div>
-            <div className="max-h-48 overflow-y-auto">
-              <iframe
-                srcDoc={generatedHtml}
-                sandbox="allow-same-origin"
-                className="w-full border-none"
-                style={{ height: "400px", pointerEvents: "none" }}
-                title="generated preview"
-              />
-            </div>
+            {editMode === "preview" ? (
+              <div className="max-h-64 overflow-y-auto">
+                <iframe
+                  srcDoc={editedHtml}
+                  sandbox="allow-same-origin"
+                  className="w-full border-none"
+                  style={{ height: "500px", pointerEvents: "none" }}
+                  title="generated preview"
+                />
+              </div>
+            ) : (
+              <div className="relative">
+                <textarea
+                  value={editedHtml}
+                  onChange={e => setEditedHtml(e.target.value)}
+                  rows={16}
+                  spellCheck={false}
+                  className="w-full px-4 py-3 text-xs font-mono text-slate-800 bg-slate-950 text-green-400 resize-none focus:outline-none border-none"
+                  placeholder="HTML source…"
+                />
+                <div className="absolute top-2 right-2 flex gap-1.5">
+                  <button onClick={() => setEditedHtml(generatedHtml)}
+                    className="px-2 py-1 text-[10px] rounded-md bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors">
+                    Reset
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1068,16 +1106,16 @@ function AIGenerateStep({
         <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-700">← Back</button>
         <div className="flex items-center gap-2">
           {status && <p className={`text-xs ${G.text} animate-pulse`}>{status}</p>}
-          {generatedHtml && onSaveToLibrary && (
-            <button onClick={() => onSaveToLibrary(generatedHtml, generatedSubject)}
-              className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-xs text-slate-600 hover:bg-slate-50 transition-colors">
-              <Save size={13} /> Save to library
+          {editedHtml && onSaveToLibrary && (
+            <button onClick={() => onSaveToLibrary(editedHtml, generatedSubject)}
+              className={`flex items-center gap-1.5 px-3 py-2 border-2 ${G.border} ${G.light} ${G.text} rounded-lg text-xs font-semibold hover:opacity-80 transition-colors`}>
+              <Save size={13} /> Save to templates
             </button>
           )}
-          {generatedHtml && (
-            <button onClick={() => onApply(generatedHtml, generatedSubject)}
+          {editedHtml && (
+            <button onClick={() => onApply(editedHtml, generatedSubject)}
               className={`flex items-center gap-2 px-4 py-2 ${G.bg} ${G.hover} text-white rounded-lg text-sm font-medium transition-colors`}>
-              Use this template →
+              Use this email →
             </button>
           )}
           {!generatedHtml && (
@@ -1219,39 +1257,67 @@ function VariableFiller({
     Object.fromEntries(template.variables.map(v => [v.key, v.defaultValue]))
   );
   const [compiling, setCompiling] = useState(false);
-  const [compiledHtml, setCompiledHtml] = useState("");
+  const [mjmlPreviewHtml, setMjmlPreviewHtml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const setVar = (k: string, v: string) => setVars(p => ({ ...p, [k]: v }));
+
+  // Instant preview for plain-HTML templates
+  const htmlPreview = useMemo(() => {
+    if (template.type === "mjml") return null;
+    return applyVars(template.html, vars);
+  }, [template, vars]);
+
+  // Debounced preview for MJML templates — apply vars to source FIRST so hrefs compile correctly
+  useEffect(() => {
+    if (template.type !== "mjml" || !template.mjmlSource) return;
+    setPreviewLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/email-marketing/render-mjml", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mjml: applyVars(template.mjmlSource!, vars) }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setMjmlPreviewHtml(data.html);
+        }
+      } catch { /* silent */ }
+      finally { setPreviewLoading(false); }
+    }, 700);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template, vars]);
 
   async function compile(): Promise<string> {
     if (template.type === "mjml" && template.mjmlSource) {
       const res = await fetch("/api/email-marketing/render-mjml", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mjml: template.mjmlSource }),
+        body: JSON.stringify({ mjml: applyVars(template.mjmlSource, vars) }),
       });
       if (!res.ok) {
         const err = await res.json();
         throw new Error("Failed to compile template: " + (err.error ?? "Unknown error"));
       }
       const data = await res.json();
-      return applyVars(data.html, vars);
+      return data.html;
     }
     return applyVars(template.html, vars);
   }
+
+  const displayHtml = template.type === "mjml" ? mjmlPreviewHtml : (htmlPreview ?? "");
+
 
   async function handleApply() {
     setCompiling(true);
     try {
       const html = await compile();
-      const subject = applyVars(template.defaultSubject, vars);
-      setCompiledHtml(html);
-      onApply(html, subject);
+      onApply(html, applyVars(template.defaultSubject, vars));
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to apply template");
-    } finally {
-      setCompiling(false);
-    }
+    } finally { setCompiling(false); }
   }
 
   async function handleSaveToLibrary() {
@@ -1259,59 +1325,83 @@ function VariableFiller({
     setCompiling(true);
     try {
       const html = await compile();
-      const subject = applyVars(template.defaultSubject, vars);
-      setCompiledHtml(html);
-      onSaveToLibrary(html, subject);
+      onSaveToLibrary(html, applyVars(template.defaultSubject, vars));
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to compile template");
-    } finally {
-      setCompiling(false);
-    }
+    } finally { setCompiling(false); }
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-6 pt-4 pb-2 flex items-center gap-2">
-        <span className="text-2xl">{template.thumbnail}</span>
-        <div>
-          <div className="text-sm font-semibold text-slate-800">{template.name}</div>
-          <div className="text-xs text-slate-500">{template.description}</div>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-6 py-3 space-y-3">
-        {template.variables.map((v: TemplateVar) => (
-          <div key={v.key} className="space-y-1">
-            <label className="text-xs font-medium text-slate-700">{v.label}</label>
-            {v.multiline ? (
-              <textarea value={vars[v.key] ?? ""}
-                onChange={e => setVar(v.key, e.target.value)}
-                placeholder={v.placeholder} rows={3}
-                className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring} resize-none`} />
-            ) : (
-              <input value={vars[v.key] ?? ""}
-                onChange={e => setVar(v.key, e.target.value)}
-                placeholder={v.placeholder}
-                className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
-            )}
+    <div className="flex h-full overflow-hidden">
+      {/* ── Left: form fields ── */}
+      <div className="w-80 shrink-0 flex flex-col border-r border-slate-100">
+        <div className="px-5 pt-4 pb-2 flex items-center gap-2 shrink-0">
+          <span className="text-2xl">{template.thumbnail}</span>
+          <div>
+            <div className="text-sm font-semibold text-slate-800">{template.name}</div>
+            <div className="text-xs text-slate-500 leading-tight">{template.description}</div>
           </div>
-        ))}
-      </div>
+        </div>
 
-      <div className="border-t border-slate-100 px-6 py-3 flex gap-2 justify-between items-center">
-        <button onClick={onBack} className="text-sm text-slate-500 hover:text-slate-700">← Back</button>
-        <div className="flex gap-2">
-          {onSaveToLibrary && (
-            <button onClick={handleSaveToLibrary} disabled={compiling}
-              className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-xs text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50">
-              <Save size={13} /> Save to library
-            </button>
-          )}
+        <div className="flex-1 overflow-y-auto px-5 py-3 space-y-3">
+          {template.variables.map((v: TemplateVar) => (
+            <div key={v.key} className="space-y-1">
+              <label className="text-xs font-medium text-slate-700">{v.label}</label>
+              {v.multiline ? (
+                <textarea value={vars[v.key] ?? ""}
+                  onChange={e => setVar(v.key, e.target.value)}
+                  placeholder={v.placeholder} rows={3}
+                  className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring} resize-none`} />
+              ) : (
+                <input value={vars[v.key] ?? ""}
+                  onChange={e => setVar(v.key, e.target.value)}
+                  placeholder={v.placeholder}
+                  className={`w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 ${G.ring}`} />
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="border-t border-slate-100 px-5 py-3 flex flex-col gap-2 shrink-0">
           <button onClick={handleApply} disabled={compiling}
-            className={`flex items-center gap-2 px-5 py-2 ${G.bg} ${G.hover} text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors`}>
+            className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 ${G.bg} ${G.hover} text-white rounded-xl text-sm font-semibold disabled:opacity-50 transition-colors`}>
             {compiling ? <Loader2 size={14} className="animate-spin" /> : null}
             Use this template →
           </button>
+          <div className="flex gap-2">
+            {onSaveToLibrary && (
+              <button onClick={handleSaveToLibrary} disabled={compiling}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-xs text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50">
+                <Save size={12} /> Save to library
+              </button>
+            )}
+            <button onClick={onBack} className="flex-1 text-center py-2 text-sm text-slate-400 hover:text-slate-600">← Back</button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Right: live preview ── */}
+      <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+        <div className={`px-4 py-2 border-b border-slate-100 flex items-center gap-2 text-xs font-medium shrink-0 ${G.light}`}>
+          <Eye size={13} className={G.text} />
+          <span className={G.text}>Live Preview</span>
+          {previewLoading && <Loader2 size={11} className={`animate-spin ${G.text} ml-auto`} />}
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {displayHtml ? (
+            <iframe
+              srcDoc={displayHtml}
+              sandbox="allow-same-origin"
+              className="w-full rounded-xl border border-slate-200 bg-white"
+              style={{ minHeight: "700px", height: "700px" }}
+              title="Template preview"
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-300">
+              <Eye size={32} />
+              <p className="text-sm">Preview loading…</p>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1374,7 +1464,7 @@ function CreateCampaignModal({
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className={`bg-white rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col ${step === "template-vars" ? "max-w-5xl h-[90vh]" : "max-w-2xl max-h-[90vh]"}`}>
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
             <h2 className="text-lg font-semibold text-slate-800">

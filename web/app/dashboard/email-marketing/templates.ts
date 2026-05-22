@@ -32,7 +32,7 @@ export type EmailTemplate = {
 /** Replace all {{KEY}} tokens in html with the given vars map */
 export function applyVars(html: string, vars: Record<string, string>): string {
   return Object.entries(vars).reduce(
-    (acc, [k, v]) => acc.replaceAll(`{{${k}}}`, v || `[${k}]`),
+    (acc, [k, v]) => acc.replaceAll(`{{${k}}}`, v ?? ""),
     html,
   );
 }

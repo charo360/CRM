@@ -982,12 +982,14 @@ _SLIDE_IMAGE_QUALITY_SUFFIX = (
 )
 
 _DESIGNED_SLIDE_QUALITY_SUFFIX = (
-    " — A complete, professionally designed presentation slide graphic. "
-    "High-end corporate presentation layout, widescreen 16:9 aspect ratio. "
-    "Impeccable premium typography, beautifully laid out and clean text elements, "
-    "perfect spelling of all words, excellent margins, alignment, and whitespace. "
-    "Do NOT include UI mockups, screen borders, laptop mockups, or website frames — only the flat slide itself. "
-    "Exactly as it would appear projected on a screen."
+    " 16:9 widescreen corporate slide background. "
+    "Style: clean flat design — solid color panels, subtle gradients, minimal geometric shapes only. "
+    "Think McKinsey or BCG slide template: simple, restrained, premium. "
+    "FORBIDDEN: NO text, NO letters, NO numbers, NO words. "
+    "NO icons, NO arrows, NO swoosh lines, NO badges, NO charts, NO infographic elements, "
+    "NO illustrations, NO people, NO objects, NO logos. "
+    "ONLY flat color areas, soft gradients, thin geometric lines or shapes as decoration. "
+    "Leave a large clear open area in the center for slide text to be placed on top."
 )
 
 _SLIDE_STYLE_MAP = {
@@ -1022,7 +1024,7 @@ async def _gen_slide_image(
     logo_url: Optional[str] = None,
     quality: str = "pro",
     slide_role: str = "content",
-    ai_designed: bool = False,
+    ai_designed: bool = True,
 ) -> Optional[str]:
     """Generate one landscape Gemini image for a slide at award-winning quality."""
     try:
@@ -1053,7 +1055,7 @@ def _add_visual_slide(
     body_lines: List[str],
     brand_color_hex: str = "",
     is_title_slide: bool = False,
-    ai_designed: bool = False,
+    ai_designed: bool = True,
 ) -> None:
     """Add one slide: full-bleed background image + text overlay."""
     import io as _io
@@ -1073,11 +1075,6 @@ def _add_visual_slide(
             slide.shapes._spTree.insert(2, pic._element)
         except Exception:
             pass  # fall through to solid bg if image fails
-
-    if ai_designed and image_bytes:
-        # If it's a fully AI-designed slide and we successfully got the image,
-        # we don't overlay any shapes or text boxes.
-        return
 
     # Semi-transparent dark overlay using a shape (pptx doesn't support true opacity
     # on fills, so we use a very dark near-black with alpha via theme trick — use
@@ -1155,7 +1152,7 @@ async def create_visual_presentation_async(
     brand_color: str = "",
     logo_url: Optional[str] = None,
     quality: str = "fast",
-    ai_designed: bool = False,
+    ai_designed: bool = True,
 ) -> Dict[str, Any]:
     """
     Build a PPTX where every slide has a **Gemini-generated full-bleed background image**
@@ -1186,51 +1183,36 @@ async def create_visual_presentation_async(
                 role = "content"
 
             raw = (sd.get("image_prompt") or sd.get("image_concept") or "").strip()
-            if ai_designed:
-                title = (sd.get("title") or "").strip()
-                body_lines = sd.get("body") or []
-                bullets_text = ""
-                if body_lines:
-                    bullets_text = "Bullets: " + ", ".join(f"'{b}'" for b in body_lines)
-                color_hint = f" Use brand primary color {brand_color} as the dominant accent color throughout." if brand_color else ""
+            color_hint = f" Use {brand_color} as accent." if brand_color else ""
 
-                if role == "title":
-                    prompt = (
-                        f"A complete, professionally designed presentation COVER slide. "
-                        f"Title: '{title}'. Subtitle/business: '{business_name}'. "
-                        f"Style/Background: {raw or 'Modern premium corporate cover background'}. "
-                        f"Elegant corporate layout, bold title, readable high-contrast typography, brand accents.{color_hint}"
-                    )
-                elif role == "closing":
-                    prompt = (
-                        f"A complete, professionally designed presentation CLOSING/CTA slide. "
-                        f"Title: '{title}'. Details: '{', '.join(body_lines)}'. "
-                        f"Style/Background: {raw or 'Inspiring widescreen corporate backdrop'}. "
-                        f"Strong CTA layout, clean typography, readable content, brand elements.{color_hint}"
-                    )
-                elif role == "data":
-                    prompt = (
-                        f"A complete, professionally designed presentation DATA/METRIC slide. "
-                        f"Title: '{title}'. Data: '{', '.join(body_lines)}'. "
-                        f"Style/Background: {raw or 'Sleek dark-room tech background'}. "
-                        f"Premium slide highlighting key stats or figures, clean fonts, balanced negative space.{color_hint}"
-                    )
-                else:  # content
-                    prompt = (
-                        f"A complete, professionally designed presentation CONTENT slide. "
-                        f"Title: '{title}'. {bullets_text}. "
-                        f"Style/Background: {raw or 'Clean corporate professional background'}. "
-                        f"Widescreen layout with bold title at top, clean readable bullet points, brand accents.{color_hint}"
-                    )
-                return await _gen_slide_image(prompt, brand_color=brand_color, logo_url=logo_url, quality=quality, slide_role=role, ai_designed=True)
-            else:
-                if not raw:
-                    raw = (
-                        f"Abstract, atmospheric, textured background for a professional business "
-                        f"presentation slide titled '{sd.get('title', topic)}'. "
-                        f"Minimal, sophisticated, no clutter."
-                    )
-                return await _gen_slide_image(raw, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role, ai_designed=False)
+            if role == "title":
+                prompt = (
+                    f"Corporate slide template background — cover slide. "
+                    f"Large solid color panel covering left 40% or bottom 30%, "
+                    f"clean contrasting area for title text. Thin accent line as divider. "
+                    f"Flat design, no gradients beyond subtle. {raw or ''}{color_hint}"
+                )
+            elif role == "closing":
+                prompt = (
+                    f"Corporate slide template background — closing slide. "
+                    f"Full-bleed soft gradient wash, solid accent band along one edge. "
+                    f"Clean open center. Flat minimal design. {raw or ''}{color_hint}"
+                )
+            elif role == "data":
+                prompt = (
+                    f"Corporate slide template background — data slide. "
+                    f"Dark solid base, thin horizontal accent bar at top, "
+                    f"subtle dot-grid or line-grid texture at very low opacity. "
+                    f"Clean open area in center. {raw or ''}{color_hint}"
+                )
+            else:  # content
+                prompt = (
+                    f"Corporate slide template background — content slide. "
+                    f"Thin accent color bar along the left edge or top edge, "
+                    f"rest is clean light or dark solid panel. Minimal geometric shapes only. "
+                    f"Large open area for text. {raw or ''}{color_hint}"
+                )
+            return await _gen_slide_image(prompt, brand_color=brand_color, logo_url=logo_url, quality=quality, slide_role=role, ai_designed=True)
 
     image_urls: List[Optional[str]] = await asyncio.gather(
         *[_bounded_gen(sd) for sd in slides_plan]
@@ -1312,7 +1294,7 @@ async def regenerate_single_slide_async(
     quality: str = "pro",
     topic: str = "",
     logo_url: Optional[str] = None,
-    ai_designed: bool = False,
+    ai_designed: bool = True,
 ) -> Dict[str, Any]:
     """
     Regenerate ONE slide's background image based on new instructions,
@@ -1347,45 +1329,33 @@ async def regenerate_single_slide_async(
     else:
         role = "content"
 
-    if ai_designed:
-        title = (sd.get("title") or "").strip()
-        body_lines = sd.get("body") or []
-        bullets_text = ""
-        if body_lines:
-            bullets_text = "Bullets: " + ", ".join(f"'{b}'" for b in body_lines)
-        color_hint = f" Use brand primary color {brand_color} as the dominant accent color throughout." if brand_color else ""
+    color_hint = f" Use {brand_color} as accent." if brand_color else ""
 
-        if role == "title":
-            prompt = (
-                f"A complete, professionally designed presentation COVER slide. "
-                f"Title: '{title}'. Subtitle/business: '{topic}'. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Elegant corporate layout, bold title, readable high-contrast typography, brand accents.{color_hint}"
-            )
-        elif role == "closing":
-            prompt = (
-                f"A complete, professionally designed presentation CLOSING/CTA slide. "
-                f"Title: '{title}'. Details: '{', '.join(body_lines)}'. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Strong CTA layout, clean typography, readable content, brand elements.{color_hint}"
-            )
-        elif role == "data":
-            prompt = (
-                f"A complete, professionally designed presentation DATA/METRIC slide. "
-                f"Title: '{title}'. Data: '{', '.join(body_lines)}'. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Premium slide highlighting key stats or figures, clean fonts, balanced negative space.{color_hint}"
-            )
-        else:  # content
-            prompt = (
-                f"A complete, professionally designed presentation CONTENT slide. "
-                f"Title: '{title}'. {bullets_text}. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Widescreen layout with bold title at top, clean readable bullet points, brand accents.{color_hint}"
-            )
-        new_url = await _gen_slide_image(prompt, brand_color=brand_color, logo_url=logo_url, quality=quality, slide_role=role, ai_designed=True)
-    else:
-        new_url = await _gen_slide_image(refined_prompt, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role, ai_designed=False)
+    if role == "title":
+        prompt = (
+            f"Corporate slide template background — cover slide. "
+            f"Large solid color panel, clean contrasting area, thin accent divider. "
+            f"Flat minimal design. Changes: {refined_prompt}.{color_hint}"
+        )
+    elif role == "closing":
+        prompt = (
+            f"Corporate slide template background — closing slide. "
+            f"Soft gradient, solid accent band, clean open center. "
+            f"Changes: {refined_prompt}.{color_hint}"
+        )
+    elif role == "data":
+        prompt = (
+            f"Corporate slide template background — data slide. "
+            f"Dark base, thin accent bar at top, subtle grid texture, open center. "
+            f"Changes: {refined_prompt}.{color_hint}"
+        )
+    else:  # content
+        prompt = (
+            f"Corporate slide template background — content slide. "
+            f"Accent bar on edge, clean open panel, minimal geometric shapes only. "
+            f"Changes: {refined_prompt}.{color_hint}"
+        )
+    new_url = await _gen_slide_image(prompt, brand_color=brand_color, logo_url=logo_url, quality=quality, slide_role=role, ai_designed=True)
 
     if not new_url:
         return {"error": "Image generation failed for this slide. Please try again."}

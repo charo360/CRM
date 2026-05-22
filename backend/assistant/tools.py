@@ -5530,7 +5530,7 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
     slides_plan = args.get("slides") or []
     brand_color = (args.get("brand_color") or "").strip()
     quality     = (args.get("quality") or "pro").strip()
-    ai_designed = bool(args.get("ai_designed", False))
+    ai_designed = bool(args.get("ai_designed", True))
 
     if not slides_plan:
         return {"error": "slides list is required — pass the approved plan from plan_visual_presentation."}
@@ -5643,7 +5643,7 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
     topic        = (args.get("topic") or "Presentation").strip()
     brand_color  = (args.get("brand_color") or "").strip()
     quality      = (args.get("quality") or "pro").strip()
-    ai_designed  = bool(args.get("ai_designed", False))
+    ai_designed  = bool(args.get("ai_designed", True))
 
     if not slides_plan:
         return {"error": "slides array is required — pass it from the previous create_visual_presentation result."}
@@ -7042,7 +7042,7 @@ async def create_presentation(ctx: ToolContext, args: Dict[str, Any]):
         brand_color=brand_color,
         logo_url=logo_url,
         quality=quality,
-        ai_designed=False,
+        ai_designed=True,
     )
 
     if not result.get("success"):
