@@ -993,7 +993,8 @@ _DESIGNED_SLIDE_QUALITY_SUFFIX = (
 
 _SLIDE_STYLE_MAP = {
     "title":   "Sweeping cinematic landscape — mountain range, modern city skyline, or vast ocean at golden hour. "
-               "Epic scale, dramatic natural lighting, deep depth of field, open negative space.",
+               "Epic scale, dramatic natural lighting, deep depth of field, open negative space. "
+               "NO dollar signs, NO currency symbols, NO icons, NO floating symbols, NO charts, NO UI elements, NO data visualizations.",
     "content": "Clean architectural interior or calm natural scene — marble surface, glass office, forest path. "
                "Soft natural light, muted tones, breathable — nothing busy or artificial.",
     "data":    "Dark polished surface — black marble, dark wood desk, or night city reflection. "
@@ -1190,7 +1191,8 @@ async def create_visual_presentation_async(
                         f"Layout: large bold title in the upper or center area, subtitle below in lighter weight. "
                         f"Generous whitespace, high contrast so text pops clearly.\n"
                         f"Font: clean premium sans-serif (Inter, Montserrat, or Helvetica Neue). "
-                        f"No watermarks, no laptop frames, no UI chrome, no geometric decorations — flat slide only."
+                        f"No watermarks, no laptop frames, no UI chrome, no geometric decorations — flat slide only. "
+                        f"NO dollar signs, NO currency symbols ($), NO floating icons, NO data charts, NO emoji."
                     )
                 elif role == "closing":
                     prompt = (
