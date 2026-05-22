@@ -287,7 +287,7 @@ DESIGN_TOOLS: FrozenSet[str] = frozenset({
     "generate_social_post", "generate_ad_creative", "generate_carousel_cover", "refine_design",
     "generate_creative_image", "generate_design_background",
     "create_business_document",
-    "create_presentation", "browse_presentation_themes", "get_analytics_summary",
+    "plan_visual_presentation", "create_visual_presentation", "regenerate_slide", "get_analytics_summary",
     "create_video", "get_video_status", "list_videos",
     "create_kling_video", "get_kling_video_status",
 }) | _WEB_TOOLS
@@ -296,7 +296,8 @@ DOCUMENT_TOOLS: FrozenSet[str] = frozenset({
     "get_owner_info", "list_products", "list_customers", "get_customer",
     "get_top_customers", "get_analytics_summary", "get_revenue_trends",
     "get_sales_pipeline", "list_orders", "list_followups", "list_team",
-    "generate_document", "create_business_document", "create_presentation", "browse_presentation_themes",
+    "generate_document", "create_business_document",
+    "plan_visual_presentation", "create_visual_presentation", "regenerate_slide",
     "get_document_style", "save_document_style",
     "switch_to_agent",
 }) | _WEB_TOOLS
