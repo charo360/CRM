@@ -5396,7 +5396,7 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
     description=(
         "STEP 1 of 2 — Plan a visual presentation deck and present the full outline to the user "
         "for review and approval BEFORE any images are generated. "
-        "This avoids wasting Gemini image credits on a deck the user hasn't approved. "
+        "This avoids generating a full deck before the user has approved the content. "
         "Call this first whenever a user asks for a presentation, pitch deck, or slideshow. "
         "It returns a structured slide-by-slide plan showing: slide title, bullet points, "
         "and the image concept for each slide. "
@@ -6993,7 +6993,7 @@ async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "boolean",
                 "description": (
                     "Set to true ONLY when the user explicitly chooses the premium AI-designed option. "
-                    "Uses the create-pdf-slides endpoint which costs ~100 credits per slide — warn the user before calling. "
+                    "Uses the 2Slides template endpoint. Prefer create_visual_presentation (Gemini-powered, no credits) for new decks. "
                     "Produces a fully AI-designed deck with no template selection required. Default: false."
                 ),
             },
