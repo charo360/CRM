@@ -12111,6 +12111,15 @@ app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="stat
 async def startup_tasks():
     """Run startup tasks"""
 
+    # Pre-warm semantic router embeddings in background (uses disk cache on subsequent starts)
+    async def _warm_semantic_router():
+        try:
+            from assistant.semantic_router import initialize as _sem_init
+            await _sem_init()
+        except Exception as _e:
+            logging.warning(f"[startup] semantic_router init failed: {_e}")
+    asyncio.create_task(_warm_semantic_router())
+
     # Inject DB into composio_service for direct Shopify credential lookups
     try:
         import composio_service as _cs

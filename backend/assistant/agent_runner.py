@@ -16,7 +16,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_STEPS = 6
+MAX_AGENT_STEPS = 4
 
 # Maps tool names → which result fields to surface as shared artifacts.
 # When a specialist produces an artifact (image_url, post_id, etc.) it is
@@ -47,6 +47,7 @@ async def run_agent_stream(
     user: Dict[str, Any],
     history: Optional[List[Dict[str, Any]]] = None,
     model_id: Optional[str] = None,
+    stream_final: bool = False,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Streaming specialist runner.
 
@@ -55,7 +56,7 @@ async def run_agent_stream(
         {"type": "agent_result", "result": {...}}  final structured result
     """
     from .agents import get_agent_config
-    from .models import chat_with_tools
+    from .models import chat_with_tools, stream_reply
     from .tools import ToolContext, openai_tool_specs, openai_tool_specs_filtered, run_tool
 
     cfg = get_agent_config(agent_id)
@@ -89,7 +90,7 @@ async def run_agent_stream(
     ]
 
     # Include recent history so the agent has conversational awareness
-    for m in (history or [])[-12:]:
+    for m in (history or [])[-6:]:
         role = m.get("role", "user")
         if role in ("user", "assistant"):
             content = m.get("content", "")
@@ -102,14 +103,19 @@ async def run_agent_stream(
     steps: List[Dict[str, Any]] = []
     artifacts: Dict[str, Any] = {}
     result_text = ""
-    _model = model_id or cfg.get("model")
+    # Use a lightweight flash model for tool planning to minimise latency.
+    # Final drafting still uses the heavier model for quality.
+    _planning_model = "deepseek-v4-flash"
+    _final_model = model_id or cfg.get("model")
 
     # ── Tool-use loop ─────────────────────────────────────────────────────────
-    for _ in range(MAX_AGENT_STEPS):
+    for step_idx in range(MAX_AGENT_STEPS):
+        if step_idx == 0:
+            yield {"type": "tool_start", "tool": "planning_specialist"}
         resp = await chat_with_tools(
             messages=messages,
             tools=tool_specs,
-            model_id=_model,
+            model_id=_planning_model,
         )
         raw_msg = resp.get("raw_assistant_message") or {
             "role": "assistant",
@@ -119,7 +125,34 @@ async def run_agent_stream(
         tool_calls = resp.get("tool_calls") or []
 
         if not tool_calls:
-            result_text = resp.get("content", "").strip()
+            draft = resp.get("content", "").strip()
+            if stream_final and draft:
+                yield {"type": "tool_start", "tool": "drafting_reply"}
+                has_tool_results = any(m.get("role") == "tool" for m in messages)
+                if has_tool_results:
+                    messages.pop()
+                    result_text = ""
+                    try:
+                        async for chunk in stream_reply(
+                            messages=messages,
+                            tools=[],
+                            model_id=_final_model,
+                        ):
+                            result_text += chunk
+                            yield {"type": "token", "text": chunk}
+                    except Exception as exc:
+                        logger.warning("[agent_runner] %s final stream failed: %s", agent_id, exc)
+                        result_text = draft
+                        yield {"type": "token", "text": draft}
+                    messages.append({"role": "assistant", "content": result_text})
+                else:
+                    result_text = ""
+                    for i in range(0, len(draft), 24):
+                        token = draft[i:i + 24]
+                        result_text += token
+                        yield {"type": "token", "text": token}
+            else:
+                result_text = draft
             break
 
         # Emit tool_start for each tool about to run (all start in parallel)
