@@ -9,13 +9,14 @@ The runner loads config at call-time so new agents are live on next restart.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_STEPS = 12
+MAX_AGENT_STEPS = 6
 
 # Maps tool names → which result fields to surface as shared artifacts.
 # When a specialist produces an artifact (image_url, post_id, etc.) it is
@@ -37,7 +38,7 @@ _ARTIFACT_FIELDS: Dict[str, List[str]] = {
 }
 
 
-async def run_agent(
+async def run_agent_stream(
     *,
     agent_id: str,
     task: str,
@@ -46,27 +47,12 @@ async def run_agent(
     user: Dict[str, Any],
     history: Optional[List[Dict[str, Any]]] = None,
     model_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Run a specialist agent and return a structured result.
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Streaming specialist runner.
 
-    Args:
-        agent_id:  Any key in AGENT_REGISTRY  e.g. 'social_scheduler'.
-        task:      Plain-language description of what the agent must do.
-        context:   Structured data from prior agent calls (image_url, caption …).
-                   Injected at the top of the system prompt so the agent has it
-                   directly — no history parsing required.
-        db:        Motor AsyncIOMotorDatabase instance.
-        user:      Authenticated user dict (same shape the tools expect).
-        history:   Recent conversation turns; last 12 used for context.
-        model_id:  Override model; falls back to agent config then global default.
-
-    Returns:
-        {
-            "text":      str,   # Agent's final reply text
-            "artifacts": dict,  # Structured outputs: image_url, post_id, …
-            "steps":     list,  # Tool calls the agent made
-            "agent_id":  str,
-        }
+    Yields:
+        {"type": "tool_start", "tool": <name>}  each time a tool fires
+        {"type": "agent_result", "result": {...}}  final structured result
     """
     from .agents import get_agent_config
     from .models import chat_with_tools
@@ -136,8 +122,12 @@ async def run_agent(
             result_text = resp.get("content", "").strip()
             break
 
-        # ── Execute each tool call and feed results back into messages ────────
-        for tc in tool_calls:
+        # Emit tool_start for each tool about to run (all start in parallel)
+        for _tc in tool_calls:
+            yield {"type": "tool_start", "tool": _tc.get("name", "")}
+
+        # ── Execute all tool calls in parallel, then feed results back ─────────
+        async def _exec_tool(tc: Dict[str, Any]):
             name = tc.get("name", "")
             args = tc.get("arguments") or {}
             if isinstance(args, str):
@@ -145,12 +135,15 @@ async def run_agent(
                     args = json.loads(args)
                 except Exception:
                     args = {}
-
             try:
                 result = await run_tool(name, tool_ctx, args)
             except Exception as exc:
                 result = {"error": str(exc)}
+            return tc, name, args, result
 
+        exec_results = await asyncio.gather(*[_exec_tool(tc) for tc in tool_calls])
+
+        for tc, name, args, result in exec_results:
             steps.append({"tool": name, "arguments": args, "result": result})
 
             # Auto-extract artifacts
@@ -182,9 +175,38 @@ async def run_agent(
         "[agent_runner] %s done | steps=%d artifacts=%s",
         agent_id, len(steps), list(artifacts.keys()),
     )
-    return {
-        "text": result_text,
-        "artifacts": artifacts,
-        "steps": steps,
-        "agent_id": cfg["id"],
+    yield {
+        "type": "agent_result",
+        "result": {
+            "text": result_text,
+            "artifacts": artifacts,
+            "steps": steps,
+            "agent_id": cfg["id"],
+        },
+    }
+
+
+async def run_agent(
+    *,
+    agent_id: str,
+    task: str,
+    context: Optional[Dict[str, Any]] = None,
+    db,
+    user: Dict[str, Any],
+    history: Optional[List[Dict[str, Any]]] = None,
+    model_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Backward-compatible blocking wrapper. Use run_agent_stream for live events."""
+    result: Dict[str, Any] = {}
+    async for ev in run_agent_stream(
+        agent_id=agent_id, task=task, context=context, db=db,
+        user=user, history=history, model_id=model_id,
+    ):
+        if ev.get("type") == "agent_result":
+            result = ev["result"]
+    return result or {
+        "text": "I've completed the requested actions.",
+        "artifacts": {},
+        "steps": [],
+        "agent_id": agent_id,
     }

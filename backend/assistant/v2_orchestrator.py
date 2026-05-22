@@ -232,8 +232,8 @@ async def run_v2_turn_stream(
         {"type": "error",     "message": str}
     """
     from .agents import AGENT_REGISTRY
-    from .agent_runner import run_agent
-    from .models import chat_with_tools
+    from .agent_runner import run_agent_stream
+    from .models import chat_with_tools, stream_reply
 
     yield {"type": "thinking", "agent": "general", "agent_label": "Zilo"}
 
@@ -286,16 +286,40 @@ async def run_v2_turn_stream(
         tool_calls = resp.get("tool_calls") or []
 
         if not tool_calls:
-            # The orchestrator has its answer — stream it directly without
-            # a second LLM call. Yields the full text as a single token event;
-            # the frontend buffers and renders it immediately.
             draft = resp.get("content", "").strip()
-            final_reply = draft
-            if draft:
-                yield {"type": "token", "text": draft}
+            # Determine if we're synthesising after a delegation (tool results exist).
+            # In that case we discard the non-streaming response we just got and
+            # re-generate it via stream_reply() so the user sees tokens immediately.
+            _has_tool_results = any(m.get("role") == "tool" for m in messages)
+            if _has_tool_results and draft:
+                # Pop the non-streaming assistant message — we'll regenerate it.
+                messages.pop()
+                final_reply = ""
+                try:
+                    async for _chunk in stream_reply(
+                        messages=messages,
+                        tools=[],
+                        model_id=model_id,
+                    ):
+                        final_reply += _chunk
+                        yield {"type": "token", "text": _chunk}
+                except Exception as _stream_exc:
+                    logger.warning("[v2_orc] stream_reply failed, falling back: %s", _stream_exc)
+                    final_reply = draft
+                    yield {"type": "token", "text": draft}
+                # Re-add the assembled message for persistence
+                messages.append({"role": "assistant", "content": final_reply})
+            else:
+                # Direct answer (no delegation this turn) — chunk it so the UI
+                # renders progressively instead of one sudden dump.
+                final_reply = draft
+                _CHUNK = 8
+                for _i in range(0, len(draft), _CHUNK):
+                    yield {"type": "token", "text": draft[_i:_i + _CHUNK]}
             break
 
         # ── 5. Process delegate_to_specialist calls ───────────────────────────
+        _last_agent_text = ""
         for tc in tool_calls:
             name = tc.get("name", "")
             args = tc.get("arguments") or {}
@@ -328,8 +352,11 @@ async def run_v2_turn_stream(
             logger.info("[v2_orc] → %s | task=%s | ctx_keys=%s",
                         agent_id, task[:80], list(context.keys()))
 
+            agent_result: Dict[str, Any] = {
+                "text": "", "artifacts": {}, "steps": [], "agent_id": agent_id,
+            }
             try:
-                agent_result = await run_agent(
+                async for _agent_ev in run_agent_stream(
                     agent_id=agent_id,
                     task=task,
                     context=context,
@@ -337,17 +364,16 @@ async def run_v2_turn_stream(
                     user=user,
                     history=history,
                     model_id=model_id,
-                )
+                ):
+                    if _agent_ev.get("type") == "tool_start":
+                        yield _agent_ev  # real-time tool activity → SSE
+                    elif _agent_ev.get("type") == "agent_result":
+                        agent_result = _agent_ev["result"]
             except Exception as exc:
                 logger.exception("[v2_orc] agent %s raised", agent_id)
-                agent_result = {
-                    "text": f"Something went wrong with {active_agent_label}. {exc}",
-                    "artifacts": {},
-                    "steps": [],
-                    "agent_id": agent_id,
-                }
+                agent_result["text"] = f"Something went wrong with {active_agent_label}. {exc}"
 
-            # Accumulate new artifacts — these flow to subsequent specialists
+            _last_agent_text = agent_result.get("text", "")
             new_artifacts = agent_result.get("artifacts") or {}
             turn_artifacts.update(new_artifacts)
             all_steps.extend(agent_result.get("steps") or [])
@@ -357,10 +383,24 @@ async def run_v2_turn_stream(
                 "tool_call_id": tc.get("id", ""),
                 "content": json.dumps({
                     "agent_id": agent_id,
-                    "result": agent_result.get("text", ""),
+                    "result": _last_agent_text,
                     "artifacts": new_artifacts,
                 }, default=str),
             })
+
+        # Fix A: single-delegation short-circuit — skip orchestrator re-synthesis.
+        # For ~80% of queries (one specialist), the specialist's reply IS the
+        # final answer. Yielding it directly removes one full LLM round-trip (~1-3s).
+        _num_delegations = sum(
+            1 for _tc in tool_calls if _tc.get("name") == "delegate_to_specialist"
+        )
+        if _num_delegations == 1 and len(_last_agent_text) > 20:
+            final_reply = _last_agent_text
+            _CHUNK = 8
+            for _i in range(0, len(final_reply), _CHUNK):
+                yield {"type": "token", "text": final_reply[_i:_i + _CHUNK]}
+            messages.append({"role": "assistant", "content": final_reply})
+            break
 
     # ── 6. Safety net — MAX_ORC_STEPS exhausted without a final answer ───────
     if not final_reply:
