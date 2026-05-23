@@ -10593,7 +10593,8 @@ _SHOPIFY_SCOPES = (
     "read_discounts,write_discounts,"
     "read_checkouts,"
     "read_locations,write_inventory,"
-    "read_content,write_content"
+    "read_content,write_content,"
+    "write_recurring_application_charges,read_recurring_application_charges"
 )
 
 
@@ -10783,8 +10784,199 @@ async def shopify_oauth_callback(
         _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
     except Exception as _wh_exc:
         logging.warning(f"[shopify-oauth] webhook registration failed: {_wh_exc}")
+
+    # Check if merchant already has an active Shopify subscription
+    # (reinstall case — still need to create a new charge per Shopify rules)
+    user_doc = await db.users.find_one(query, {"shopify_plan": 1, "shopify_billing_status": 1})
+    had_active_plan = (
+        user_doc
+        and user_doc.get("shopify_billing_status") == "active"
+        and user_doc.get("shopify_plan")
+    )
+
     from starlette.responses import RedirectResponse
-    return RedirectResponse(url=f"{frontend_url}/dashboard/shopify?shopify_connected=1")
+    # Always send to billing selection — on reinstall Shopify requires a new charge approval
+    billing_url = (
+        f"{frontend_url}/dashboard/shopify/billing"
+        f"?shop={shop}&uid={user_id}&reinstall={'1' if had_active_plan else '0'}"
+    )
+    return RedirectResponse(url=billing_url)
+
+
+# ── Shopify Billing API endpoints ─────────────────────────────────────────────
+
+@api_router.get("/shopify/billing/plans")
+async def shopify_billing_plans():
+    """Return available Zilo plans (public — shown on billing selection page)."""
+    from shopify_billing import PLANS
+    return {"plans": list(PLANS.values())}
+
+
+@api_router.post("/shopify/billing/create")
+async def shopify_billing_create(request: Request, user=Depends(get_current_user)):
+    """Create a Shopify RecurringApplicationCharge for the chosen plan.
+
+    Body: { "plan_id": "starter" | "growth" | "pro" }
+    Returns: { "confirmation_url": "https://..." }
+    """
+    from shopify_billing import create_charge, PLANS
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    plan_id = str(body.get("plan_id") or "").strip().lower()
+    if plan_id not in PLANS:
+        raise HTTPException(status_code=400, detail=f"Invalid plan. Choose: {list(PLANS)}")
+
+    user_doc = await db.users.find_one({"_id": user["_id"]}, {"shopify_domain": 1, "shopify_token": 1})
+    shop = (user_doc or {}).get("shopify_domain", "")
+    token = (user_doc or {}).get("shopify_token", "")
+    if not shop or not token:
+        raise HTTPException(status_code=400, detail="Shopify store not connected")
+
+    backend_url = _shopify_backend_url()
+    return_url = f"{backend_url}/shopify/billing/confirm"
+
+    is_test = os.environ.get("SHOPIFY_BILLING_TEST", "true").lower() == "true"
+    try:
+        result = await create_charge(shop, token, plan_id, return_url, test=is_test)
+    except Exception as exc:
+        logging.error(f"[shopify-billing] create_charge error: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Store pending charge info on the user
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "shopify_billing_charge_id": result["charge_id"],
+            "shopify_plan":             plan_id,
+            "shopify_billing_status":   "pending",
+        }},
+    )
+
+    return {"confirmation_url": result["confirmation_url"], "plan": plan_id}
+
+
+@api_router.get("/shopify/billing/confirm")
+async def shopify_billing_confirm(
+    request: Request,
+    charge_id: int = 0,
+    shop: str = "",
+):
+    """Shopify redirects merchants here after they approve or decline billing.
+
+    This endpoint is public (no auth) because Shopify redirects here directly.
+    We look up the user by shop domain, verify and activate the charge, then
+    redirect to the dashboard.
+    """
+    from shopify_billing import get_charge, activate_charge
+    from starlette.responses import RedirectResponse
+
+    frontend_url = _shopify_frontend_url()
+    error_url = f"{frontend_url}/dashboard/shopify/billing?billing_error="
+
+    if not charge_id or not shop:
+        return RedirectResponse(url=error_url + "missing_params")
+
+    # Find user by shop domain
+    user_doc = await db.users.find_one(
+        {"shopify_domain": shop},
+        {"_id": 1, "shopify_token": 1, "shopify_billing_charge_id": 1, "shopify_plan": 1},
+    )
+    if not user_doc:
+        return RedirectResponse(url=error_url + "shop_not_found")
+
+    token = user_doc.get("shopify_token", "")
+    if not token:
+        return RedirectResponse(url=error_url + "no_token")
+
+    try:
+        charge = await get_charge(shop, token, charge_id)
+    except Exception as exc:
+        logging.error(f"[shopify-billing] get_charge failed: {exc}")
+        return RedirectResponse(url=error_url + "charge_lookup_failed")
+
+    status = charge.get("status", "")
+
+    if status == "declined":
+        await db.users.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {"shopify_billing_status": "declined"}},
+        )
+        return RedirectResponse(url=error_url + "declined")
+
+    if status == "accepted":
+        try:
+            await activate_charge(shop, token, charge_id)
+        except Exception as exc:
+            logging.error(f"[shopify-billing] activate failed: {exc}")
+            return RedirectResponse(url=error_url + "activation_failed")
+
+        plan_id = user_doc.get("shopify_plan", "starter")
+        await db.users.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {
+                "shopify_billing_status":    "active",
+                "shopify_billing_charge_id": charge_id,
+                "shopify_plan":              plan_id,
+            }},
+        )
+        logging.info(f"[shopify-billing] Activated shop={shop} plan={plan_id} charge={charge_id}")
+        return RedirectResponse(
+            url=f"{frontend_url}/dashboard/shopify?shopify_connected=1&plan={plan_id}"
+        )
+
+    # Any other status (pending, etc.) — send back to billing page
+    return RedirectResponse(url=error_url + f"unexpected_status_{status}")
+
+
+@api_router.get("/shopify/billing/status")
+async def shopify_billing_status(user=Depends(get_current_user)):
+    """Return the current billing plan and status for this user."""
+    user_doc = await db.users.find_one(
+        {"_id": user["_id"]},
+        {"shopify_plan": 1, "shopify_billing_status": 1, "shopify_billing_charge_id": 1, "shopify_domain": 1},
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    from shopify_billing import PLANS
+    plan_id = user_doc.get("shopify_plan", "")
+    return {
+        "plan":      plan_id,
+        "plan_details": PLANS.get(plan_id),
+        "status":    user_doc.get("shopify_billing_status", "none"),
+        "charge_id": user_doc.get("shopify_billing_charge_id"),
+        "shop":      user_doc.get("shopify_domain", ""),
+    }
+
+
+@api_router.post("/shopify/billing/cancel")
+async def shopify_billing_cancel(user=Depends(get_current_user)):
+    """Cancel the active subscription (called when merchant uninstalls manually)."""
+    from shopify_billing import cancel_charge
+    user_doc = await db.users.find_one(
+        {"_id": user["_id"]},
+        {"shopify_domain": 1, "shopify_token": 1, "shopify_billing_charge_id": 1},
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    shop    = user_doc.get("shopify_domain", "")
+    token   = user_doc.get("shopify_token", "")
+    charge_id = user_doc.get("shopify_billing_charge_id")
+
+    if shop and token and charge_id:
+        try:
+            await cancel_charge(shop, token, int(charge_id))
+        except Exception as exc:
+            logging.warning(f"[shopify-billing] cancel error (non-fatal): {exc}")
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"shopify_billing_status": "cancelled", "shopify_billing_charge_id": None}},
+    )
+    return {"ok": True}
 
 
 @api_router.post("/shopify/connect-direct")
@@ -10880,6 +11072,7 @@ async def _shopify_register_webhooks(domain: str, token: str, backend_url: str) 
         ("products/create", f"{backend_url}/api/shopify/webhook/products-sync"),
         ("products/update", f"{backend_url}/api/shopify/webhook/products-sync"),
         ("products/delete", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("app/uninstalled", f"{backend_url}/api/shopify/webhook/app-uninstalled"),
     ]
     registered = []
     async with _httpx.AsyncClient(timeout=15.0) as _c:
@@ -10929,6 +11122,72 @@ async def shopify_register_webhooks(user=Depends(get_current_user)):
         creds["domain"], creds["token"], _shopify_backend_url()
     )
     return {"ok": True, "registered": registered}
+
+
+# ── app/uninstalled webhook ────────────────────────────────────────────────────
+
+@api_router.post("/shopify/webhook/app-uninstalled")
+async def shopify_app_uninstalled(request: Request):
+    """Shopify sends this when a merchant uninstalls the app.
+
+    We cancel their billing subscription and clear their Shopify credentials.
+    HMAC is verified to prevent spoofing.
+    """
+    import hashlib, hmac as _hmac, base64 as _b64
+
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    body_bytes = await request.body()
+
+    # Verify HMAC
+    if client_secret:
+        expected = _b64.b64encode(
+            _hmac.new(client_secret.encode(), body_bytes, hashlib.sha256).digest()
+        ).decode()
+        received = request.headers.get("X-Shopify-Hmac-Sha256", "")
+        if not _hmac.compare_digest(expected, received):
+            logging.warning("[shopify-uninstall] HMAC mismatch — ignoring webhook")
+            raise HTTPException(status_code=401, detail="Invalid HMAC")
+
+    try:
+        import json as _json
+        payload = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    shop = payload.get("myshopify_domain") or payload.get("domain") or ""
+    if not shop:
+        return {"ok": True}
+
+    user_doc = await db.users.find_one(
+        {"shopify_domain": shop},
+        {"_id": 1, "shopify_token": 1, "shopify_billing_charge_id": 1},
+    )
+    if not user_doc:
+        logging.info(f"[shopify-uninstall] No user found for shop={shop}")
+        return {"ok": True}
+
+    # Cancel billing subscription
+    charge_id = user_doc.get("shopify_billing_charge_id")
+    token = user_doc.get("shopify_token", "")
+    if charge_id and token:
+        try:
+            from shopify_billing import cancel_charge
+            await cancel_charge(shop, token, int(charge_id))
+        except Exception as exc:
+            logging.warning(f"[shopify-uninstall] cancel_charge non-fatal: {exc}")
+
+    # Clear Shopify credentials
+    await db.users.update_one(
+        {"_id": user_doc["_id"]},
+        {"$set": {
+            "shopify_domain":              None,
+            "shopify_token":               None,
+            "shopify_billing_status":      "cancelled",
+            "shopify_billing_charge_id":   None,
+        }},
+    )
+    logging.info(f"[shopify-uninstall] Cleaned up shop={shop}")
+    return {"ok": True}
 
 
 # ── Auto-fulfillment: orders/paid webhook ──────────────────────────────────────
