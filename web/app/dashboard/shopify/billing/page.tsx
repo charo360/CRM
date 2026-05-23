@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Check as CheckIcon } from "lucide-react";
 
@@ -20,6 +20,14 @@ const PLAN_HIGHLIGHTS: Record<string, { color: string; badge: string | null }> =
 };
 
 export default function ShopifyBillingPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div>}>
+      <BillingContent />
+    </Suspense>
+  );
+}
+
+function BillingContent() {
   const params     = useSearchParams();
   const router     = useRouter();
   const shop       = params.get("shop") || "";
