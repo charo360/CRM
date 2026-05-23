@@ -729,13 +729,15 @@ def _mk_router(db, get_current_user):
         conv_id = (body.get("conversation_id") or "").strip()
         message_index = body.get("message_index")
 
+        text_edited = bool(body.get("text_edited"))
+
         if not isinstance(slide_index, int) or slide_index < 0:
             async def _err():
                 yield "data: " + json.dumps({"type": "error", "message": "slide_index is required"}) + "\n\n"
             return StreamingResponse(_err(), media_type="text/event-stream")
-        if not instruction:
+        if not instruction and not text_edited:
             async def _err():
-                yield "data: " + json.dumps({"type": "error", "message": "instruction is required"}) + "\n\n"
+                yield "data: " + json.dumps({"type": "error", "message": "Edit slide text and/or provide a visual instruction"}) + "\n\n"
             return StreamingResponse(_err(), media_type="text/event-stream")
         if not isinstance(slides, list) or not slides:
             async def _err():
@@ -781,6 +783,7 @@ def _mk_router(db, get_current_user):
                         slides=slides,
                         image_urls=image_urls if isinstance(image_urls, list) else [],
                         topic=topic,
+                        text_edited=text_edited,
                     ):
                         await _queue.put(ev)
                 except Exception as exc:

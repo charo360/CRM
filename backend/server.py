@@ -446,7 +446,12 @@ _frontend_url_cors = os.environ.get('FRONTEND_URL', '').strip()
 if _allowed_origins_raw:
     _origins_list = [o.strip() for o in _allowed_origins_raw.split(',') if o.strip()]
 elif _frontend_url_cors:
-    _origins_list = [_frontend_url_cors, "http://localhost:3000", "http://localhost:5173"]
+    _origins_list = [
+        _frontend_url_cors,
+        "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
+        "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ]
 else:
     _origins_list = ["*"]
 _use_credentials = "*" not in _origins_list
@@ -16399,73 +16404,136 @@ async def serve_document_preview(key: str):
 # directly (avoids RequestHeaderSectionTooLarge from AWS Console cookies).
 # Accepts either ?url=<s3-url> or ?filename=<doc-filename> (looked up from
 # the server-side _proxy_store so the S3 URL is never exposed to the browser).
+class DownloadProxyRequest(BaseModel):
+    url: str
+    filename: str = "download"
+
+
+async def _download_proxy_impl(url: str, filename: str = "download"):
+    import re as _re
+    from urllib.parse import urlparse
+
+    s3_url = (url or "").strip()
+    if not s3_url:
+        raise HTTPException(status_code=400, detail="url parameter is required")
+
+    parsed = urlparse(s3_url)
+    path = parsed.path or ""
+    if not path and s3_url.startswith("/api/"):
+        path = s3_url.split("?")[0]
+    host = (parsed.netloc or "").lower()
+
+    safe_name = _re.sub(r"[^\w\-. ]", "_", filename).strip() or "download"
+    if "." not in safe_name:
+        path_ext = path.rsplit(".", 1)[-1].lower()
+        if path_ext in ("pdf", "docx", "pptx", "png", "jpg", "jpeg", "gif", "webp", "csv", "txt"):
+            safe_name += f".{path_ext}"
+
+    expected_bucket = (os.environ.get("AWS_BUCKET_NAME") or "").strip()
+    has_aws = bool(expected_bucket and os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"))
+
+    def _attachment_response(content: bytes, content_type: str):
+        return Response(
+            content=content,
+            media_type=content_type or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+
+    # Backend S3 proxy path: /api/images/s3/<key>
+    if "/api/images/s3/" in path and has_aws:
+        key = path.split("/api/images/s3/", 1)[1].split("?")[0].lstrip("/")
+        if key:
+            try:
+                import asyncio
+                s3 = S3Handler.get_s3_client()
+
+                def _s3_get():
+                    return s3.get_object(Bucket=expected_bucket, Key=key)
+
+                obj = await asyncio.get_event_loop().run_in_executor(None, _s3_get)
+                content = obj["Body"].read()
+                content_type = obj.get("ContentType") or "application/octet-stream"
+                return _attachment_response(content, content_type)
+            except Exception as s3_exc:
+                logging.warning("[download-proxy] backend s3 path fetch failed: %s", s3_exc)
+
+    # Local presentation files: /api/media/presentations/<filename>
+    if "/api/media/presentations/" in path:
+        fname = path.split("/api/media/presentations/", 1)[1].split("?")[0].lstrip("/")
+        if fname and ".." not in fname and "/" not in fname:
+            local_path = ROOT_DIR / "public" / "presentations" / fname
+            if local_path.is_file():
+                content = local_path.read_bytes()
+                ext = fname.rsplit(".", 1)[-1].lower()
+                mime = {
+                    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "ppt": "application/vnd.ms-powerpoint",
+                    "pdf": "application/pdf",
+                }.get(ext, "application/octet-stream")
+                return _attachment_response(content, mime)
+
+    # Direct S3 URLs (presigned or virtual-hosted)
+    if host.endswith(".amazonaws.com") or host == "amazonaws.com":
+        if has_aws:
+            try:
+                bucket, key = S3Handler.parse_s3_source_to_bucket_key(s3_url)
+                use_bucket = bucket or expected_bucket
+                if use_bucket.lower() == expected_bucket.lower() and key:
+                    import asyncio
+                    s3 = S3Handler.get_s3_client()
+                    logging.info("[download-proxy] attempting direct S3 fetch: bucket=%s key=%s", use_bucket, key)
+
+                    def _s3_get():
+                        return s3.get_object(Bucket=use_bucket, Key=key)
+
+                    obj = await asyncio.get_event_loop().run_in_executor(None, _s3_get)
+                    content = obj["Body"].read()
+                    content_type = obj.get("ContentType") or "application/octet-stream"
+                    logging.info("[download-proxy] direct S3 fetch succeeded: bucket=%s key=%s length=%d", use_bucket, key, len(content))
+                    return _attachment_response(content, content_type)
+            except Exception as s3_exc:
+                logging.warning("[download-proxy] direct S3 fetch failed: %s. Falling back to HTTP client.", s3_exc)
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                resp = await client.get(s3_url)
+            if resp.status_code < 400:
+                content_type = resp.headers.get("content-type", "application/octet-stream")
+                return _attachment_response(resp.content, content_type)
+        except Exception as exc:
+            logging.warning("[download-proxy] HTTP fetch failed: %s", exc)
+
+    # Fallback: fetch any /api/ path from this server (images proxy, static presentations, etc.)
+    api_path = path if path.startswith("/api/") else (s3_url.split("?")[0] if s3_url.startswith("/api/") else "")
+    if api_path.startswith("/api/"):
+        port = (os.environ.get("PORT") or "8000").strip()
+        internal = f"http://127.0.0.1:{port}{api_path}"
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(internal)
+            if resp.status_code < 400:
+                content_type = resp.headers.get("content-type", "application/octet-stream")
+                return _attachment_response(resp.content, content_type)
+            logging.warning("[download-proxy] internal fetch %s → HTTP %s", internal, resp.status_code)
+        except Exception as exc:
+            logging.warning("[download-proxy] internal fetch failed: %s", exc)
+
+    raise HTTPException(status_code=400, detail=f"Could not download file from URL: {s3_url[:120]}")
+
+
 @api_router.get("/download-proxy")
 async def download_proxy(
     url: str = Query(...),
     filename: str = Query("download"),
 ):
-    # No auth required — this endpoint only fetches from S3 on behalf of the browser.
-    # The browser passes the S3 URL as a query param; the backend makes the actual
-    # S3 request (no browser cookies reach S3, so no RequestHeaderSectionTooLarge).
-    import re as _re
-    from urllib.parse import urlparse
+    return await _download_proxy_impl(url, filename)
 
-    s3_url = url.strip()
-    if not s3_url:
-        raise HTTPException(status_code=400, detail="url parameter is required")
 
-    parsed = urlparse(s3_url)
-    host = parsed.netloc.lower()
-    if not (host.endswith(".amazonaws.com") or host == "amazonaws.com"):
-        raise HTTPException(status_code=400, detail="Only S3 URLs are supported")
-
-    safe_name = _re.sub(r"[^\w\-. ]", "_", filename).strip() or "download"
-    if "." not in safe_name:
-        path_ext = parsed.path.rsplit(".", 1)[-1].lower()
-        if path_ext in ("pdf", "docx", "pptx", "png", "jpg", "jpeg", "gif", "webp", "csv", "txt"):
-            safe_name += f".{path_ext}"
-
-    # Try server-side S3 client download first to avoid expired or LLM-mangled presigned URLs
-    expected_bucket = (os.environ.get("AWS_BUCKET_NAME") or "").strip()
-    if expected_bucket and os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
-        try:
-            bucket, key = S3Handler.parse_s3_source_to_bucket_key(s3_url)
-            use_bucket = bucket or expected_bucket
-            if use_bucket.lower() == expected_bucket.lower() and key:
-                import asyncio
-                s3 = S3Handler.get_s3_client()
-                logging.info("[download-proxy] attempting direct S3 fetch: bucket=%s key=%s", use_bucket, key)
-                
-                def _s3_get():
-                    return s3.get_object(Bucket=use_bucket, Key=key)
-                
-                obj = await asyncio.get_event_loop().run_in_executor(None, _s3_get)
-                content = obj["Body"].read()
-                content_type = obj.get("ContentType") or "application/octet-stream"
-                logging.info("[download-proxy] direct S3 fetch succeeded: bucket=%s key=%s length=%d", use_bucket, key, len(content))
-                return Response(
-                    content=content,
-                    media_type=content_type,
-                    headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-                )
-        except Exception as s3_exc:
-            logging.warning("[download-proxy] direct S3 fetch failed: %s. Falling back to HTTP client.", s3_exc)
-
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            resp = await client.get(s3_url)
-        if resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"S3 returned {resp.status_code}")
-        content_type = resp.headers.get("content-type", "application/octet-stream")
-        return Response(
-            content=resp.content,
-            media_type=content_type,
-            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-        )
-    except Exception as exc:
-        logging.warning("[download-proxy] fetch failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Failed to fetch file")
+@api_router.post("/download-proxy")
+async def download_proxy_post(body: DownloadProxyRequest):
+    return await _download_proxy_impl(body.url, body.filename)
 
 
 # ── Action Mode routes ───────────────────────────────────────────────────────

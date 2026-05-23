@@ -1446,6 +1446,7 @@ async def create_visual_presentation_async(
     prs.save(filepath)
 
     file_url = f"/api/media/presentations/{filename}"
+    s3_ok = False
     try:
         from pathlib import Path
         from image_handler import S3Handler
@@ -1458,13 +1459,15 @@ async def create_visual_presentation_async(
         )
         if s3_url:
             file_url = s3_url
+            s3_ok = True
     except Exception as e:
         _log.warning("[visual_pptx] S3 upload skipped: %s", e)
     finally:
-        try:
-            os.unlink(filepath)
-        except Exception:
-            pass
+        if s3_ok:
+            try:
+                os.unlink(filepath)
+            except Exception:
+                pass
 
     slide_count = len(slides_plan)
     generated_count = sum(1 for u in image_urls if u)
@@ -1492,6 +1495,7 @@ async def regenerate_single_slide_async(
     topic: str = "",
     logo_url: Optional[str] = None,
     ai_designed: bool = False,
+    user_edited: bool = False,
 ) -> Dict[str, Any]:
     """
     Regenerate ONE slide's background image based on new instructions,
@@ -1529,6 +1533,7 @@ async def regenerate_single_slide_async(
             deck_system=deck_system,
             business_name=topic or "My Business",
             topic=topic,
+            user_edited=user_edited,
         )
         new_url = await _gen_slide_image(
             prompt, brand_color=brand_color, logo_url=logo_url,
@@ -1583,6 +1588,7 @@ async def regenerate_single_slide_async(
     prs.save(filepath)
 
     file_url = f"/api/media/presentations/{filename}"
+    s3_ok = False
     try:
         from pathlib import Path
         from image_handler import S3Handler
@@ -1595,13 +1601,15 @@ async def regenerate_single_slide_async(
         )
         if s3_url:
             file_url = s3_url
+            s3_ok = True
     except Exception as e:
         _log.warning("[visual_pptx] S3 re-upload skipped: %s", e)
     finally:
-        try:
-            os.unlink(filepath)
-        except Exception:
-            pass
+        if s3_ok:
+            try:
+                os.unlink(filepath)
+            except Exception:
+                pass
 
     return {
         "success": True,

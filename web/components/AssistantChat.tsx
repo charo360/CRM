@@ -49,7 +49,7 @@ import {
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { TemplateGallery } from "@/components/TemplateGallery";
 import { getBusinessId, getUser } from "@/lib/auth";
-import { downloadAsset } from "@/lib/utils";
+import { downloadAsset, resolveMediaUrl } from "@/lib/utils";
 import {
   clonePlanSlides,
   isPlanSuperseded,
@@ -809,6 +809,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     slides: Record<string, unknown>[],
     imageUrls: string[],
     topic: string,
+    textEdited: boolean,
   ) {
     if (sending || sendingRef.current || !convId) return;
     sendingRef.current = true;
@@ -832,6 +833,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         slides,
         image_urls: imageUrls,
         topic,
+        text_edited: textEdited,
         signal: abortController.signal,
       });
       const reader = stream.getReader();
@@ -1192,8 +1194,8 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                         void generatePresentationFromPlan(messageIndex, topic, slides, edited)
                       }
                       onSavePresentationPlan={savePresentationPlan}
-                      onRegeneratePresentationSlide={(messageIndex, slideIndex, instruction, slides, imageUrls, topic) =>
-                        void regeneratePresentationSlide(messageIndex, slideIndex, instruction, slides, imageUrls, topic)
+                      onRegeneratePresentationSlide={(messageIndex, slideIndex, instruction, slides, imageUrls, topic, textEdited) =>
+                        void regeneratePresentationSlide(messageIndex, slideIndex, instruction, slides, imageUrls, topic, textEdited)
                       }
                       onUserResend={
                         m.role === "user"
@@ -2111,6 +2113,7 @@ function MessageBubble({
     slides: Record<string, unknown>[],
     imageUrls: string[],
     topic: string,
+    textEdited: boolean,
   ) => void;
   onUserResend?: (text: string) => void;
 }) {
@@ -3506,8 +3509,11 @@ function PresentationPreview({
     slides: Record<string, unknown>[],
     imageUrls: string[],
     topic: string,
+    textEdited: boolean,
   ) => void;
 }) {
+  type SlideTextEdit = { title: string; tagline: string; body: string[] };
+
   // Always pick the LATEST successful presentation result (create or regenerate)
   const step = useMemo(
     () =>
@@ -3520,25 +3526,117 @@ function PresentationPreview({
     [steps],
   );
 
-  const [inputs, setInputs] = useState<Record<number, string>>({});
+  const [visualInputs, setVisualInputs] = useState<Record<number, string>>({});
+  const [textEdits, setTextEdits] = useState<Record<number, SlideTextEdit>>({});
+  const [expandedText, setExpandedText] = useState<Record<number, boolean>>({});
   const [regenerating, setRegenerating] = useState<number | null>(null);
+  const [activePreview, setActivePreview] = useState(0);
+  const [downloading, setDownloading] = useState(false);
+
+  const result = step?.result as Record<string, unknown> | undefined;
+  const url = (result?.url as string | undefined) ?? "";
+  const topic = (result?.topic as string | undefined) ?? "Presentation";
+  const slideCount = (result?.slide_count as number | undefined) ?? 0;
+  const slides = (result?.slides as Array<Record<string, unknown>> | undefined) ?? [];
+  const imageUrls = (result?.image_urls as string[] | undefined) ?? [];
+  const imagesGenerated = (result?.images_generated as number | undefined) ?? 0;
+  const previewUrls = useMemo(
+    () => imageUrls.map((u) => resolveMediaUrl(u) || u).filter(Boolean) as string[],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable when deck URL or thumbs change
+    [url, imageUrls.join("\u0000")],
+  );
+
+  const deckKey = url || String(slideCount);
+
+  useEffect(() => {
+    setActivePreview(0);
+  }, [deckKey]);
+
+  useEffect(() => {
+    if (activePreview >= previewUrls.length && previewUrls.length > 0) {
+      setActivePreview(0);
+    }
+  }, [activePreview, previewUrls.length]);
+
+  function handleDownload(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!url || downloading) return;
+    setDownloading(true);
+    const safeName = topic.replace(/[^a-z0-9_\-. ]/gi, "_").trim() || "presentation";
+    void downloadAsset(url, safeName)
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Download failed");
+      })
+      .finally(() => setDownloading(false));
+  }
+
+  useEffect(() => {
+    if (!slides.length) return;
+    const next: Record<number, SlideTextEdit> = {};
+    slides.forEach((s, i) => {
+      const rawBody = ((s.body as string[] | undefined) ?? []).slice(0, 3);
+      const body = [...rawBody];
+      while (body.length < 3) body.push("");
+      next[i] = {
+        title: String(s.title ?? ""),
+        tagline: String(s.tagline ?? ""),
+        body,
+      };
+    });
+    setTextEdits(next);
+  }, [deckKey]);
 
   if (!step) return null;
 
-  const result = step.result as Record<string, unknown>;
-  const url = result.url as string;
-  const topic = (result.topic as string | undefined) ?? "Presentation";
-  const slideCount = (result.slide_count as number | undefined) ?? 0;
-  const slides = (result.slides as Array<Record<string, unknown>> | undefined) ?? [];
-  const imageUrls = (result.image_urls as string[] | undefined) ?? [];
-  const imagesGenerated = (result.images_generated as number | undefined) ?? 0;
+  function slideTextChanged(index: number): boolean {
+    const s = slides[index];
+    const e = textEdits[index];
+    if (!s || !e) return false;
+    const origTitle = String(s.title ?? "").trim();
+    const origTagline = String(s.tagline ?? "").trim();
+    const origBody = ((s.body as string[] | undefined) ?? []).map((b) => String(b).trim()).filter(Boolean);
+    const newBody = e.body.map((b) => b.trim()).filter(Boolean);
+    return (
+      e.title.trim() !== origTitle ||
+      e.tagline.trim() !== origTagline ||
+      JSON.stringify(newBody) !== JSON.stringify(origBody)
+    );
+  }
+
+  function buildSlidesForRegenerate(): Record<string, unknown>[] {
+    return slides.map((s, i) => {
+      const e = textEdits[i];
+      if (!e) return s;
+      const body = e.body.map((b) => b.trim()).filter(Boolean).slice(0, 3);
+      return {
+        ...s,
+        title: e.title.trim() || s.title,
+        tagline: e.tagline.trim(),
+        body,
+      };
+    });
+  }
 
   function handleRegenerate(index: number) {
-    const instruction = (inputs[index] || "").trim();
-    if (!instruction || !onRegenerateSlide) return;
+    const instruction = (visualInputs[index] || "").trim();
+    const textChanged = slideTextChanged(index);
+    if ((!instruction && !textChanged) || !onRegenerateSlide) return;
     setRegenerating(index);
-    onRegenerateSlide(messageIndex, index, instruction, slides, imageUrls, topic);
-    setInputs(prev => ({ ...prev, [index]: "" }));
+    onRegenerateSlide(
+      messageIndex,
+      index,
+      instruction,
+      buildSlidesForRegenerate(),
+      imageUrls,
+      topic,
+      textChanged,
+    );
+    setVisualInputs((prev) => ({ ...prev, [index]: "" }));
+  }
+
+  function canRegenerate(index: number): boolean {
+    return Boolean((visualInputs[index] || "").trim()) || slideTextChanged(index);
   }
 
   useEffect(() => {
@@ -3559,52 +3657,152 @@ function PresentationPreview({
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-400">{slideCount} slides · {imagesGenerated} AI images</span>
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-md border border-brand/40 bg-brand/10 px-2.5 py-1 text-[11px] font-semibold text-brand-dark hover:bg-brand/20"
+          <button
+            type="button"
+            disabled={downloading || !url}
+            onClick={handleDownload}
+            className="inline-flex items-center gap-1 rounded-md border border-brand/40 bg-brand/10 px-2.5 py-1 text-[11px] font-semibold text-brand-dark hover:bg-brand/20 disabled:opacity-50"
           >
-            <Download size={11} />
-            Download .pptx
-          </a>
+            {downloading ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+            {downloading ? "Downloading…" : "Download .pptx"}
+          </button>
         </div>
       </div>
+
+      {previewUrls.length > 0 && (
+        <div className="border-b border-slate-200 bg-slate-950">
+          <div className="relative flex aspect-video max-h-[240px] w-full items-center justify-center bg-slate-900">
+            <img
+              src={previewUrls[activePreview]}
+              alt={`Slide ${activePreview + 1} preview`}
+              className="max-h-full max-w-full object-contain"
+            />
+            <span className="absolute bottom-2 right-2 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white">
+              Slide {activePreview + 1} / {previewUrls.length}
+            </span>
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto p-2">
+            {previewUrls.map((src, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setActivePreview(i)}
+                className={`shrink-0 overflow-hidden rounded border-2 transition ${
+                  i === activePreview ? "border-brand ring-1 ring-brand/30" : "border-slate-700 opacity-75 hover:opacity-100"
+                }`}
+                title={`Preview slide ${i + 1}`}
+              >
+                <img src={src} alt="" className="h-11 w-20 object-cover" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Per-slide list with edit inputs */}
       {slides.length > 0 ? (
         <div className="divide-y divide-slate-100 bg-white">
           {slides.map((s, i) => {
-            const title = (s.title as string | undefined) ?? `Slide ${i + 1}`;
-            const body = (s.body as string[] | undefined) ?? [];
+            const edit = textEdits[i];
+            const title = edit?.title || (s.title as string | undefined) || `Slide ${i + 1}`;
+            const body = edit?.body.filter((b) => b.trim()) ?? (s.body as string[] | undefined) ?? [];
             const isTitle = Boolean(s.is_title);
             const isRegenerating = regenerating === i;
+            const showText = expandedText[i] ?? slideTextChanged(i);
             return (
               <div key={i} className="px-3 py-2.5">
                 <div className="flex items-start gap-2">
-                  {/* Slide number badge */}
                   <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold ${isTitle ? "bg-brand text-white" : "bg-slate-100 text-slate-500"}`}>
                     {isTitle ? "★" : i + 1}
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-[12px] font-semibold text-slate-800">{title}</p>
-                    {body.length > 0 && (
+                    {body.length > 0 && !showText && (
                       <p className="text-[10.5px] text-slate-400">{body.slice(0, 2).join(" · ")}{body.length > 2 ? "…" : ""}</p>
                     )}
-                    {/* Inline edit input */}
+
+                    <button
+                      type="button"
+                      onClick={() => setExpandedText((prev) => ({ ...prev, [i]: !showText }))}
+                      className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-brand-dark hover:text-brand"
+                    >
+                      <PencilLine size={10} />
+                      {showText ? "Hide text editor" : "Edit title & bullets"}
+                    </button>
+
+                    {showText && edit && (
+                      <div className="mt-2 space-y-1.5 rounded-lg border border-slate-100 bg-slate-50/80 p-2">
+                        <label className="block">
+                          <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">Title</span>
+                          <input
+                            type="text"
+                            value={edit.title}
+                            onChange={(e) =>
+                              setTextEdits((prev) => ({
+                                ...prev,
+                                [i]: { ...edit, title: e.target.value },
+                              }))
+                            }
+                            disabled={isRegenerating || presentationBusy}
+                            className="mt-0.5 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-brand/50 focus:outline-none disabled:opacity-50"
+                          />
+                        </label>
+                        {isTitle && (
+                          <label className="block">
+                            <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">Subtitle / tagline</span>
+                            <input
+                              type="text"
+                              value={edit.tagline}
+                              onChange={(e) =>
+                                setTextEdits((prev) => ({
+                                  ...prev,
+                                  [i]: { ...edit, tagline: e.target.value },
+                                }))
+                              }
+                              disabled={isRegenerating || presentationBusy}
+                              className="mt-0.5 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-brand/50 focus:outline-none disabled:opacity-50"
+                            />
+                          </label>
+                        )}
+                        {!isTitle &&
+                          edit.body.map((bullet, bi) => (
+                            <label key={bi} className="block">
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                                Bullet {bi + 1}
+                              </span>
+                              <input
+                                type="text"
+                                value={bullet}
+                                onChange={(e) => {
+                                  const nextBody = [...edit.body];
+                                  nextBody[bi] = e.target.value;
+                                  setTextEdits((prev) => ({
+                                    ...prev,
+                                    [i]: { ...edit, body: nextBody },
+                                  }));
+                                }}
+                                disabled={isRegenerating || presentationBusy}
+                                placeholder={bi === 0 ? "Optional — leave blank to omit" : "Optional"}
+                                className="mt-0.5 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-brand/50 focus:outline-none disabled:opacity-50"
+                              />
+                            </label>
+                          ))}
+                      </div>
+                    )}
+
                     <div className="mt-1.5 flex items-center gap-1.5">
                       <input
                         type="text"
-                        value={inputs[i] ?? ""}
-                        onChange={e => setInputs(prev => ({ ...prev, [i]: e.target.value }))}
-                        onKeyDown={e => { if (e.key === "Enter" && !isRegenerating) handleRegenerate(i); }}
-                        placeholder={`Change slide ${i + 1} background…`}
+                        value={visualInputs[i] ?? ""}
+                        onChange={(e) => setVisualInputs((prev) => ({ ...prev, [i]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !isRegenerating) handleRegenerate(i); }}
+                        placeholder="Visual changes (color, background, style)…"
                         disabled={isRegenerating || !onRegenerateSlide || presentationBusy}
                         className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-800 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none disabled:opacity-50"
                       />
                       <button
                         type="button"
-                        disabled={!(inputs[i] || "").trim() || isRegenerating || !onRegenerateSlide || presentationBusy}
+                        disabled={!canRegenerate(i) || isRegenerating || !onRegenerateSlide || presentationBusy}
                         onClick={() => handleRegenerate(i)}
                         className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 text-[11px] font-semibold text-brand-dark transition hover:bg-brand/20 disabled:opacity-40"
                       >

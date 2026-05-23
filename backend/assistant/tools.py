@@ -6183,8 +6183,8 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
 
     if not slides_plan:
         return {"error": "slides array is required — pass it from the previous create_visual_presentation result."}
-    if not instruction:
-        return {"error": "instruction is required — describe what to change on this slide."}
+    if not instruction and not args.get("text_edited"):
+        return {"error": "Describe a visual change and/or pass updated slide text."}
 
     business_name = "My Business"
     logo_url = None
@@ -6218,6 +6218,7 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
         topic=topic,
         logo_url=logo_url,
         ai_designed=True,
+        user_edited=bool(args.get("text_edited")),
     )
 
     if not result.get("success"):

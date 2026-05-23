@@ -509,11 +509,13 @@ async def run_presentation_regenerate_slide_stream(
     slides: List[Dict[str, Any]],
     image_urls: List[str],
     topic: str = "",
+    text_edited: bool = False,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Regenerate ONE slide image and merge it back into the existing deck (no LLM round-trip)."""
     user_id = user.get("business_id") or user["_id"]
     instruction = (instruction or "").strip()
     topic = (topic or "Presentation").strip()
+    text_edited = bool(text_edited)
 
     if slide_index < 0:
         reply = "Invalid slide index."
@@ -549,8 +551,8 @@ async def run_presentation_regenerate_slide_stream(
         }
         return
 
-    if not instruction:
-        reply = "Describe what to change on this slide first."
+    if not instruction and not text_edited:
+        reply = "Edit the slide text and/or describe a visual change, then tap Regenerate."
         yield {"type": "token", "text": reply}
         yield {
             "type": "done",
@@ -583,6 +585,7 @@ async def run_presentation_regenerate_slide_stream(
         "slides": slides,
         "image_urls": image_urls,
         "topic": topic,
+        "text_edited": text_edited,
     }
     result = await run_tool("regenerate_slide", ctx, tool_args)
     step = {"tool": "regenerate_slide", "arguments": tool_args, "result": result}

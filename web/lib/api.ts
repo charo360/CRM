@@ -6,7 +6,7 @@ import { getToken } from "./auth";
  * using the Next rewrite (`/proxy` → backend `/api/*`). Render/env values often
  * omit `/api` — that produces 404 on routes like the SEO coach.
  */
-function normalizeCrmApiBase(raw: string): string {
+export function normalizeCrmApiBase(raw: string): string {
   const t = raw.trim().replace(/\/+$/, "");
   if (!t) return "http://127.0.0.1:8000/api";
   if (t.endsWith("/proxy") || t === "/proxy") return t;
@@ -15,7 +15,7 @@ function normalizeCrmApiBase(raw: string): string {
   return t;
 }
 
-const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
+export const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
 
 function formatErrorBody(res: Response, rawText: string): string {
   let err: { detail?: unknown; error?: unknown; message?: unknown; details?: unknown } = {};
@@ -1327,6 +1327,7 @@ export const assistantApi = {
     slides: Record<string, unknown>[];
     image_urls: string[];
     topic?: string;
+    text_edited?: boolean;
     signal?: AbortSignal;
   }): ReadableStream<string> => {
     const { signal, ...bodyRest } = body;
