@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import {
   marketingApi,
   socialSchedulerApi,
+  uploadApi,
   type ScheduledPost,
   type ScheduledPostAsset,
   type SocialAnalytics,
@@ -35,6 +36,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Clock,
   Copy,
   Eye,
@@ -122,15 +124,266 @@ function fmt(n: number): string {
 
 // ── Analytics tab ─────────────────────────────────────────────────────────────
 
+type AnalyticsPostRow = SocialAnalytics["top_posts"][number];
+
 function SkeletonCard({ wide }: { wide?: boolean }) {
   return (
     <div
-      className={`animate-pulse rounded-xl border border-slate-100 bg-white p-4 shadow-sm ${wide ? "col-span-2" : ""}`}
+      className={`animate-pulse rounded-lg border border-slate-200 bg-white p-4 ${wide ? "col-span-2" : ""}`}
     >
-      <div className="mb-3 h-4 w-8 rounded-md bg-slate-100" />
-      <div className="h-6 w-16 rounded-md bg-slate-100" />
-      <div className="mt-2 h-3 w-24 rounded-md bg-slate-100" />
+      <div className="mb-3 h-4 w-8 rounded bg-slate-100" />
+      <div className="h-6 w-16 rounded bg-slate-100" />
+      <div className="mt-2 h-3 w-24 rounded bg-slate-100" />
     </div>
+  );
+}
+
+function AnalyticsPostDetailDrawer({
+  row,
+  open,
+  onClose,
+}: {
+  row: AnalyticsPostRow | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [visible, setVisible] = React.useState(false);
+  const [post, setPost] = React.useState<ScheduledPost | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!open || !row) {
+      setVisible(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setVisible(true));
+    setLoading(true);
+    setError(null);
+    setPost(null);
+    void socialSchedulerApi
+      .get(row.id)
+      .then((res) => setPost(res.post))
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "Failed to load post"),
+      )
+      .finally(() => setLoading(false));
+    return () => cancelAnimationFrame(frame);
+  }, [open, row]);
+
+  if (!open || !row) return null;
+
+  const metrics = post?.engagement ?? {
+    likes: row.likes,
+    comments: row.comments,
+    shares: row.shares,
+    reach: row.reach,
+    clicks: row.clicks,
+    saves: 0,
+  };
+  const engagementRate =
+    metrics.reach > 0
+      ? (
+          ((metrics.likes + metrics.comments + metrics.shares) / metrics.reach) *
+          100
+        ).toFixed(2)
+      : "0.00";
+  const syncedAt = post?.engagement_synced_at ?? row.engagement_synced_at;
+  const publishedDate = new Date(row.date);
+
+  const metricItems = [
+    { label: "Reach", value: fmt(metrics.reach), icon: Eye },
+    { label: "Likes", value: fmt(metrics.likes), icon: ThumbsUp },
+    { label: "Comments", value: fmt(metrics.comments), icon: MessageCircle },
+    { label: "Shares", value: fmt(metrics.shares), icon: Share2 },
+    { label: "Clicks", value: fmt(metrics.clicks), icon: MousePointer },
+    { label: "Saves", value: fmt(metrics.saves), icon: BarChart2 },
+  ];
+
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        className={`fixed inset-0 z-40 bg-slate-900/30 transition-opacity duration-200 ${
+          visible ? "opacity-100" : "opacity-0"
+        }`}
+        onClick={onClose}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Post analytics details"
+        className={`fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-slate-200 bg-white transition-transform duration-200 ease-out ${
+          visible ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        <div className="flex shrink-0 items-start justify-between border-b border-slate-200 px-5 py-4">
+          <div className="min-w-0 pr-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+              Published post
+            </p>
+            <h2 className="mt-1 truncate text-base font-semibold text-slate-900">
+              {post?.title || row.title || "Untitled"}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              {publishedDate.toLocaleDateString(undefined, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {row.channels.map((ch) => (
+                <span
+                  key={ch}
+                  className={`rounded px-2 py-0.5 text-[10px] font-semibold capitalize ${
+                    CHANNEL_COLOURS[ch] ?? "bg-slate-100 text-slate-700"
+                  }`}
+                >
+                  {ch}
+                </span>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-400">
+              <Loader2 size={16} className="animate-spin" />
+              Loading post…
+            </div>
+          )}
+
+          {error && !loading && (
+            <div className="mx-5 mt-5 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5">
+              <AlertCircle size={14} className="mt-0.5 shrink-0 text-red-500" />
+              <p className="text-xs text-red-700">{error}</p>
+            </div>
+          )}
+
+          {!loading && (
+            <div className="space-y-5 p-5">
+              <div>
+                <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Engagement
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {metricItems.map((m) => (
+                    <div
+                      key={m.label}
+                      className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5"
+                    >
+                      <div className="mb-1 flex items-center gap-1.5 text-slate-400">
+                        <m.icon size={12} />
+                        <span className="text-[10px] font-medium">{m.label}</span>
+                      </div>
+                      <p className="text-lg font-semibold tabular-nums text-slate-900">
+                        {m.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-xs">
+                  <span className="text-slate-500">Engagement rate</span>
+                  <span className="font-semibold text-slate-900">
+                    {engagementRate}%
+                  </span>
+                </div>
+              </div>
+
+              {(post?.body || post?.title) && (
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    Content
+                  </p>
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    {post?.body ? (
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
+                        {post.body}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-slate-400 italic">No caption</p>
+                    )}
+                    {post?.link_url && (
+                      <p className="mt-2 truncate text-xs text-brand-dark">
+                        {post.link_url}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(post?.image_url || post?.assets?.[0]?.preview_data_url) && (
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    Media
+                  </p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={
+                      post?.assets?.[0]?.preview_data_url ?? post?.image_url ?? ""
+                    }
+                    alt=""
+                    className="w-full rounded-lg border border-slate-200 object-cover"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-2 border-t border-slate-200 pt-4 text-xs">
+                {/* <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Post ID</span>
+                  <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600">
+                    {row.id.slice(0, 8)}…
+                  </code>
+                </div>
+                {row.zernio_post_id && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Platform ID</span>
+                    <code className="max-w-[180px] truncate rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600">
+                      {row.zernio_post_id}
+                    </code>
+                  </div>
+                )} */}
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Metrics sync</span>
+                  {syncedAt ? (
+                    <span className="inline-flex items-center gap-1 font-medium text-emerald-700">
+                      <CheckCircle2 size={11} />
+                      {new Date(syncedAt).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 font-medium text-amber-600">
+                      <Clock size={11} />
+                      Pending
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Engagement score</span>
+                  <span className="font-semibold text-slate-900">
+                    {row.engagement_score}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -141,6 +394,19 @@ function AnalyticsTab() {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [lastFetched, setLastFetched] = React.useState<Date | null>(null);
+  const [selectedPost, setSelectedPost] =
+    React.useState<AnalyticsPostRow | null>(null);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+
+  const openPostDetail = (row: AnalyticsPostRow) => {
+    setSelectedPost(row);
+    setDrawerOpen(true);
+  };
+
+  const closePostDetail = () => {
+    setDrawerOpen(false);
+    setTimeout(() => setSelectedPost(null), 200);
+  };
 
   const load = React.useCallback(async (d: Period, ch: string) => {
     setLoading(true);
@@ -166,33 +432,31 @@ function AnalyticsTab() {
   const maxReach = channelEntries[0]?.[1].reach ?? 1;
 
   return (
-    <div className="space-y-6">
-      {/* ── Controls bar ── */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Period toggle */}
-          <div className="flex items-center gap-1 rounded-xl bg-slate-100 p-1">
+    <div className="space-y-5">
+      {/* Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center rounded-lg border border-slate-200 p-0.5">
             {PERIOD_OPTIONS.map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setDays(p)}
-                className={`rounded-lg px-3 py-1 text-xs font-semibold transition-all ${
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                   days === p
-                    ? "bg-white text-slate-900 shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:text-slate-800"
                 }`}
               >
-                {p}d
+                {p} days
               </button>
             ))}
           </div>
 
-          {/* Platform filter */}
           <select
             value={channel}
             onChange={(e) => setChannel(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-brand focus:ring-1 focus:ring-brand/20"
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-slate-400"
           >
             <option value="">All platforms</option>
             {CHANNELS.map((c) => (
@@ -217,7 +481,7 @@ function AnalyticsTab() {
             type="button"
             onClick={() => void load(days, channel)}
             disabled={loading}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
           >
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
             {loading ? "Loading…" : "Refresh"}
@@ -225,17 +489,15 @@ function AnalyticsTab() {
         </div>
       </div>
 
-      {/* ── Error ── */}
       {error && (
-        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
           <AlertCircle size={15} className="mt-0.5 shrink-0 text-red-500" />
           <p className="text-sm text-red-700">{error}</p>
         </div>
       )}
 
-      {/* ── Skeleton while first load ── */}
       {loading && !data && (
-        <div className="space-y-6">
+        <div className="space-y-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[...Array(4)].map((_, i) => (
               <SkeletonCard key={i} />
@@ -249,10 +511,9 @@ function AnalyticsTab() {
         </div>
       )}
 
-      {/* ── Data ── */}
       {data && (
         <>
-          {/* Primary KPI cards */}
+          {/* Primary KPIs */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               {
@@ -260,94 +521,87 @@ function AnalyticsTab() {
                 value: fmt(data.totals.reach),
                 sub: `${days}-day window`,
                 icon: Eye,
-                iconColor: "text-brand-dark",
               },
               {
                 label: "Total likes",
                 value: fmt(data.totals.likes),
-                sub: "across all platforms",
+                sub: "all platforms",
                 icon: ThumbsUp,
-                iconColor: "text-pink-500",
               },
               {
                 label: "Comments",
                 value: fmt(data.totals.comments),
-                sub: "on published posts",
+                sub: "published posts",
                 icon: MessageCircle,
-                iconColor: "text-amber-500",
               },
               {
                 label: "Avg engagement",
                 value: `${data.avg_engagement_rate}%`,
                 sub: "rate per post",
                 icon: TrendingUp,
-                iconColor: "text-emerald-500",
               },
             ].map((c) => (
               <div
                 key={c.label}
-                className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                className="rounded-lg border border-slate-200 bg-white p-4"
               >
-                <div className="mb-3">
-                  <c.icon size={15} className={c.iconColor} />
+                <div className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                  <c.icon size={15} />
                 </div>
-                <p className="text-2xl font-bold tracking-tight text-slate-900">
+                <p className="text-2xl font-semibold tabular-nums tracking-tight text-slate-900">
                   {c.value}
                 </p>
-                <p className="mt-0.5 text-[11px] font-semibold text-slate-600">
+                <p className="mt-0.5 text-xs font-medium text-slate-600">
                   {c.label}
                 </p>
-                <p className="text-[10px] text-slate-400">{c.sub}</p>
+                <p className="text-[11px] text-slate-400">{c.sub}</p>
               </div>
             ))}
           </div>
 
           {/* Secondary stats */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {[
-              {
-                label: "Shares",
-                value: fmt(data.totals.shares),
-                icon: Share2,
-                color: "text-sky-500",
-              },
+              { label: "Shares", value: fmt(data.totals.shares), icon: Share2 },
               {
                 label: "Clicks",
                 value: fmt(data.totals.clicks),
                 icon: MousePointer,
-                color: "text-violet-500",
               },
               {
                 label: "Avg reach / post",
                 value: fmt(data.avg_reach_per_post),
                 icon: BarChart2,
-                color: "text-brand-dark",
               },
             ].map((c) => (
               <div
                 key={c.label}
-                className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 shadow-sm"
+                className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3"
               >
-                <c.icon size={16} className={`shrink-0 ${c.color}`} />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                  <c.icon size={15} />
+                </div>
                 <div>
-                  <p className="text-lg font-bold text-slate-900">{c.value}</p>
-                  <p className="text-[11px] text-slate-500">{c.label}</p>
+                  <p className="text-lg font-semibold tabular-nums text-slate-900">
+                    {c.value}
+                  </p>
+                  <p className="text-xs text-slate-500">{c.label}</p>
                 </div>
               </div>
             ))}
           </div>
 
-          {/* By platform */}
+          {/* Platform breakdown */}
           {channelEntries.length > 0 && (
-            <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-900">
                     Platform breakdown
                   </h3>
-                  <p className="text-[11px] text-slate-400">Sorted by reach</p>
+                  <p className="text-xs text-slate-500">Sorted by reach</p>
                 </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
                   {channelEntries.length} platform
                   {channelEntries.length > 1 ? "s" : ""}
                 </span>
@@ -355,27 +609,24 @@ function AnalyticsTab() {
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[560px] text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      <th className="px-5 py-3 text-left">Platform</th>
-                      <th className="px-5 py-3 text-left">Reach</th>
-                      <th className="px-5 py-3 text-right">Posts</th>
-                      <th className="px-5 py-3 text-right">Likes</th>
-                      <th className="px-5 py-3 text-right">Comments</th>
-                      <th className="px-5 py-3 text-right">Shares</th>
-                      <th className="px-5 py-3 text-right">Clicks</th>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="px-5 py-2.5 text-left">Platform</th>
+                      <th className="px-5 py-2.5 text-left">Reach</th>
+                      <th className="px-5 py-2.5 text-right">Posts</th>
+                      <th className="px-5 py-2.5 text-right">Likes</th>
+                      <th className="px-5 py-2.5 text-right">Comments</th>
+                      <th className="px-5 py-2.5 text-right">Shares</th>
+                      <th className="px-5 py-2.5 text-right">Clicks</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
+                  <tbody className="divide-y divide-slate-100">
                     {channelEntries.map(([ch, stats]) => {
                       const pct = Math.round((stats.reach / maxReach) * 100);
                       return (
-                        <tr
-                          key={ch}
-                          className="group hover:bg-slate-50/60 transition-colors"
-                        >
-                          <td className="px-5 py-3.5">
+                        <tr key={ch} className="hover:bg-slate-50/80">
+                          <td className="px-5 py-3">
                             <span
-                              className={`inline-flex items-center rounded-lg px-2.5 py-1 text-[11px] font-bold capitalize ${
+                              className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-semibold capitalize ${
                                 CHANNEL_COLOURS[ch] ??
                                 "bg-slate-100 text-slate-700"
                               }`}
@@ -383,32 +634,32 @@ function AnalyticsTab() {
                               {ch}
                             </span>
                           </td>
-                          <td className="px-5 py-3.5">
+                          <td className="px-5 py-3">
                             <div className="flex items-center gap-2.5">
-                              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-100">
+                              <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-100">
                                 <div
-                                  className="h-full rounded-full bg-brand transition-all duration-500"
+                                  className="h-full rounded-full bg-slate-800"
                                   style={{ width: `${pct}%` }}
                                 />
                               </div>
-                              <span className="text-xs font-semibold text-slate-800">
+                              <span className="text-xs font-medium tabular-nums text-slate-800">
                                 {fmt(stats.reach)}
                               </span>
                             </div>
                           </td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                             {stats.posts}
                           </td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                             {fmt(stats.likes)}
                           </td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                             {fmt(stats.comments)}
                           </td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                             {fmt(stats.shares)}
                           </td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                             {fmt(stats.clicks)}
                           </td>
                         </tr>
@@ -420,27 +671,27 @@ function AnalyticsTab() {
             </div>
           )}
 
-          {/* Top posts */}
-          <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          {/* Published posts */}
+          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">
                   Published posts
                 </h3>
-                <p className="text-[11px] text-slate-400">
-                  Engagement over the last {days} days
+                <p className="text-xs text-slate-500">
+                  Click a row to view details · last {days} days
                 </p>
               </div>
               {data.unsynced_posts > 0 && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700">
+                <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
                   <Clock size={10} />
                   {data.unsynced_posts} awaiting sync
                 </span>
               )}
             </div>
             {data.top_posts.length === 0 ? (
-              <div className="flex flex-col items-center gap-3 px-4 py-14 text-center">
-                <div className="rounded-full bg-slate-100 p-3">
+              <div className="flex flex-col items-center gap-2 px-4 py-14 text-center">
+                <div className="rounded-lg bg-slate-100 p-3">
                   <BarChart2 size={20} className="text-slate-400" />
                 </div>
                 <p className="text-sm font-medium text-slate-600">
@@ -454,24 +705,34 @@ function AnalyticsTab() {
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[680px] text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      <th className="px-5 py-3 text-left">Post</th>
-                      <th className="px-5 py-3 text-left">Channels</th>
-                      <th className="px-5 py-3 text-right">Reach</th>
-                      <th className="px-5 py-3 text-right">Likes</th>
-                      <th className="px-5 py-3 text-right">Comments</th>
-                      <th className="px-5 py-3 text-right">Shares</th>
-                      <th className="px-5 py-3 text-right">Synced</th>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="px-5 py-2.5 text-left">Post</th>
+                      <th className="px-5 py-2.5 text-left">Channels</th>
+                      <th className="px-5 py-2.5 text-right">Reach</th>
+                      <th className="px-5 py-2.5 text-right">Likes</th>
+                      <th className="px-5 py-2.5 text-right">Comments</th>
+                      <th className="px-5 py-2.5 text-right">Shares</th>
+                      <th className="px-5 py-2.5 text-right">Synced</th>
+                      <th className="w-10 px-2 py-2.5" />
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
+                  <tbody className="divide-y divide-slate-100">
                     {data.top_posts.map((p) => (
                       <tr
                         key={p.id}
-                        className="hover:bg-slate-50/60 transition-colors"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openPostDetail(p)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            openPostDetail(p);
+                          }
+                        }}
+                        className="cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none"
                       >
-                        <td className="px-5 py-3.5 max-w-[200px]">
-                          <p className="truncate text-xs font-semibold text-slate-900">
+                        <td className="max-w-[220px] px-5 py-3">
+                          <p className="truncate text-xs font-medium text-slate-900">
                             {p.title || "Untitled"}
                           </p>
                           <p className="text-[10px] text-slate-400">
@@ -482,12 +743,12 @@ function AnalyticsTab() {
                             })}
                           </p>
                         </td>
-                        <td className="px-5 py-3.5">
+                        <td className="px-5 py-3">
                           <div className="flex flex-wrap gap-1">
                             {p.channels.map((ch) => (
                               <span
                                 key={ch}
-                                className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold capitalize ${
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold capitalize ${
                                   CHANNEL_COLOURS[ch] ??
                                   "bg-slate-100 text-slate-700"
                                 }`}
@@ -497,22 +758,22 @@ function AnalyticsTab() {
                             ))}
                           </div>
                         </td>
-                        <td className="px-5 py-3.5 text-right text-xs font-semibold text-slate-900">
+                        <td className="px-5 py-3 text-right text-xs font-medium tabular-nums text-slate-900">
                           {fmt(p.reach)}
                         </td>
-                        <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                        <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                           {fmt(p.likes)}
                         </td>
-                        <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                        <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                           {fmt(p.comments)}
                         </td>
-                        <td className="px-5 py-3.5 text-right text-xs text-slate-600">
+                        <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
                           {fmt(p.shares)}
                         </td>
-                        <td className="px-5 py-3.5 text-right">
+                        <td className="px-5 py-3 text-right">
                           {p.engagement_synced_at ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                              <CheckCircle2 size={9} />
+                            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-700">
+                              <CheckCircle2 size={10} />
                               {new Date(
                                 p.engagement_synced_at,
                               ).toLocaleTimeString([], {
@@ -521,11 +782,14 @@ function AnalyticsTab() {
                               })}
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-600">
-                              <Clock size={9} />
+                            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600">
+                              <Clock size={10} />
                               Pending
                             </span>
                           )}
+                        </td>
+                        <td className="px-2 py-3 text-slate-300">
+                          <ChevronRight size={14} />
                         </td>
                       </tr>
                     ))}
@@ -535,13 +799,18 @@ function AnalyticsTab() {
             )}
           </div>
 
-          {/* Footer note */}
           <p className="text-center text-[11px] text-slate-400">
             {data.total_posts} published post{data.total_posts !== 1 ? "s" : ""}{" "}
             · Metrics sync every 30 min
           </p>
         </>
       )}
+
+      <AnalyticsPostDetailDrawer
+        row={selectedPost}
+        open={drawerOpen}
+        onClose={closePostDetail}
+      />
     </div>
   );
 }
@@ -902,8 +1171,13 @@ export default function SocialSchedulerPage() {
   }, [modal]);
 
   const filtered = useMemo(() => {
-    if (filter === "all") return rows;
-    return rows.filter((r) => r.status === filter);
+    const list =
+      filter === "all" ? rows : rows.filter((r) => r.status === filter);
+    return [...list].sort(
+      (a, b) =>
+        new Date(b.created_at || b.scheduled_at).getTime() -
+        new Date(a.created_at || a.scheduled_at).getTime(),
+    );
   }, [rows, filter]);
 
   // ── Close drawer with animation ──────────────────────────────────────────────
@@ -1011,6 +1285,38 @@ export default function SocialSchedulerPage() {
     );
   }
 
+  async function ensurePublicMedia(
+    assets?: ScheduledPostAsset[],
+    imageUrl?: string,
+  ): Promise<{ assets?: ScheduledPostAsset[]; image_url?: string }> {
+    const nextAssets = [...(assets ?? [])];
+    for (let i = 0; i < nextAssets.length; i++) {
+      const asset = nextAssets[i];
+      if (asset.s3_url?.startsWith("http")) continue;
+      const preview = asset.preview_data_url;
+      if (!preview?.startsWith("data:")) continue;
+      const { image_url: uploadedUrl } = await uploadApi.imageBase64(
+        preview,
+        asset.file_name || "social-post.jpg",
+      );
+      nextAssets[i] = { ...asset, s3_url: uploadedUrl };
+    }
+
+    let nextImageUrl = imageUrl;
+    if (nextImageUrl?.startsWith("data:")) {
+      const { image_url: uploadedUrl } = await uploadApi.imageBase64(
+        nextImageUrl,
+        "social-post.jpg",
+      );
+      nextImageUrl = uploadedUrl;
+    }
+
+    return {
+      assets: nextAssets.length ? nextAssets : assets,
+      image_url: nextImageUrl,
+    };
+  }
+
   async function saveModal() {
     if (!modal) return;
 
@@ -1040,34 +1346,63 @@ export default function SocialSchedulerPage() {
         ? (modal.placement_height ?? 1080)
         : preset.height;
 
-    const payload = {
-      title: (modal.title ?? "").trim(),
-      body: (modal.body ?? "").trim(),
-      channels: (modal.channels?.length
-        ? modal.channels
-        : ["facebook"]) as SocialChannel[],
-      scheduled_at: modal.scheduled_at
-        ? new Date(modal.scheduled_at).toISOString()
-        : new Date().toISOString(),
-      status: (modal.status ?? "draft") as ScheduledPost["status"],
-      post_kind: modal.post_kind,
-      placement_id: modal.placement_id,
-      placement_width: w,
-      placement_height: h,
-      link_url: modal.link_url?.trim() || undefined,
-      assets: modal.assets,
-      image_url: modal.image_url,
-    };
+    const status = (modal.status ?? "draft") as ScheduledPost["status"];
 
     setSaving(true);
     try {
-      if (modal.id) {
-        await socialSchedulerApi.update(modal.id, payload);
-      } else {
-        await socialSchedulerApi.create(payload);
+      const media = await ensurePublicMedia(modal.assets, modal.image_url);
+      if (media.assets) {
+        setModal((prev) => (prev ? { ...prev, assets: media.assets } : prev));
       }
+      if (media.image_url && media.image_url !== modal.image_url) {
+        setModal((prev) =>
+          prev ? { ...prev, image_url: media.image_url } : prev,
+        );
+      }
+
+      const payload = {
+        title: (modal.title ?? "").trim(),
+        body: (modal.body ?? "").trim(),
+        channels: (modal.channels?.length
+          ? modal.channels
+          : ["facebook"]) as SocialChannel[],
+        scheduled_at:
+          status === "published"
+            ? new Date().toISOString()
+            : modal.scheduled_at
+              ? new Date(modal.scheduled_at).toISOString()
+              : new Date().toISOString(),
+        status,
+        post_kind: modal.post_kind,
+        placement_id: modal.placement_id,
+        placement_width: w,
+        placement_height: h,
+        link_url: modal.link_url?.trim() || undefined,
+        assets: media.assets ?? modal.assets,
+        image_url: media.image_url ?? modal.image_url,
+      };
+
+      const res = modal.id
+        ? await socialSchedulerApi.update(modal.id, payload)
+        : await socialSchedulerApi.create(payload);
+
+      if (res.publish && !res.publish.success) {
+        const pubErr =
+          res.publish.error || "Failed to publish to social media.";
+        setSaveError(pubErr);
+        toast.error(pubErr);
+        await refresh();
+        return;
+      }
+
       await refresh();
-      toast.success(modal.id ? "Post updated" : "Post scheduled");
+      if (status === "published") {
+        toast.success("Post published to social media");
+      } else if (status === "scheduled") {
+        toast.success(modal.id ? "Post updated" : "Post scheduled");
+      } else {
+        toast.success(modal.id ? "Post updated" : "Draft saved");
+      }
       closeDrawer();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to save post";
@@ -1781,9 +2116,20 @@ export default function SocialSchedulerPage() {
                         >
                           <option value="draft">Draft</option>
                           <option value="scheduled">Scheduled</option>
-                          <option value="published">Published (manual)</option>
-                          <option value="failed">Failed (manual)</option>
+                          <option value="published">Publish now</option>
                         </select>
+                        {(modal.status ?? "draft") === "published" && (
+                          <p className="mt-1.5 text-[11px] text-slate-500">
+                            Sends immediately to connected social accounts via
+                            Zernio.
+                          </p>
+                        )}
+                        {(modal.status ?? "draft") === "scheduled" && (
+                          <p className="mt-1.5 text-[11px] text-slate-500">
+                            Queues the post for the date above. Past times
+                            publish on save.
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
