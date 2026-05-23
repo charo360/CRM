@@ -5394,9 +5394,11 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="plan_visual_presentation",
     description=(
-        "STEP 1 of 2 — Plan a presentation deck and present the full outline to the user "
-        "for review and approval BEFORE generating the file. "
-        "Call this first whenever a user asks for a presentation, pitch deck, or slideshow. "
+        "STEP 1 of 2 — Plan a presentation deck slide-by-slide and show the outline to the user "
+        "for review BEFORE generating the file. "
+        "Use this ONLY when the user wants to manually choose each slide's layout and content themselves, "
+        "or when they explicitly say 'show me the plan first' / 'let me review before generating'. "
+        "DO NOT use this when the user provides a company brief or description — use generate_deck instead. "
         "Returns a structured slide-by-slide plan with title, body bullets, layout type, and "
         "any structured data needed (stats, steps, items, etc.). "
         "After showing the plan, ask: 'Does this look good, or would you like to change anything?' "
