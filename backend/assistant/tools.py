@@ -5395,10 +5395,11 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
     name="check_presentation_requirements",
     description=(
         "STEP 0 of the presentation loop — verify you have every fact needed BEFORE building the plan. "
-        "Call after purpose + slide count are known. Auto-loads CRM data AND web-searches for "
-        "topic- and deck-type-specific context (market stats, industry pain, ROI benchmarks, etc.). "
-        "The checklist UI only shows gaps the user must answer (e.g. funding ask, private metrics). "
-        "If ready=false, reply using chat_reply from the tool — do NOT paste questions or market-size disclaimers in chat. "
+        "Call as soon as deck_purpose is known — do NOT ask the user for a topic first. "
+        "The tool auto-loads the business name and description from CRM and uses that as the topic. "
+        "Only ask the user for things the CRM and web research cannot answer (e.g. funding ask). "
+        "Auto-loads CRM data AND web-searches for topic- and deck-type-specific context. "
+        "If ready=false, reply using chat_reply from the tool — do NOT paste questions in chat. "
         "Researched facts appear in the checklist card under 'Researched for you'."
     ),
     parameters={
@@ -5411,7 +5412,7 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
             },
             "topic": {
                 "type": "string",
-                "description": "Main subject of the presentation.",
+                "description": "Main subject — leave blank to auto-resolve from CRM business name.",
             },
             "audience": {
                 "type": "string",
@@ -5427,7 +5428,7 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
                 "additionalProperties": {"type": "string"},
             },
         },
-        "required": ["deck_purpose", "topic"],
+        "required": ["deck_purpose"],
     },
 )
 async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]):
