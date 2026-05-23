@@ -5392,25 +5392,211 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="check_presentation_requirements",
+    description=(
+        "STEP 0 of the presentation loop — verify you have every fact needed BEFORE building the plan. "
+        "Call after purpose + slide count are known. Auto-loads CRM data AND web-searches for "
+        "topic- and deck-type-specific context (market stats, industry pain, ROI benchmarks, etc.). "
+        "The checklist UI only shows gaps the user must answer (e.g. funding ask, private metrics). "
+        "If ready=false, reply using chat_reply from the tool — do NOT paste questions or market-size disclaimers in chat. "
+        "Researched facts appear in the checklist card under 'Researched for you'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "deck_purpose": {
+                "type": "string",
+                "enum": ["investor_pitch", "sales", "internal", "training", "other"],
+                "description": "Deck type from the user's purpose answer.",
+            },
+            "topic": {
+                "type": "string",
+                "description": "Main subject of the presentation.",
+            },
+            "audience": {
+                "type": "string",
+                "description": "Who the deck is for.",
+            },
+            "user_context": {
+                "type": "object",
+                "description": (
+                    "Facts the user already provided in chat, keyed by requirement id "
+                    "(e.g. funding_ask, market_size, problem_statement, pricing_offer). "
+                    "Merge new answers here after each user reply."
+                ),
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["deck_purpose", "topic"],
+    },
+)
+async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]):
+    from .presentation_plan import (
+        CHECKLIST_VERSION,
+        RESEARCHABLE_KEYS,
+        _PURPOSE_REQUIRED_KEYS,
+        _ctx_val,
+        _resolve_deck_purpose,
+        assess_presentation_requirements,
+        auto_research_requirements,
+        build_requirements_checklist,
+        build_agent_requirements_note,
+        build_requirements_chat_reply,
+        finalize_presentation_requirements_assessment,
+        researchable_keys_for_purpose,
+        resolve_presentation_topic,
+        seed_user_context_from_crm,
+        strip_researchable_checklist_items,
+    )
+
+    deck_purpose = (args.get("deck_purpose") or "").strip()
+    topic = (args.get("topic") or "Presentation").strip()
+    audience = (args.get("audience") or "").strip()
+    user_context = dict(args.get("user_context") or {})
+
+    owner: Dict[str, Any] = {}
+    analytics: Dict[str, Any] = {}
+    products: List[Dict[str, Any]] = []
+    team: List[Dict[str, Any]] = []
+
+    try:
+        owner = await get_owner_info(ctx, {}) or {}
+        if owner.get("error"):
+            owner = {}
+    except Exception:
+        logger.exception("[check_presentation_requirements] get_owner_info skipped")
+
+    try:
+        analytics = await get_analytics_summary(ctx, {}) or {}
+        if analytics.get("error"):
+            analytics = {}
+    except Exception:
+        logger.exception("[check_presentation_requirements] get_analytics_summary skipped")
+
+    try:
+        prod_result = await list_products(ctx, {"limit": 20}) or {}
+        products = prod_result.get("products") or []
+    except Exception:
+        logger.exception("[check_presentation_requirements] list_products skipped")
+
+    try:
+        team_result = await list_team(ctx, {}) or {}
+        team = team_result.get("members") or []
+    except Exception:
+        logger.exception("[check_presentation_requirements] list_team skipped")
+
+    purpose = _resolve_deck_purpose(deck_purpose, audience)
+    topic = resolve_presentation_topic(topic, owner)
+    if not (audience or "").strip():
+        if purpose == "investor_pitch":
+            audience = "investors"
+        elif purpose == "sales":
+            audience = "prospective clients"
+        elif purpose == "internal":
+            audience = "internal team"
+        elif purpose == "training":
+            audience = "trainees"
+
+    user_context = seed_user_context_from_crm(
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+    )
+
+    required = _PURPOSE_REQUIRED_KEYS.get(purpose, _PURPOSE_REQUIRED_KEYS["other"])
+    purpose_researchable = researchable_keys_for_purpose(purpose)
+    research_keys_list = [
+        k for k in required
+        if k in purpose_researchable and not _ctx_val(user_context, k)
+    ]
+    researched: Dict[str, str] = {}
+    research_sources: Dict[str, str] = {}
+    if research_keys_list:
+
+        async def _search_fn(query: str) -> Dict[str, Any]:
+            return await web_search(ctx, {"query": query, "max_results": 6})
+
+        researched, research_sources = await auto_research_requirements(
+            deck_purpose=deck_purpose,
+            topic=topic,
+            audience=audience,
+            owner=owner,
+            user_context=user_context,
+            keys=research_keys_list,
+            search_fn=_search_fn,
+        )
+        user_context.update(researched)
+
+    assessment = assess_presentation_requirements(
+        deck_purpose=deck_purpose,
+        topic=topic,
+        audience=audience,
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+        research_keys=set(researched.keys()),
+    )
+    checklist = strip_researchable_checklist_items(
+        build_requirements_checklist(
+            assessment,
+            owner=owner,
+            analytics=analytics,
+            products=products,
+            team=team,
+        )
+    )
+    assessment = finalize_presentation_requirements_assessment(
+        assessment,
+        owner=owner,
+        auto_researched=researched,
+        user_context=user_context,
+        topic=topic,
+        audience=audience,
+        deck_purpose=deck_purpose,
+    )
+    if not assessment.get("ready"):
+        assessment["chat_reply"] = build_requirements_chat_reply(
+            assessment, checklist, researched
+        )
+    assessment["success"] = True
+    assessment["checklist"] = checklist
+    assessment["checklist_ui"] = not assessment.get("ready") and len(checklist) > 0
+    assessment["checklist_version"] = CHECKLIST_VERSION
+    assessment["auto_researched"] = researched
+    assessment["research_sources"] = research_sources
+    assessment["user_context"] = user_context
+    assessment["do_not_ask"] = sorted(purpose_researchable | RESEARCHABLE_KEYS)
+    assessment["agent_reply_hint"] = build_agent_requirements_note(assessment, researched)
+    if not assessment.get("ready"):
+        assessment["chat_reply"] = build_requirements_chat_reply(
+            assessment, checklist, researched
+        )
+    assessment["crm_loaded"] = {
+        "owner": bool(owner),
+        "analytics": bool(analytics),
+        "products_count": len(products),
+        "team_count": len(team),
+    }
+    return assessment
+
+
+@tool(
     name="plan_visual_presentation",
     description=(
-        "STEP 1 of 2 — Plan a presentation deck slide-by-slide and show the outline to the user "
-        "for review BEFORE generating the file. "
-        "ALWAYS call this first whenever a user asks for a presentation, pitch deck, or slideshow — "
-        "show the plan and get explicit approval before spending credits on generation. "
-        "Returns a structured slide-by-slide plan with title, body bullets, layout type, and "
-        "any structured data needed (stats, steps, items, etc.). "
-        "After showing the plan, ask: 'Does this look good, or would you like to change anything?' "
-        "Once the user approves, call generate_deck (NOT create_visual_presentation) — "
-        "pass the original brief plus any adjustments the user requested. "
-        "DESIGN RULES (follow for every deck): "
-        "(1) Never repeat the same layout twice in a deck. "
-        "(2) Max 3 bullet points per content slide — short punchy phrases only, never full sentences. "
-        "(3) Every slide must include an 'image_prompt' field: one clean sentence describing a REAL photographic "
-        "scene as the background (e.g. 'sunlit marble office desk', 'aerial Nairobi skyline at dusk', "
-        "'calm ocean horizon at sunrise'). NO glowing lines, NO network effects, NO tech overlays in the scene. "
-        "(4) Every slide must have at least one non-text visual element (stat number, icon circle, table, flow, timeline). "
-        "(5) Use real placeholder numbers — never 'X%' or 'TBD'."
+        "STEP 1 of the presentation loop — build the slide plan ONLY. "
+        "Call ONLY after check_presentation_requirements returns ready=true "
+        "(or user_context covers every missing field). "
+        "The plan must be client-ready on first pass — use real facts from CRM + user_context. "
+        "Every slide: specific headline, real numbers, 2–3 verb-led bullets, concrete image_prompt. "
+        "Never use placeholders like 'X%', 'TBD', or '[insert]'. "
+        "Never repeat the same layout twice. Start with layout=title, end with layout=closing. "
+        "The UI renders an interactive plan card — do NOT list slides in chat afterward. "
+        "Do NOT call create_visual_presentation — the user approves on the plan card. "
+        "After this tool returns, reply in 1–2 sentences pointing to the plan card below."
     ),
     parameters={
         "type": "object",
@@ -5422,6 +5608,19 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
             "audience": {
                 "type": "string",
                 "description": "Who this deck is for (e.g. 'investors', 'clients', 'internal team').",
+            },
+            "deck_purpose": {
+                "type": "string",
+                "enum": ["investor_pitch", "sales", "internal", "training", "other"],
+                "description": "Deck type — pick the closest match so narrative and CTA fit.",
+            },
+            "user_context": {
+                "type": "object",
+                "description": (
+                    "All facts gathered from CRM + user answers (same keys as check_presentation_requirements). "
+                    "Required — planning is blocked if critical fields are still missing."
+                ),
+                "additionalProperties": {"type": "string"},
             },
             "slides": {
                 "type": "array",
@@ -5514,25 +5713,147 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    from .presentation_plan import (
+        RESEARCHABLE_KEYS,
+        _PURPOSE_REQUIRED_KEYS,
+        _ctx_val,
+        _resolve_deck_purpose,
+        assess_presentation_requirements,
+        auto_research_requirements,
+        build_agent_requirements_note,
+        finalize_presentation_requirements_assessment,
+        prepare_slide_plan,
+        researchable_keys_for_purpose,
+        resolve_presentation_topic,
+        seed_user_context_from_crm,
+    )
+
     topic    = (args.get("topic") or "Presentation").strip()
     audience = (args.get("audience") or "").strip()
+    deck_purpose = (args.get("deck_purpose") or "").strip()
+    user_context = dict(args.get("user_context") or {})
     slides   = args.get("slides") or []
 
     if not slides:
         return {"error": "slides list is required."}
+
+    owner: Dict[str, Any] = {}
+    analytics: Dict[str, Any] = {}
+    products: List[Dict[str, Any]] = []
+    team: List[Dict[str, Any]] = []
+
+    try:
+        owner = await get_owner_info(ctx, {}) or {}
+        if owner.get("error"):
+            owner = {}
+    except Exception:
+        logger.exception("[plan_visual_presentation] get_owner_info skipped")
+
+    try:
+        analytics = await get_analytics_summary(ctx, {}) or {}
+        if analytics.get("error"):
+            analytics = {}
+    except Exception:
+        logger.exception("[plan_visual_presentation] get_analytics_summary skipped")
+
+    try:
+        prod_result = await list_products(ctx, {"limit": 20}) or {}
+        products = prod_result.get("products") or []
+    except Exception:
+        logger.exception("[plan_visual_presentation] list_products skipped")
+
+    try:
+        team_result = await list_team(ctx, {}) or {}
+        team = team_result.get("members") or []
+    except Exception:
+        logger.exception("[plan_visual_presentation] list_team skipped")
+
+    purpose = _resolve_deck_purpose(deck_purpose, audience)
+    topic = resolve_presentation_topic(topic, owner)
+    user_context = seed_user_context_from_crm(
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+    )
+
+    required = _PURPOSE_REQUIRED_KEYS.get(purpose, _PURPOSE_REQUIRED_KEYS["other"])
+    purpose_researchable = researchable_keys_for_purpose(purpose)
+    research_keys_list = [
+        k for k in required
+        if k in purpose_researchable and not _ctx_val(user_context, k)
+    ]
+    researched: Dict[str, str] = {}
+    if research_keys_list:
+
+        async def _search_fn(query: str) -> Dict[str, Any]:
+            return await web_search(ctx, {"query": query, "max_results": 6})
+
+        researched, _ = await auto_research_requirements(
+            deck_purpose=deck_purpose,
+            topic=topic,
+            audience=audience,
+            owner=owner,
+            user_context=user_context,
+            keys=research_keys_list,
+            search_fn=_search_fn,
+        )
+        user_context.update(researched)
+
+    assessment = assess_presentation_requirements(
+        deck_purpose=deck_purpose,
+        topic=topic,
+        audience=audience,
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+        research_keys=set(researched.keys()),
+    )
+    assessment = finalize_presentation_requirements_assessment(
+        assessment,
+        owner=owner,
+        auto_researched=researched,
+        user_context=user_context,
+        topic=topic,
+        audience=audience,
+        deck_purpose=deck_purpose,
+    )
+    if not assessment.get("ready"):
+        return {
+            "success": False,
+            "blocked": True,
+            "error": "Missing required information — ask the user before planning.",
+            "missing": assessment.get("missing") or [],
+            "found": assessment.get("found") or {},
+            "instruction": assessment.get("instruction"),
+            "agent_reply_hint": build_agent_requirements_note(assessment, researched),
+            "do_not_ask": sorted(RESEARCHABLE_KEYS),
+            "user_context": user_context,
+        }
+
+    prepared = prepare_slide_plan(
+        slides, topic=topic, audience=audience, deck_purpose=deck_purpose, owner=owner
+    )
 
     return {
         "success": True,
         "plan_ready": True,
         "topic": topic,
         "audience": audience,
-        "slide_count": len(slides),
-        "slides": slides,
+        "deck_purpose": assessment.get("deck_purpose") or deck_purpose,
+        "slide_count": len(prepared),
+        "slides": prepared,
+        "user_context": user_context,
         "awaiting_approval": True,
         "note": (
-            f"Deck plan ready — {len(slides)} slides. "
-            "Show this plan to the user and ask for approval or changes. "
-            "Do NOT call create_visual_presentation until the user confirms."
+            f"Plan ready — {len(prepared)} slides (enriched with CRM owner info where needed). "
+            "UI plan card is shown to the user. "
+            "Reply in 1–2 sentences only (point them to the card). "
+            "Do NOT list slides in chat. Do NOT call create_visual_presentation — "
+            "the app generates when the user taps Approve on the card."
         ),
     }
 
@@ -5540,11 +5861,11 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="create_visual_presentation",
     description=(
-        "STEP 2 of 2 — Generate the actual PowerPoint (.pptx) ONLY after the user has "
-        "approved the plan from plan_visual_presentation. "
-        "Uses a pure python-pptx clean design system: white backgrounds, primary-color headers, "
-        "varied layouts, NO AI image generation — produces crisp human-quality results every time. "
-        "Never call this tool speculatively — only after explicit user approval of the slide plan."
+        "Generate the PowerPoint (.pptx) with Gemini AI-designed slides. "
+        "Normally invoked by the app when the user taps Approve on the plan card — "
+        "agents should NOT call this after plan_visual_presentation. "
+        "Each slide is a full AI-rendered image with typography baked in. "
+        "Pass topic + the approved slides array (with image_prompt on each slide)."
     ),
     parameters={
         "type": "object",
@@ -5567,18 +5888,27 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "Hex colour (e.g. '#1B4332'). Auto-fetched from get_owner_info if omitted.",
             },
+            "user_edited": {
+                "type": "boolean",
+                "description": "True when the user edited the plan on the UI card before approving.",
+            },
         },
         "required": ["topic", "slides"],
     },
 )
 async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    from .presentation_plan import finalize_slides_for_generation
+
     topic        = (args.get("topic") or "Presentation").strip()
-    slides_plan  = args.get("slides") or []
+    user_edited  = bool(args.get("user_edited"))
+    slides_plan  = finalize_slides_for_generation(
+        args.get("slides") or [],
+        topic=topic,
+        user_edited=user_edited,
+    )
     brand_color  = (args.get("brand_color") or "").strip()
     if not slides_plan:
         return {"error": "slides list is required — pass the approved plan from plan_visual_presentation."}
-    if len(slides_plan) > 20:
-        slides_plan = slides_plan[:20]
 
     # Cap bullets to 3 and trim to 80 chars so slides stay uncluttered
     def _limit(sd: dict) -> dict:
@@ -5609,6 +5939,7 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
         logo_url=logo_url,
         quality="pro",
         ai_designed=True,
+        user_edited=user_edited,
     )
     if not result.get("success"):
         return {"error": result.get("error", "Presentation generation failed.")}
@@ -5690,6 +6021,14 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "Any extra instructions for the AI content engine (tone, language, specific numbers to use).",
             },
+            "approved_plan": {
+                "type": "string",
+                "description": (
+                    "The full slide-by-slide outline the user reviewed and approved — paste it verbatim. "
+                    "When provided, the AI content engine will follow it exactly (titles, bullets, structure). "
+                    "ALWAYS pass this when calling generate_deck after plan_visual_presentation approval."
+                ),
+            },
             "brand_color": {
                 "type": "string",
                 "description": "Primary brand hex color (e.g. '#1B4332'). Auto-fetched from owner info if omitted.",
@@ -5708,6 +6047,7 @@ async def generate_deck(ctx: ToolContext, args: Dict[str, Any]):
     pack          = (args.get("pack") or "bold").strip()
     region        = (args.get("region") or "global").strip()
     extra_context = (args.get("extra_context") or "").strip()
+    approved_plan = (args.get("approved_plan") or "").strip()
     slide_list    = args.get("slides") or None
     brand_color   = (args.get("brand_color") or "").strip()
 
@@ -5743,6 +6083,7 @@ async def generate_deck(ctx: ToolContext, args: Dict[str, Any]):
         slide_list=slide_list,
         region=region,
         extra_context=extra_context,
+        approved_plan=approved_plan,
         export_pdf=False,
         export_png=False,
     )
@@ -5786,9 +6127,9 @@ async def generate_deck(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="regenerate_slide",
     description=(
-        "Regenerate-slide image editing is disabled for clean deck presentations. "
-        "For presentation changes, call plan_visual_presentation/create_visual_presentation again "
-        "with the revised approved slide content so the pure python-pptx clean design system is used."
+        "Regenerate ONE slide's AI-designed image based on new instructions, "
+        "then rebuild and re-upload the full .pptx with that slide swapped in. "
+        "Requires slides + image_urls from the previous create_visual_presentation result."
     ),
     parameters={
         "type": "object",
@@ -5821,6 +6162,11 @@ async def generate_deck(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "Hex brand colour (from get_owner_info or previous result).",
             },
+            "image_urls": {
+                "type": "array",
+                "description": "Image URLs from the previous create_visual_presentation result (one per slide).",
+                "items": {"type": "string"},
+            },
         },
         "required": ["slide_index", "instruction", "slides"],
     },
@@ -5829,6 +6175,7 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
     slide_index  = int(args.get("slide_index", 0))
     instruction  = (args.get("instruction") or "").strip()
     slides_plan  = args.get("slides") or []
+    image_urls   = args.get("image_urls") or []
     topic        = (args.get("topic") or "Presentation").strip()
     brand_color  = (args.get("brand_color") or "").strip()
 
@@ -5837,29 +6184,38 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
     if not instruction:
         return {"error": "instruction is required — describe what to change on this slide."}
 
+    business_name = "My Business"
+    logo_url = None
     if not brand_color:
         try:
             owner = await get_owner_info(ctx, {})
             brand_color = owner.get("brand_primary_color") or ""
             business_name = str(owner.get("business_name") or "My Business").strip()
+            logo_url = owner.get("default_logo_url") or None
         except Exception:
-            business_name = "My Business"
             pass
     else:
-        business_name = "My Business"
+        try:
+            owner = await get_owner_info(ctx, {})
+            business_name = str(owner.get("business_name") or "My Business").strip()
+            logo_url = owner.get("default_logo_url") or None
+        except Exception:
+            pass
 
-    revised_slides = list(slides_plan)
-    if 0 <= slide_index < len(revised_slides):
-        revised = dict(revised_slides[slide_index])
-        revised["revision_instruction"] = instruction
-        revised_slides[slide_index] = revised
+    if not image_urls:
+        image_urls = [""] * len(slides_plan)
 
-    from presentation_service import create_clean_deck_async
-    result = await create_clean_deck_async(
-        topic=topic,
-        slides_plan=revised_slides,
-        business_name=business_name,
+    from presentation_service import regenerate_single_slide_async
+    result = await regenerate_single_slide_async(
+        slides_plan=slides_plan,
+        image_urls=image_urls,
+        slide_index=slide_index,
+        instruction=instruction,
         brand_color=brand_color,
+        quality="pro",
+        topic=topic,
+        logo_url=logo_url,
+        ai_designed=True,
     )
 
     if not result.get("success"):
@@ -5870,8 +6226,9 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
         "url": result["url"],
         "slide_count": result["slide_count"],
         "regenerated_slide_index": slide_index,
-        "deck_type": "clean",
-        "slides": revised_slides,
+        "deck_type": "photo",
+        "slides": result.get("slides", slides_plan),
+        "image_urls": result.get("image_urls", image_urls),
     }
 
 
