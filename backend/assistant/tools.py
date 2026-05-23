@@ -5394,14 +5394,21 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="plan_visual_presentation",
     description=(
-        "STEP 1 of 2 — Plan a visual presentation deck and present the full outline to the user "
-        "for review and approval BEFORE any images are generated. "
-        "This avoids generating a full deck before the user has approved the content. "
+        "STEP 1 of 2 — Plan a presentation deck and present the full outline to the user "
+        "for review and approval BEFORE generating the file. "
         "Call this first whenever a user asks for a presentation, pitch deck, or slideshow. "
-        "It returns a structured slide-by-slide plan showing: slide title, bullet points, "
-        "and the image concept for each slide. "
-        "After showing the plan, ask the user: 'Does this look good, or would you like to change anything?' "
-        "Only call create_visual_presentation once the user explicitly approves."
+        "Returns a structured slide-by-slide plan with title, body bullets, layout type, and "
+        "any structured data needed (stats, steps, items, etc.). "
+        "After showing the plan, ask: 'Does this look good, or would you like to change anything?' "
+        "Only call create_visual_presentation once the user explicitly approves. "
+        "DESIGN RULES (follow for every deck): "
+        "(1) Never repeat the same layout twice in a deck. "
+        "(2) Max 3 bullet points per content slide — short punchy phrases only, never full sentences. "
+        "(3) Every slide must include an 'image_prompt' field: one clean sentence describing a REAL photographic "
+        "scene as the background (e.g. 'sunlit marble office desk', 'aerial Nairobi skyline at dusk', "
+        "'calm ocean horizon at sunrise'). NO glowing lines, NO network effects, NO tech overlays in the scene. "
+        "(4) Every slide must have at least one non-text visual element (stat number, icon circle, table, flow, timeline). "
+        "(5) Use real placeholder numbers — never 'X%' or 'TBD'."
     ),
     parameters={
         "type": "object",
@@ -5417,36 +5424,97 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
             "slides": {
                 "type": "array",
                 "description": (
-                    "The complete planned slide list. Each object must have: "
-                    "title (str), body (list of 3-5 punchy bullet strings — no filler), "
-                    "image_concept (str — vivid 1-sentence description of the background visual), "
-                    "is_title (bool — True only for the first cover slide). "
-                    "Plan 6-10 slides. Start with a cover, end with a strong CTA or summary."
+                    "Complete planned slide list. Plan 8-12 slides. "
+                    "Start with layout='title', end with layout='closing'. "
+                    "Never repeat the same layout twice. "
+                    "Each slide object must include 'title' and 'layout'. "
+                    "Include 'body' (max 4 punchy bullets) as fallback for any layout. "
+                    "For structured layouts also include the matching data field: "
+                    "stat_callout → 'stats' list; icon_grid → 'items' list; "
+                    "flow → 'steps' list; comparison_table → 'columns' + 'features'; "
+                    "timeline → 'milestones' list; two_column → 'left_items' + 'right_items'; "
+                    "title → 'tagline', 'website', 'founder'; "
+                    "closing → 'tagline', 'contact', 'cta'."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
-                        "title":         {"type": "string"},
-                        "body":          {"type": "array", "items": {"type": "string"}},
-                        "image_concept": {"type": "string"},
-                        "is_title":      {"type": "boolean"},
+                        "title":    {"type": "string"},
+                        "layout":   {
+                            "type": "string",
+                            "enum": ["title", "stat_callout", "two_column", "icon_grid",
+                                     "flow", "comparison_table", "timeline", "closing", "content"],
+                            "description": (
+                                "Slide layout type. Use each at most once per deck. "
+                                "title: cover (primary bg). "
+                                "stat_callout: 1-3 large numbers (TAM/SAM/SOM, KPIs, etc.). "
+                                "two_column: bullets left + stats or bullets right. "
+                                "icon_grid: 2x2 or 3x2 icon+label+desc grid. "
+                                "flow: 3-5 numbered horizontal steps. "
+                                "comparison_table: pricing/feature table with alternating rows. "
+                                "timeline: horizontal milestone line. "
+                                "closing: CTA slide (primary bg mirrors title). "
+                                "content: fallback bulleted list (use sparingly)."
+                            ),
+                        },
+                        "body":        {"type": "array", "items": {"type": "string"},
+                                        "description": "Max 3 SHORT punchy bullet strings. Required as fallback for any layout."},
+                        "subtitle":    {"type": "string", "description": "Optional subheader for content slides."},
+                        "tagline":     {"type": "string", "description": "One-line tagline for title/closing."},
+                        "website":     {"type": "string"},
+                        "founder":     {"type": "string"},
+                        "contact":     {"type": "string"},
+                        "cta":         {"type": "string", "description": "e.g. 'Let's talk.' or 'Book a call.'"},
+                        "image_prompt": {"type": "string", "description": "One sentence: real photographic background scene, no glowing/network/tech effects."},
+                        "stats": {
+                            "type": "array",
+                            "description": "For stat_callout. Each: {number, label, sublabel}.",
+                            "items": {"type": "object"},
+                        },
+                        "items": {
+                            "type": "array",
+                            "description": "For icon_grid. Each: {label, description}.",
+                            "items": {"type": "object"},
+                        },
+                        "steps": {
+                            "type": "array",
+                            "description": "For flow. Each: {label, description}.",
+                            "items": {"type": "object"},
+                        },
+                        "columns": {
+                            "type": "array",
+                            "description": "For comparison_table. List of tier/column names.",
+                            "items": {"type": "string"},
+                        },
+                        "features": {
+                            "type": "array",
+                            "description": "For comparison_table. Each: {feature, values[]}.",
+                            "items": {"type": "object"},
+                        },
+                        "milestones": {
+                            "type": "array",
+                            "description": "For timeline. Each: {date, label, description}.",
+                            "items": {"type": "object"},
+                        },
+                        "left_items":  {"type": "array", "items": {"type": "string"},
+                                        "description": "Left column bullets for two_column."},
+                        "right_items": {
+                            "type": "array",
+                            "description": "Right column for two_column: str list OR [{number, label}] for stat callouts.",
+                            "items": {},
+                        },
                     },
-                    "required": ["title", "body", "image_concept"],
+                    "required": ["title", "layout"],
                 },
-            },
-            "style_note": {
-                "type": "string",
-                "description": "Visual tone for all images (e.g. 'dark cinematic', 'bright modern', 'luxury minimal').",
             },
         },
         "required": ["topic", "slides"],
     },
 )
 async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    topic      = (args.get("topic") or "Presentation").strip()
-    audience   = (args.get("audience") or "").strip()
-    slides     = args.get("slides") or []
-    style_note = (args.get("style_note") or "cinematic dark professional").strip()
+    topic    = (args.get("topic") or "Presentation").strip()
+    audience = (args.get("audience") or "").strip()
+    slides   = args.get("slides") or []
 
     if not slides:
         return {"error": "slides list is required."}
@@ -5456,7 +5524,6 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
         "plan_ready": True,
         "topic": topic,
         "audience": audience,
-        "style_note": style_note,
         "slide_count": len(slides),
         "slides": slides,
         "awaiting_approval": True,
@@ -5471,13 +5538,11 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="create_visual_presentation",
     description=(
-        "STEP 2 of 2 — Generate the actual visual PowerPoint (.pptx) ONLY after the user has "
+        "STEP 2 of 2 — Generate the actual PowerPoint (.pptx) ONLY after the user has "
         "approved the plan from plan_visual_presentation. "
-        "Each slide gets a unique Gemini AI-generated full-bleed background image with title/bullets "
-        "overlaid on a panel, OR a complete AI-designed slide image including layout and text if ai_designed=True. "
-        "Never call this tool speculatively — only after explicit user approval of the slide plan. "
-        "Pass the exact slides array from the approved plan, enriched with a detailed image_prompt "
-        "per slide (expand image_concept into a rich, specific generation prompt)."
+        "Uses a pure python-pptx clean design system: white backgrounds, primary-color headers, "
+        "varied layouts, NO AI image generation — produces crisp human-quality results every time. "
+        "Never call this tool speculatively — only after explicit user approval of the slide plan."
     ),
     parameters={
         "type": "object",
@@ -5489,56 +5554,40 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
             "slides": {
                 "type": "array",
                 "description": (
-                    "The APPROVED slide list from plan_visual_presentation, with image_prompt "
-                    "added to each slide (expand the image_concept into a rich, specific, "
-                    "award-winning image generation prompt — include lighting, mood, composition, "
-                    "color palette, no text, no people unless essential). "
-                    "Each slide: title, body (list[str]), image_prompt (str), is_title (bool)."
+                    "The APPROVED slide list from plan_visual_presentation. "
+                    "Pass the full array exactly as planned — each slide must have 'title' and 'layout'. "
+                    "Include any structured data fields (stats, items, steps, columns, features, "
+                    "milestones, left_items, right_items, tagline, cta, contact, etc.) as planned."
                 ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "title":        {"type": "string"},
-                        "body":         {"type": "array", "items": {"type": "string"}},
-                        "image_prompt": {"type": "string"},
-                        "is_title":     {"type": "boolean"},
-                    },
-                    "required": ["title", "image_prompt"],
-                },
+                "items": {"type": "object"},
             },
             "brand_color": {
                 "type": "string",
-                "description": "Hex colour code for the accent bar (e.g. '#4CD137'). From get_owner_info.",
-            },
-            "quality": {
-                "type": "string",
-                "enum": ["fast", "pro"],
-                "description": "'pro' for final delivery (recommended), 'fast' for draft preview.",
-            },
-            "ai_designed": {
-                "type": "boolean",
-                "description": "True = Gemini designs the complete slide including layout, text, and visuals (default, recommended). False = background image only with pptx text overlay.",
+                "description": "Hex colour (e.g. '#1B4332'). Auto-fetched from get_owner_info if omitted.",
             },
         },
         "required": ["topic", "slides"],
     },
 )
 async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    from presentation_service import create_visual_presentation_async
-
-    topic       = (args.get("topic") or "Presentation").strip()
-    slides_plan = args.get("slides") or []
-    brand_color = (args.get("brand_color") or "").strip()
-    quality     = (args.get("quality") or "pro").strip()
-    ai_designed = bool(args.get("ai_designed", True))
-
+    topic        = (args.get("topic") or "Presentation").strip()
+    slides_plan  = args.get("slides") or []
+    brand_color  = (args.get("brand_color") or "").strip()
     if not slides_plan:
         return {"error": "slides list is required — pass the approved plan from plan_visual_presentation."}
-    if len(slides_plan) > 15:
-        slides_plan = slides_plan[:15]
+    if len(slides_plan) > 20:
+        slides_plan = slides_plan[:20]
 
-    # Auto-fetch brand color, logo + business name from owner info
-    logo_url = None
+    # Cap bullets to 3 and trim to 80 chars so slides stay uncluttered
+    def _limit(sd: dict) -> dict:
+        sd = dict(sd)
+        body = sd.get("body") or []
+        if body:
+            sd["body"] = [str(b)[:80] for b in body[:3]]
+        return sd
+    slides_plan = [_limit(s) for s in slides_plan]
+
+    # Auto-fetch brand color + business name from owner info
     try:
         owner = await get_owner_info(ctx, {})
         if not brand_color:
@@ -5547,42 +5596,197 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
         logo_url = owner.get("default_logo_url") or None
     except Exception:
         business_name = "My Business"
+        logo_url = None
 
+    from presentation_service import create_visual_presentation_async
     result = await create_visual_presentation_async(
         topic=topic,
         slides_plan=slides_plan,
         business_name=business_name,
         brand_color=brand_color,
         logo_url=logo_url,
-        quality=quality,
-        ai_designed=ai_designed,
+        quality="pro",
+        ai_designed=True,
     )
-
     if not result.get("success"):
         return {"error": result.get("error", "Presentation generation failed.")}
-
     return {
         "success": True,
         "url": result["url"],
         "slide_count": result["slide_count"],
-        "images_generated": result["images_generated"],
+        "images_generated": result.get("images_generated", 0),
         "topic": topic,
-        "ai_designed": result.get("ai_designed", ai_designed),
+        "deck_type": "photo",
         "slides": result.get("slides", slides_plan),
         "image_urls": result.get("image_urls", []),
     }
 
 
 @tool(
+    name="generate_deck",
+    description=(
+        "Full-pipeline deck generator: takes a plain-English brief → runs it through the AI content "
+        "engine (Claude) → builds a polished PPTX using the structured layout pack system. "
+        "Three layout packs available: bold (large stats, high contrast, loose spacing), "
+        "corporate (dense data, tables, tight spacing), story (narrative, imagery-friendly). "
+        "Supports both Western and Africa-first framing — specify region for localized content. "
+        "Use this when the user provides a brief or description and wants a complete deck generated "
+        "in one step WITHOUT manually planning each slide. "
+        "For decks where the user wants to review the plan first, use plan_visual_presentation instead."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "brief": {
+                "type": "string",
+                "description": (
+                    "Plain-English description of the company / product. Include: "
+                    "what it does, who it serves, key problem solved, any known metrics or numbers. "
+                    "More detail = better output. Min 2 sentences."
+                ),
+            },
+            "deck_type": {
+                "type": "string",
+                "enum": ["investor_pitch", "sales", "corporate", "product_launch"],
+                "description": (
+                    "investor_pitch: bold claims, market size, ask slide. "
+                    "sales: client pain, ROI, pricing. "
+                    "corporate: data-heavy, process-focused. "
+                    "product_launch: features, how-it-works, excitement."
+                ),
+            },
+            "pack": {
+                "type": "string",
+                "enum": ["bold", "corporate", "story"],
+                "description": (
+                    "bold: 72pt stats, filled cards, left accent bar — investor pitch default. "
+                    "corporate: 48pt stats, outlined cards, top bar — B2B/enterprise. "
+                    "story: 60pt stats, ghost cards, no bars, light bg — narrative/brand decks."
+                ),
+            },
+            "slides": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Ordered list of slide types to include. "
+                    "Available: title, problem, solution, market, how_it_works, pricing, "
+                    "why_now, team, ask, closing. "
+                    "Default investor deck: ['title','problem','solution','market',"
+                    "'how_it_works','pricing','why_now','team','ask','closing']"
+                ),
+            },
+            "region": {
+                "type": "string",
+                "description": (
+                    "Target market/region for content framing. "
+                    "Use 'africa', 'kenya', 'nigeria', 'ghana', 'east_africa', 'west_africa' "
+                    "for Africa-first framing (mobile money, WhatsApp-native, local platforms). "
+                    "Use 'us', 'europe', or 'global' for Western framing."
+                ),
+            },
+            "extra_context": {
+                "type": "string",
+                "description": "Any extra instructions for the AI content engine (tone, language, specific numbers to use).",
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Primary brand hex color (e.g. '#1B4332'). Auto-fetched from owner info if omitted.",
+            },
+        },
+        "required": ["brief"],
+    },
+)
+async def generate_deck(ctx: ToolContext, args: Dict[str, Any]):
+    import base64, os
+    from deck_content_engine import generate_and_build
+    from image_handler import S3Handler
+
+    brief         = (args.get("brief") or "").strip()
+    deck_type     = (args.get("deck_type") or "investor_pitch").strip()
+    pack          = (args.get("pack") or "bold").strip()
+    region        = (args.get("region") or "global").strip()
+    extra_context = (args.get("extra_context") or "").strip()
+    slide_list    = args.get("slides") or None
+    brand_color   = (args.get("brand_color") or "").strip()
+
+    if not brief:
+        return {"error": "brief is required — describe the company or product."}
+
+    # Fetch owner brand info
+    brand_name = "My Business"
+    try:
+        owner = await get_owner_info(ctx, {})
+        if not brand_color:
+            brand_color = owner.get("brand_primary_color") or "#1B4332"
+        brand_name = str(owner.get("business_name") or "My Business").strip()
+        tagline    = str(owner.get("tagline") or "").strip()
+        logo_path  = owner.get("default_logo_url") or ""
+    except Exception:
+        tagline   = ""
+        logo_path = ""
+
+    brand = {
+        "name":        brand_name,
+        "tagline":     tagline,
+        "primary":     brand_color or "#1B4332",
+        "font_header": "Calibri",
+        "font_body":   "Calibri",
+    }
+
+    result = await generate_and_build(
+        brief=brief,
+        brand=brand,
+        deck_type=deck_type,
+        pack=pack,
+        slide_list=slide_list,
+        region=region,
+        extra_context=extra_context,
+        export_pdf=False,
+        export_png=False,
+    )
+
+    if not result.get("success"):
+        return {"error": result.get("error", "Deck generation failed.")}
+
+    # Upload PPTX to S3
+    pptx_path = result.get("pptx_path", "")
+    file_url  = f"/api/media/presentations/{os.path.basename(pptx_path)}"
+    try:
+        from pathlib import Path as _Path
+        _bytes  = _Path(pptx_path).read_bytes()
+        _b64    = base64.b64encode(_bytes).decode()
+        s3_name = os.path.basename(pptx_path)
+        s3_url  = await S3Handler.upload_file(
+            _b64, s3_name,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        if s3_url:
+            file_url = s3_url
+    except Exception as e:
+        import logging as _log
+        _log.warning("[generate_deck] S3 upload: %s", e)
+    finally:
+        try:
+            os.unlink(pptx_path)
+        except Exception:
+            pass
+
+    return {
+        "success":     True,
+        "url":         file_url,
+        "slide_count": result["slide_count"],
+        "pack":        result.get("pack", pack),
+        "deck_type":   deck_type,
+        "region":      region,
+    }
+
+
+@tool(
     name="regenerate_slide",
     description=(
-        "Regenerate a SINGLE slide's background image in an existing visual presentation, "
-        "based on the user's feedback/instruction for that specific slide. "
-        "Only ONE new Gemini image is generated (cheap). The full .pptx is rebuilt with "
-        "that one slide swapped and re-uploaded. "
-        "Use this when the user says things like 'redo slide 3', 'change slide 2 to show a sunset', "
-        "'make slide 4 more dramatic', etc. "
-        "You need the slides array and image_urls array from the previous create_visual_presentation result."
+        "Regenerate-slide image editing is disabled for clean deck presentations. "
+        "For presentation changes, call plan_visual_presentation/create_visual_presentation again "
+        "with the revised approved slide content so the pure python-pptx clean design system is used."
     ),
     parameters={
         "type": "object",
@@ -5607,11 +5811,6 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "description": "The full slides array from the previous create_visual_presentation result.",
                 "items": {"type": "object"},
             },
-            "image_urls": {
-                "type": "array",
-                "description": "The image_urls array from the previous create_visual_presentation result.",
-                "items": {"type": "string"},
-            },
             "topic": {
                 "type": "string",
                 "description": "The presentation topic (from the previous result).",
@@ -5620,74 +5819,57 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "Hex brand colour (from get_owner_info or previous result).",
             },
-            "quality": {
-                "type": "string",
-                "enum": ["fast", "pro"],
-                "description": "'pro' for final quality (default), 'fast' for quick preview.",
-            },
-            "ai_designed": {
-                "type": "boolean",
-                "description": "True = Gemini designs the complete slide (default, recommended). False = background-only with pptx text overlay.",
-            },
         },
-        "required": ["slide_index", "instruction", "slides", "image_urls"],
+        "required": ["slide_index", "instruction", "slides"],
     },
 )
 async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
-    from presentation_service import regenerate_single_slide_async
-
     slide_index  = int(args.get("slide_index", 0))
     instruction  = (args.get("instruction") or "").strip()
     slides_plan  = args.get("slides") or []
-    image_urls   = args.get("image_urls") or []
     topic        = (args.get("topic") or "Presentation").strip()
     brand_color  = (args.get("brand_color") or "").strip()
-    quality      = (args.get("quality") or "pro").strip()
-    ai_designed  = bool(args.get("ai_designed", True))
 
     if not slides_plan:
         return {"error": "slides array is required — pass it from the previous create_visual_presentation result."}
-    if not image_urls:
-        return {"error": "image_urls array is required — pass it from the previous create_visual_presentation result."}
     if not instruction:
         return {"error": "instruction is required — describe what to change on this slide."}
 
-    logo_url = None
-    if not brand_color or ai_designed:
+    if not brand_color:
         try:
             owner = await get_owner_info(ctx, {})
-            if not brand_color:
-                brand_color = owner.get("brand_primary_color") or ""
-            logo_url = owner.get("default_logo_url") or None
+            brand_color = owner.get("brand_primary_color") or ""
+            business_name = str(owner.get("business_name") or "My Business").strip()
         except Exception:
+            business_name = "My Business"
             pass
+    else:
+        business_name = "My Business"
 
-    result = await regenerate_single_slide_async(
-        slides_plan=slides_plan,
-        image_urls=image_urls,
-        slide_index=slide_index,
-        instruction=instruction,
-        brand_color=brand_color,
-        quality=quality,
+    revised_slides = list(slides_plan)
+    if 0 <= slide_index < len(revised_slides):
+        revised = dict(revised_slides[slide_index])
+        revised["revision_instruction"] = instruction
+        revised_slides[slide_index] = revised
+
+    from presentation_service import create_clean_deck_async
+    result = await create_clean_deck_async(
         topic=topic,
-        logo_url=logo_url,
-        ai_designed=ai_designed,
+        slides_plan=revised_slides,
+        business_name=business_name,
+        brand_color=brand_color,
     )
 
     if not result.get("success"):
-        return {"error": result.get("error", "Slide regeneration failed.")}
+        return {"error": result.get("error", "Presentation regeneration failed.")}
 
     return {
         "success": True,
         "url": result["url"],
         "slide_count": result["slide_count"],
-        "images_generated": result["images_generated"],
-        "regenerated_slide_index": result["regenerated_slide_index"],
-        "regenerated_slide_title": result["regenerated_slide_title"],
-        "topic": topic,
-        "ai_designed": result.get("ai_designed", ai_designed),
-        "slides": result["slides"],
-        "image_urls": result["image_urls"],
+        "regenerated_slide_index": slide_index,
+        "deck_type": "clean",
+        "slides": revised_slides,
     }
 
 

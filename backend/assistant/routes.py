@@ -428,6 +428,8 @@ def _mk_router(db, get_current_user):
         user_id = user.get("business_id", user["_id"])
 
         async def _generate():
+            yield ": open\n\n"
+            yield "data: " + json.dumps({"type": "tool_start", "tool": "starting_request"}) + "\n\n"
             try:
                 await _check_rate_limit(user_id)
             except HTTPException as e:
@@ -555,7 +557,15 @@ def _mk_router(db, get_current_user):
                 "reply_suggestions": result.get("reply_suggestions") or [],
             }, default=str) + "\n\n"
 
-        return StreamingResponse(_generate(), media_type="text/event-stream")
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.patch("/conversations/{conv_id}")
     async def patch_conversation(conv_id: str, req: Request, user=Depends(get_current_user)):

@@ -63,6 +63,11 @@ interface Props {
 
 /** Maps raw tool names → friendly activity labels shown during streaming and in steps trail */
 const TOOL_LABELS: Record<string, string> = {
+  starting_request:     "Starting request…",
+  loading_context:      "Loading context…",
+  routing_request:      "Choosing specialist…",
+  planning_specialist:  "Planning next steps…",
+  drafting_reply:       "Writing reply…",
   // Customers
   list_customers:        "Checking customers…",
   get_customer:          "Looking up customer…",
