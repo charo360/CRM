@@ -35,6 +35,7 @@ Given a company brief, output ONLY valid JSON matching the deck content schema b
 
 RULES:
 - If an APPROVED PLAN is provided, it is AUTHORITATIVE — follow it exactly. Use the exact slide titles, bullet points, headlines, stats, and structure the user already reviewed and approved. Do NOT invent different content or reorder anything. Only enrich with supporting detail (real numbers, one-line descriptions) while keeping every user-approved point intact.
+- title.tagline: write a punchy one-line pitch describing what the company does — NEVER repeat the company name as the tagline
 - bullets: max 4 per slide, max 12 words each — punchy, specific, no filler
 - stats: use REAL numbers only — never "X%", "TBD", or vague ranges. If unknown, use credible industry estimates and note them
 - tone: match deck_type — investor = bold claims + market size; sales = client pain + ROI; corporate = data + process
