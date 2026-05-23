@@ -85,6 +85,8 @@ function ActiveBadge({ active }: { active: boolean }) {
   );
 }
 
+
+
 const FEATURE_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
   shop:  { icon: <Store size={12} />,       label: "Shop",  color: "bg-blue-50 text-blue-700 border-blue-200" },
   forms: { icon: <ClipboardList size={12} />, label: "Forms", color: "bg-purple-50 text-purple-700 border-purple-200" },

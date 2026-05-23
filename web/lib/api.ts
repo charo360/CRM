@@ -1530,6 +1530,16 @@ export interface ScheduledPost {
   assets?: ScheduledPostAsset[];
   image_url?: string;
   publish_error?: string;
+  zernio_post_id?: string;
+  engagement_synced_at?: string;
+  engagement?: {
+    likes: number;
+    comments: number;
+    shares: number;
+    reach: number;
+    clicks: number;
+    saves: number;
+  };
 }
 
 export type ScheduledPostInput = Omit<ScheduledPost, "id" | "created_at" | "updated_at">;
@@ -1549,13 +1559,28 @@ export interface SocialAnalytics {
   avg_engagement_rate: number;
 }
 
+export type SocialPostPublishResult = {
+  success: boolean;
+  zernio_post_id?: string | null;
+  error?: string | null;
+  crm_status?: string;
+};
+
 export const socialSchedulerApi = {
   list: (status?: string) =>
     api.get<{ posts: ScheduledPost[] }>(`/marketing/social-posts${status ? `?status=${status}` : ""}`),
+  get: (id: string) =>
+    api.get<{ post: ScheduledPost }>(`/marketing/social-posts/${id}`),
   create: (body: Partial<ScheduledPostInput> & { title: string; body: string }) =>
-    api.post<{ post: ScheduledPost }>("/marketing/social-posts", body),
+    api.post<{ post: ScheduledPost; publish?: SocialPostPublishResult }>(
+      "/marketing/social-posts",
+      body,
+    ),
   update: (id: string, body: Partial<ScheduledPostInput>) =>
-    api.patch<{ post: ScheduledPost }>(`/marketing/social-posts/${id}`, body),
+    api.patch<{ post: ScheduledPost; publish?: SocialPostPublishResult }>(
+      `/marketing/social-posts/${id}`,
+      body,
+    ),
   delete: (id: string) =>
     api.delete<{ status: string; id: string }>(`/marketing/social-posts/${id}`),
   analytics: (days = 30, channel?: string) =>

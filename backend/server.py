@@ -10593,7 +10593,8 @@ _SHOPIFY_SCOPES = (
     "read_discounts,write_discounts,"
     "read_checkouts,"
     "read_locations,write_inventory,"
-    "read_content,write_content"
+    "read_content,write_content,"
+    "write_recurring_application_charges,read_recurring_application_charges"
 )
 
 
@@ -10646,6 +10647,57 @@ def _shopify_redirect_uri(request: Request) -> str:
 
 def _shopify_frontend_url() -> str:
     return os.environ.get("SHOPIFY_FRONTEND_URL") or os.environ.get("NEXT_PUBLIC_APP_URL") or "http://localhost:3000"
+
+
+@api_router.get("/shopify/install")
+async def shopify_install(
+    request: Request,
+    shop: str = "",
+    hmac: str = "",
+    timestamp: str = "",
+    locale: str = "",
+):
+    """Entry point when a merchant installs from the Shopify App Store.
+
+    Shopify hits the application_url with ?shop=&hmac=&timestamp= query params.
+    We verify the HMAC then redirect to Shopify's OAuth consent screen.
+    No user login is required — this creates the account after OAuth completes.
+    """
+    from starlette.responses import RedirectResponse
+    from urllib.parse import urlencode
+
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    frontend_url = _shopify_frontend_url()
+
+    if not client_id or not client_secret:
+        logging.error("[shopify-install] SHOPIFY_CLIENT_ID/SECRET not configured")
+        return RedirectResponse(url=f"{frontend_url}/?install_error=not_configured")
+
+    shop = shop.strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
+    if not shop or not shop.endswith(".myshopify.com"):
+        return RedirectResponse(url=f"{frontend_url}/?install_error=invalid_shop")
+
+    # Verify the request really came from Shopify
+    all_params = dict(request.query_params)
+    if not _shopify_validate_hmac(all_params, client_secret):
+        logging.warning(f"[shopify-install] HMAC invalid shop={shop}")
+        return RedirectResponse(url=f"{frontend_url}/?install_error=invalid_hmac")
+
+    redirect_uri = _shopify_redirect_uri(request)
+
+    # Encode install marker in state so the callback knows to create a new user
+    state = _shopify_state_encode(f"__install__:{shop}", client_secret)
+
+    params = urlencode({
+        "client_id": client_id,
+        "scope": _SHOPIFY_SCOPES,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    })
+    auth_url = f"https://{shop}/admin/oauth/authorize?{params}"
+    logging.info(f"[shopify-install] Starting OAuth shop={shop}")
+    return RedirectResponse(url=auth_url)
 
 
 @api_router.get("/shopify/oauth/start")
@@ -10703,14 +10755,16 @@ async def shopify_oauth_callback(
         from starlette.responses import RedirectResponse
         return RedirectResponse(url=error_redirect + "invalid_hmac")
 
-    # 2. Decode state → user_id
-    user_id = _shopify_state_decode(state, client_secret)
-    if not user_id:
+    # 2. Decode state → uid (may be a real user_id or "__install__:{shop}")
+    uid_from_state = _shopify_state_decode(state, client_secret)
+    if not uid_from_state:
         logging.warning(f"[shopify-oauth] Invalid or expired state shop={shop}")
         from starlette.responses import RedirectResponse
         return RedirectResponse(url=error_redirect + "invalid_state")
 
-    # 3. Exchange code for access token (expiring=1 → gets expiring offline token)
+    is_install_flow = uid_from_state.startswith("__install__:")
+
+    # 3. Exchange code for access token
     import httpx as _httpx
     try:
         async with _httpx.AsyncClient(timeout=15.0) as _c:
@@ -10754,37 +10808,293 @@ async def shopify_oauth_callback(
         token_fields["shopify_refresh_token"] = refresh_token
         token_fields["shopify_refresh_token_expires_at"] = now_ts + refresh_expires_in
 
-    # 4. Store credentials in MongoDB
-    import bson
-    try:
-        oid = bson.ObjectId(user_id)
-    except Exception:
-        oid = None
-    query = {"$or": [{"business_id": user_id}]}
-    if oid:
-        query["$or"].append({"_id": oid})
+    from starlette.responses import RedirectResponse
 
+    if is_install_flow:
+        # ── App Store install: get/create user account ────────────────────────
+        # Check if this shop already has an account (reinstall)
+        existing = await db.users.find_one({"shopify_domain": shop})
+        if existing:
+            user_id = str(existing.get("business_id") or existing["_id"])
+            await db.users.update_one({"_id": existing["_id"]}, {"$set": token_fields})
+            logging.info(f"[shopify-install] Reconnected existing user shop={shop} user={user_id}")
+        else:
+            # Fetch shop info from Shopify to populate the new account
+            shop_info: dict = {}
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as _c:
+                    _sr = await _c.get(
+                        f"https://{shop}/admin/api/2024-01/shop.json",
+                        headers={"X-Shopify-Access-Token": access_token},
+                    )
+                    if _sr.status_code == 200:
+                        shop_info = _sr.json().get("shop", {})
+            except Exception as _se:
+                logging.warning(f"[shopify-install] Could not fetch shop info: {_se}")
+
+            user_id = str(uuid.uuid4())
+            owner_name = shop_info.get("shop_owner") or shop_info.get("name") or shop.replace(".myshopify.com", "")
+            business_name = shop_info.get("name") or owner_name
+            email = shop_info.get("email") or f"merchant+{user_id[:8]}@zilo.pro"
+            phone = shop_info.get("phone") or ""
+            currency = shop_info.get("currency") or "USD"
+            country_code = shop_info.get("country_code") or "US"
+
+            await db.users.insert_one({
+                "_id":                    user_id,
+                "email":                  email,
+                "business_name":          business_name,
+                "owner_name":             owner_name,
+                "phone_number":           phone,
+                "business_id":            user_id,
+                "role":                   "owner",
+                "auth_provider":          "shopify",
+                "subscription_plan":      "starter",
+                "subscription_active":    False,
+                "shopify_billing_status": "pending",
+                "currency":               currency,
+                "country_code":           country_code,
+                "setup_complete":         True,
+                "settings":               {"onboarding_v1_completed": True},
+                "created_at":             datetime.utcnow(),
+                **token_fields,
+            })
+            logging.info(f"[shopify-install] Created new user shop={shop} user={user_id} email={email}")
+
+        # Register webhooks in background
+        try:
+            import asyncio as _aio
+            _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
+        except Exception as _wh_exc:
+            logging.warning(f"[shopify-install] webhook registration failed: {_wh_exc}")
+
+        # Issue a Zilo JWT so the frontend can authenticate immediately
+        zilo_token = create_token(user_id, "")
+
+        # Redirect to install-complete page which stores the token then goes to billing
+        had_active = bool(existing and existing.get("shopify_billing_status") == "active")
+        complete_url = (
+            f"{frontend_url}/shopify-install-complete"
+            f"?token={zilo_token}&shop={shop}&reinstall={'1' if had_active else '0'}"
+        )
+        return RedirectResponse(url=complete_url)
+
+    else:
+        # ── Connect-from-dashboard flow (user already logged in) ──────────────
+        user_id = uid_from_state
+        import bson
+        try:
+            oid = bson.ObjectId(user_id)
+        except Exception:
+            oid = None
+        query = {"$or": [{"business_id": user_id}]}
+        if oid:
+            query["$or"].append({"_id": oid})
+
+        await db.users.update_one(query, {"$set": token_fields})
+
+        # Refresh composio_service DB reference so calls work immediately
+        try:
+            import composio_service as _cs
+            _cs.set_db(db)
+        except Exception:
+            pass
+
+        logging.info(f"[shopify-oauth] Connected shop={shop} user={user_id}")
+        try:
+            import asyncio as _aio
+            _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
+        except Exception as _wh_exc:
+            logging.warning(f"[shopify-oauth] webhook registration failed: {_wh_exc}")
+
+        user_doc = await db.users.find_one(query, {"shopify_plan": 1, "shopify_billing_status": 1})
+        had_active_plan = (
+            user_doc
+            and user_doc.get("shopify_billing_status") == "active"
+            and user_doc.get("shopify_plan")
+        )
+
+        billing_url = (
+            f"{frontend_url}/dashboard/shopify/billing"
+            f"?shop={shop}&uid={user_id}&reinstall={'1' if had_active_plan else '0'}"
+        )
+        return RedirectResponse(url=billing_url)
+
+
+# ── Shopify Billing API endpoints ─────────────────────────────────────────────
+
+@api_router.get("/shopify/billing/plans")
+async def shopify_billing_plans():
+    """Return available Zilo plans (public — shown on billing selection page)."""
+    from shopify_billing import PLANS
+    return {"plans": list(PLANS.values())}
+
+
+@api_router.post("/shopify/billing/create")
+async def shopify_billing_create(request: Request, user=Depends(get_current_user)):
+    """Create a Shopify RecurringApplicationCharge for the chosen plan.
+
+    Body: { "plan_id": "starter" | "growth" | "pro" }
+    Returns: { "confirmation_url": "https://..." }
+    """
+    from shopify_billing import create_charge, PLANS
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    plan_id = str(body.get("plan_id") or "").strip().lower()
+    if plan_id not in PLANS:
+        raise HTTPException(status_code=400, detail=f"Invalid plan. Choose: {list(PLANS)}")
+
+    user_doc = await db.users.find_one({"_id": user["_id"]}, {"shopify_domain": 1, "shopify_token": 1})
+    shop = (user_doc or {}).get("shopify_domain", "")
+    token = (user_doc or {}).get("shopify_token", "")
+    if not shop or not token:
+        raise HTTPException(status_code=400, detail="Shopify store not connected")
+
+    backend_url = _shopify_backend_url()
+    return_url = f"{backend_url}/shopify/billing/confirm"
+
+    is_test = os.environ.get("SHOPIFY_BILLING_TEST", "true").lower() == "true"
+    try:
+        result = await create_charge(shop, token, plan_id, return_url, test=is_test)
+    except Exception as exc:
+        logging.error(f"[shopify-billing] create_charge error: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Store pending charge info on the user
     await db.users.update_one(
-        query,
-        {"$set": token_fields},
+        {"_id": user["_id"]},
+        {"$set": {
+            "shopify_billing_charge_id": result["charge_id"],
+            "shopify_plan":             plan_id,
+            "shopify_billing_status":   "pending",
+        }},
     )
 
-    # Refresh composio_service DB reference so calls work immediately
-    try:
-        import composio_service as _cs
-        _cs.set_db(db)
-    except Exception:
-        pass
+    return {"confirmation_url": result["confirmation_url"], "plan": plan_id}
 
-    logging.info(f"[shopify-oauth] Connected shop={shop} user={user_id}")
-    # Auto-register webhooks in background
-    try:
-        import asyncio as _aio
-        _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
-    except Exception as _wh_exc:
-        logging.warning(f"[shopify-oauth] webhook registration failed: {_wh_exc}")
+
+@api_router.get("/shopify/billing/confirm")
+async def shopify_billing_confirm(
+    request: Request,
+    charge_id: int = 0,
+    shop: str = "",
+):
+    """Shopify redirects merchants here after they approve or decline billing.
+
+    This endpoint is public (no auth) because Shopify redirects here directly.
+    We look up the user by shop domain, verify and activate the charge, then
+    redirect to the dashboard.
+    """
+    from shopify_billing import get_charge, activate_charge
     from starlette.responses import RedirectResponse
-    return RedirectResponse(url=f"{frontend_url}/dashboard/shopify?shopify_connected=1")
+
+    frontend_url = _shopify_frontend_url()
+    error_url = f"{frontend_url}/dashboard/shopify/billing?billing_error="
+
+    if not charge_id or not shop:
+        return RedirectResponse(url=error_url + "missing_params")
+
+    # Find user by shop domain
+    user_doc = await db.users.find_one(
+        {"shopify_domain": shop},
+        {"_id": 1, "shopify_token": 1, "shopify_billing_charge_id": 1, "shopify_plan": 1},
+    )
+    if not user_doc:
+        return RedirectResponse(url=error_url + "shop_not_found")
+
+    token = user_doc.get("shopify_token", "")
+    if not token:
+        return RedirectResponse(url=error_url + "no_token")
+
+    try:
+        charge = await get_charge(shop, token, charge_id)
+    except Exception as exc:
+        logging.error(f"[shopify-billing] get_charge failed: {exc}")
+        return RedirectResponse(url=error_url + "charge_lookup_failed")
+
+    status = charge.get("status", "")
+
+    if status == "declined":
+        await db.users.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {"shopify_billing_status": "declined"}},
+        )
+        return RedirectResponse(url=error_url + "declined")
+
+    if status == "accepted":
+        try:
+            await activate_charge(shop, token, charge_id)
+        except Exception as exc:
+            logging.error(f"[shopify-billing] activate failed: {exc}")
+            return RedirectResponse(url=error_url + "activation_failed")
+
+        plan_id = user_doc.get("shopify_plan", "starter")
+        await db.users.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {
+                "shopify_billing_status":    "active",
+                "shopify_billing_charge_id": charge_id,
+                "shopify_plan":              plan_id,
+            }},
+        )
+        logging.info(f"[shopify-billing] Activated shop={shop} plan={plan_id} charge={charge_id}")
+        return RedirectResponse(
+            url=f"{frontend_url}/dashboard/shopify?shopify_connected=1&plan={plan_id}"
+        )
+
+    # Any other status (pending, etc.) — send back to billing page
+    return RedirectResponse(url=error_url + f"unexpected_status_{status}")
+
+
+@api_router.get("/shopify/billing/status")
+async def shopify_billing_status(user=Depends(get_current_user)):
+    """Return the current billing plan and status for this user."""
+    user_doc = await db.users.find_one(
+        {"_id": user["_id"]},
+        {"shopify_plan": 1, "shopify_billing_status": 1, "shopify_billing_charge_id": 1, "shopify_domain": 1},
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    from shopify_billing import PLANS
+    plan_id = user_doc.get("shopify_plan", "")
+    return {
+        "plan":      plan_id,
+        "plan_details": PLANS.get(plan_id),
+        "status":    user_doc.get("shopify_billing_status", "none"),
+        "charge_id": user_doc.get("shopify_billing_charge_id"),
+        "shop":      user_doc.get("shopify_domain", ""),
+    }
+
+
+@api_router.post("/shopify/billing/cancel")
+async def shopify_billing_cancel(user=Depends(get_current_user)):
+    """Cancel the active subscription (called when merchant uninstalls manually)."""
+    from shopify_billing import cancel_charge
+    user_doc = await db.users.find_one(
+        {"_id": user["_id"]},
+        {"shopify_domain": 1, "shopify_token": 1, "shopify_billing_charge_id": 1},
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    shop    = user_doc.get("shopify_domain", "")
+    token   = user_doc.get("shopify_token", "")
+    charge_id = user_doc.get("shopify_billing_charge_id")
+
+    if shop and token and charge_id:
+        try:
+            await cancel_charge(shop, token, int(charge_id))
+        except Exception as exc:
+            logging.warning(f"[shopify-billing] cancel error (non-fatal): {exc}")
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"shopify_billing_status": "cancelled", "shopify_billing_charge_id": None}},
+    )
+    return {"ok": True}
 
 
 @api_router.post("/shopify/connect-direct")
@@ -10880,6 +11190,7 @@ async def _shopify_register_webhooks(domain: str, token: str, backend_url: str) 
         ("products/create", f"{backend_url}/api/shopify/webhook/products-sync"),
         ("products/update", f"{backend_url}/api/shopify/webhook/products-sync"),
         ("products/delete", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("app/uninstalled", f"{backend_url}/api/shopify/webhook/app-uninstalled"),
     ]
     registered = []
     async with _httpx.AsyncClient(timeout=15.0) as _c:
@@ -10929,6 +11240,72 @@ async def shopify_register_webhooks(user=Depends(get_current_user)):
         creds["domain"], creds["token"], _shopify_backend_url()
     )
     return {"ok": True, "registered": registered}
+
+
+# ── app/uninstalled webhook ────────────────────────────────────────────────────
+
+@api_router.post("/shopify/webhook/app-uninstalled")
+async def shopify_app_uninstalled(request: Request):
+    """Shopify sends this when a merchant uninstalls the app.
+
+    We cancel their billing subscription and clear their Shopify credentials.
+    HMAC is verified to prevent spoofing.
+    """
+    import hashlib, hmac as _hmac, base64 as _b64
+
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    body_bytes = await request.body()
+
+    # Verify HMAC
+    if client_secret:
+        expected = _b64.b64encode(
+            _hmac.new(client_secret.encode(), body_bytes, hashlib.sha256).digest()
+        ).decode()
+        received = request.headers.get("X-Shopify-Hmac-Sha256", "")
+        if not _hmac.compare_digest(expected, received):
+            logging.warning("[shopify-uninstall] HMAC mismatch — ignoring webhook")
+            raise HTTPException(status_code=401, detail="Invalid HMAC")
+
+    try:
+        import json as _json
+        payload = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    shop = payload.get("myshopify_domain") or payload.get("domain") or ""
+    if not shop:
+        return {"ok": True}
+
+    user_doc = await db.users.find_one(
+        {"shopify_domain": shop},
+        {"_id": 1, "shopify_token": 1, "shopify_billing_charge_id": 1},
+    )
+    if not user_doc:
+        logging.info(f"[shopify-uninstall] No user found for shop={shop}")
+        return {"ok": True}
+
+    # Cancel billing subscription
+    charge_id = user_doc.get("shopify_billing_charge_id")
+    token = user_doc.get("shopify_token", "")
+    if charge_id and token:
+        try:
+            from shopify_billing import cancel_charge
+            await cancel_charge(shop, token, int(charge_id))
+        except Exception as exc:
+            logging.warning(f"[shopify-uninstall] cancel_charge non-fatal: {exc}")
+
+    # Clear Shopify credentials
+    await db.users.update_one(
+        {"_id": user_doc["_id"]},
+        {"$set": {
+            "shopify_domain":              None,
+            "shopify_token":               None,
+            "shopify_billing_status":      "cancelled",
+            "shopify_billing_charge_id":   None,
+        }},
+    )
+    logging.info(f"[shopify-uninstall] Cleaned up shop={shop}")
+    return {"ok": True}
 
 
 # ── Auto-fulfillment: orders/paid webhook ──────────────────────────────────────
@@ -12110,6 +12487,16 @@ app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="stat
 @app.on_event("startup")
 async def startup_tasks():
     """Run startup tasks"""
+
+    # Pre-warm semantic router embeddings in background (uses disk cache on subsequent starts)
+    async def _warm_semantic_router():
+        try:
+            from assistant.semantic_router import initialize as _sem_init
+            await _sem_init()
+        except Exception as _e:
+            logging.warning(f"[startup] semantic_router init failed: {_e}")
+    import asyncio as _asyncio_mod
+    _asyncio_mod.create_task(_warm_semantic_router())
 
     # Inject DB into composio_service for direct Shopify credential lookups
     try:
