@@ -62,8 +62,15 @@ async def _generate_seo_brief(db, user_id: str) -> dict:
     days_since_audit = None
     audit_score = None
     if audit:
-        delta = now - audit["created_at"]
-        days_since_audit = delta.days
+        try:
+            ca = audit["created_at"]
+            if isinstance(ca, str):
+                from datetime import datetime as _dt
+                ca = _dt.fromisoformat(ca.replace("Z", "+00:00").split("+")[0])
+            delta = now - ca
+            days_since_audit = delta.days
+        except Exception:
+            days_since_audit = None
         audit_score = audit.get("score")
 
     # Top keywords by volume (no content yet)
@@ -213,6 +220,10 @@ class SEOChatResponse(BaseModel):
     conversation_id: str
     tool_steps: List[Dict[str, Any]] = []   # what tools ran and their output snippets
 
+class ExecuteActionRequest(BaseModel):
+    agent_prompt: Optional[str] = None
+    conversation_id: Optional[str] = None
+
 
 def _tid(user): return user.get("business_id", user["_id"])
 
@@ -249,8 +260,47 @@ def make_seo_agent_router(db, user_dep):
         tid = _tid(user)
         conv_id = payload.conversation_id or str(uuid.uuid4())
 
+        # ── Fetch business context and inject into system message ─────────────
+        # This ensures the AI always has context without needing to call a tool.
+        from langchain_core.messages import SystemMessage as _SM
+        biz_context_block = ""
+        try:
+            u = await db.users.find_one({"_id": tid})
+            if not u:
+                u = await db.users.find_one({"business_id": tid})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                settings = u.get("settings") or {}
+                biz_name = u.get("business_name", "")
+                biz_type = (str(bk.get("business_type") or "").strip()
+                            or str(settings.get("business_type") or "").strip()
+                            or str(u.get("business_type") or "").strip())
+                loc_parts = []
+                bl = str(bk.get("business_location") or "").strip()
+                if bl: loc_parts.append(bl)
+                country = str(settings.get("country") or "").strip()
+                if country and country not in loc_parts: loc_parts.append(country)
+                location = ", ".join(loc_parts)
+                website = str(bk.get("website_url") or settings.get("website_url") or "").strip()
+                description = str(bk.get("business_description") or "").strip()
+                products_services = str(bk.get("products_services") or "").strip()
+                country_code = str(u.get("country_code") or "").strip()
+                parts = [f"BUSINESS CONTEXT (use this — do NOT ask the user for info already here):"]
+                if biz_name: parts.append(f"Business Name: {biz_name}")
+                if biz_type: parts.append(f"Business Type: {biz_type}")
+                if location: parts.append(f"Location: {location}")
+                parts.append(f"Website: {website if website else 'not set — ask the user for their website URL before running any audit'}")
+                if country_code: parts.append(f"Country Code: {country_code}")
+                if description: parts.append(f"Business Description: {description[:500]}")
+                if products_services: parts.append(f"Products/Services: {products_services[:500]}")
+                biz_context_block = "\n".join(parts)
+        except Exception as _ctx_err:
+            logger.warning("[seo_agent] Context injection failed: %s", _ctx_err)
+
         # ── Rebuild message list from history + new user turn ─────────────────
         lc_messages = []
+        if biz_context_block:
+            lc_messages.append(_SM(content=biz_context_block))
         for m in payload.history:
             if m.role == "user":
                 lc_messages.append(HumanMessage(content=m.content))
@@ -368,7 +418,12 @@ def make_seo_agent_router(db, user_dep):
             if cached:
                 generated_at = cached.get("generated_at")
                 if generated_at:
-                    age = datetime.utcnow() - generated_at
+                    if isinstance(generated_at, str):
+                        try:
+                            generated_at = datetime.fromisoformat(generated_at.replace("Z", "+00:00").split("+")[0])
+                        except Exception:
+                            generated_at = None
+                    age = datetime.utcnow() - generated_at if generated_at else timedelta(hours=BRIEF_CACHE_HOURS + 1)
                     if age.total_seconds() < BRIEF_CACHE_HOURS * 3600:
                         doc = dict(cached)
                         doc.pop("_id", None)
@@ -385,9 +440,13 @@ def make_seo_agent_router(db, user_dep):
 
         # Cache it
         try:
+            cache_doc = {k: v for k, v in brief.items() if k != "generated_at"}
+            cache_doc["_id"] = f"brief:{tid}"
+            cache_doc["user_id"] = tid
+            cache_doc["generated_at"] = datetime.utcnow()
             await db.seo_memory.replace_one(
                 {"_id": f"brief:{tid}"},
-                {"_id": f"brief:{tid}", "user_id": tid, "generated_at": datetime.utcnow(), **brief},
+                cache_doc,
                 upsert=True,
             )
         except Exception as e:
@@ -398,10 +457,6 @@ def make_seo_agent_router(db, user_dep):
     # ── POST /seo-agent/execute-action ────────────────────────────────────────
     # One-click execution of a recommended action from the brief.
     # Runs the action through the full LangGraph agent and returns the result.
-
-    class ExecuteActionRequest(BaseModel):
-        agent_prompt: Optional[str] = None
-        conversation_id: Optional[str] = None
 
     @router.post("/execute-action")
     async def execute_action(payload: ExecuteActionRequest, user=Depends(user_dep)):
@@ -465,6 +520,68 @@ def make_seo_agent_router(db, user_dep):
             pass
 
         return SEOChatResponse(reply=reply, conversation_id=conv_id, tool_steps=tool_steps)
+
+    # ── GET /seo-agent/cache/stats ────────────────────────────────────────────
+
+    @router.get("/cache/stats")
+    async def cache_stats(_user=Depends(user_dep)):
+        now = datetime.utcnow()
+        try:
+            total = await db.seo_cache.count_documents({})
+            valid = await db.seo_cache.count_documents({"expires_at": {"$gt": now}})
+
+            agg = await db.seo_cache.aggregate([
+                {"$group": {
+                    "_id": None,
+                    "total_hits": {"$sum": "$hit_count"},
+                    "oldest": {"$min": "$created_at"},
+                    "newest": {"$max": "$created_at"},
+                }}
+            ]).to_list(1)
+            totals = agg[0] if agg else {}
+
+            by_tool = await db.seo_cache.aggregate([
+                {"$match": {"expires_at": {"$gt": now}}},
+                {"$group": {
+                    "_id": "$tool",
+                    "count": {"$sum": 1},
+                    "hits": {"$sum": "$hit_count"},
+                    "ttl_days": {"$first": "$ttl_days"},
+                }},
+                {"$sort": {"hits": -1}},
+            ]).to_list(50)
+
+            return {
+                "total_cached": total,
+                "valid_cached": valid,
+                "expired_cached": total - valid,
+                "api_calls_saved": totals.get("total_hits", 0),
+                "oldest_entry": totals.get("oldest").isoformat() if totals.get("oldest") else None,
+                "newest_entry": totals.get("newest").isoformat() if totals.get("newest") else None,
+                "by_tool": [
+                    {
+                        "tool": r["_id"],
+                        "cached": r["count"],
+                        "hits": r["hits"],
+                        "ttl_days": r.get("ttl_days", 0),
+                    }
+                    for r in by_tool
+                ],
+            }
+        except Exception as e:
+            return {"total_cached": 0, "valid_cached": 0, "expired_cached": 0,
+                    "api_calls_saved": 0, "by_tool": [], "error": str(e)}
+
+    # ── DELETE /seo-agent/cache ────────────────────────────────────────────────
+
+    @router.delete("/cache")
+    async def clear_cache(tool: str = "", _user=Depends(user_dep)):
+        try:
+            query = {"tool": tool} if tool else {}
+            result = await db.seo_cache.delete_many(query)
+            return {"ok": True, "deleted": result.deleted_count}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     # ── GET /seo-agent/status ─────────────────────────────────────────────────
 

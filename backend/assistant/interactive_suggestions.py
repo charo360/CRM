@@ -25,7 +25,7 @@ AGENTS_WITH_SUGGESTION_CHIPS = frozenset({
     "meta_ads", "google_ads", "x_ads", "social_media", "design", "creative",
     "general", "sales", "customers", "orders", "broadcasts", "follow_ups", "followups",
     "bookings", "finance", "automations", "shopify", "shopify_orders",
-    "shopify_products", "shopify_analytics", "social_inbox", "social_scheduler",
+    "shopify_products", "shopify_analytics", "shopify_customers", "social_inbox", "social_scheduler",
     "social_monitor", "tiktok_ads", "linkedin_ads", "pinterest_ads", "youtube_ads",
     # Document / writing agents — chips let owners pick options without typing
     "document", "quotes",
@@ -63,6 +63,7 @@ def _agent_label(agent_id: str) -> str:
         "shopify_orders": "Shopify Orders",
         "shopify_products": "Shopify Products",
         "shopify_analytics": "Shopify Analytics",
+        "shopify_customers": "Shopify Customers",
     }.get(agent_id, "Zilo")
 
 

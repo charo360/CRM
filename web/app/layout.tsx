@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import GoogleAnalytics from "@/components/analytics/GoogleAnalytics";
 
 export const metadata: Metadata = {
   title: {
@@ -15,9 +16,14 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const measurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID || "";
+
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
-      <body className="h-full" suppressHydrationWarning>{children}</body>
+      <body className="h-full" suppressHydrationWarning>
+        {measurementId && <GoogleAnalytics measurementId={measurementId} />}
+        {children}
+      </body>
     </html>
   );
 }

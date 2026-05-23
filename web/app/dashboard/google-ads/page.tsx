@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MarketingApiBanner } from "@/components/marketing/MarketingApiBanner";
-import { assistantApi } from "@/lib/api";
+import { assistantApi, api } from "@/lib/api";
 import {
   type AdsCampaign,
   listGoogleCampaigns,
   upsertGoogleCampaign,
   deleteGoogleCampaign,
 } from "@/lib/marketing-stubs";
-import { getCurrency } from "@/lib/auth";
+import { getCurrency, getToken } from "@/lib/auth";
 import { formatDateTime } from "@/lib/utils";
 import {
   Search,
@@ -32,6 +32,9 @@ import {
   Wand2,
   MousePointerClick,
   Tag,
+  Wifi,
+  WifiOff,
+  AlertCircle,
 } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -71,6 +74,10 @@ interface GoogleCampaignExt extends AdsCampaign {
   bidding_strategy?: string;
   target_cpa?: number;
   audience?: string;
+  headlines_text?: string;
+  descriptions_text?: string;
+  customer_id?: string;
+  google_ads_campaign_id?: string;
 }
 
 type ModalState = Partial<GoogleCampaignExt>;
@@ -139,6 +146,8 @@ interface AISuggestion {
   target_cpa?: number;
   audience: string;
   strategy: string;
+  headlines?: string[];
+  descriptions?: string[];
 }
 
 interface ChatMsg { role: "user" | "assistant"; text: string; suggestion?: AISuggestion; }
@@ -149,6 +158,7 @@ When the user describes their business or goal, respond with:
 1. Campaign strategy (2-3 sentences — search intent, match types, ad copy angle)
 2. Top keyword recommendations with match types
 3. Bidding strategy explanation
+4. Ad copy suggestions (headlines max 30 chars, descriptions max 90 chars)
 
 ALWAYS end with a JSON block in this exact format:
 \`\`\`json
@@ -162,9 +172,12 @@ ALWAYS end with a JSON block in this exact format:
   "bidding_strategy": "Target CPA|Target ROAS|Maximize Clicks|...",
   "target_cpa": <number or null>,
   "audience": "who this targets — demographics, in-market segments",
-  "strategy": "one sentence on the winning ad angle"
+  "strategy": "one sentence on the winning ad angle",
+  "headlines": ["Headline 1", "Headline 2", "Headline 3", "Headline 4", "Headline 5"],
+  "descriptions": ["First description up to 90 chars", "Second description up to 90 chars"]
 }
-\`\`\``;
+\`\`\`
+Headlines must be ≤30 chars each. Descriptions must be ≤90 chars each. Generate at least 5 headlines and 2 descriptions.`;
 
 function extractSuggestion(reply: string): AISuggestion | null {
   const match = reply.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -326,14 +339,19 @@ function AIBuilderDrawer({
 
 // ── Campaign modal ─────────────────────────────────────────────────────────────
 
+interface LaunchResult { ok?: boolean; error?: string; campaign_id?: string; note?: string; warning?: string; }
+
 function CampaignModal({
-  modal, saving, onClose, onChange, onSave,
+  modal, saving, launching, launchResult, onClose, onChange, onSave, onLaunch,
 }: {
   modal: ModalState;
   saving: boolean;
+  launching: boolean;
+  launchResult: LaunchResult | null;
   onClose: () => void;
   onChange: (m: ModalState) => void;
   onSave: () => void;
+  onLaunch: () => void;
 }) {
   const currency = getCurrency();
 
@@ -346,6 +364,16 @@ function CampaignModal({
         </div>
 
         <div className="space-y-4 p-5">
+          {/* Customer ID */}
+          <div className="rounded-lg bg-blue-50 border border-blue-100 p-3 space-y-1.5">
+            <label className="text-xs font-semibold text-blue-700 uppercase tracking-wide">Google Ads Customer ID (for launch)</label>
+            <input className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-mono outline-none focus:border-blue-500"
+              placeholder="123-456-7890"
+              value={modal.customer_id ?? ""}
+              onChange={(e) => onChange({ ...modal, customer_id: e.target.value })} />
+            <p className="text-[10px] text-blue-500">Find it in Google Ads → top-right corner. Required to launch; not needed to save as draft.</p>
+          </div>
+
           {/* Name */}
           <div>
             <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Campaign name *</label>
@@ -443,6 +471,31 @@ function CampaignModal({
               onChange={(e) => onChange({ ...modal, audience: e.target.value })} />
           </div>
 
+          {/* Headlines */}
+          <div>
+            <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide flex items-center gap-1">
+              <Sparkles size={10} />Ad Headlines <span className="text-slate-400 normal-case font-normal">(one per line, max 30 chars — need ≥3 to launch)</span>
+            </label>
+            <textarea rows={5}
+              className="mt-1 w-full resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono text-xs"
+              placeholder={"Buy Quality Furniture\nFurniture Sale Nairobi\nShop Sofas & More\nFast Delivery Kenya\nAffordable Home Decor"}
+              value={modal.headlines_text ?? ""}
+              onChange={(e) => onChange({ ...modal, headlines_text: e.target.value })} />
+            <p className="text-[10px] text-slate-400 mt-0.5">Each line = one headline. Max 30 chars each. AI Builder fills these automatically.</p>
+          </div>
+
+          {/* Descriptions */}
+          <div>
+            <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+              Ad Descriptions <span className="text-slate-400 normal-case font-normal">(one per line, max 90 chars — need ≥2 to launch)</span>
+            </label>
+            <textarea rows={3}
+              className="mt-1 w-full resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 font-mono text-xs"
+              placeholder={"Shop our wide range of affordable furniture. Free delivery on orders above KES 5,000.\nHigh-quality sofas, beds & home decor at unbeatable prices. Visit our Nairobi showroom today."}
+              value={modal.descriptions_text ?? ""}
+              onChange={(e) => onChange({ ...modal, descriptions_text: e.target.value })} />
+          </div>
+
           {/* Status */}
           <div>
             <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Status</label>
@@ -457,12 +510,39 @@ function CampaignModal({
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+        {/* Launch result */}
+        {launchResult && (
+          <div className={`mx-5 mb-3 rounded-lg border px-4 py-3 text-xs ${
+            launchResult.ok ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-800"
+          }`}>
+            {launchResult.ok ? (
+              <>
+                <p className="font-semibold">✓ Campaign created in Google Ads!</p>
+                {launchResult.campaign_id && <p className="mt-0.5 text-emerald-600">Campaign ID: {launchResult.campaign_id}</p>}
+                {launchResult.note && <p className="mt-1">{launchResult.note}</p>}
+                {launchResult.warning && <p className="mt-1 text-amber-700">{launchResult.warning}</p>}
+                <p className="mt-1 text-emerald-600">Campaign is paused — enable it in Google Ads when ready.</p>
+              </>
+            ) : (
+              <>
+                <p className="font-semibold">Launch failed</p>
+                <p className="mt-0.5">{launchResult.error}</p>
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-col sm:flex-row justify-end gap-2 border-t border-slate-100 px-5 py-4">
           <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">Cancel</button>
           <button type="button" disabled={saving || !modal.name?.trim()} onClick={onSave}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
             {saving && <Loader2 size={14} className="animate-spin" />}
-            {modal.id ? "Save changes" : "Create campaign"}
+            Save draft
+          </button>
+          <button type="button" disabled={launching || !modal.name?.trim()} onClick={onLaunch}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+            {launching ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            {launching ? "Launching…" : "🚀 Launch to Google Ads"}
           </button>
         </div>
       </div>
@@ -470,71 +550,189 @@ function CampaignModal({
   );
 }
 
+// ── Types for live ads data ────────────────────────────────────────────────────
+
+interface LiveAdsCampaign {
+  id: string;
+  name: string;
+  status: string;
+  impressions: number;
+  clicks: number;
+  cost: number;
+  ctr: number;
+  avg_cpc: number;
+}
+
+interface LiveAdsSummary {
+  total_spend: number;
+  total_clicks: number;
+  total_impressions: number;
+  avg_ctr: number;
+  avg_cpc: number;
+}
+
+interface AdsApiResponse {
+  connected: boolean;
+  error?: string;
+  customer_id?: string;
+  period_days?: number;
+  summary?: LiveAdsSummary;
+  campaigns?: LiveAdsCampaign[];
+}
+
 // ── Reporting tab ──────────────────────────────────────────────────────────────
 
 function ReportingTab({ rows }: { rows: GoogleCampaignExt[] }) {
-  const active = rows.filter((r) => r.status === "active");
-  const totals = rows.reduce((a, r) => ({ spend: a.spend + r.spend, impressions: a.impressions + r.impressions, clicks: a.clicks + r.clicks }), { spend: 0, impressions: 0, clicks: 0 });
-  const ctr = totals.impressions > 0 ? ((totals.clicks / totals.impressions) * 100).toFixed(2) : "0.00";
   const currency = getCurrency();
+  const [customerId, setCustomerId] = useState(() => localStorage.getItem("zilo_gads_cid") || "");
+  const [days, setDays] = useState(30);
+  const [liveData, setLiveData] = useState<AdsApiResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchLive = async () => {
+    const cid = customerId.trim();
+    if (!cid) return;
+    localStorage.setItem("zilo_gads_cid", cid);
+    setLoading(true);
+    try {
+      const res = await api.get<AdsApiResponse>(`/analytics/google-ads?customer_id=${encodeURIComponent(cid)}&days=${days}`);
+      setLiveData(res);
+    } catch (e) {
+      setLiveData({ connected: false, error: e instanceof Error ? e.message : "Request failed" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const s = liveData?.summary;
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-4">
-        {[
-          { label: "Cost", value: `${currency} ${totals.spend.toFixed(2)}` },
-          { label: "Impressions", value: totals.impressions.toLocaleString() },
-          { label: "Clicks", value: totals.clicks.toLocaleString() },
-          { label: "CTR", value: `${ctr}%` },
-        ].map((c) => (
-          <div key={c.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{c.label}</p>
-            <p className="mt-1 text-2xl font-bold text-slate-900">{c.value}</p>
-          </div>
-        ))}
-      </div>
+    <div className="space-y-5">
 
-      {active.length > 0 && (
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-100 px-4 py-3">
-            <p className="text-sm font-semibold text-slate-700">Active campaigns breakdown</p>
+      {/* ── Live data panel ── */}
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">Live Analytics</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Pulled directly from Google Ads API via your connected account</p>
           </div>
-          <table className="w-full text-sm">
-            <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-2.5 text-left">Campaign</th>
-                <th className="px-4 py-2.5 text-left">Type</th>
-                <th className="px-4 py-2.5 text-right">Budget/day</th>
-                <th className="px-4 py-2.5 text-right">Cost</th>
-                <th className="px-4 py-2.5 text-right">Clicks</th>
-                <th className="px-4 py-2.5 text-right">CTR</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {active.map((r) => {
-                const ctr = r.impressions > 0 ? ((r.clicks / r.impressions) * 100).toFixed(1) : "0.0";
-                return (
-                  <tr key={r.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{r.name}</td>
-                    <td className="px-4 py-2.5">
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${typeMeta(r.objective).color}`}>{typeMeta(r.objective).label}</span>
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{r.currency} {r.daily_budget.toFixed(0)}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">${r.spend.toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{r.clicks}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-600">{ctr}%</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {liveData?.connected === true && (
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
+              <Wifi size={11} /> Connected
+            </span>
+          )}
+          {liveData?.connected === false && (
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-red-600 bg-red-50 px-2.5 py-1 rounded-full">
+              <WifiOff size={11} /> Not connected
+            </span>
+          )}
         </div>
-      )}
 
-      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
-        <BarChart3 className="mx-auto mb-2 h-8 w-8 text-slate-300" />
-        <p className="font-medium">Live metrics pending Google Ads API connection</p>
-        <p className="text-xs mt-1 text-slate-400">Connect via OAuth to pull real spend, impressions, conversions, and ROAS from the Google Ads query layer.</p>
+        {/* Customer ID + controls */}
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            placeholder="Google Ads Customer ID (e.g. 123-456-7890)"
+            value={customerId}
+            onChange={(e) => setCustomerId(e.target.value)}
+            className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-400/30 font-mono"
+          />
+          <select
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 w-32">
+            <option value={7}>Last 7 days</option>
+            <option value={14}>Last 14 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+          </select>
+          <button
+            onClick={fetchLive}
+            disabled={loading || !customerId.trim()}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            {loading ? "Fetching…" : "Fetch Data"}
+          </button>
+        </div>
+
+        {/* Error state */}
+        {liveData?.error && (
+          <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <AlertCircle size={15} className="text-amber-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs font-semibold text-amber-800">Could not fetch data</p>
+              <p className="text-xs text-amber-700 mt-0.5">{liveData.error}</p>
+              {!liveData.connected && (
+                <p className="text-xs text-amber-600 mt-1">Connect Google Ads via <strong>Integrations → Google Ads</strong> first.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Summary metrics */}
+        {s && (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {[
+              { label: "Total Spend", value: `${currency} ${s.total_spend.toFixed(2)}`, color: "text-blue-600" },
+              { label: "Clicks", value: s.total_clicks.toLocaleString(), color: "text-emerald-600" },
+              { label: "Impressions", value: s.total_impressions.toLocaleString(), color: "text-slate-700" },
+              { label: "Avg CTR", value: `${s.avg_ctr.toFixed(2)}%`, color: "text-purple-600" },
+              { label: "Avg CPC", value: `${currency} ${s.avg_cpc.toFixed(2)}`, color: "text-orange-600" },
+            ].map((m) => (
+              <div key={m.label} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-center">
+                <p className={`text-lg font-bold ${m.color}`}>{m.value}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">{m.label}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Campaign breakdown table */}
+        {liveData?.campaigns && liveData.campaigns.length > 0 && (
+          <div className="overflow-hidden rounded-xl border border-slate-200">
+            <div className="border-b border-slate-100 px-4 py-3 flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-700">Campaign Breakdown</p>
+              <span className="text-xs text-slate-400">Last {liveData.period_days} days</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[600px] text-sm">
+                <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left">Campaign</th>
+                    <th className="px-4 py-2.5 text-right">Spend</th>
+                    <th className="px-4 py-2.5 text-right">Clicks</th>
+                    <th className="px-4 py-2.5 text-right">Impressions</th>
+                    <th className="px-4 py-2.5 text-right">CTR</th>
+                    <th className="px-4 py-2.5 text-right">Avg CPC</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {liveData.campaigns.map((c) => (
+                    <tr key={c.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5">
+                        <p className="font-medium text-slate-900">{c.name}</p>
+                        <span className="text-[10px] text-slate-400 capitalize">{c.status.toLowerCase()}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-slate-700 font-medium">{currency} {c.cost.toFixed(2)}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{c.clicks.toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{c.impressions.toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{c.ctr.toFixed(2)}%</td>
+                      <td className="px-4 py-2.5 text-right text-slate-600">{currency} {c.avg_cpc.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {!liveData && !loading && (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
+            <BarChart3 className="mx-auto mb-2 h-8 w-8 text-slate-300" />
+            <p className="text-sm font-medium text-slate-500">Enter your Customer ID and click Fetch Data</p>
+            <p className="text-xs text-slate-400 mt-1">Find it in Google Ads → top-right corner (format: 123-456-7890)</p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -549,6 +747,8 @@ export default function GoogleAdsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [aiOpen, setAiOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [launching, setLaunching] = useState(false);
+  const [launchResult, setLaunchResult] = useState<LaunchResult | null>(null);
   const currency = getCurrency();
 
   const refresh = useCallback(() => setRows(mergeExt(listGoogleCampaigns())), []);
@@ -556,11 +756,13 @@ export default function GoogleAdsPage() {
   useEffect(() => { refresh(); }, [refresh]);
 
   function openNew() {
-    setModal({ name: "", objective: "search", daily_budget: 500, currency, status: "draft", bidding_strategy: "Maximize Clicks" });
+    const storedCid = typeof window !== "undefined" ? localStorage.getItem("zilo_gads_cid") || "" : "";
+    setModal({ name: "", objective: "search", daily_budget: 500, currency, status: "draft", bidding_strategy: "Maximize Clicks", customer_id: storedCid });
   }
 
   function openEdit(r: GoogleCampaignExt) {
-    setModal({ ...r });
+    const storedCid = typeof window !== "undefined" ? localStorage.getItem("zilo_gads_cid") || "" : "";
+    setModal({ ...r, customer_id: r.customer_id || storedCid });
   }
 
   function handleDuplicate(r: GoogleCampaignExt) {
@@ -595,10 +797,66 @@ export default function GoogleAdsPage() {
       bidding_strategy: modal.bidding_strategy,
       target_cpa: modal.target_cpa,
       audience: modal.audience,
+      customer_id: modal.customer_id,
+      headlines_text: modal.headlines_text,
+      descriptions_text: modal.descriptions_text,
     });
+    if (modal.customer_id?.trim()) localStorage.setItem("zilo_gads_cid", modal.customer_id.trim());
     refresh();
     setModal(null);
     setSaving(false);
+  }
+
+  async function launch() {
+    if (!modal?.name?.trim()) return;
+    setLaunching(true);
+    setLaunchResult(null);
+    const cid = (modal.customer_id || "").trim();
+    const token = getToken();
+    const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+    try {
+      const res = await fetch(`${apiBase}/api/seo/google-ads/campaigns/launch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` },
+        body: JSON.stringify({
+          customer_id: cid,
+          name: modal.name!.trim(),
+          objective: modal.objective ?? "search",
+          daily_budget: Number(modal.daily_budget) || 500,
+          currency: modal.currency ?? currency,
+          bidding_strategy: modal.bidding_strategy ?? "Maximize Clicks",
+          target_cpa: modal.target_cpa,
+          keywords: modal.keywords || "",
+          negative_keywords: modal.negative_keywords || "",
+          headlines: (modal.headlines_text || "").split("\n").map(h => h.trim()).filter(Boolean),
+          descriptions: (modal.descriptions_text || "").split("\n").map(d => d.trim()).filter(Boolean),
+          launch_paused: true,
+        }),
+      });
+      const data: LaunchResult = await res.json();
+      setLaunchResult(data);
+      if (data.ok) {
+        const saved = upsertGoogleCampaign({
+          id: modal.id, name: modal.name!.trim(),
+          objective: modal.objective ?? "search",
+          daily_budget: Number(modal.daily_budget) || 0,
+          currency: modal.currency ?? currency,
+          status: "paused", spend: 0, impressions: 0, clicks: 0,
+        });
+        saveExt(saved.id, {
+          keywords: modal.keywords, negative_keywords: modal.negative_keywords,
+          bidding_strategy: modal.bidding_strategy, target_cpa: modal.target_cpa,
+          audience: modal.audience, customer_id: cid,
+          headlines_text: modal.headlines_text, descriptions_text: modal.descriptions_text,
+          google_ads_campaign_id: data.campaign_id,
+        });
+        if (cid) localStorage.setItem("zilo_gads_cid", cid);
+        refresh();
+      }
+    } catch (e) {
+      setLaunchResult({ ok: false, error: e instanceof Error ? e.message : "Launch failed" });
+    }
+    setLaunching(false);
   }
 
   function handleDelete(id: string) {
@@ -609,6 +867,7 @@ export default function GoogleAdsPage() {
   }
 
   function applyAI(s: AISuggestion) {
+    const storedCid = typeof window !== "undefined" ? localStorage.getItem("zilo_gads_cid") || "" : "";
     setModal({
       name: s.name,
       objective: s.objective,
@@ -620,6 +879,9 @@ export default function GoogleAdsPage() {
       keywords: s.keywords,
       negative_keywords: s.negative_keywords,
       audience: s.audience,
+      headlines_text: (s.headlines || []).join("\n"),
+      descriptions_text: (s.descriptions || []).join("\n"),
+      customer_id: storedCid,
     });
     setAiOpen(false);
   }
@@ -765,15 +1027,19 @@ export default function GoogleAdsPage() {
 
       {/* Checklist */}
       <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-xs text-slate-600 space-y-1">
-        <p className="font-semibold text-slate-800 mb-2">Integration checklist</p>
-        <p>â¢ Campaign drafts saved locally (shared with AI builder)</p>
-        <p>â Google Ads API OAuth â store refresh token per workspace</p>
-        <p>â Map customer ID â developer token + GAQL for reports</p>
-        <p>â Mutate campaigns/ad groups/keywords with API resource names</p>
+        <p className="font-semibold text-slate-800 mb-2">What works</p>
+        <p>✅ Campaign drafts saved locally (shared with AI builder)</p>
+        <p>✅ Connect Google Ads via OAuth (Integrations page)</p>
+        <p>✅ Live reporting: spend, clicks, impressions, CTR, CPC</p>
+        <p>✅ Launch campaigns directly — budget → campaign → ad group → keywords → RSA</p>
       </section>
 
       {modal && (
-        <CampaignModal modal={modal} saving={saving} onClose={() => setModal(null)} onChange={setModal} onSave={save} />
+        <CampaignModal
+          modal={modal} saving={saving} launching={launching} launchResult={launchResult}
+          onClose={() => { setModal(null); setLaunchResult(null); }}
+          onChange={setModal} onSave={save} onLaunch={launch}
+        />
       )}
 
       {aiOpen && <AIBuilderDrawer onApply={applyAI} onClose={() => setAiOpen(false)} />}

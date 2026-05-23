@@ -215,7 +215,7 @@ Business Information:
 Use this information to answer questions and provide relevant details about products/services.
 """
         
-        prompt = f"""You are the owner of {business_name}, a Kenyan business. You're reaching out to your customer {context['name']} via WhatsApp.
+        prompt = f"""You are the owner of {business_name}. You're reaching out to your customer {context['name']} via WhatsApp.
 
 Customer Context:
 - {context_str}{language_hint}
@@ -229,15 +229,14 @@ CRITICAL INSTRUCTIONS:
 4. Reference their last interaction if relevant
 5. If they asked a question, ANSWER it directly
 6. Detect the language they used and respond in the SAME language
-7. For Swahili, use natural Kenyan Swahili (mix with English is fine - "Sheng")
+7. Match the customer's language naturally — if they mix languages, you can too
 8. Be {tone_desc}
 9. Include a clear next step or question
 10. NO emojis unless it fits naturally (max 1-2)
 11. If you don't have enough information to answer their question, say you'll check and get back to them
 
 Examples of GOOD messages:
-- "Hi John! Saw you were asking about the price last week. It's KES 2,500. Still interested?"
-- "Habari Mary! That product is back in stock. Unataka nikudelivery?"
+- "Hi John! Saw you were asking about the price last week. It's $25. Still interested?"
 - "Hey! Been a while 😊 We have a new offer - 20% off this week. Want details?"
 
 Examples of BAD messages (too formal/generic):

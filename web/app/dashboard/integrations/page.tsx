@@ -6,7 +6,7 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel } from "@/lib/api";
+import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections } from "@/lib/api";
 import { PayHeroUsagePanel } from "@/components/billing/PayHeroUsagePanel";
 import { getToken } from "@/lib/auth";
 import { confirmDialog } from "@/lib/confirmDialog";
@@ -679,6 +679,83 @@ function IntegrationsPageInner() {
   });
   const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const [googleAdsCustomerId, setGoogleAdsCustomerId] = useState("");
+  const [shopifyShop, setShopifyShop]     = useState("");
+  const [shopifyDomain, setShopifyDomain] = useState("");
+  const [shopifyToken, setShopifyToken]   = useState("");
+  const [shopifyFormOpen, setShopifyFormOpen] = useState<"none" | "oauth" | "manual">("none");
+  const [shopifyBusy, setShopifyBusy] = useState(false);
+
+  // ── Supplier connections ──────────────────────────────────────────────────
+  const [supplierStatus, setSupplierStatus] = useState<SupplierConnections>({ cj: false, aliexpress: false });
+  const [cjEmail, setCjEmail] = useState("");
+  const [cjApiKey, setCjApiKey] = useState("");
+  const [cjBusy, setCjBusy] = useState(false);
+  const [aeBusy, setAeBusy] = useState(false);
+
+  const refreshSuppliers = useCallback(() => {
+    supplierApi.connections().then(setSupplierStatus).catch(() => {});
+  }, []);
+
+  async function connectCJ() {
+    if (!cjEmail.trim() || !cjApiKey.trim()) return;
+    setCjBusy(true);
+    try {
+      await supplierApi.connectCJ(cjEmail.trim(), cjApiKey.trim());
+      setCjEmail(""); setCjApiKey("");
+      refreshSuppliers();
+      setBanner({ type: "success", msg: "CJ Dropshipping connected." });
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect CJ." });
+    } finally { setCjBusy(false); }
+  }
+
+  async function disconnectCJ() {
+    if (!confirm("Disconnect CJ Dropshipping?")) return;
+    setCjBusy(true);
+    try { await supplierApi.disconnectCJ(); refreshSuppliers(); }
+    catch { /* ignore */ } finally { setCjBusy(false); }
+  }
+
+  async function connectAEOAuth() {
+    setAeBusy(true);
+    try {
+      const token = getToken();
+      const res = await fetch("/api/aliexpress/oauth/start", {
+        headers: { Authorization: `Bearer ${token ?? ""}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Failed to start AliExpress OAuth" })) as { detail?: string };
+        setBanner({ type: "error", msg: String(err.detail ?? "Failed to start AliExpress OAuth") });
+        return;
+      }
+      const data = await res.json() as { auth_url: string };
+      const popup = window.open(data.auth_url, "ae-connect", "width=980,height=760,noopener,noreferrer");
+      if (!popup) { window.location.href = data.auth_url; return; }
+      setBanner({ type: "success", msg: "Finish connecting in the popup, then return here." });
+      const onMsg = (e: MessageEvent) => {
+        if (e.origin !== window.location.origin) return;
+        if (e.data?.type === "ae_connected") { refreshSuppliers(); setBanner({ type: "success", msg: "AliExpress connected!" }); }
+        if (e.data?.type === "ae_connect_failed") setBanner({ type: "error", msg: e.data.msg || "AliExpress connection failed." });
+        window.removeEventListener("message", onMsg);
+      };
+      window.addEventListener("message", onMsg);
+      const poll = window.setInterval(() => {
+        void refreshSuppliers();
+        if (popup.closed) { window.clearInterval(poll); setTimeout(() => void refreshSuppliers(), 1200); }
+      }, 3000);
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect AliExpress." });
+    } finally { setAeBusy(false); }
+  }
+
+  async function disconnectAE() {
+    if (!confirm("Disconnect AliExpress?")) return;
+    setAeBusy(true);
+    try { await supplierApi.disconnectAliExpress(); refreshSuppliers(); }
+    catch { /* ignore */ } finally { setAeBusy(false); }
+  }
+
   const searchParams = useSearchParams();
 
   const refreshTg = useCallback(() => {
@@ -766,7 +843,7 @@ function IntegrationsPageInner() {
     }
   }, []);
 
-  async function composioConnect(toolkit: string, silent = false) {
+  async function composioConnect(toolkit: string, silent = false, extraBody: Record<string, string> = {}) {
     setComposioBusy(toolkit);
     try {
       const token = getToken();
@@ -776,11 +853,17 @@ function IntegrationsPageInner() {
           Authorization: `Bearer ${token ?? ""}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ redirect_base: window.location.origin }),
+        body: JSON.stringify({ redirect_base: window.location.origin, ...extraBody }),
       });
       if (!res.ok) {
-        const err = (await res.json().catch(() => ({} as { detail?: string }))) as { detail?: string };
-        if (!silent) setBanner({ type: "error", msg: err.detail || "Could not start connection. Please try again." });
+        const err = (await res.json().catch(() => ({} as { detail?: unknown }))) as { detail?: unknown };
+        const rawDetail = err.detail;
+        const errMsg = typeof rawDetail === "string"
+          ? rawDetail
+          : rawDetail && typeof rawDetail === "object"
+            ? ((rawDetail as Record<string, unknown>).message as string) || JSON.stringify(rawDetail)
+            : "Could not start connection. Please try again.";
+        if (!silent) setBanner({ type: "error", msg: errMsg });
         return;
       }
       const data = (await res.json()) as { redirect_url?: string };
@@ -823,6 +906,95 @@ function IntegrationsPageInner() {
     }
   }
 
+  async function shopifyConnectOAuth() {
+    const storeName = shopifyShop.trim().replace(/\.myshopify\.com.*/, "");
+    if (!storeName) { setBanner({ type: "error", msg: "Enter your store name." }); return; }
+    setShopifyBusy(true);
+    try {
+      const authTok = getToken();
+      const res = await fetch(`/api/shopify/oauth/start?shop=${encodeURIComponent(storeName)}`, {
+        headers: { Authorization: `Bearer ${authTok ?? ""}` },
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>) as { auth_url?: string; detail?: string };
+      if (!res.ok || !data.auth_url) {
+        setBanner({ type: "error", msg: typeof data.detail === "string" ? data.detail : "Couldn't start Shopify OAuth. Is the app configured?" });
+        return;
+      }
+      const popup = window.open(data.auth_url, "shopify-oauth", "width=1024,height=768,noopener,noreferrer");
+      if (!popup) { window.location.href = data.auth_url; return; }
+      setBanner({ type: "success", msg: "Approve access in the Shopify popup." });
+      await new Promise<void>((resolve) => {
+        const poll = window.setInterval(() => { if (popup.closed) { window.clearInterval(poll); resolve(); } }, 800);
+      });
+      await new Promise((r) => setTimeout(r, 1200));
+      const check = await fetch("/api/composio/connections", { headers: { Authorization: `Bearer ${authTok ?? ""}` } })
+        .then((r) => r.json()).catch(() => ({ connected: {} })) as { connected: Record<string, boolean> };
+      if (check.connected?.shopify) {
+        setComposioStatus((prev) => ({ ...prev, shopify: true }));
+        setBanner({ type: "success", msg: "Shopify connected!" });
+        setShopifyFormOpen("none");
+      } else {
+        setBanner({ type: "error", msg: "Didn't detect connection yet — refresh the page after approving." });
+      }
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "OAuth failed" });
+    } finally {
+      setShopifyBusy(false);
+    }
+  }
+
+  async function shopifyConnectDirect() {
+    const domain = shopifyDomain.trim();
+    const token  = shopifyToken.trim();
+    if (!domain || !token) { setBanner({ type: "error", msg: "Enter your store domain and API token." }); return; }
+    setShopifyBusy(true);
+    try {
+      const authTok = getToken();
+      const res = await fetch("/api/shopify/connect-direct", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authTok ?? ""}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ domain, token }),
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>) as Record<string, unknown>;
+      if (!res.ok) {
+        setBanner({ type: "error", msg: typeof data.detail === "string" ? data.detail : "Connection failed — check domain and token." });
+        return;
+      }
+      const shopName = typeof data.shop_name === "string" ? data.shop_name : domain;
+      setBanner({ type: "success", msg: `Shopify connected to ${shopName}!` });
+      setShopifyFormOpen("none");
+      setShopifyDomain(""); setShopifyToken("");
+      setComposioStatus((prev) => ({ ...prev, shopify: true }));
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Connection failed" });
+    } finally {
+      setShopifyBusy(false);
+    }
+  }
+
+  async function shopifyDisconnectDirect() {
+    if (!confirm("Disconnect Shopify?")) return;
+    setShopifyBusy(true);
+    try {
+      const authTok = getToken();
+      const res = await fetch("/api/shopify/connect-direct", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${authTok ?? ""}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { detail?: string };
+        setBanner({ type: "error", msg: (data.detail as string) || "Disconnect failed. Please try again." });
+        return;
+      }
+      setComposioStatus((prev) => ({ ...prev, shopify: false }));
+      setBanner({ type: "success", msg: "Shopify disconnected." });
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Disconnect failed" });
+    } finally {
+      setShopifyBusy(false);
+    }
+  }
+
   async function composioDisconnect(toolkit: string, label: string) {
     if (!confirm(`Disconnect ${label}?`)) return;
     setComposioBusy(toolkit);
@@ -845,7 +1017,7 @@ function IntegrationsPageInner() {
     }
   }
 
-  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio]);
+  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); refreshSuppliers(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio, refreshSuppliers]);
 
   useEffect(() => {
     const platform = searchParams.get("platform");
@@ -888,6 +1060,12 @@ function IntegrationsPageInner() {
     const connected = searchParams.get("connected");
     const error = searchParams.get("error");
     if (connected) {
+      // If this page loaded inside an OAuth popup, close it so the parent window
+      // picks up the connection via its polling loop.
+      if (typeof window !== "undefined" && window.opener && !window.opener.closed) {
+        window.close();
+        return;
+      }
       setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!` });
       refreshTg(); void refreshNango(); void refreshZernio(); void refreshComposio();
       window.history.replaceState({}, "", window.location.pathname);
@@ -1285,12 +1463,21 @@ function IntegrationsPageInner() {
               </svg>
             }
           >
+            {!composioStatus.googleads && (
+              <input
+                type="text"
+                value={googleAdsCustomerId}
+                onChange={e => setGoogleAdsCustomerId(e.target.value)}
+                placeholder="Customer ID (e.g. 123-456-7890)"
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs font-mono outline-none focus:border-[#4285F4] mb-1"
+              />
+            )}
             <ComposioTileControls
               connected={composioStatus.googleads}
               busy={composioBusy === "googleads"}
               connectLabel="Connect Google Ads"
               connectClass="bg-[#4285F4] hover:bg-[#3367d6]"
-              onConnect={() => void composioConnect("googleads")}
+              onConnect={() => void composioConnect("googleads", false, { customer_id: googleAdsCustomerId })}
               onDisconnect={() => void composioDisconnect("googleads", "Google Ads")}
             />
           </SmallTile>
@@ -1348,15 +1535,117 @@ function IntegrationsPageInner() {
             borderClass="border-[#96BF48]/30 bg-[#96BF48]/10"
             icon={<ShopifyGlyph className="h-5 w-5 text-[#5A8E00]" />}
           >
-            <ComposioTileControls
-              connected={composioStatus.shopify}
-              busy={composioBusy === "shopify"}
-              connectLabel="Connect Shopify"
-              connectClass="bg-[#5A8E00] hover:bg-[#4a7500]"
-              onConnect={() => void composioConnect("shopify")}
-              onDisconnect={() => void composioDisconnect("shopify", "Shopify")}
-            />
+            {composioStatus.shopify === null ? (
+              <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
+                <Loader2 size={11} className="animate-spin" /> Checking…
+              </div>
+            ) : composioStatus.shopify ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+                  <CheckCircle size={12} /> Connected
+                </div>
+                <button type="button" onClick={() => void shopifyDisconnectDirect()} disabled={shopifyBusy}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+                  {shopifyBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+                </button>
+              </div>
+            ) : shopifyFormOpen === "oauth" ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-[#96BF48]">
+                  <input value={shopifyShop} onChange={(e) => setShopifyShop(e.target.value.replace(/\.myshopify\.com.*/, ""))}
+                    placeholder="yourstore" className="flex-1 px-2 py-1.5 text-[11px] outline-none" disabled={shopifyBusy} />
+                  <span className="px-1.5 text-[10px] text-slate-400 select-none">.myshopify.com</span>
+                </div>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={() => void shopifyConnectOAuth()} disabled={shopifyBusy || !shopifyShop.trim()}
+                    className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-[#5A8E00] hover:bg-[#4a7500] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                    {shopifyBusy ? <Loader2 size={11} className="animate-spin" /> : "Connect"}
+                  </button>
+                  <button type="button" onClick={() => setShopifyFormOpen("none")}
+                    className="px-2 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setShopifyFormOpen("oauth")} disabled={shopifyBusy}
+                className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#5A8E00] hover:bg-[#4a7500] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                Connect Shopify
+              </button>
+            )}
           </SmallTile>
+        </div>
+      </section>
+
+      {/* ── Section 7: Supplier Accounts ───────────────────────────────────── */}
+      <section>
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Supplier Accounts</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+
+          {/* CJ Dropshipping */}
+          <SmallTile
+            title="CJ Dropshipping" subtitle="Source products &amp; auto-fulfill orders"
+            borderClass="border-[#FF6600]/20 bg-[#FF6600]/5"
+            icon={
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none">
+                <rect width="24" height="24" rx="4" fill="#FF6600"/>
+                <text x="4" y="17" fontSize="11" fontWeight="bold" fill="white" fontFamily="sans-serif">CJ</text>
+              </svg>
+            }
+          >
+            {supplierStatus.cj ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+                  <CheckCircle size={12} /> Connected
+                </div>
+                <button type="button" onClick={() => void disconnectCJ()} disabled={cjBusy}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+                  {cjBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <input type="email" value={cjEmail} onChange={e => setCjEmail(e.target.value)}
+                  placeholder="CJ account email" autoComplete="off"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#FF6600]" />
+                <input type="password" value={cjApiKey} onChange={e => setCjApiKey(e.target.value)}
+                  placeholder="API key" autoComplete="off"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#FF6600]" />
+                <button type="button" onClick={() => void connectCJ()} disabled={cjBusy || !cjEmail.trim() || !cjApiKey.trim()}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#FF6600] hover:bg-[#e05a00] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                  {cjBusy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
+                </button>
+              </div>
+            )}
+          </SmallTile>
+
+          {/* AliExpress */}
+          <SmallTile
+            title="AliExpress DS" subtitle="Source products &amp; auto-fulfill via DS API"
+            borderClass="border-[#E62222]/20 bg-[#E62222]/5"
+            icon={
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none">
+                <rect width="24" height="24" rx="4" fill="#E62222"/>
+                <text x="3" y="16" fontSize="8.5" fontWeight="bold" fill="white" fontFamily="sans-serif">AliEx</text>
+              </svg>
+            }
+          >
+            {supplierStatus.aliexpress ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
+                  <CheckCircle size={12} /> Connected
+                </div>
+                <button type="button" onClick={() => void disconnectAE()} disabled={aeBusy}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+                  {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+                </button>
+              </div>
+            ) : (
+              <button type="button" onClick={() => void connectAEOAuth()} disabled={aeBusy}
+                className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#E62222] hover:bg-[#c71c1c] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <><span>Connect AliExpress</span><ExternalLink size={9} /></>}
+              </button>
+            )}
+          </SmallTile>
+
         </div>
       </section>
 

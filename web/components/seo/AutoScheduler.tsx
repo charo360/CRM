@@ -4,10 +4,10 @@ import { seoApi } from "@/lib/api";
 interface ScheduledPost {
   id: string;
   title: string;
-  scheduled_date: string;
+  scheduled_date?: string;
   platform: "wordpress" | "shopify" | "social";
   status: "scheduled" | "published" | "failed";
-  content_preview: string;
+  content_preview?: string;
 }
 
 interface PublishingCredentials {
@@ -18,6 +18,139 @@ interface PublishingCredentials {
   shopify_domain?: string;
   shopify_token?: string;
   updated_at?: string;
+}
+
+const STATUS_DOT: Record<string, string> = {
+  scheduled:  "bg-blue-500",
+  published:  "bg-green-500",
+  failed:     "bg-red-500",
+};
+const STATUS_CARD: Record<string, string> = {
+  scheduled:  "bg-blue-50 border-blue-200 text-blue-700",
+  published:  "bg-green-50 border-green-200 text-green-700",
+  failed:     "bg-red-50 border-red-200 text-red-600",
+};
+const MONTH_NAMES = ["January","February","March","April","May","June",
+  "July","August","September","October","November","December"];
+
+function PublishingCalendarGrid({ posts }: { posts: ScheduledPost[] }) {
+  const today = new Date();
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+
+  const firstDay = new Date(viewYear, viewMonth, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+
+  // Build a map: "YYYY-MM-DD" → posts[]
+  const postsByDate: Record<string, ScheduledPost[]> = {};
+  posts.forEach(p => {
+    if (!p.scheduled_date) return;
+    const key = p.scheduled_date.slice(0, 10);
+    if (!postsByDate[key]) postsByDate[key] = [];
+    postsByDate[key].push(p);
+  });
+
+  function prevMonth() {
+    if (viewMonth === 0) { setViewYear(y => y - 1); setViewMonth(11); }
+    else setViewMonth(m => m - 1);
+  }
+  function nextMonth() {
+    if (viewMonth === 11) { setViewYear(y => y + 1); setViewMonth(0); }
+    else setViewMonth(m => m + 1);
+  }
+
+  // Grid cells: leading empty cells + day cells
+  const cells: (number | null)[] = [
+    ...Array(firstDay).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  // Pad to complete last row
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-base font-bold text-slate-800">Publishing Calendar</h3>
+        <div className="flex items-center gap-2">
+          <button onClick={prevMonth} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-500 text-sm">‹</button>
+          <span className="text-sm font-semibold text-slate-700 min-w-[130px] text-center">{MONTH_NAMES[viewMonth]} {viewYear}</span>
+          <button onClick={nextMonth} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-500 text-sm">›</button>
+        </div>
+        {/* Legend */}
+        <div className="hidden sm:flex items-center gap-3 text-[11px] text-slate-500">
+          {[["bg-blue-500","Scheduled"],["bg-green-500","Published"],["bg-red-500","Failed"]].map(([cls,label]) => (
+            <span key={label} className="flex items-center gap-1">
+              <span className={`w-2 h-2 rounded-full ${cls}`} />{label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Day headers */}
+      <div className="grid grid-cols-7 mb-1">
+        {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d => (
+          <div key={d} className="text-[11px] font-bold text-slate-400 text-center py-1.5 uppercase tracking-wide">{d}</div>
+        ))}
+      </div>
+
+      {/* Cells */}
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((day, idx) => {
+          if (day === null) return <div key={`empty-${idx}`} className="aspect-square" />;
+          const key = `${viewYear}-${String(viewMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+          const dayPosts = postsByDate[key] ?? [];
+          const isToday = key === todayKey;
+          return (
+            <div
+              key={key}
+              className={`min-h-[64px] rounded-xl border p-1.5 transition-colors ${
+                isToday
+                  ? "border-emerald-400 bg-emerald-50/60 ring-1 ring-emerald-300"
+                  : dayPosts.length > 0
+                  ? "border-slate-200 bg-white shadow-sm"
+                  : "border-slate-100 bg-slate-50/40"
+              }`}
+            >
+              <div className={`text-[11px] font-bold mb-1 ${isToday ? "text-emerald-600" : "text-slate-500"}`}>{day}</div>
+              <div className="space-y-0.5">
+                {dayPosts.slice(0, 3).map(p => (
+                  <div
+                    key={p.id}
+                    title={p.title}
+                    className={`flex items-center gap-1 rounded px-1 py-0.5 border text-[9px] font-medium truncate cursor-default ${STATUS_CARD[p.status] ?? "bg-slate-50 border-slate-200 text-slate-600"}`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[p.status] ?? "bg-slate-400"}`} />
+                    <span className="truncate">{p.title}</span>
+                  </div>
+                ))}
+                {dayPosts.length > 3 && (
+                  <div className="text-[9px] text-slate-400 text-center">+{dayPosts.length - 3} more</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Monthly summary */}
+      {posts.length > 0 && (
+        <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap gap-3 text-[11px] text-slate-500">
+          {(["scheduled","published","failed"] as const).map(s => {
+            const count = posts.filter(p => p.status === s).length;
+            if (!count) return null;
+            return (
+              <span key={s} className={`flex items-center gap-1 px-2 py-1 rounded-full ${STATUS_CARD[s]}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[s]}`} />
+                {count} {s}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function AutoScheduler() {
@@ -305,7 +438,7 @@ export default function AutoScheduler() {
                     </div>
                     <p className="text-sm text-slate-600 line-clamp-2">{post.content_preview}</p>
                     <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
-                      <span>Scheduled: {new Date(post.scheduled_date).toLocaleString()}</span>
+                      <span>Scheduled: {post.scheduled_date ? new Date(post.scheduled_date).toLocaleString() : "—"}</span>
                       <span>Platform: {post.platform}</span>
                     </div>
                   </div>
@@ -339,45 +472,8 @@ export default function AutoScheduler() {
         )}
       </div>
 
-      {/* Calendar View */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h3 className="text-lg font-semibold text-slate-800 mb-4">Publishing Calendar</h3>
-        
-        <div className="grid grid-cols-7 gap-1 mb-4">
-          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(day => (
-            <div key={day} className="text-xs font-medium text-slate-500 text-center py-2">
-              {day}
-            </div>
-          ))}
-        </div>
-        
-        <div className="grid grid-cols-7 gap-1">
-          {/* Simple calendar grid - in production would show actual scheduled posts */}
-          {Array.from({ length: 35 }, (_, i) => {
-            const date = i - 2; // Start from previous month
-            const isCurrentMonth = date >= 1 && date <= 31;
-            const hasPost = [5, 8, 12, 15, 20, 25].includes(date);
-            
-            return (
-              <div
-                key={i}
-                className={`aspect-square border rounded-lg p-1 text-xs ${
-                  !isCurrentMonth ? "bg-slate-50 text-slate-300" : "bg-white"
-                } ${hasPost ? "border-emerald-200 bg-emerald-50" : "border-slate-100"}`}
-              >
-                {isCurrentMonth && date > 0 && (
-                  <div>
-                    <div className="font-medium text-slate-700">{date}</div>
-                    {hasPost && (
-                      <div className="w-1 h-1 bg-emerald-500 rounded-full mx-auto mt-1"></div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {/* Publishing Calendar */}
+      <PublishingCalendarGrid posts={scheduledPosts} />
 
       {/* Credentials Modal */}
       {showCredentials && (

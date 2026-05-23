@@ -24,7 +24,7 @@ _LLM_ROUTE_CONFIDENCE_MIN = 0.75
 
 # Routed here only when the user clearly means the Shopify *store*, not generic catalog work.
 _SHOPIFY_AGENT_IDS = frozenset(
-    {"shopify", "shopify_orders", "shopify_products", "shopify_analytics"}
+    {"shopify", "shopify_orders", "shopify_products", "shopify_analytics", "shopify_customers"}
 )
 
 
@@ -110,6 +110,13 @@ def _is_text_document_intent(msg_lower: str) -> bool:
         "business document", "formal document", "write a", "draft a",
         "create a document", "brochure", "presentation", "powerpoint", "pptx",
         "slide deck",
+        # Presentation follow-up phrases — keep these in document, never route to creative
+        "the slide", "the slides", "the deck", "my slides", "my deck",
+        "make the slide", "make them look", "make it look",
+        "slide design", "deck design", "slide layout", "deck layout",
+        "slide style", "deck style", "visually appealing", "look appealing",
+        "make it appealing", "make them appealing", "look good for",
+        "slides look", "deck look", "slide look",
     )
     return any(m in msg_lower for m in markers)
 
@@ -131,6 +138,7 @@ _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS = frozenset(
         "shopify_products",
         "shopify_orders",
         "shopify_analytics",
+        "shopify_customers",
     }
 )
 
@@ -287,6 +295,15 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "ai product finder", "product sourcing", "shopify add product",
         # Note: do not use generic phrases like "adjust inventory" / "low stock" here —
         # those belong to CRM `inventory`; Shopify wins only when Shopify-specific terms match.
+    ],
+    "shopify_customers": [
+        "shopify customer", "shopify buyer", "shopify client",
+        "tag customer", "tag shopify customer", "shopify vip",
+        "win-back", "win back customer", "lapsed customer",
+        "at-risk customer", "shopify segment", "customer segment shopify",
+        "shopify loyalty", "shopify ltv customer", "top shopify customer",
+        "abandoned cart customer", "message shopify customer",
+        "shopify customer tag", "customer lifetime value shopify",
     ],
     "shopify_analytics": [
         "shopify revenue", "shopify sales", "shopify analytics",
@@ -785,7 +802,7 @@ async def _llm_route_choice(
         resp = await _chat_with_tools(
             messages=[{"role": "user", "content": prompt}],
             tools=[],
-            model_id=None,
+            model_id="deepseek-v4-flash",
             temperature=0.0,
             timeout=8.0,
         )
@@ -825,12 +842,13 @@ async def route_to_agent(
 ) -> str:
     """Return the best agent_id for this message.
 
-    Strategy (LLM-first):
+    Strategy (semantic-first):
       0.  Explicit agent from UI/API — user locked or picked a specialist.
       0a. Sticky creative — active multi-turn design flow (stateful, never interrupt).
-      1.  LLM routing — primary decision maker, runs before any keyword checks.
-      2.  Keyword scoring — last-resort fallback only if LLM fails or returns
-          low confidence.
+      1.  Semantic router — cosine similarity on pre-embedded phrases (~70 ms, no LLM).
+          Skips steps 2-3 when confidence ≥ 0.72 with margin ≥ 0.03.
+      2.  LLM routing — fallback when semantic confidence is low.
+      3.  Keyword scoring — last-resort if both LLM fails and returns low confidence.
     Always returns a valid agent_id that exists in agent_registry.
     """
     msg_lower = message.lower()
@@ -878,27 +896,37 @@ async def route_to_agent(
             logger.info("[IntentRouter] sticky → social_scheduler (mid-scheduling flow)")
             return "social_scheduler"
 
-    # ── 1. LLM route — PRIMARY decision maker ────────────────────────────────
+    # ── 1. Semantic route — embedding cosine-similarity (no LLM call) ────────
+    # ~50-80 ms vs ~500 ms for LLM. Falls back to LLM when confidence is low.
+    try:
+        from .semantic_router import route as _sem_route
+        sem = await _sem_route(message, agent_registry)
+        if sem is not None:
+            sem_agent, sem_score = sem
+            # Apply the same creative/catalog safety overrides as the LLM path
+            if _design_or_creative_document_intent(msg_lower) and sem_agent in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
+                sem_agent = _prefer_creative_agent(msg_lower, agent_registry)
+                logger.info("[IntentRouter] Semantic override: creative intent; was catalog agent")
+            if sem_agent in agent_registry:
+                logger.info("[IntentRouter] Semantic → %s (score=%.3f)", sem_agent, sem_score)
+                return sem_agent
+    except Exception as _sem_exc:
+        logger.warning("[IntentRouter] Semantic router error: %s", _sem_exc)
+
+    # ── 2. LLM route — fallback when semantic confidence is low ──────────────
     # Runs before any keyword checks. LLM understands meaning, not just words.
     llm_choice = await _llm_route_choice(message, history, agent_registry, msg_lower)
     if llm_choice is not None:
         chosen, confidence = llm_choice
         if confidence >= _LLM_ROUTE_CONFIDENCE_MIN:
-            # Hard override: document intent must never land on general.
-            # general's old description said "documents" which caused the LLM to
-            # confidently pick it for presentation/proposal requests.
             if chosen == "general" and _is_text_document_intent(msg_lower) and "document" in agent_registry:
                 logger.info("[IntentRouter] LLM → document (override: text-doc intent mis-routed to general)")
                 return "document"
-            logger.info(
-                "[IntentRouter] LLM → %s (confidence=%.2f)", chosen, confidence
-            )
+            logger.info("[IntentRouter] LLM → %s (confidence=%.2f)", chosen, confidence)
             return chosen
-        logger.info(
-            "[IntentRouter] LLM low-confidence (%.2f); falling back to keywords", confidence
-        )
+        logger.info("[IntentRouter] LLM low-confidence (%.2f); falling back to keywords", confidence)
 
-    # ── 2. Keyword scoring fallback (word-count weighted) ─────────────────────
+    # ── 3. Keyword scoring fallback ───────────────────────────────────────────
     # Score = total word count of all matched phrases.
     # "shopify order" (2 words) beats "shopify" (1 word) automatically.
     scores: Dict[str, int] = {}

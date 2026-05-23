@@ -367,8 +367,10 @@ class S3Handler:
                 aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                 aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
                 region_name=region,
-                endpoint_url=f'https://s3.{region}.amazonaws.com',
-                config=Config(signature_version='s3v4'),
+                config=Config(
+                    signature_version='s3v4',
+                    s3={'addressing_style': 'virtual'}
+                ),
             )
         except Exception as e:
             logger.error(f"Failed to create S3 client: {e}")
@@ -416,23 +418,58 @@ class S3Handler:
                     Body=file_content,
                     ContentType=content_type
                 )
-                
-                # Generate presigned URL (valid for 7 days)
-                # This ensures the image is accessible even if bucket is private
-                url = s3.generate_presigned_url(
-                    'get_object',
-                    Params={'Bucket': bucket_name, 'Key': key},
-                    ExpiresIn=604800  # 7 days
-                )
-                return url
+                return key
 
-            url = await loop.run_in_executor(None, _upload)
-            logger.info(f"Uploaded to S3: {url}")
+            key = await loop.run_in_executor(None, _upload)
+            url = S3Handler.stable_public_url_for_key(key)
+            logger.info(f"Uploaded to S3: {key} → {url}")
             return url
 
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
             raise
+
+    @staticmethod
+    def _public_base_url() -> str:
+        return (
+            os.environ.get("BACKEND_PUBLIC_URL")
+            or os.environ.get("PUBLIC_BASE_URL")
+            or os.environ.get("SERVER_URL")
+            or os.environ.get("WEBHOOK_BASE_URL")
+            or ""
+        ).rstrip("/")
+
+    @staticmethod
+    def stable_public_url_for_key(key: str) -> str:
+        """Permanent URL via server-side S3 proxy — does not expire like presigned URLs."""
+        key = (key or "").lstrip("/")
+        if not key:
+            return ""
+        path = f"/api/images/s3/{key}"
+        base = S3Handler._public_base_url()
+        return f"{base}{path}" if base else path
+
+    @staticmethod
+    def resolve_accessible_url(url: str) -> str:
+        """Return a non-expiring fetchable URL for stored media (logos, product images, etc.)."""
+        url = (url or "").strip()
+        if not url:
+            return url
+        if url.startswith("/api/images/s3/"):
+            base = S3Handler._public_base_url()
+            return f"{base}{url}" if base else url
+        if url.startswith("/uploads/"):
+            base = S3Handler._public_base_url()
+            return f"{base}{url}" if base else url
+        bucket, key = S3Handler.parse_s3_source_to_bucket_key(url)
+        if key:
+            return S3Handler.stable_public_url_for_key(key)
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        base = S3Handler._public_base_url()
+        if base:
+            return f"{base}{url if url.startswith('/') else '/' + url}"
+        return url
 
     @staticmethod
     def parse_s3_source_to_bucket_key(url: str) -> tuple:

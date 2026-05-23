@@ -1,9 +1,10 @@
 "use client";
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import BlogRenderer from "@/components/seo/BlogRenderer";
 import {
   seoApi,
+  seoAgentApi,
   blogApi,
   type SeoAudit,
   type SeoAuditIssue,
@@ -13,6 +14,11 @@ import {
   type ContentCalendarItem,
   type SeoSummary,
   type SeoBusinessContext,
+  type SeoCacheStats,
+  type KeywordTrackerRow,
+  type SerpRankingEntry,
+  type AiVisibilityAudit,
+  type ContentLink,
 } from "@/lib/api";
 import OnboardingChecklist from "@/components/seo/OnboardingChecklist";
 import SuccessMetrics from "@/components/seo/SuccessMetrics";
@@ -40,11 +46,20 @@ import {
   Search,
   Share2,
   Sparkles,
+  Target,
   TrendingUp,
+  TrendingDown,
+  Minus,
   Wrench,
   RefreshCw,
+  Download,
+  X,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
+import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 
@@ -60,20 +75,22 @@ type Tab =
   | "scheduler"
   | "analytics"
   | "local"
-  | "social";
+  | "social"
+  | "rankings";
 
 const SEO_TABS: Tab[] = [
   "hub",
   "keywords",
-  "blog",
+  "rankings",
   "calendar",
+  "blog",
   "scheduler",
   "autoblog",
   "social",
   "local",
   "analytics",
-  "overview",
   "audit",
+  "overview",
   "roi",
 ];
 
@@ -84,19 +101,20 @@ function normalizeSeoTabParam(raw: string | null): Tab {
   return "hub";
 }
 
-/** Left-to-right = typical workflow: coach → research → write → plan → automate → distribute → measure → improve */
+/** Left-to-right = typical workflow: coach → research → rank → plan → write → automate → distribute → measure → improve */
 const SEO_TAB_DEFS: { id: Tab; label: string; short: string; desc: string; Icon: LucideIcon }[] = [
   { id: "hub", label: "Start here", short: "Start", desc: "Coach & tracker", Icon: Sparkles },
   { id: "keywords", label: "Keywords", short: "Keys", desc: "Research topics", Icon: Search },
-  { id: "blog", label: "Write posts", short: "Write", desc: "Drafts & articles", Icon: PenLine },
+  { id: "rankings", label: "Rankings", short: "Rank", desc: "Position tracker", Icon: Target },
   { id: "calendar", label: "Calendar", short: "Plan", desc: "Content calendar", Icon: CalendarDays },
+  { id: "blog", label: "Write posts", short: "Write", desc: "Drafts & articles", Icon: PenLine },
   { id: "scheduler", label: "Schedule", short: "Sched", desc: "When posts go live", Icon: Clock },
   { id: "autoblog", label: "Autoblog", short: "Auto", desc: "Hands-off blog site", Icon: Rss },
   { id: "social", label: "Social", short: "Social", desc: "Share & syndicate", Icon: Share2 },
   { id: "local", label: "Local SEO", short: "Local", desc: "Maps & listings", Icon: MapPin },
   { id: "analytics", label: "Analytics", short: "Data", desc: "Traffic & tracking", Icon: Activity },
-  { id: "overview", label: "Stats", short: "Stats", desc: "Progress overview", Icon: BarChart3 },
   { id: "audit", label: "Audit", short: "Audit", desc: "Site health check", Icon: Wrench },
+  { id: "overview", label: "Stats", short: "Stats", desc: "Progress overview", Icon: BarChart3 },
   { id: "roi", label: "ROI", short: "ROI", desc: "Results & value", Icon: TrendingUp },
 ];
 
@@ -195,6 +213,155 @@ function BusinessSnapshotBar({ profile }: { profile: SeoBusinessContext | null }
   );
 }
 
+// ── Data Intelligence Panel ───────────────────────────────────────────────────
+
+const TOOL_LABELS: Record<string, string> = {
+  get_keyword_ideas: "Keyword Ideas",
+  get_keyword_search_volume: "Search Volumes",
+  check_serp_ranking: "SERP Rankings",
+  get_competitor_keywords: "Competitor Keywords",
+  veb_keyword_research: "Keyword Research",
+  veb_keyword_density: "Keyword Density",
+  veb_page_analysis: "Page Analysis",
+  veb_ai_visibility_audit: "AI Visibility",
+  veb_speed_check: "Speed Tests",
+  veb_backlinks: "Backlinks",
+  veb_top_search_keywords: "Top Keywords",
+  veb_ai_crawler_check: "AI Crawler Check",
+  veb_google_serp: "Google SERP",
+  veb_youtube_research: "YouTube Research",
+  veb_instagram_hashtags: "Instagram Hashtags",
+  veb_domain_data: "Domain Data",
+  audit_website: "Website Audit",
+};
+
+function DataIntelligencePanel() {
+  const [stats, setStats] = useState<SeoCacheStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [clearing, setClearing] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    seoAgentApi.cacheStats()
+      .then(setStats)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleClearAll = async () => {
+    if (!confirm("Clear all cached SEO data? Next searches will call live APIs.")) return;
+    setClearing(true);
+    try {
+      await seoAgentApi.clearCache();
+      load();
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-base font-semibold text-slate-800 flex items-center gap-2">
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-emerald-100 text-emerald-700 text-xs">⚡</span>
+            Data Intelligence Cache
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Searches are stored locally — reused across your account to save API costs
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={load}
+            disabled={loading}
+            className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+          >
+            {loading ? "…" : "Refresh"}
+          </button>
+          <button
+            onClick={handleClearAll}
+            disabled={clearing || loading}
+            className="px-3 py-1.5 text-xs border border-red-100 rounded-lg text-red-600 hover:bg-red-50 disabled:opacity-40"
+          >
+            {clearing ? "Clearing…" : "Clear all"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-slate-400 text-sm">Loading cache stats…</p>
+      ) : !stats ? (
+        <p className="text-slate-400 text-sm">Could not load cache stats.</p>
+      ) : (
+        <>
+          {/* Top stat cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+            <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600">Cached Queries</p>
+              <p className="text-2xl font-bold text-emerald-700 mt-0.5">{stats.valid_cached}</p>
+              <p className="text-[10px] text-emerald-500">{stats.expired_cached} expired</p>
+            </div>
+            <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-600">API Calls Saved</p>
+              <p className="text-2xl font-bold text-blue-700 mt-0.5">{stats.api_calls_saved}</p>
+              <p className="text-[10px] text-blue-500">cache hits</p>
+            </div>
+            <div className="bg-purple-50 rounded-lg p-3 border border-purple-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-purple-600">Data Types</p>
+              <p className="text-2xl font-bold text-purple-700 mt-0.5">{stats.by_tool.length}</p>
+              <p className="text-[10px] text-purple-500">tools with cache</p>
+            </div>
+            <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">Total Stored</p>
+              <p className="text-2xl font-bold text-amber-700 mt-0.5">{stats.total_cached}</p>
+              <p className="text-[10px] text-amber-500">all entries</p>
+            </div>
+          </div>
+
+          {/* Per-tool breakdown */}
+          {stats.by_tool.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Breakdown by data type</p>
+              <div className="divide-y divide-slate-100">
+                {stats.by_tool.map((t) => (
+                  <div key={t.tool} className="flex items-center justify-between py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                      <span className="text-sm text-slate-700 truncate">
+                        {TOOL_LABELS[t.tool] ?? t.tool}
+                      </span>
+                      <span className="text-[10px] text-slate-400 flex-shrink-0">
+                        {t.ttl_days}d TTL
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-4 text-right flex-shrink-0">
+                      <span className="text-xs text-slate-500">{t.cached} stored</span>
+                      {t.hits > 0 && (
+                        <span className="text-xs font-semibold text-blue-600">
+                          {t.hits} saved
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {stats.valid_cached === 0 && (
+            <p className="text-slate-400 text-sm text-center py-4">
+              No cached data yet — use the SEO Coach to run searches and they'll be stored here automatically.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 
 type SeoMemory = {
@@ -238,6 +405,9 @@ function OverviewTab({ summary, onJump, profile }: { summary: SeoSummary | null;
 
   return (
     <div className="space-y-6">
+      {/* Data Intelligence Cache */}
+      <DataIntelligencePanel />
+
       {/* Success Metrics Dashboard */}
       <SuccessMetrics />
 
@@ -475,6 +645,846 @@ function OverviewTab({ summary, onJump, profile }: { summary: SeoSummary | null;
 
 // ── Audit Tab ─────────────────────────────────────────────────────────────────
 
+// ── Rankings Tab ──────────────────────────────────────────────────────────────
+
+function PositionBadge({ pos }: { pos: number | null }) {
+  if (!pos) return <span className="text-slate-400 text-sm">Not found</span>;
+  const color = pos <= 3 ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+    : pos <= 10 ? "bg-blue-100 text-blue-700 border-blue-200"
+    : pos <= 30 ? "bg-yellow-100 text-yellow-700 border-yellow-200"
+    : "bg-slate-100 text-slate-500 border-slate-200";
+  return (
+    <span className={`inline-flex items-center justify-center w-10 h-7 rounded-md border text-sm font-bold ${color}`}>
+      #{pos}
+    </span>
+  );
+}
+
+function PositionChange({ current, prev }: { current: number | null; prev: number | null }) {
+  if (!current || !prev || current === prev) return <Minus className="w-3 h-3 text-slate-400" />;
+  const improved = current < prev;
+  const diff = Math.abs(current - prev);
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-xs font-semibold ${improved ? "text-emerald-600" : "text-red-500"}`}>
+      {improved ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+      {diff}
+    </span>
+  );
+}
+
+function Sparkline({ positions }: { positions: (number | null)[] }) {
+  const valid = positions.filter((p): p is number => p !== null);
+  if (valid.length < 2) return <span className="text-slate-300 text-xs">—</span>;
+  const w = 80, h = 24, pad = 2;
+  const min = Math.min(...valid), max = Math.max(...valid);
+  const range = max - min || 1;
+  // Note: lower position = better, so invert Y axis
+  const pts = positions
+    .map((p, i) => {
+      if (p === null) return null;
+      const x = pad + (i / (positions.length - 1)) * (w - pad * 2);
+      const y = pad + ((p - min) / range) * (h - pad * 2); // lower pos = top of chart
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+  const improved = valid[valid.length - 1] < valid[0];
+  return (
+    <svg width={w} height={h} className="overflow-visible">
+      <polyline points={pts} fill="none" stroke={improved ? "#10b981" : "#f59e0b"} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function RankingsTab() {
+  const [rankings, setRankings] = useState<SerpRankingEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<{ keyword: string; domain: string } | null>(null);
+  const [trends, setTrends] = useState<{ date: string; position: number | null }[]>([]);
+  const [loadingTrend, setLoadingTrend] = useState(false);
+
+  // Check ranking form
+  const [ckKeyword, setCkKeyword] = useState("");
+  const [ckDomain, setCkDomain] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<{ position: number | null; global_position?: number | null; top_results: { pos: number; domain: string; url: string }[] } | null>(null);
+  const [checkErr, setCheckErr] = useState("");
+
+  // Import from saved keywords
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importKwList, setImportKwList] = useState<{ keyword: string; search_volume?: number; difficulty?: string }[]>([]);
+  const [selectedKws, setSelectedKws] = useState<Set<string>>(new Set());
+  const [loadingImport, setLoadingImport] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ checked: number; failed: number } | null>(null);
+
+  // Refresh all rankings
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState<{ checked: number; failed: number } | null>(null);
+
+  // Manual check form visibility
+  const [showManualForm, setShowManualForm] = useState(false);
+
+  // Background volume backfill
+  const [backfillingVolumes, setBackfillingVolumes] = useState(false);
+
+  // Delete keyword
+  const [deletingKw, setDeletingKw] = useState<string | null>(null);
+
+  // Content creation per ranking row
+  const [creatingPost, setCreatingPost] = useState<Record<string, "idle" | "generating" | "publishing" | "done" | "error">>({});
+  const [expandedPosts, setExpandedPosts] = useState<Set<string>>(new Set());
+  const [bizCtx, setBizCtx] = useState<{ business_name?: string; language?: string } | null>(null);
+
+  // AI Rank Diagnosis
+  const [aiDiagnosis, setAiDiagnosis] = useState<null | {
+    overall_trend: string; overall_summary: string; top_priority: string;
+    diagnoses: { keyword: string; direction: string; change: number; diagnosis: string; action: string }[];
+  }>(null);
+  const [aiDiagnosisLoading, setAiDiagnosisLoading] = useState(false);
+  const [aiDiagnosisMovers, setAiDiagnosisMovers] = useState<{ keyword: string; current_position: number; previous_position: number; change: number; direction: string }[]>([]);
+
+  const runAiDiagnosis = async () => {
+    setAiDiagnosisLoading(true);
+    try {
+      const r = await seoApi.getRankAiDiagnosis();
+      setAiDiagnosisMovers(r.movers ?? []);
+      setAiDiagnosis(r.diagnosis ?? null);
+      if (!r.diagnosis && r.summary) {
+        setAiDiagnosis({ overall_trend: r.overall_trend, overall_summary: r.summary ?? "", top_priority: "", diagnoses: [] });
+      }
+    } catch { /* silent */ }
+    setAiDiagnosisLoading(false);
+  };
+
+  const load = () => {
+    setLoading(true);
+    seoApi.getRankings(undefined, undefined, 300)
+      .then(r => setRankings(r.rankings ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  // Auto-fill domain from business profile
+  useEffect(() => {
+    seoApi.businessContext().then(ctx => {
+      if (ctx.website_url) {
+        const clean = ctx.website_url
+          .replace(/https?:\/\//i, "").replace(/^www\./, "").split("/")[0].trim();
+        if (clean) setCkDomain(clean);
+      }
+      setBizCtx({ business_name: ctx.business_name, language: ctx.language });
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    // Load table immediately, then backfill volumes in background
+    load();
+    setBackfillingVolumes(true);
+    seoApi.backfillVolumes()
+      .then(r => { if (r.updated > 0) load(); })
+      .catch(() => {})
+      .finally(() => setBackfillingVolumes(false));
+  }, []);
+
+  async function runCheck() {
+    if (!ckKeyword.trim() || !ckDomain.trim()) return;
+    setChecking(true); setCheckErr(""); setCheckResult(null);
+    try {
+      const r = await seoApi.checkRanking(ckKeyword.trim(), ckDomain.trim());
+      setCheckResult(r);
+      load();
+    } catch (e) {
+      setCheckErr(e instanceof Error ? e.message : "Check failed");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function openImportModal() {
+    setShowImportModal(true);
+    setLoadingImport(true);
+    setImportResult(null);
+    try {
+      const months = await seoApi.listSavedKeywords();
+      if (!months.length) { setImportKwList([]); return; }
+      const allKws: { keyword: string; search_volume?: number; difficulty?: string }[] = [];
+      const seen = new Set<string>();
+      for (const m of months.slice(0, 3)) {
+        const data = await seoApi.getSavedKeywords(m.month);
+        for (const kw of (data.keywords || [])) {
+          const k = String((kw as Record<string, unknown>).keyword ?? "").trim();
+          if (!k || seen.has(k.toLowerCase())) continue;
+          seen.add(k.toLowerCase());
+          allKws.push({
+            keyword: k,
+            search_volume: Number((kw as Record<string, unknown>).search_volume) || undefined,
+            difficulty: String((kw as Record<string, unknown>).difficulty ?? "") || undefined,
+          });
+        }
+      }
+      setImportKwList(allKws);
+      setSelectedKws(new Set(allKws.map(k => k.keyword)));
+    } catch { setImportKwList([]); } finally { setLoadingImport(false); }
+  }
+
+  async function runBulkCheck() {
+    if (!ckDomain.trim() || selectedKws.size === 0) return;
+    setImporting(true);
+    try {
+      const kwObjects = importKwList
+        .filter(k => selectedKws.has(k.keyword))
+        .map(k => ({ keyword: k.keyword, search_volume: k.search_volume }));
+      const r = await seoApi.bulkCheckRankings(kwObjects, ckDomain.trim());
+      setImportResult({ checked: r.checked, failed: r.failed });
+      load();
+    } catch { /* ignore */ } finally { setImporting(false); }
+  }
+
+  async function deleteKeyword(keyword: string, domain: string) {
+    setDeletingKw(keyword);
+    try {
+      await seoApi.deleteRanking(keyword, domain);
+      setRankings(prev => prev.filter(r => !(r.keyword === keyword && r.domain === domain)));
+      if (selected?.keyword === keyword) setSelected(null);
+    } catch { /* ignore */ } finally { setDeletingKw(null); }
+  }
+
+  async function createPostForRanking(keyword: string, domain: string, existingPosts: ContentLink[]) {
+    const rowKey = `${keyword}||${domain}`;
+    setCreatingPost(p => ({ ...p, [rowKey]: "generating" }));
+    try {
+      const existingTitles = existingPosts.map(p => p.title).filter(Boolean);
+      const post = await seoApi.generateBlog({
+        topic: keyword,
+        keywords: [keyword],
+        tone: "professional",
+        length: "medium",
+        business_name: bizCtx?.business_name,
+        language: bizCtx?.language || "English",
+        include_faq: true,
+        existing_titles: existingTitles,
+      });
+      setCreatingPost(p => ({ ...p, [rowKey]: "publishing" }));
+      const result = await blogApi.publishFromSeo({
+        title: post.title,
+        content: post.content,
+        keywords: post.keywords || [keyword],
+        excerpt: post.meta_description,
+      });
+      await seoApi.addContentLink(keyword, domain, post.title, result.post_url || "");
+      // Update local rankings state so count refreshes without a full reload
+      setRankings(prev => prev.map(r => {
+        if (r.keyword !== keyword || r.domain !== domain) return r;
+        const newPost: ContentLink = { title: post.title, url: result.post_url || "", published_at: new Date().toISOString() };
+        return { ...r, posts: [newPost, ...(r.posts || [])] };
+      }));
+      setCreatingPost(p => ({ ...p, [rowKey]: "done" }));
+      setTimeout(() => setCreatingPost(p => ({ ...p, [rowKey]: "idle" })), 4000);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to create post — is Autoblog activated?");
+      setCreatingPost(p => ({ ...p, [rowKey]: "idle" }));
+    }
+  }
+
+  async function runRefreshAll() {
+    setRefreshing(true);
+    setRefreshResult(null);
+    try {
+      const r = await seoApi.refreshAllRankings();
+      setRefreshResult({ checked: r.checked, failed: r.failed });
+      load();
+    } catch { /* ignore */ } finally { setRefreshing(false); }
+  }
+
+  function toggleKw(kw: string) {
+    setSelectedKws(prev => {
+      const next = new Set(prev);
+      if (next.has(kw)) next.delete(kw); else next.add(kw);
+      return next;
+    });
+  }
+
+  // Deduplicate: latest entry per keyword+domain
+  const latest = useMemo(() => {
+    const map = new Map<string, SerpRankingEntry>();
+    for (const r of rankings) {
+      const k = `${r.keyword}||${r.domain}`;
+      if (!map.has(k)) map.set(k, r);
+    }
+    return Array.from(map.values());
+  }, [rankings]);
+
+  // Previous entry per keyword+domain (second occurrence)
+  const prev = useMemo(() => {
+    const seen = new Set<string>();
+    const map = new Map<string, SerpRankingEntry>();
+    for (const r of rankings) {
+      const k = `${r.keyword}||${r.domain}`;
+      if (!seen.has(k)) { seen.add(k); continue; }
+      if (!map.has(k)) map.set(k, r);
+    }
+    return map;
+  }, [rankings]);
+
+  // Position history per keyword (for sparkline — last 10 checks)
+  const history = useMemo(() => {
+    const map = new Map<string, (number | null)[]>();
+    for (const r of [...rankings].reverse()) {
+      const k = `${r.keyword}||${r.domain}`;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(r.position);
+    }
+    return map;
+  }, [rankings]);
+
+  const viewTrend = async (keyword: string, domain: string) => {
+    setSelected({ keyword, domain });
+    setLoadingTrend(true);
+    try {
+      const r = await seoApi.getRankingTrends(keyword, domain, 30);
+      setTrends(r.trends ?? []);
+    } catch { /* ignore */ } finally { setLoadingTrend(false); }
+  };
+
+  // Summary stats
+  const page1 = latest.filter(r => r.position && r.position <= 10).length;
+  const top3  = latest.filter(r => r.position && r.position <= 3).length;
+  const notFound = latest.filter(r => !r.position).length;
+  const positions = latest.map(r => r.position).filter((p): p is number => !!p);
+  const best = positions.length ? Math.min(...positions) : null;
+
+  return (
+    <div className="space-y-5">
+      {/* Action bar */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">Keyword Rankings</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {ckDomain ? <>Tracking <strong>{ckDomain}</strong></> : "Domain auto-filled from your profile"}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={openImportModal}
+              className="flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-semibold rounded-lg border border-slate-200 transition-colors whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Import Keywords
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowManualForm(v => !v)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-semibold rounded-lg border border-slate-200 transition-colors whitespace-nowrap"
+            >
+              <Search className="w-3.5 h-3.5" />
+              {showManualForm ? "Hide manual check" : "Check one keyword"}
+            </button>
+            <button
+              type="button"
+              onClick={runRefreshAll}
+              disabled={refreshing || latest.length === 0}
+              className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {refreshing
+                ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Checking all…</>
+                : <><RefreshCw className="w-3.5 h-3.5" />Refresh All Positions</>}
+            </button>
+            {latest.length >= 2 && (
+              <button
+                type="button"
+                onClick={runAiDiagnosis}
+                disabled={aiDiagnosisLoading}
+                className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap"
+              >
+                {aiDiagnosisLoading
+                  ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Analysing…</>
+                  : <>✦ AI Diagnosis</>}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* AI Diagnosis Panel */}
+        {aiDiagnosis && (
+          <div className="mt-4 rounded-xl border border-purple-200 bg-purple-50 p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="font-semibold text-purple-700 text-sm">✦ AI Rank Diagnosis</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                aiDiagnosis.overall_trend === "improving" ? "bg-green-100 text-green-700" :
+                aiDiagnosis.overall_trend === "declining" ? "bg-red-100 text-red-700" :
+                "bg-yellow-100 text-yellow-700"
+              }`}>{aiDiagnosis.overall_trend}</span>
+              <button onClick={() => setAiDiagnosis(null)} className="ml-auto text-purple-400 hover:text-purple-600 text-lg leading-none">×</button>
+            </div>
+            <p className="text-sm text-slate-700 mb-3">{aiDiagnosis.overall_summary}</p>
+            {aiDiagnosis.top_priority && (
+              <div className="bg-purple-100 rounded-lg px-3 py-2 mb-3">
+                <p className="text-xs font-semibold text-purple-800">Top Priority</p>
+                <p className="text-xs text-purple-700 mt-0.5">{aiDiagnosis.top_priority}</p>
+              </div>
+            )}
+            {aiDiagnosis.diagnoses.length > 0 && (
+              <div className="space-y-2">
+                {aiDiagnosis.diagnoses.map((d, i) => (
+                  <div key={i} className="bg-white rounded-lg p-3 border border-purple-100 flex gap-3 items-start">
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 mt-0.5 ${
+                      d.direction === "improved" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                    }`}>
+                      {d.direction === "improved" ? `↑ +${Math.abs(d.change)}` : `↓ -${Math.abs(d.change)}`}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-slate-800 truncate">{d.keyword}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{d.diagnosis}</p>
+                      <p className="text-xs text-blue-600 mt-1 font-medium">→ {d.action}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Refresh result feedback */}
+        {refreshResult && (
+          <div className="mt-3 rounded-lg bg-emerald-50 border border-emerald-100 px-4 py-2.5 flex items-center justify-between gap-3">
+            <p className="text-xs text-emerald-700">
+              <strong>{refreshResult.checked}</strong> keyword{refreshResult.checked !== 1 ? "s" : ""} refreshed.
+              {refreshResult.failed > 0 && <> <span className="text-amber-600">{refreshResult.failed} failed.</span></>}
+            </p>
+            <button onClick={() => setRefreshResult(null)} className="text-emerald-400 hover:text-emerald-600"><X className="w-3.5 h-3.5" /></button>
+          </div>
+        )}
+
+        {/* Collapsible manual check form */}
+        {showManualForm && (
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <div className="flex flex-wrap gap-2 items-end">
+              <div className="flex-1 min-w-[160px]">
+                <label className="text-[11px] font-medium text-slate-500 block mb-1">Keyword</label>
+                <input
+                  value={ckKeyword}
+                  onChange={e => setCkKeyword(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && runCheck()}
+                  placeholder="e.g. plumber nairobi"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div className="flex-1 min-w-[160px]">
+                <label className="text-[11px] font-medium text-slate-500 block mb-1">Domain</label>
+                <input
+                  value={ckDomain}
+                  onChange={e => setCkDomain(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && runCheck()}
+                  placeholder="e.g. mysite.co.ke"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={runCheck}
+                disabled={checking || !ckKeyword.trim() || !ckDomain.trim()}
+                className="min-h-[38px] px-5 py-2 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2 whitespace-nowrap"
+              >
+                {checking ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Checking…</> : "Check ranking"}
+              </button>
+            </div>
+            {checkErr && <p className="text-red-500 text-xs mt-2">{checkErr}</p>}
+            {checkResult && (
+              <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-4">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase w-12">Local</span>
+                    <PositionBadge pos={checkResult.position} />
+                    {checkResult.position
+                      ? <span className="text-sm text-slate-700">#{checkResult.position} in your country</span>
+                      : <span className="text-sm text-slate-400">Not found locally</span>}
+                  </div>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase w-12">World</span>
+                    <PositionBadge pos={checkResult.global_position ?? null} />
+                    {checkResult.global_position
+                      ? <span className="text-sm text-slate-700">#{checkResult.global_position} worldwide</span>
+                      : <span className="text-sm text-slate-400">Not found globally</span>}
+                  </div>
+                </div>
+                {checkResult.top_results.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Top 10 results</p>
+                    <div className="space-y-1">
+                      {checkResult.top_results.map(r => (
+                        <div key={r.pos} className="flex items-center gap-2 text-xs text-slate-600">
+                          <span className="w-6 text-right font-bold text-slate-400">#{r.pos}</span>
+                          <span className="font-medium">{r.domain}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <p className="text-[10px] text-slate-400 mt-2">Saved to history. Run again in a few days to track movement.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-xs text-slate-500 font-medium">Keywords Tracked</p>
+          <p className="text-2xl font-bold text-slate-800 mt-1">{latest.length}</p>
+          <p className="text-xs text-slate-400 mt-0.5">unique keywords</p>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-xs text-slate-500 font-medium">On Page 1</p>
+          <p className="text-2xl font-bold text-emerald-600 mt-1">{page1}</p>
+          <p className="text-xs text-slate-400 mt-0.5">positions 1–10</p>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-xs text-slate-500 font-medium">Top 3</p>
+          <p className="text-2xl font-bold text-blue-600 mt-1">{top3}</p>
+          <p className="text-xs text-slate-400 mt-0.5">podium positions</p>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <p className="text-xs text-slate-500 font-medium">Best Rank</p>
+          <p className="text-2xl font-bold text-slate-800 mt-1">{best ? `#${best}` : "—"}</p>
+          <p className="text-xs text-slate-400 mt-0.5">{notFound} not found</p>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-slate-400 text-sm py-6 text-center">Loading rankings…</p>
+      ) : latest.length === 0 ? (
+        <div className="bg-white rounded-xl border border-slate-200 p-6 text-center">
+          <Target className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+          <p className="font-semibold text-slate-700 text-sm mb-1">No rankings tracked yet</p>
+          <p className="text-xs text-slate-400">Use the form above to check your first keyword position.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">Keyword Positions</h3>
+              <p className="text-xs text-slate-500 mt-0.5">Click a row to see 30-day position history</p>
+            </div>
+            <button onClick={load} className="text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1">
+              <RefreshCw className="w-3 h-3" /> Refresh
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  <th className="text-left px-5 py-2.5">Keyword & Volumes</th>
+                  <th className="text-left px-3 py-2.5">Domain</th>
+                  <th className="text-center px-3 py-2.5">Local / Global</th>
+                  <th className="text-center px-3 py-2.5">Change</th>
+                  <th className="text-center px-3 py-2.5">Difficulty</th>
+                  <th className="text-center px-3 py-2.5">Trend</th>
+                  <th className="text-center px-3 py-2.5">Posts</th>
+                  <th className="text-right px-5 py-2.5">Checked</th>
+                  <th className="px-3 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {latest.map((r) => {
+                  const key = `${r.keyword}||${r.domain}`;
+                  const prevEntry = prev.get(key);
+                  const hist = history.get(key) ?? [];
+                  const isSelected = selected?.keyword === r.keyword && selected?.domain === r.domain;
+                  const rowPosts = r.posts ?? [];
+                  const postCount = rowPosts.length;
+                  const postState = creatingPost[key] ?? "idle";
+                  const isExpanded = expandedPosts.has(key);
+                  return (
+                    <Fragment key={key}>
+                      <tr
+                        onClick={() => viewTrend(r.keyword, r.domain)}
+                        className={`cursor-pointer transition-colors ${isSelected ? "bg-blue-50" : "hover:bg-slate-50"}`}
+                      >
+                        <td className="px-5 py-3 max-w-[200px]">
+                          <p className="font-medium text-slate-800 truncate">{r.keyword}</p>
+                          <div className="flex gap-1 mt-0.5 flex-wrap">
+                            {r.global_search_volume ? (
+                              <span className="text-[9px] bg-blue-50 text-blue-700 border border-blue-100 px-1 py-0.5 rounded-full font-medium">
+                                🌍 World · {r.global_search_volume.toLocaleString()}/mo
+                              </span>
+                            ) : null}
+                            {r.search_volume ? (
+                              <span className="text-[9px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-1 py-0.5 rounded-full font-medium">
+                                📍 {r.local_country || "Local"} · {r.search_volume.toLocaleString()}/mo
+                              </span>
+                            ) : null}
+                            {r.top_region ? (
+                              <span className="text-[9px] bg-amber-50 text-amber-700 border border-amber-100 px-1 py-0.5 rounded-full font-medium">
+                                🏆 {r.top_region} · {r.top_region_volume?.toLocaleString()}/mo
+                              </span>
+                            ) : null}
+                            {r.cpc ? (
+                              <span className="text-[9px] bg-purple-50 text-purple-700 border border-purple-100 px-1 py-0.5 rounded-full font-medium">
+                                💰 CPC ${Number(r.cpc).toFixed(2)}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-slate-500 text-xs truncate max-w-[120px]">{r.domain}</td>
+                        <td className="px-3 py-3 text-center">
+                          <div className="flex flex-col items-center gap-0.5">
+                            <div className="flex items-center gap-1 text-[9px] text-slate-400">
+                              <span>Local</span>
+                              <PositionBadge pos={r.position} />
+                            </div>
+                            <div className="flex items-center gap-1 text-[9px] text-slate-400">
+                              <span>World</span>
+                              <PositionBadge pos={r.global_position ?? null} />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          <PositionChange current={r.position} prev={prevEntry?.position ?? null} />
+                        </td>
+                        <td className="px-3 py-3 text-center text-xs text-slate-500">
+                          {r.difficulty ? (
+                            <span className={`font-semibold ${r.difficulty === "low" ? "text-green-600" : r.difficulty === "medium" ? "text-amber-600" : "text-red-500"}`}>
+                              {r.difficulty === "low" ? "Easy" : r.difficulty === "medium" ? "Medium" : "Hard"}
+                            </span>
+                          ) : "—"}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {r.trend ? (
+                            <span className={`text-[11px] font-semibold ${r.trend === "rising" ? "text-green-600" : r.trend === "declining" ? "text-red-500" : "text-slate-400"}`}>
+                              {r.trend === "rising" ? "📈 Rising" : r.trend === "declining" ? "📉 Declining" : "→ Stable"}
+                            </span>
+                          ) : (
+                            <Sparkline positions={hist.slice(-10)} />
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-center" onClick={e => e.stopPropagation()}>
+                          <button
+                            onClick={() => setExpandedPosts(prev => {
+                              const next = new Set(prev);
+                              next.has(key) ? next.delete(key) : next.add(key);
+                              return next;
+                            })}
+                            className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors"
+                          >
+                            {postCount > 0 ? `${postCount} post${postCount !== 1 ? "s" : ""}` : "0 posts"}
+                          </button>
+                        </td>
+                        <td className="px-5 py-3 text-right text-xs text-slate-400 whitespace-nowrap">
+                          {new Date(r.checked_at).toLocaleDateString()}
+                        </td>
+                        <td className="px-3 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => createPostForRanking(r.keyword, r.domain, rowPosts)}
+                              disabled={postState === "generating" || postState === "publishing"}
+                              className="text-[10px] px-2 py-1 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 whitespace-nowrap"
+                              title="Create a new post targeting this keyword"
+                            >
+                              {postState === "generating" ? "Writing…"
+                                : postState === "publishing" ? "Publishing…"
+                                : postState === "done" ? "✓ Done"
+                                : "+ Create post"}
+                            </button>
+                            <button
+                              onClick={() => deleteKeyword(r.keyword, r.domain)}
+                              disabled={deletingKw === r.keyword}
+                              className="p-1 rounded text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-40"
+                              title="Remove from tracking"
+                            >
+                              {deletingKw === r.keyword
+                                ? <span className="w-3 h-3 rounded-full border-2 border-slate-300 border-t-transparent animate-spin inline-block" />
+                                : <X className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-indigo-50/40">
+                          <td colSpan={9} className="px-8 py-3">
+                            <p className="text-[11px] font-semibold text-indigo-700 uppercase tracking-wide mb-2">
+                              Content published for &ldquo;{r.keyword}&rdquo;
+                            </p>
+                            {rowPosts.length === 0 ? (
+                              <p className="text-xs text-slate-400">No posts yet — click &ldquo;+ Create post&rdquo; to write the first one.</p>
+                            ) : (
+                              <ul className="space-y-1.5">
+                                {rowPosts.map((p, pi) => (
+                                  <li key={pi} className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold text-indigo-400">#{pi + 1}</span>
+                                    {p.url ? (
+                                      <a href={p.url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-700 hover:underline font-medium flex-1 truncate">{p.title}</a>
+                                    ) : (
+                                      <span className="text-xs text-slate-600 font-medium flex-1 truncate">{p.title}</span>
+                                    )}
+                                    <span className="text-[10px] text-slate-400 shrink-0">{new Date(p.published_at).toLocaleDateString()}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Import from Keywords modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-800">Import Keywords to Track</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {ckDomain ? <>Tracking for <strong>{ckDomain}</strong></> : "Set your domain in the form above first"}
+                </p>
+              </div>
+              <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              {loadingImport ? (
+                <div className="py-10 text-center text-slate-400 text-sm">
+                  <span className="w-5 h-5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block mb-2" />
+                  <p>Loading your saved keywords…</p>
+                </div>
+              ) : importKwList.length === 0 ? (
+                <div className="py-10 text-center text-slate-400 text-sm">
+                  <p className="font-medium text-slate-600 mb-1">No saved keywords found</p>
+                  <p>Go to the <strong>Keywords</strong> tab to research and save keywords first.</p>
+                </div>
+              ) : importResult ? (
+                <div className="py-8 text-center">
+                  <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-3">
+                    <TrendingUp className="w-6 h-6 text-emerald-600" />
+                  </div>
+                  <p className="font-semibold text-slate-800 text-sm">Done!</p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    <strong>{importResult.checked}</strong> keyword{importResult.checked !== 1 ? "s" : ""} added to your rankings tracker.
+                    {" "}Use the <strong>Check ranking</strong> form to get live positions for each one.
+                  </p>
+                  <button
+                    onClick={() => { setShowImportModal(false); setImportResult(null); }}
+                    className="mt-4 px-4 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700"
+                  >
+                    View Rankings
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {/* Select all / deselect all */}
+                  <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-100">
+                    <p className="text-xs text-slate-500">{selectedKws.size} of {importKwList.length} selected</p>
+                    <div className="flex gap-3">
+                      <button onClick={() => setSelectedKws(new Set(importKwList.map(k => k.keyword)))} className="text-xs text-blue-600 hover:underline">All</button>
+                      <button onClick={() => setSelectedKws(new Set())} className="text-xs text-slate-400 hover:underline">None</button>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    {importKwList.map(kw => (
+                      <button
+                        key={kw.keyword}
+                        type="button"
+                        onClick={() => toggleKw(kw.keyword)}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 text-left transition-colors"
+                      >
+                        {selectedKws.has(kw.keyword)
+                          ? <CheckSquare className="w-4 h-4 text-blue-600 shrink-0" />
+                          : <Square className="w-4 h-4 text-slate-300 shrink-0" />}
+                        <span className="flex-1 text-sm text-slate-700">{kw.keyword}</span>
+                        <span className="text-xs text-slate-400 shrink-0">
+                          {kw.search_volume ? `${kw.search_volume.toLocaleString()}/mo` : ""}
+                          {kw.difficulty ? <span className={cn("ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium",
+                            kw.difficulty === "low" ? "bg-emerald-100 text-emerald-700" :
+                            kw.difficulty === "medium" ? "bg-amber-100 text-amber-700" :
+                            "bg-red-100 text-red-700")}>{kw.difficulty}</span> : null}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            {!importResult && !loadingImport && importKwList.length > 0 && (
+              <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+                <p className="text-xs text-slate-400">
+                  Keywords are added instantly. Check positions individually after import.
+                </p>
+                <button
+                  type="button"
+                  onClick={runBulkCheck}
+                  disabled={importing || selectedKws.size === 0 || !ckDomain.trim()}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {importing
+                    ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Adding keywords…</>
+                    : <>Track {selectedKws.size} keyword{selectedKws.size !== 1 ? "s" : ""}</>}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Trend detail panel */}
+      {selected && (
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">30-Day History: "{selected.keyword}"</h3>
+              <p className="text-xs text-slate-500 mt-0.5">{selected.domain}</p>
+            </div>
+            <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-slate-600 text-xs">Close</button>
+          </div>
+          {loadingTrend ? (
+            <p className="text-slate-400 text-sm">Loading history…</p>
+          ) : trends.length === 0 ? (
+            <p className="text-slate-400 text-sm">Only one check recorded — check again in a few days to see trends.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100">
+                    <th className="text-left py-2">Date</th>
+                    <th className="text-center py-2">Position</th>
+                    <th className="text-center py-2">Checks</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {[...trends].reverse().map((t) => (
+                    <tr key={t.date}>
+                      <td className="py-2 text-slate-600">{t.date}</td>
+                      <td className="py-2 text-center">
+                        <PositionBadge pos={t.position ? Math.round(t.position) : null} />
+                      </td>
+                      <td className="py-2 text-center text-slate-400 text-xs">{(t as { checks?: number }).checks ?? 1} check{((t as { checks?: number }).checks ?? 1) > 1 ? "s" : ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AuditTab() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -483,10 +1493,12 @@ function AuditTab() {
   const [fixes, setFixes] = useState<{ field: string; issue: string; fix: string; example: string }[] | null>(null);
   const [fixLoading, setFixLoading] = useState(false);
   const [history, setHistory] = useState<SeoAudit[]>([]);
+  const [aiAudits, setAiAudits] = useState<AiVisibilityAudit[]>([]);
   const [err, setErr] = useState("");
 
   useEffect(() => {
     seoApi.listAudits().then(setHistory).catch(() => {});
+    seoApi.getAiAudits().then(r => setAiAudits(r.audits ?? [])).catch(() => {});
   }, []);
 
   async function runAudit(targetUrl?: string) {
@@ -650,6 +1662,35 @@ function AuditTab() {
           </div>
         </div>
       )}
+
+      {aiAudits.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <p className="text-sm font-semibold text-slate-700 mb-3">AI Visibility History</p>
+          <div className="space-y-2">
+            {aiAudits.slice(0, 10).map((a, i) => (
+              <div key={i} className="flex items-center justify-between gap-3 py-2 border-b border-slate-50 last:border-0">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-slate-700 truncate">{a.url}</p>
+                  <p className="text-xs text-slate-400">{a.created_at ? new Date(a.created_at).toLocaleDateString() : ""}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-xs font-bold ${
+                    (a.ai_score ?? 0) >= 80 ? "bg-emerald-100 text-emerald-700" :
+                    (a.ai_score ?? 0) >= 60 ? "bg-amber-100 text-amber-700" :
+                    "bg-red-100 text-red-700"
+                  }`}>{a.grade || "?"}</span>
+                  <span className="text-xs text-slate-500">{a.ai_score ?? "—"}/100</span>
+                  {a.issues_count > 0 && (
+                    <span className="text-[11px] px-1.5 py-0.5 bg-red-50 text-red-600 rounded font-medium">
+                      {a.issues_count} issue{a.issues_count !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -661,47 +1702,29 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
   const [location, setLocation] = useState("");
   const [loading, setLoading] = useState(false);
   const [keywords, setKeywords] = useState<SeoKeyword[]>([]);
-  const [keywordSource, setKeywordSource] = useState<"dataforseo" | "ai" | "saved" | null>(null);
+  const [keywordSource, setKeywordSource] = useState<"dataforseo" | "vebapi" | "ai" | "ai+dataforseo" | "saved" | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedMonth, setSavedMonth] = useState<string | null>(null);
   const [savedKeywordSets, setSavedKeywordSets] = useState<{ month: string; count: number; business_type: string; location: string; saved_at: string }[]>([]);
   const [loadingSavedSets, setLoadingSavedSets] = useState(false);
   const [err, setErr] = useState("");
   const [excludedCount, setExcludedCount] = useState(0);
-  const [kwPublishing, setKwPublishing] = useState<Record<number, "idle" | "generating" | "publishing" | "done" | "error">>({});
-  const [kwPublishUrl, setKwPublishUrl] = useState<Record<number, string>>({});
+  const [selectedKwsForRanking, setSelectedKwsForRanking] = useState<Set<string>>(new Set());
+  const [showTrackModal, setShowTrackModal] = useState(false);
+  const [trackDomain, setTrackDomain] = useState("");
+  const [tracking, setTracking] = useState(false);
+  const [trackResult, setTrackResult] = useState<{ checked: number } | null>(null);
 
-  async function publishKeywordToBlog(kw: SeoKeyword, idx: number) {
-    setKwPublishing(p => ({ ...p, [idx]: "generating" }));
-    try {
-      const post = await seoApi.generateBlog({
-        topic: kw.content_idea || kw.keyword,
-        keywords: [kw.keyword],
-        tone: "professional",
-        length: "medium",
-        business_name: profile?.business_name,
-        language: profile?.language || "English",
-        include_faq: true,
-      });
-      setKwPublishing(p => ({ ...p, [idx]: "publishing" }));
-      const result = await blogApi.publishFromSeo({
-        title: post.title,
-        content: post.content,
-        keywords: post.keywords || [kw.keyword],
-        excerpt: post.meta_description,
-      });
-      setKwPublishUrl(p => ({ ...p, [idx]: result.post_url }));
-      setKwPublishing(p => ({ ...p, [idx]: "done" }));
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Publish failed — is your Autoblog activated?");
-      setKwPublishing(p => ({ ...p, [idx]: "error" }));
-    }
-  }
+  // Filter + sort state
+  const [kwSortBy, setKwSortBy] = useState<"world" | "local" | "top_region" | "cpc">("world");
+  const [kwFilterDiff, setKwFilterDiff] = useState<"all" | "low" | "medium" | "high">("all");
+
 
   useEffect(() => {
     if (!profile) return;
     setBusinessType((t) => (t.trim() ? t : profile.business_type));
     setLocation((t) => (t.trim() ? t : profile.location));
+    setTrackDomain((d) => d.trim() ? d : (profile.website_url || "").replace(/^https?:\/\/(www\.)?/, "").split("/")[0]);
   }, [profile]);
 
   useEffect(() => {
@@ -743,6 +1766,42 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
       setSavedKeywordSets([]);
     } finally {
       setLoadingSavedSets(false);
+    }
+  }
+
+  function toggleKwRankSelection(kw: string) {
+    setSelectedKwsForRanking(prev => {
+      const next = new Set(prev);
+      next.has(kw) ? next.delete(kw) : next.add(kw);
+      return next;
+    });
+  }
+
+  async function trackSelectedKeywords() {
+    if (!trackDomain.trim()) return;
+    setTracking(true);
+    try {
+      const kwsToTrack = keywords
+        .filter(k => selectedKwsForRanking.has(k.keyword))
+        .map(k => ({
+          keyword: k.keyword,
+          search_volume: k.search_volume ?? undefined,
+          global_search_volume: (k as any).global_search_volume ?? undefined,
+          local_country: k.local_country ?? undefined,
+          top_region: (k as any).top_region ?? undefined,
+          top_region_volume: (k as any).top_region_volume ?? undefined,
+          cpc: k.cpc ?? undefined,
+          difficulty: k.difficulty ?? undefined,
+          trend: (k as any).trend ?? undefined,
+          content_idea: k.content_idea ?? undefined,
+        }));
+      const res = await seoApi.bulkCheckRankings(kwsToTrack, trackDomain.trim());
+      setTrackResult({ checked: res.checked });
+      setSelectedKwsForRanking(new Set());
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to track keywords");
+    } finally {
+      setTracking(false);
     }
   }
 
@@ -893,14 +1952,24 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
                   {excludedCount} already known — skipped
                 </span>
               )}
+              {keywordSource === "ai+dataforseo" && (
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
+                  AI keywords · Real volumes
+                </span>
+              )}
               {keywordSource === "dataforseo" && (
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
                   Live data · DataForSEO
                 </span>
               )}
+              {keywordSource === "vebapi" && (
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-blue-800 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">
+                  Real volumes · VebAPI
+                </span>
+              )}
               {keywordSource === "ai" && (
                 <span className="text-[10px] font-medium text-slate-500 bg-slate-50 px-2 py-0.5 rounded-full">
-                  AI suggestions{profile?.live_keyword_data ? " (DataForSEO unavailable or no results)" : ""}
+                  AI suggestions (no live data available)
                 </span>
               )}
               {keywordSource === "saved" && (
@@ -911,35 +1980,28 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
             </div>
           </div>
 
-          {savedMonth && (
-            <div className="mx-5 mt-4 rounded-xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-3">
-              <p className="text-sm font-semibold text-emerald-900">Saved for {savedMonth}</p>
-              <p className="text-xs text-emerald-800/90 mt-1 leading-relaxed">
-                {keywords.length} phrases on file (volumes and intent kept when available). Reload an older month from the list below if you need past research.
-              </p>
-            </div>
-          )}
+          {savedMonth && (() => {
+            const currentSet = savedKeywordSets.find(s => s.month === savedMonth);
+            const crawledDate = currentSet?.saved_at
+              ? new Date(currentSet.saved_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
+              : null;
+            return (
+              <div className="mx-5 mt-4 rounded-xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <p className="text-sm font-semibold text-emerald-900">Saved for {savedMonth}</p>
+                  {crawledDate && (
+                    <span className="text-[10px] font-medium text-emerald-700 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">
+                      Last crawled: {crawledDate}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-emerald-800/90 mt-1 leading-relaxed">
+                  {keywords.length} phrases on file (volumes and intent kept when available). Reload an older month from the list below if you need past research.
+                </p>
+              </div>
+            );
+          })()}
 
-          <div className="px-5 pt-4 pb-2">
-            <button
-              type="button"
-              onClick={() => {
-                toast.message("Opening your calendar", {
-                  description: "We'll build your schedule from these keyword ideas.",
-                });
-                onPushToCalendar?.(keywords);
-                onJump("calendar");
-              }}
-              className="flex w-full min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700"
-            >
-              <CalendarDays className="h-4 w-4 shrink-0 opacity-95" aria-hidden />
-              Continue to calendar — plan posts from these topics
-              <ArrowRight className="h-4 w-4 shrink-0 opacity-90" aria-hidden />
-            </button>
-            <p className="mt-2 text-center text-[11px] text-slate-500">
-              Your list is already saved for this month when possible — this step just opens the planner with these topics.
-            </p>
-          </div>
 
           <div className="flex flex-wrap items-center gap-2 px-5 pb-4">
             <button
@@ -975,10 +2037,65 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
             </div>
           )}
 
+          {keywords.length > 0 && (
+            <div className="px-5 py-2 border-t border-slate-100 space-y-2">
+              {/* Sort + filter controls */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] text-slate-400 font-medium">Sort:</span>
+                {(["world", "local", "top_region", "cpc"] as const).map(s => (
+                  <button key={s} type="button" onClick={() => setKwSortBy(s)}
+                    className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition-colors ${kwSortBy === s ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-500 border-slate-200 hover:border-blue-300"}`}>
+                    {s === "world" ? "🌍 World" : s === "local" ? "📍 Local" : s === "top_region" ? "🏆 Top country" : "💰 CPC"}
+                  </button>
+                ))}
+                <span className="ml-3 text-[11px] text-slate-400 font-medium">Difficulty:</span>
+                {(["all", "low", "medium", "high"] as const).map(d => (
+                  <button key={d} type="button" onClick={() => setKwFilterDiff(d)}
+                    className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition-colors ${kwFilterDiff === d ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"}`}>
+                    {d === "all" ? "All" : d === "low" ? "Easy" : d === "medium" ? "Medium" : "Hard"}
+                  </button>
+                ))}
+              </div>
+              {/* Select all */}
+              <div className="flex items-center justify-between">
+                <button type="button"
+                  onClick={() => {
+                    if (selectedKwsForRanking.size === keywords.length) {
+                      setSelectedKwsForRanking(new Set());
+                    } else {
+                      setSelectedKwsForRanking(new Set(keywords.map(k => k.keyword)));
+                    }
+                  }}
+                  className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">
+                  {selectedKwsForRanking.size === keywords.length ? "Deselect all" : "Select all"}
+                </button>
+                {selectedKwsForRanking.size > 0 && (
+                  <span className="text-[11px] text-slate-500">{selectedKwsForRanking.size} selected</span>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="divide-y divide-slate-50">
-            {keywords.map((kw, i) => (
-              <div key={i} className="px-5 py-3">
+            {[...keywords]
+              .filter(kw => kwFilterDiff === "all" || kw.difficulty === kwFilterDiff)
+              .sort((a, b) => {
+                if (kwSortBy === "world") return ((b as any).global_search_volume ?? 0) - ((a as any).global_search_volume ?? 0);
+                if (kwSortBy === "local") return (b.search_volume ?? 0) - (a.search_volume ?? 0);
+                if (kwSortBy === "top_region") return ((b as any).top_region_volume ?? 0) - ((a as any).top_region_volume ?? 0);
+                if (kwSortBy === "cpc") return (b.cpc ?? 0) - (a.cpc ?? 0);
+                return 0;
+              })
+              .map((kw, i) => (
+              <div key={i} className={`px-5 py-3 transition-colors ${selectedKwsForRanking.has(kw.keyword) ? "bg-blue-50/60" : ""}`}>
                 <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <input
+                      type="checkbox"
+                      checked={selectedKwsForRanking.has(kw.keyword)}
+                      onChange={() => toggleKwRankSelection(kw.keyword)}
+                      className="mt-1 w-4 h-4 rounded border-slate-300 text-blue-600 cursor-pointer shrink-0"
+                    />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="text-sm font-medium text-slate-800">{kw.keyword}</p>
@@ -997,30 +2114,36 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
                       )}
                     </div>
                     <p className="text-xs text-slate-600 mt-0.5">💡 {kw.content_idea}</p>
-                    {kw.search_volume != null && kw.search_volume > 0 && (
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        ~{kw.search_volume.toLocaleString()} searches/mo
-                      </p>
+                    {((kw as any).global_search_volume > 0 || (kw.search_volume != null && kw.search_volume > 0) || (kw as any).top_region || kw.cpc) && (
+                      <div className="flex gap-1.5 mt-1 flex-wrap">
+                        {(kw as any).global_search_volume > 0 && (
+                          <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded-full font-medium">
+                            🌍 World · {((kw as any).global_search_volume as number).toLocaleString()}/mo
+                          </span>
+                        )}
+                        {kw.search_volume != null && kw.search_volume > 0 && (
+                          <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-1.5 py-0.5 rounded-full font-medium">
+                            📍 {kw.local_country || "Local"} · {kw.search_volume.toLocaleString()}/mo
+                          </span>
+                        )}
+                        {(kw as any).top_region && (
+                          <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-100 px-1.5 py-0.5 rounded-full font-medium">
+                            🏆 {(kw as any).top_region} · {((kw as any).top_region_volume as number)?.toLocaleString()}/mo
+                          </span>
+                        )}
+                        {kw.cpc != null && kw.cpc > 0 && (
+                          <span className="text-[10px] bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded-full font-medium">
+                            💰 CPC ${Number(kw.cpc).toFixed(2)}
+                          </span>
+                        )}
+                      </div>
                     )}
+                  </div>
                   </div>
                   <div className="flex gap-2 shrink-0 items-center flex-wrap justify-end">
                     <span className={`text-xs font-semibold capitalize ${difficultyColor(String(kw.difficulty ?? ""))}`}>
                       {kw.difficulty === "low" ? "Easy" : kw.difficulty === "medium" ? "Medium" : "Hard"}
                     </span>
-                    {kwPublishing[i] === "done" ? (
-                      <a href={kwPublishUrl[i]} target="_blank" rel="noopener noreferrer"
-                        className="text-[10px] px-2 py-1 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 whitespace-nowrap">
-                        ✓ View post →
-                      </a>
-                    ) : (
-                      <button
-                        onClick={() => publishKeywordToBlog(kw, i)}
-                        disabled={kwPublishing[i] === "generating" || kwPublishing[i] === "publishing"}
-                        className="text-[10px] px-2 py-1 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 whitespace-nowrap"
-                      >
-                        {kwPublishing[i] === "generating" ? "Writing…" : kwPublishing[i] === "publishing" ? "Publishing…" : "→ Publish"}
-                      </button>
-                    )}
                   </div>
                 </div>
                 <div className="mt-1.5 flex items-center gap-2">
@@ -1039,6 +2162,96 @@ function KeywordsTab({ profile, onJump, onPushToCalendar }: { profile: SeoBusine
               </div>
             ))}
           </div>
+
+          {selectedKwsForRanking.size > 0 && (
+            <div className="fixed bottom-0 left-0 right-0 z-50 px-5 py-3 bg-white border-t border-blue-200 shadow-[0_-4px_16px_rgba(0,0,0,0.12)] flex items-center gap-3 max-w-3xl mx-auto">
+              <span className="flex-1 text-sm font-semibold text-slate-800">
+                {selectedKwsForRanking.size} keyword{selectedKwsForRanking.size !== 1 ? "s" : ""} selected
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedKwsForRanking(new Set())}
+                className="text-xs text-slate-400 hover:text-slate-600"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTrackDomain(d => d.trim() ? d : (profile?.website_url || "").replace(/^https?:\/\/(www\.)?/, "").split("/")[0]);
+                  setShowTrackModal(true);
+                }}
+                className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 shadow-sm"
+              >
+                Send to Rankings →
+              </button>
+            </div>
+          )}
+
+          {showTrackModal && (
+            <div
+              className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm p-4"
+              onClick={e => { if (e.target === e.currentTarget) { setShowTrackModal(false); setTrackResult(null); } }}
+            >
+              <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-6">
+                {trackResult ? (
+                  <div className="text-center">
+                    <div className="text-4xl mb-3">✓</div>
+                    <p className="text-base font-semibold text-slate-800">Tracking started</p>
+                    <p className="text-sm text-slate-500 mt-1">
+                      {trackResult.checked} keyword{trackResult.checked !== 1 ? "s" : ""} added to Rankings
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setShowTrackModal(false); setTrackResult(null); onJump("rankings"); }}
+                      className="mt-4 w-full py-2.5 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700"
+                    >
+                      Go to Rankings →
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowTrackModal(false); setTrackResult(null); }}
+                      className="mt-2 w-full py-2 text-sm text-slate-500 hover:text-slate-700"
+                    >
+                      Stay here
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-base font-semibold text-slate-800 mb-1">
+                      Track {selectedKwsForRanking.size} keyword{selectedKwsForRanking.size !== 1 ? "s" : ""} in Rankings
+                    </p>
+                    <p className="text-xs text-slate-500 mb-4">We&apos;ll check your position weekly for each keyword.</p>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Domain to track</label>
+                    <input
+                      type="text"
+                      value={trackDomain}
+                      onChange={e => setTrackDomain(e.target.value)}
+                      placeholder="example.com"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowTrackModal(false)}
+                        className="flex-1 py-2.5 rounded-xl border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={trackSelectedKeywords}
+                        disabled={tracking || !trackDomain.trim()}
+                        className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700 disabled:opacity-60"
+                      >
+                        {tracking ? "Adding…" : "Start tracking"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1103,9 +2316,14 @@ type BlogTemplateId = (typeof BLOG_TEMPLATES)[number]["id"];
 // ── Blog Tab ──────────────────────────────────────────────────────────────────
 
 function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null; prefillTopic?: CalendarWritePayload }) {
-  const [tab, setTab] = useState<"write" | "posts">("posts");
+  const [tab, setTab] = useState<"write" | "posts" | "suggested">("posts");
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
+  const [rankingKeywords, setRankingKeywords] = useState<SerpRankingEntry[]>([]);
+  const [rankingLoading, setRankingLoading] = useState(false);
+  const [expandedAngles, setExpandedAngles] = useState<Set<string>>(new Set());
+  const [loadingAngles, setLoadingAngles] = useState<Record<string, boolean>>({});
+  const [angles, setAngles] = useState<Record<string, { title: string; angle: string }[]>>({});
 
   // Generator form
   const [topic, setTopic] = useState("");
@@ -1126,8 +2344,114 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
   const [publishingSiteId, setPublishingSiteId] = useState<string | null>(null);
   const [publishedUrls, setPublishedUrls] = useState<Record<string, string>>({});
 
+  // Schedule generated post
+  const [schedulingGenerated, setSchedulingGenerated] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [schedulePosting, setSchedulePosting] = useState(false);
+
+  // Schedule existing draft post
+  const [schedulingPostId, setSchedulingPostId] = useState<string | null>(null);
+  const [schedulePostDate, setSchedulePostDate] = useState<Record<string, string>>({});
+  const [schedulePostPosting, setSchedulePostPosting] = useState<string | null>(null);
+
+  // Internal link suggestions
+  const [internalLinks, setInternalLinks] = useState<null | {
+    suggestions: { from_post_id: string; from_post_title: string; to_post_id: string; to_post_title: string; anchor_text: string; reason: string; priority: string; where_to_add: string }[];
+    summary: string; posts_analyzed: number;
+  }>(null);
+  const [internalLinksLoading, setInternalLinksLoading] = useState(false);
+
+  const runInternalLinks = async () => {
+    setInternalLinksLoading(true);
+    try { setInternalLinks(await seoApi.getInternalLinkSuggestions()); }
+    catch { /* silent */ }
+    setInternalLinksLoading(false);
+  };
+
+  // Schema generator
+  const [schemaPost, setSchemaPost] = useState<BlogPost | null>(null);
+  const [schemaResult, setSchemaResult] = useState<{ script_tags: string; count: number } | null>(null);
+  const [schemaLoading, setSchemaLoading] = useState(false);
+  const [schemaCopied, setSchemaCopied] = useState(false);
+
+  const generateSchema = async (post: BlogPost) => {
+    setSchemaPost(post);
+    setSchemaResult(null);
+    setSchemaLoading(true);
+    setSchemaCopied(false);
+    try {
+      const r = await seoApi.generateBlogSchema({ post_id: post.id, title: post.title, content: post.content, keywords: post.keywords ?? [] });
+      setSchemaResult(r);
+    } catch { /* silent */ }
+    setSchemaLoading(false);
+  };
+
   // Read modal
   const [readPost, setReadPost] = useState<BlogPost | null>(null);
+
+  // Social share modal
+  const { accounts: rawZernioAccounts } = useZernioAccounts();
+  const zernioAccounts = rawZernioAccounts as { id: string; platform: string; displayName?: string; username?: string }[];
+  const [sharePost, setSharePost] = useState<BlogPost | null>(null);
+  const [shareCaption, setShareCaption] = useState("");
+  const [shareAccId, setShareAccId] = useState("");
+  const [sharePlatform, setSharePlatform] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [shareResult, setShareResult] = useState<string>("");
+  const [sharedPosts, setSharedPosts] = useState<Record<string, string[]>>({}); // postId → platform[]
+
+  function openShareModal(post: BlogPost) {
+    const firstAcc = zernioAccounts[0];
+    const caption = buildCaption(post);
+    setSharePost(post);
+    setShareCaption(caption);
+    setShareAccId(firstAcc?.id ?? "");
+    setSharePlatform(firstAcc?.platform ?? "");
+    setShareResult("");
+  }
+
+  function buildCaption(post: BlogPost): string {
+    const clean = post.content.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+    const intro = clean.slice(0, 240).trim();
+    const truncated = clean.length > 240 ? intro + "…" : intro;
+    const link = post.site_post_url ? `\n\n🔗 ${post.site_post_url}` : "";
+    return `${post.title}\n\n${truncated}${link}`;
+  }
+
+  async function doShare() {
+    if (!sharePost || !shareAccId || !sharePlatform || !shareCaption.trim()) return;
+    setSharing(true); setShareResult("");
+    try {
+      await seoApi.shareBlogToSocial(sharePost.id, {
+        platform: sharePlatform,
+        account_id: shareAccId,
+        caption: shareCaption.trim(),
+        link_url: sharePost.site_post_url ?? publishedUrls[sharePost.id] ?? "",
+        image_url: sharePost.image_url ?? "",
+      });
+      setShareResult("✓ Posted to " + (SOCIAL_PLATFORMS.find(p => p.id === sharePlatform)?.label ?? sharePlatform));
+      setSharedPosts(prev => ({
+        ...prev,
+        [sharePost.id]: [...new Set([...(prev[sharePost.id] ?? []), sharePlatform])],
+      }));
+      setPosts(prev => prev.map(p => p.id === sharePost.id ? {
+        ...p,
+        social_shares: [...(p.social_shares ?? []), {
+          platform: sharePlatform,
+          account_id: shareAccId,
+          social_post_id: "",
+          caption: shareCaption.trim(),
+          link_url: sharePost.site_post_url ?? "",
+          shared_at: new Date().toISOString(),
+        }],
+      } : p));
+      setTimeout(() => setSharePost(null), 1800);
+    } catch (e) {
+      setShareResult("Error: " + (e instanceof Error ? e.message : "Share failed"));
+    } finally {
+      setSharing(false);
+    }
+  }
 
   // Publish modal
   const [publishPost, setPublishPost] = useState<BlogPost | null>(null);
@@ -1161,17 +2485,36 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
   useEffect(() => { loadPosts(); }, [loadPosts]);
 
   useEffect(() => {
+    if (tab !== "suggested") return;
+    setRankingLoading(true);
+    seoApi.getRankings(undefined, undefined, 200)
+      .then(r => {
+        // Deduplicate by keyword — keep latest entry per keyword
+        const seen = new Map<string, SerpRankingEntry>();
+        for (const entry of (r.rankings ?? [])) {
+          if (!seen.has(entry.keyword.toLowerCase())) seen.set(entry.keyword.toLowerCase(), entry);
+        }
+        setRankingKeywords(Array.from(seen.values()));
+      })
+      .catch(() => {})
+      .finally(() => setRankingLoading(false));
+  }, [tab]);
+
+  useEffect(() => {
     if (!profile) return;
     setBusinessName((n) => (n.trim() ? n : profile.business_name));
     if (profile.language?.trim()) setBlogLanguage(profile.language.trim());
   }, [profile]);
 
-  // Pre-fill from calendar "Write post" click
+  // Pre-fill from calendar "Write post" click — auto-generate immediately
   useEffect(() => {
     if (!prefillTopic) return;
     setTopic(prefillTopic.title);
     setKeywords(prefillTopic.keywords.join(", "));
     setTab("write");
+    // Auto-generate using prefill values directly (can't wait for state update)
+    void generateFromCalendar(prefillTopic.title, prefillTopic.keywords);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefillTopic]);
 
   // Load saved publish credentials when platform changes
@@ -1191,6 +2534,23 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
     }).catch(() => {});
   }, [publishPlatform]);
 
+  async function suggestAnglesForKeyword(kw: string, existingPosts: ContentLink[]) {
+    const isOpen = expandedAngles.has(kw);
+    if (isOpen) {
+      setExpandedAngles(prev => { const n = new Set(prev); n.delete(kw); return n; });
+      return;
+    }
+    setExpandedAngles(prev => new Set(prev).add(kw));
+    if (angles[kw]) return; // already loaded
+    setLoadingAngles(prev => ({ ...prev, [kw]: true }));
+    try {
+      const existingTitles = existingPosts.map(p => p.title).filter(Boolean);
+      const res = await seoApi.suggestAngles(kw, existingTitles);
+      setAngles(prev => ({ ...prev, [kw]: res.angles }));
+    } catch { /* ignore */ }
+    finally { setLoadingAngles(prev => ({ ...prev, [kw]: false })); }
+  }
+
   async function publishToSite(post: BlogPost) {
     setPublishingSiteId(post.id);
     try {
@@ -1199,6 +2559,7 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
         content: post.content,
         keywords: post.keywords ?? [],
         excerpt: post.meta_description,
+        post_id: post.id,
       });
       setPublishedUrls(prev => ({ ...prev, [post.id]: result.post_url }));
       toast.success("Published to your website!");
@@ -1207,6 +2568,27 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
       toast.error(e instanceof Error ? e.message : "Publish failed — is Autoblog activated?");
     } finally {
       setPublishingSiteId(null);
+    }
+  }
+
+  async function generateFromCalendar(topicStr: string, kws: string[]) {
+    if (!topicStr.trim()) return;
+    setGenerating(true); setErr(""); setGenerated(null);
+    try {
+      const res = await seoApi.generateBlog({
+        topic: topicStr.trim(),
+        keywords: kws,
+        tone,
+        length,
+        business_name: businessName,
+        language: blogLanguage,
+        include_faq: includeFaq,
+      });
+      setGenerated(res);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Generation failed");
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -1256,6 +2638,61 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
       setErr(e instanceof Error ? e.message : "Save failed");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function defaultScheduleDate() {
+    const d = new Date();
+    const day = d.getDay();
+    const diff = day === 0 ? 1 : 8 - day;
+    d.setDate(d.getDate() + diff);
+    return d.toISOString().slice(0, 10);
+  }
+
+  async function scheduleGenerated() {
+    if (!generated || !scheduleDate) return;
+    setSchedulePosting(true);
+    try {
+      const saved = await seoApi.createPost({
+        title: generated.title,
+        content: generated.content,
+        meta_title: generated.meta_title,
+        meta_description: generated.meta_description,
+        image_url: imageUrl || undefined,
+        keywords: generated.keywords || [],
+        tags: generated.tags,
+        status: "scheduled",
+        scheduled_at: scheduleDate,
+        platform: "internal",
+      });
+      toast.success(`"${saved.title}" scheduled for ${scheduleDate}`);
+      await loadPosts();
+      setTab("posts");
+      setGenerated(null);
+      setSchedulingGenerated(false);
+      setImageUrl("");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to schedule");
+    } finally {
+      setSchedulePosting(false);
+    }
+  }
+
+  async function scheduleExistingPost(post: BlogPost) {
+    const date = schedulePostDate[post.id] || defaultScheduleDate();
+    setSchedulePostPosting(post.id);
+    try {
+      const updated = await seoApi.updatePost(post.id, {
+        status: "scheduled",
+        scheduled_at: date,
+      });
+      setPosts(current => current.map(p => p.id === updated.id ? updated : p));
+      toast.success(`"${post.title}" scheduled for ${date}`);
+      setSchedulingPostId(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to schedule");
+    } finally {
+      setSchedulePostPosting(null);
     }
   }
 
@@ -1347,11 +2784,6 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
     }
   }
 
-  const statusColor = (s: string) =>
-    s === "published" ? "bg-green-100 text-green-700"
-    : s === "scheduled" ? "bg-blue-100 text-blue-700"
-    : "bg-slate-100 text-slate-600";
-
   const topicStarters = useMemo(() => {
     if (!profile) return [];
     const bn = profile.business_name?.trim();
@@ -1368,18 +2800,202 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
 
   return (
     <div className="space-y-5">
-      <div className="flex gap-2">
-        {(["posts", "write"] as const).map(t => (
+      <div className="flex gap-2 flex-wrap items-center">
+        {([
+          { id: "posts" as const, label: "My posts" },
+          { id: "write" as const, label: "Write post" },
+          { id: "suggested" as const, label: "📊 From Rankings" },
+        ]).map(({ id, label }) => (
           <button
-            key={t}
+            key={id}
             type="button"
-            onClick={() => setTab(t)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${tab === t ? "bg-emerald-600 text-white shadow-sm" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+            onClick={() => setTab(id)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${tab === id ? "bg-emerald-600 text-white shadow-sm" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"}`}
           >
-            {t === "posts" ? "My posts" : "Write post"}
+            {label}
           </button>
         ))}
+        {posts.length >= 2 && (
+          <button
+            type="button"
+            onClick={runInternalLinks}
+            disabled={internalLinksLoading}
+            className="ml-auto px-3 py-1.5 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+          >
+            {internalLinksLoading ? <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Analysing…</> : <>✦ Internal Links AI</>}
+          </button>
+        )}
       </div>
+
+      {/* Internal Links Panel */}
+      {internalLinks && (
+        <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <span className="font-semibold text-purple-700 text-sm">✦ Internal Link Suggestions</span>
+              <span className="text-xs text-purple-500 ml-2">{internalLinks.posts_analyzed} posts analysed</span>
+            </div>
+            <button onClick={() => setInternalLinks(null)} className="text-purple-400 hover:text-purple-600 text-lg leading-none">×</button>
+          </div>
+          {internalLinks.summary && <p className="text-xs text-slate-600 mb-3">{internalLinks.summary}</p>}
+          <div className="space-y-2">
+            {internalLinks.suggestions.map((s, i) => (
+              <div key={i} className="bg-white rounded-lg p-3 border border-purple-100">
+                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${s.priority === "high" ? "bg-purple-100 text-purple-700" : "bg-slate-100 text-slate-600"}`}>{s.priority}</span>
+                  <span className="text-xs text-slate-700 font-medium truncate max-w-[200px]">{s.from_post_title}</span>
+                  <span className="text-xs text-slate-400">→</span>
+                  <span className="text-xs text-slate-700 font-medium truncate max-w-[200px]">{s.to_post_title}</span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Link text: <span className="font-semibold text-blue-600">"{s.anchor_text}"</span>
+                </p>
+                <p className="text-xs text-slate-400 mt-0.5">{s.where_to_add}</p>
+                <p className="text-xs text-slate-500 mt-0.5 italic">{s.reason}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === "suggested" && (
+        <div className="space-y-3">
+          <div className="bg-white rounded-xl border border-slate-200 p-4">
+            <p className="text-sm font-semibold text-slate-800">Write from your tracked keywords</p>
+            <p className="text-xs text-slate-500 mt-1">
+              These are the keywords you are tracking in Rankings. Click <strong>Write this</strong> to draft an article targeting that keyword.
+            </p>
+          </div>
+          {rankingLoading ? (
+            <p className="text-sm text-slate-400 p-5 bg-white rounded-xl border border-slate-200">Loading…</p>
+          ) : rankingKeywords.length === 0 ? (
+            <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
+              <p className="text-slate-400 text-sm">No tracked keywords yet.</p>
+              <p className="text-xs text-slate-400 mt-1">Go to Rankings → push keywords from research → they will appear here.</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100">
+                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">{rankingKeywords.length} tracked keyword{rankingKeywords.length !== 1 ? "s" : ""}</p>
+              </div>
+              <div className="divide-y divide-slate-50">
+                {rankingKeywords.map((row, i) => {
+                  const postCount = row.posts?.length ?? 0;
+                  const isOpen = expandedAngles.has(row.keyword);
+                  const isLoadingA = loadingAngles[row.keyword];
+                  const kwAngles = angles[row.keyword] ?? [];
+                  return (
+                    <div key={i} className="transition-colors">
+                      <div
+                        className="px-5 py-3 flex items-start justify-between gap-3 hover:bg-slate-50/50 cursor-pointer"
+                        onClick={() => suggestAnglesForKeyword(row.keyword, row.posts ?? [])}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-slate-800">{row.keyword}</p>
+                            <span className="text-[10px] text-slate-400">{isOpen ? "▲" : "▼"} angles</span>
+                          </div>
+                          {row.content_idea && (
+                            <p className="text-xs text-slate-500 mt-0.5">💡 {row.content_idea}</p>
+                          )}
+                          <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                            {row.global_search_volume ? (
+                              <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded-full font-medium">
+                                🌍 {row.global_search_volume.toLocaleString()}/mo
+                              </span>
+                            ) : null}
+                            {row.search_volume ? (
+                              <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-1.5 py-0.5 rounded-full font-medium">
+                                📍 {row.local_country || "Local"} · {row.search_volume.toLocaleString()}/mo
+                              </span>
+                            ) : null}
+                            {row.top_region ? (
+                              <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-100 px-1.5 py-0.5 rounded-full font-medium">
+                                🏆 {row.top_region} · {row.top_region_volume?.toLocaleString()}/mo
+                              </span>
+                            ) : null}
+                            {row.cpc ? (
+                              <span className="text-[10px] bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded-full font-medium">
+                                💰 CPC ${Number(row.cpc).toFixed(2)}
+                              </span>
+                            ) : null}
+                            {row.difficulty ? (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${
+                                row.difficulty === "low" ? "bg-green-50 text-green-700 border-green-100"
+                                : row.difficulty === "medium" ? "bg-yellow-50 text-yellow-700 border-yellow-100"
+                                : "bg-red-50 text-red-700 border-red-100"
+                              }`}>
+                                {row.difficulty === "low" ? "Easy" : row.difficulty === "medium" ? "Medium" : "Hard"}
+                              </span>
+                            ) : null}
+                            {row.trend ? (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${
+                                row.trend === "rising" ? "bg-green-50 text-green-700 border-green-100"
+                                : row.trend === "declining" ? "bg-red-50 text-red-700 border-red-100"
+                                : "bg-slate-50 text-slate-500 border-slate-100"
+                              }`}>
+                                {row.trend === "rising" ? "📈 Rising" : row.trend === "declining" ? "📉 Declining" : "→ Stable"}
+                              </span>
+                            ) : null}
+                            {postCount > 0 && (
+                              <span className="text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-1.5 py-0.5 rounded-full font-medium">
+                                ✓ {postCount} post{postCount !== 1 ? "s" : ""} written
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {isOpen && (
+                        <div className="px-5 pb-4 bg-slate-50 border-t border-slate-100">
+                          {isLoadingA ? (
+                            <p className="text-xs text-slate-400 py-3">Generating angle suggestions…</p>
+                          ) : kwAngles.length === 0 ? (
+                            <p className="text-xs text-slate-400 py-3">No suggestions yet — try again.</p>
+                          ) : (
+                            <div className="space-y-2 pt-3">
+                              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Pick an angle to write</p>
+                              {kwAngles.map((a, ai) => (
+                                <div key={ai} className="flex items-start justify-between gap-3 bg-white rounded-lg border border-slate-100 px-3 py-2.5 hover:border-emerald-200 transition-colors">
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-slate-800">{a.title}</p>
+                                    <p className="text-xs text-slate-500 mt-0.5">{a.angle}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setTopic(a.title);
+                                      setKeywords(row.keyword);
+                                      setTab("write");
+                                    }}
+                                    className="shrink-0 text-[11px] px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-semibold whitespace-nowrap"
+                                  >
+                                    ✍ Write this
+                                  </button>
+                                </div>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAngles(prev => { const n = {...prev}; delete n[row.keyword]; return n; });
+                                  suggestAnglesForKeyword(row.keyword, row.posts ?? []);
+                                }}
+                                className="text-[11px] text-slate-400 hover:text-slate-600 mt-1"
+                              >
+                                ↻ Refresh suggestions
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === "write" && (
         <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
@@ -1550,7 +3166,7 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
           {generated && (
             <div className="space-y-3 pt-2 border-t border-slate-100">
               {/* Action bar */}
-              <div className="flex gap-2 flex-wrap">
+              <div className="flex gap-2 flex-wrap items-center">
                 <button
                   onClick={async () => {
                     setSaving(true);
@@ -1572,19 +3188,57 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                     } catch (e) { toast.error(e instanceof Error ? e.message : "Publish failed"); }
                     finally { setSaving(false); }
                   }}
-                  disabled={saving}
+                  disabled={saving || schedulePosting}
                   className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-xl font-semibold hover:bg-emerald-700 disabled:opacity-50"
                 >
                   {saving ? "Publishing…" : "🚀 Publish to My Site"}
                 </button>
                 <button
                   onClick={saveAsDraft}
-                  disabled={saving}
+                  disabled={saving || schedulePosting}
                   className="px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-xl font-medium hover:bg-slate-200 disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save as Draft"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSchedulingGenerated(s => !s);
+                    if (!scheduleDate) setScheduleDate(defaultScheduleDate());
+                  }}
+                  disabled={saving || schedulePosting}
+                  className="px-4 py-2 bg-blue-600 text-white text-sm rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50"
+                >
+                  📅 Schedule
+                </button>
               </div>
+              {schedulingGenerated && (
+                <div className="flex items-center gap-2 flex-wrap p-3 bg-blue-50 border border-blue-100 rounded-xl">
+                  <span className="text-xs font-medium text-blue-700">Publish on:</span>
+                  <input
+                    type="date"
+                    value={scheduleDate}
+                    onChange={e => setScheduleDate(e.target.value)}
+                    min={new Date().toISOString().slice(0, 10)}
+                    className="border border-blue-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={scheduleGenerated}
+                    disabled={!scheduleDate || schedulePosting}
+                    className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {schedulePosting ? "Scheduling…" : "Confirm →"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSchedulingGenerated(false)}
+                    className="text-xs text-blue-400 hover:text-blue-600"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
 
               {/* Beautiful rendered article */}
               <div className="max-h-[600px] overflow-y-auto rounded-xl">
@@ -1615,63 +3269,118 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                 Write Your First Post
               </button>
             </div>
-          ) : (
-            <div className="divide-y divide-slate-50">
-              {posts.map(post => (
-                <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3 hover:bg-slate-50/50 transition-colors">
-                  <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setReadPost(post)}>
-                    <p className="text-sm font-semibold text-slate-800 hover:text-emerald-700 transition-colors">{post.title}</p>
-                    {post.image_url && (
-                      <img src={post.image_url} alt={post.title} className="w-full h-20 object-cover rounded-xl mt-3 border border-slate-200" />
-                    )}
-                    {(post.keywords ?? []).length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-1">
-                        {(post.keywords ?? []).slice(0, 4).map((kw, index) => (
-                          <span key={`${post.id}-kw-${index}`} className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
-                        ))}
-                      </div>
-                    )}
-                    <p className="text-xs text-slate-400 mt-2">
-                      {post.created_at ? new Date(post.created_at).toLocaleDateString() : ""}
-                      {(post as BlogPost & { word_count?: number }).word_count ? ` · ${(post as BlogPost & { word_count?: number }).word_count} words` : ""}
-                    </p>
-                    {(post.tags ?? []).length > 0 && (
-                      <div className="flex gap-1 mt-1 flex-wrap">
-                        {(post.tags ?? []).slice(0, 3).map(t => (
-                          <span key={t} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                    <p className="text-[10px] text-slate-300 mt-1">Click to read →</p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${statusColor(post.status ?? "")}`}>{post.status}</span>
+          ) : (() => {
+            const readyPosts = posts.filter(p => !publishedUrls[p.id] && !p.site_post_url && p.status !== "published");
+            const donePosts  = posts
+              .filter(p => publishedUrls[p.id] || p.site_post_url || p.status === "published")
+              .sort((a, b) => new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime());
+            const renderPost = (post: BlogPost) => (
+              <div key={post.id} className="px-5 py-4 flex items-start justify-between gap-3 hover:bg-slate-50/50 transition-colors">
+                <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setReadPost(post)}>
+                  <p className="text-sm font-semibold text-slate-800 hover:text-emerald-700 transition-colors">{post.title}</p>
+                  {post.image_url && (
+                    <img src={post.image_url} alt={post.title} className="w-full h-20 object-cover rounded-xl mt-3 border border-slate-200" />
+                  )}
+                  {(post.keywords ?? []).length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1">
+                      {(post.keywords ?? []).slice(0, 4).map((kw, index) => (
+                        <span key={`${post.id}-kw-${index}`} className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded-full">{kw}</span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-slate-400 mt-2">
+                    {post.created_at ? new Date(post.created_at).toLocaleDateString() : ""}
+                    {(post as BlogPost & { word_count?: number }).word_count ? ` · ${(post as BlogPost & { word_count?: number }).word_count} words` : ""}
+                  </p>
+                  {(post.tags ?? []).length > 0 && (
+                    <div className="flex gap-1 mt-1 flex-wrap">
+                      {(post.tags ?? []).slice(0, 3).map(t => (
+                        <span key={t} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{t}</span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[10px] text-slate-300 mt-1">Click to read →</p>
+                  {/* Social share badges */}
+                  {((post.social_shares ?? []).length > 0 || (sharedPosts[post.id] ?? []).length > 0) && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {[...new Set([
+                        ...(post.social_shares ?? []).map(s => s.platform),
+                        ...(sharedPosts[post.id] ?? []),
+                      ])].map(plat => {
+                        const pDef = SOCIAL_PLATFORMS.find(p => p.id === plat);
+                        return (
+                          <span key={plat} className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border font-medium ${pDef?.bg ?? "bg-slate-100"} ${pDef?.text ?? "text-slate-600"} ${pDef?.border ?? "border-slate-200"}`}>
+                            {pDef?.logo}
+                            {pDef?.label ?? plat}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  <div className="flex items-center gap-2">
                     <button
                       onClick={() => openEditModal(post)}
                       className="text-xs px-2 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
                     >
                       Edit
                     </button>
-                    {post.status !== "published" && (
-                      publishedUrls[post.id] ? (
-                        <a
-                          href={publishedUrls[post.id]}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium whitespace-nowrap"
-                        >
-                          ✓ View live →
-                        </a>
-                      ) : (
-                        <button
-                          onClick={() => publishToSite(post)}
-                          disabled={publishingSiteId === post.id}
-                          className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-60 font-medium whitespace-nowrap"
-                        >
-                          {publishingSiteId === post.id ? "Publishing…" : "🚀 Publish"}
-                        </button>
-                      )
+                    {(() => {
+                      const liveUrl = publishedUrls[post.id] || post.site_post_url;
+                      if (liveUrl) {
+                        return (
+                          <a
+                            href={liveUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium whitespace-nowrap"
+                          >
+                            ✓ View live →
+                          </a>
+                        );
+                      }
+                      if (post.status !== "published") {
+                        return (
+                          <button
+                            onClick={() => publishToSite(post)}
+                            disabled={publishingSiteId === post.id}
+                            className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-60 font-medium whitespace-nowrap"
+                          >
+                            {publishingSiteId === post.id ? "Publishing…" : "🚀 Publish"}
+                          </button>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {post.status === "draft" && schedulingPostId !== post.id && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSchedulingPostId(post.id);
+                          setSchedulePostDate(prev => ({ ...prev, [post.id]: prev[post.id] || defaultScheduleDate() }));
+                        }}
+                        className="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 font-medium whitespace-nowrap"
+                      >
+                        📅 Schedule
+                      </button>
                     )}
+                    {zernioAccounts.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => openShareModal(post)}
+                        className="text-xs px-2 py-1 bg-violet-50 text-violet-600 rounded-lg hover:bg-violet-100 font-medium whitespace-nowrap"
+                      >
+                        📤 Share
+                      </button>
+                    )}
+                    <button
+                      onClick={() => generateSchema(post)}
+                      className="text-xs px-2 py-1 bg-purple-50 text-purple-600 rounded-lg hover:bg-purple-100 font-medium whitespace-nowrap"
+                      title="Generate Schema.org JSON-LD for SEO"
+                    >
+                      {} Schema
+                    </button>
                     <button
                       onClick={() => deletePost(post.id)}
                       className="text-xs px-2 py-1 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"
@@ -1679,10 +3388,67 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
                       Delete
                     </button>
                   </div>
+                  {schedulingPostId === post.id && (
+                    <div className="flex items-center gap-1.5 p-2 bg-blue-50 border border-blue-100 rounded-lg">
+                      <input
+                        type="date"
+                        value={schedulePostDate[post.id] || ""}
+                        onChange={e => setSchedulePostDate(prev => ({ ...prev, [post.id]: e.target.value }))}
+                        min={new Date().toISOString().slice(0, 10)}
+                        className="border border-blue-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => scheduleExistingPost(post)}
+                        disabled={schedulePostPosting === post.id}
+                        className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 font-semibold whitespace-nowrap"
+                      >
+                        {schedulePostPosting === post.id ? "…" : "Confirm"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSchedulingPostId(null)}
+                        className="text-xs px-2 py-1 bg-white text-slate-500 rounded-lg hover:bg-slate-100 border border-slate-200"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            );
+            return (
+              <div>
+                {/* Ready to publish section */}
+                <div className="px-5 py-2.5 bg-emerald-50 border-b border-emerald-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-emerald-800">Ready to Publish</span>
+                    <span className="text-[11px] px-2 py-0.5 bg-emerald-600 text-white rounded-full font-semibold">{readyPosts.length}</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-600">Fully written — click 🚀 Publish to go live</p>
+                </div>
+                {readyPosts.length === 0 ? (
+                  <div className="px-5 py-6 text-center">
+                    <p className="text-sm text-slate-400">No posts waiting to be published.</p>
+                    <button onClick={() => setTab("write")} className="mt-2 text-xs text-emerald-600 hover:underline">Write a new post →</button>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-50">{readyPosts.map(renderPost)}</div>
+                )}
+
+                {/* Published section */}
+                {donePosts.length > 0 && (
+                  <>
+                    <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-500">Published</span>
+                      <span className="text-[11px] px-2 py-0.5 bg-slate-200 text-slate-600 rounded-full font-semibold">{donePosts.length}</span>
+                    </div>
+                    <div className="divide-y divide-slate-50">{donePosts.map(renderPost)}</div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1952,6 +3718,141 @@ function BlogTab({ profile, prefillTopic }: { profile: SeoBusinessContext | null
           </div>
         </div>
       )}
+
+      {/* ── Schema.org Modal ── */}
+      {schemaPost && (
+        <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-base font-semibold text-slate-800">Schema.org JSON-LD</h3>
+                <p className="text-xs text-slate-500 mt-0.5 truncate max-w-md">{schemaPost.title}</p>
+              </div>
+              <button onClick={() => { setSchemaPost(null); setSchemaResult(null); setSchemaCopied(false); }} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
+            </div>
+
+            {schemaLoading && (
+              <div className="flex items-center gap-2 py-8 justify-center">
+                <span className="w-5 h-5 rounded-full border-2 border-purple-600 border-t-transparent animate-spin" />
+                <span className="text-sm text-slate-500">Generating structured data…</span>
+              </div>
+            )}
+
+            {schemaResult && (
+              <>
+                <div className="bg-slate-900 rounded-xl p-4 mb-4 max-h-64 overflow-y-auto">
+                  <pre className="text-xs text-green-400 whitespace-pre-wrap font-mono">{schemaResult.script_tags}</pre>
+                </div>
+                <p className="text-xs text-slate-500 mb-3">
+                  Copy this code and paste it inside the <code className="bg-slate-100 px-1 rounded">&lt;head&gt;</code> section of your blog post page.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(schemaResult.script_tags); setSchemaCopied(true); setTimeout(() => setSchemaCopied(false), 2000); }}
+                    className="flex-1 px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 font-medium"
+                  >
+                    {schemaCopied ? "✓ Copied!" : "Copy to Clipboard"}
+                  </button>
+                  <button onClick={() => { setSchemaPost(null); setSchemaResult(null); setSchemaCopied(false); }} className="px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium">Close</button>
+                </div>
+              </>
+            )}
+
+            {!schemaLoading && !schemaResult && (
+              <div className="py-6 text-center text-sm text-slate-400">Failed to generate schema. Try again.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Share to Social Modal ── */}
+      {sharePost && (
+        <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <p className="text-base font-bold text-slate-800">📤 Share to Social</p>
+              <button onClick={() => setSharePost(null)} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
+            </div>
+
+            <p className="text-sm text-slate-600 font-medium truncate">{sharePost.title}</p>
+
+            {/* Account selector */}
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-2 block">Post from account</label>
+              <div className="flex flex-col gap-2 max-h-36 overflow-y-auto">
+                {zernioAccounts.map(acc => {
+                  const pDef = SOCIAL_PLATFORMS.find(p => p.id === acc.platform.toLowerCase());
+                  const selected = shareAccId === acc.id;
+                  return (
+                    <button
+                      key={acc.id}
+                      type="button"
+                      onClick={() => { setShareAccId(acc.id); setSharePlatform(acc.platform.toLowerCase()); }}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${selected ? "border-violet-500 bg-violet-50 ring-2 ring-violet-200" : "border-slate-200 hover:border-slate-300 bg-white"}`}
+                    >
+                      <span className={`w-7 h-7 flex items-center justify-center rounded-full ${pDef?.bg ?? "bg-slate-100"}`}>
+                        {pDef?.logo}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-xs font-semibold ${pDef?.text ?? "text-slate-700"}`}>{pDef?.label ?? acc.platform}</p>
+                        <p className="text-[10px] text-slate-400 truncate">{acc.displayName ?? acc.username ?? acc.id}</p>
+                      </div>
+                      {selected && <span className="text-violet-600 text-sm">✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Caption editor */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold text-slate-500">Caption</label>
+                <span className={`text-[10px] font-medium ${shareCaption.length > 2200 ? "text-red-500" : "text-slate-400"}`}>{shareCaption.length} chars</span>
+              </div>
+              <textarea
+                value={shareCaption}
+                onChange={e => setShareCaption(e.target.value)}
+                rows={6}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                placeholder="Write a caption for this post…"
+              />
+              <p className="text-[10px] text-slate-400 mt-1">Twitter/X caps at 280 chars · LinkedIn/Facebook up to 2,200</p>
+            </div>
+
+            {shareResult && (
+              <p className={`text-sm font-medium ${shareResult.startsWith("Error") ? "text-red-600" : "text-emerald-600"}`}>
+                {shareResult}
+              </p>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void doShare()}
+                disabled={sharing || !shareAccId || !shareCaption.trim()}
+                className="flex-1 py-2.5 bg-violet-600 text-white text-sm rounded-xl font-semibold hover:bg-violet-700 disabled:opacity-50 transition-colors"
+              >
+                {sharing ? "Posting…" : "Post now"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSharePost(null)}
+                className="px-4 py-2.5 bg-slate-100 text-slate-700 text-sm rounded-xl font-medium hover:bg-slate-200"
+              >
+                Cancel
+              </button>
+            </div>
+
+            {zernioAccounts.length === 0 && (
+              <p className="text-xs text-slate-500 text-center">
+                No social accounts connected.{" "}
+                <a href="/dashboard/integrations" className="text-violet-600 hover:underline font-medium">Connect one in Integrations →</a>
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1980,6 +3881,23 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
   const [draftsDone, setDraftsDone] = useState(0);
   const [draftsTotal, setDraftsTotal] = useState(0);
   const [generationMode, setGenerationMode] = useState<"all" | "one-by-one">("all");
+
+  // Drag-and-drop reorder
+  const dragIdx = useRef<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  // Inline title + topic editing
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editingValue, setEditingValue] = useState("");
+  const [editingTopic, setEditingTopic] = useState("");
+
+  // Push to Schedule (bulk)
+  const [pushing, setPushing] = useState(false);
+  const [pushDone, setPushDone] = useState(false);
+  const [pushErr, setPushErr] = useState("");
+
+  // Push single item to Schedule
+  const [pushingItem, setPushingItem] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2103,6 +4021,114 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
     setGeneratingDrafts(false);
   }
 
+  // ── Drag-and-drop handlers ────────────────────────────────────────────────
+  function handleDragStart(globalIdx: number) {
+    dragIdx.current = globalIdx;
+  }
+  function handleDragOver(e: React.DragEvent, globalIdx: number) {
+    e.preventDefault();
+    setDragOverIdx(globalIdx);
+  }
+  function handleDrop(globalIdx: number) {
+    const from = dragIdx.current;
+    if (from === null || from === globalIdx) { dragIdx.current = null; setDragOverIdx(null); return; }
+    setCalendar(prev => {
+      const next = [...prev];
+      const [removed] = next.splice(from, 1);
+      next.splice(globalIdx, 0, removed);
+      return next;
+    });
+    dragIdx.current = null;
+    setDragOverIdx(null);
+  }
+  function handleDragEnd() {
+    dragIdx.current = null;
+    setDragOverIdx(null);
+  }
+
+  // ── Inline edit handlers ──────────────────────────────────────────────────
+  function startEdit(globalIdx: number, currentTitle: string, currentTopic: string) {
+    setEditingIdx(globalIdx);
+    setEditingValue(currentTitle);
+    setEditingTopic(currentTopic);
+  }
+  function commitEdit(globalIdx: number) {
+    if (editingIdx === null) return;
+    const trimmedTitle = editingValue.trim();
+    if (trimmedTitle) {
+      setCalendar(prev => prev.map((item, i) =>
+        i === globalIdx
+          ? { ...item, title: trimmedTitle, topic: editingTopic.trim() || item.topic }
+          : item
+      ));
+    }
+    setEditingIdx(null);
+    setEditingValue("");
+    setEditingTopic("");
+  }
+
+  // ── Scheduling helpers ────────────────────────────────────────────────────
+  function getNextMonday() {
+    const d = new Date();
+    const day = d.getDay();
+    const diff = day === 0 ? 1 : 8 - day;
+    d.setDate(d.getDate() + diff);
+    d.setHours(9, 0, 0, 0);
+    return d;
+  }
+  const dayOffsets: Record<string, number> = {
+    Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3,
+    Friday: 4, Saturday: 5, Sunday: 6,
+  };
+  function itemToSchedulePayload(item: ContentCalendarItem, start: Date) {
+    const weekOffset = ((item.week ?? 1) - 1) * 7;
+    const dayOffset = dayOffsets[String(item.day ?? "Monday")] ?? 0;
+    const d = new Date(start);
+    d.setDate(d.getDate() + weekOffset + dayOffset);
+    return {
+      title: item.title,
+      keywords: item.keywords ?? [],
+      scheduled_at: d.toISOString().slice(0, 10),
+      topic: String(item.topic ?? ""),
+      week: item.week,
+      day: String(item.day ?? ""),
+    };
+  }
+
+  // ── Push written posts to Schedule (only items with draftStatus === "done") ─
+  async function pushToSchedule() {
+    const readyItems = calendar.filter(it => draftStatus[it.title] === "done");
+    if (!readyItems.length) return;
+    setPushing(true); setPushDone(false); setPushErr("");
+    try {
+      const start = getNextMonday();
+      const items = readyItems.map(item => itemToSchedulePayload(item, start));
+      await seoApi.scheduleCalendarPosts(items);
+      setPushDone(true);
+      toast.success(`${items.length} post${items.length !== 1 ? "s" : ""} pushed to Schedule!`, {
+        description: "View them in the Schedule tab — they'll publish at the set times.",
+      });
+    } catch (e) {
+      setPushErr(e instanceof Error ? e.message : "Failed to schedule");
+    } finally {
+      setPushing(false);
+    }
+  }
+
+  // ── Push single item to Schedule ─────────────────────────────────────────
+  async function pushSingleToSchedule(item: ContentCalendarItem) {
+    setPushingItem(item.title);
+    try {
+      const start = getNextMonday();
+      await seoApi.scheduleCalendarPosts([itemToSchedulePayload(item, start)]);
+      toast.success(`"${item.title}" added to Schedule`);
+    } catch {
+      toast.error("Failed to schedule this post");
+    } finally {
+      setPushingItem(null);
+    }
+  }
+
   const trafficColor = (t: string) =>
     t === "high" ? "text-green-600" : t === "medium" ? "text-yellow-600" : "text-slate-400";
 
@@ -2112,6 +4138,8 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
     Boolean(profile?.business_name?.trim()) ||
     Boolean(profile?.business_type?.trim()) ||
     Boolean(profile?.location?.trim());
+
+  const doneItems = calendar.filter(it => draftStatus[it.title] === "done");
 
   const allDone = calendar.length > 0 &&
     calendar.every(it => draftStatus[it.title] === "done");
@@ -2125,7 +4153,7 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
         <div>
           <p className="text-sm font-semibold text-slate-800">Your content calendar</p>
           <p className="text-xs text-slate-500 mt-1">
-            Step 1 — generate the plan. Step 2 — write all posts in one click. The AI already knows what to write.
+            Generates a posting plan from your tracked Rankings keywords. Step 1 — generate. Step 2 — write all posts in one click.
           </p>
           {usingProfile && (
             <p className="text-xs text-slate-600 mt-2 rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
@@ -2189,7 +4217,37 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
               📖 Review & publish drafts →
             </button>
           )}
+
+          {doneItems.length > 0 && (
+            <button
+              type="button"
+              onClick={pushToSchedule}
+              disabled={pushing || generatingDrafts}
+              className="min-h-[44px] px-6 py-3 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm flex items-center gap-2"
+            >
+              {pushing ? (
+                <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" /> Scheduling…</>
+              ) : pushDone
+                ? `✓ ${doneItems.length} post${doneItems.length !== 1 ? "s" : ""} scheduled`
+                : `📅 Push ${doneItems.length} ready post${doneItems.length !== 1 ? "s" : ""} to Schedule`
+              }
+            </button>
+          )}
         </div>
+
+        {pushDone && (
+          <div className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+            <span className="text-blue-700 text-sm font-semibold">✓ {doneItems.length} post{doneItems.length !== 1 ? "s" : ""} added to your schedule queue.</span>
+            <button
+              type="button"
+              onClick={() => onJump("scheduler")}
+              className="ml-auto text-[11px] px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold whitespace-nowrap"
+            >
+              View Schedule →
+            </button>
+          </div>
+        )}
+        {pushErr && <p className="text-red-500 text-xs">{pushErr}</p>}
 
         {generatingDrafts && (
           <div className="space-y-1.5">
@@ -2293,13 +4351,31 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
                   )}
                 </div>
 
-                {/* Calendar items */}
+                {/* Calendar items — draggable */}
                 <div className="divide-y divide-slate-50">
-                  {weekItems.map((item, i) => {
+                  {weekItems.map((item) => {
+                    const globalIdx = calendar.indexOf(item);
                     const status = draftStatus[item.title];
+                    const isEditing = editingIdx === globalIdx;
+                    const isDragOver = dragOverIdx === globalIdx;
                     return (
-                      <div key={i} className={`px-5 py-3 transition-colors ${status === "done" ? "bg-green-50/40" : status === "error" ? "bg-red-50/30" : ""}`}>
-                        <div className="flex items-start justify-between gap-3">
+                      <div
+                        key={globalIdx}
+                        draggable
+                        onDragStart={() => handleDragStart(globalIdx)}
+                        onDragOver={(e) => handleDragOver(e, globalIdx)}
+                        onDrop={() => handleDrop(globalIdx)}
+                        onDragEnd={handleDragEnd}
+                        className={`px-4 py-3 transition-colors cursor-grab active:cursor-grabbing ${
+                          isDragOver ? "bg-blue-50 border-blue-200" :
+                          status === "done" ? "bg-green-50/40" :
+                          status === "error" ? "bg-red-50/30" : ""
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          {/* Drag handle */}
+                          <span className="text-slate-300 mt-1 select-none shrink-0 text-sm leading-none" title="Drag to reorder">⠿</span>
+
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                               <span className="text-xs text-slate-400 font-medium">{item.day}</span>
@@ -2310,8 +4386,45 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
                               {status === "generating" && <span className="text-[10px] text-blue-500 font-semibold animate-pulse">Writing…</span>}
                               {status === "error" && <span className="text-[10px] text-red-500 font-semibold">⚠ Failed</span>}
                             </div>
-                            <p className="text-sm font-semibold text-slate-800">{item.title}</p>
-                            <p className="text-xs text-slate-400 mt-0.5">{item.topic as string}</p>
+
+                            {/* Inline editable title + topic */}
+                            {isEditing ? (
+                              <div className="space-y-1.5 mt-0.5">
+                                <input
+                                  autoFocus
+                                  value={editingValue}
+                                  onChange={e => setEditingValue(e.target.value)}
+                                  onKeyDown={e => { if (e.key === "Escape") setEditingIdx(null); }}
+                                  placeholder="Post title"
+                                  className="w-full border border-emerald-300 rounded-lg px-2 py-1 text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                                />
+                                <textarea
+                                  rows={2}
+                                  value={editingTopic}
+                                  onChange={e => setEditingTopic(e.target.value)}
+                                  placeholder="Topic / angle description"
+                                  className="w-full border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-300 resize-none"
+                                />
+                                <div className="flex gap-2">
+                                  <button type="button" onClick={() => commitEdit(globalIdx)} className="text-[10px] px-2.5 py-1.5 bg-emerald-600 text-white rounded-lg font-semibold">Save</button>
+                                  <button type="button" onClick={() => setEditingIdx(null)} className="text-[10px] px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-lg">Cancel</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 group/title">
+                                <p className="text-sm font-semibold text-slate-800">{item.title}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => startEdit(globalIdx, item.title, String(item.topic ?? ""))}
+                                  className="opacity-0 group-hover/title:opacity-100 transition-opacity text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded hover:bg-slate-200"
+                                  title="Edit title & topic"
+                                >
+                                  ✏
+                                </button>
+                              </div>
+                            )}
+
+                            {!isEditing && <p className="text-xs text-slate-400 mt-0.5">{item.topic as string}</p>}
                             <div className="flex gap-1 mt-1 flex-wrap">
                               {(item.keywords ?? []).map(kw => (
                                 <span key={kw} className="text-[10px] bg-green-50 text-green-700 px-1.5 py-0.5 rounded">{kw}</span>
@@ -2321,14 +4434,13 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
 
                           <div className="flex flex-col items-end gap-1.5 shrink-0">
                             <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium">{item.intent as string}</span>
-                            {/* If no draft yet — manual write button */}
                             {!status && onWritePost && (
                               <button
                                 type="button"
                                 onClick={() => onWritePost({ title: item.title, keywords: item.keywords ?? [] })}
                                 className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 font-medium whitespace-nowrap"
                               >
-                                Edit & write
+                                ✍ Write now
                               </button>
                             )}
                             {status === "done" && (
@@ -2347,6 +4459,17 @@ function CalendarTab({ profile, onJump, prefillKeywords, onWritePost }: {
                                 className="text-[10px] px-2 py-1 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 font-medium whitespace-nowrap"
                               >
                                 Retry
+                              </button>
+                            )}
+                            {status === "done" && (
+                              <button
+                                type="button"
+                                onClick={() => pushSingleToSchedule(item)}
+                                disabled={pushingItem === item.title}
+                                className="text-[10px] px-2 py-1 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 font-medium whitespace-nowrap disabled:opacity-50"
+                                title="Add this post to your schedule"
+                              >
+                                {pushingItem === item.title ? "…" : "📅 Schedule"}
                               </button>
                             )}
                           </div>
@@ -2426,7 +4549,7 @@ function SeoPageInner() {
           </div>
         </section>
 
-        {showQuickStart && summary && (summary.total_posts ?? 0) === 0 && (summary.total_audits ?? 0) === 0 && (
+        {showQuickStart && summary && tab !== "hub" && (summary.total_posts ?? 0) === 0 && (summary.total_audits ?? 0) === 0 && (
           <div className="relative mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3.5 shadow-sm sm:px-5">
             <button
               type="button"
@@ -2523,6 +4646,7 @@ function SeoPageInner() {
               {tab === "hub" && <SeoHubWorkspace onOpenTab={changeTab} />}
               {tab === "overview" && <OverviewTab summary={summary} onJump={changeTab} profile={seoProfile} />}
               {tab === "audit" && <AuditTab />}
+              {tab === "rankings" && <RankingsTab />}
               {tab === "keywords" && (
                 <KeywordsTab profile={seoProfile} onJump={changeTab} onPushToCalendar={handlePushToCalendar} />
               )}

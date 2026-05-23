@@ -1,16 +1,22 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { API_BASE } from "./api";
 
-const API_ORIGIN =
-  typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL
-    ? process.env.NEXT_PUBLIC_API_URL.replace(/\/?api\/?$/, "")
-    : "http://localhost:8000";
+function crmApiOrigin(): string {
+  if (API_BASE.startsWith("http://") || API_BASE.startsWith("https://")) {
+    return API_BASE.replace(/\/api$/, "");
+  }
+  return "";
+}
 
 /** Resolve relative upload paths from the API for `<img src>`. */
 export function resolveMediaUrl(url: string | undefined | null): string | null {
   if (!url || typeof url !== "string") return null;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${API_ORIGIN}${url.startsWith("/") ? "" : "/"}${url}`;
+  // Same-origin proxy: Next rewrites `/api/media/...` and `/proxy/...` to the backend.
+  if (!crmApiOrigin() && url.startsWith("/api/")) return url;
+  const origin = crmApiOrigin() || "http://localhost:8000";
+  return `${origin}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
 export function cn(...inputs: ClassValue[]) {
@@ -56,8 +62,15 @@ export function formatDateSafe(dateStr: string | undefined | null) {
 }
 
 /** Date + time for reminders, messages, etc. */
+/** Normalise a server datetime string: if it has no timezone indicator treat it as UTC. */
+function asUtc(dateStr: string): string {
+  return dateStr && !dateStr.includes("+") && !dateStr.endsWith("Z")
+    ? dateStr + "Z"
+    : dateStr;
+}
+
 export function formatDateTime(dateStr: string) {
-  return new Date(dateStr).toLocaleString("en-KE", {
+  return new Date(asUtc(dateStr)).toLocaleString("en-KE", {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -76,7 +89,7 @@ export function toDatetimeLocalValue(isoOrDate: string | Date | undefined | null
 }
 
 export function timeAgo(dateStr: string) {
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff = Date.now() - new Date(asUtc(dateStr)).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
@@ -86,20 +99,64 @@ export function timeAgo(dateStr: string) {
 }
 
 export function elapsedMinutes(dateStr: string) {
-  return Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
+  return Math.floor((Date.now() - new Date(asUtc(dateStr)).getTime()) / 60000);
 }
 
 /**
- * Trigger a browser save dialog for a remote file (typically an S3 presigned URL).
- * Routes the request through the backend `/api/download-proxy` so the response
- * carries `Content-Disposition: attachment` — this avoids S3 CORS issues and
- * prevents the browser from opening the file inline.
+ * Save a blob via a hidden anchor — avoids navigation flashes in SPA chat UIs.
+ */
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  a.rel = "noopener";
+  a.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;pointer-events:none";
+  document.body.appendChild(a);
+  a.click();
+  requestAnimationFrame(() => {
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
+  });
+}
+
+/**
+ * Trigger a browser save dialog for a remote file.
+ * S3 URLs go through `/api/download-proxy`; same-origin / backend URLs fetch directly.
  */
 export async function downloadAsset(url: string, name: string): Promise<void> {
   const resolved = resolveMediaUrl(url) || url;
   const safeBase = (name || "download").replace(/[^a-z0-9_\-. ]/gi, "_").trim() || "download";
-  const proxied = `${API_ORIGIN}/api/download-proxy?url=${encodeURIComponent(resolved)}&filename=${encodeURIComponent(safeBase)}`;
-  const res = await fetch(proxied);
+  const isLocalPresentation = /\/api\/media\/presentations\//i.test(resolved);
+  const useProxy =
+    !isLocalPresentation &&
+    (/amazonaws\.com/i.test(resolved) || /\/api\/images\/s3\//i.test(resolved));
+
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
+  const fetchUrl =
+    resolved.startsWith("/") && typeof window !== "undefined"
+      ? `${window.location.origin}${resolved}`
+      : resolved;
+
+  let res: Response;
+  if (isLocalPresentation) {
+    res = await fetch(fetchUrl, { headers: authHeaders });
+  } else if (useProxy) {
+    const proxyGetUrl =
+      `${API_BASE}/download-proxy?url=${encodeURIComponent(resolved)}&filename=${encodeURIComponent(safeBase)}`;
+    res = await fetch(proxyGetUrl, { method: "GET", headers: authHeaders });
+    if (res.status === 405) {
+      res = await fetch(`${API_BASE}/download-proxy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ url: resolved, filename: safeBase }),
+      });
+    }
+  } else {
+    res = await fetch(fetchUrl, { headers: authHeaders });
+  }
   if (!res.ok) throw new Error(`Download failed (HTTP ${res.status})`);
   const blob = await res.blob();
   const cd = res.headers.get("content-disposition") || "";
@@ -117,11 +174,5 @@ export async function downloadAsset(url: string, name: string): Promise<void> {
     const ext = pathExt || mimeMap[blob.type] || "bin";
     filename = `${safeBase}.${ext}`;
   }
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  triggerBlobDownload(blob, filename);
 }

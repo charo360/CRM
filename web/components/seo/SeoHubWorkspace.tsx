@@ -13,7 +13,7 @@ import {
   type SeoBrief,
   type SeoBriefAction,
 } from "@/lib/api";
-import { ArrowRight, CalendarDays, Clock, PenLine, RefreshCw, Rss, Search, Zap } from "lucide-react";
+import { ArrowRight, CalendarDays, Clock, PenLine, RefreshCw, Rss, Search, Trash2, Zap } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -24,8 +24,33 @@ type ChatMsg = {
 };
 
 type PublishState = "idle" | "generating" | "publishing" | "done" | "error";
+type TrackerFilter = "all" | "ranked" | "easy" | "unpublished";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function positionBadge(pos: number | null | undefined) {
+  if (pos == null) return <span className="text-[10px] text-slate-300 italic">—</span>;
+  if (pos <= 3) return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+      🏆 #{pos}
+    </span>
+  );
+  if (pos <= 10) return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+      ✓ #{pos}
+    </span>
+  );
+  if (pos <= 30) return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-50 text-yellow-800 border border-yellow-200">
+      p.{pos}
+    </span>
+  );
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+      p.{pos}
+    </span>
+  );
+}
 
 function difficultyBadge(d: string) {
   if (!d) return null;
@@ -82,15 +107,18 @@ const QUICK_ACTIONS = [
 function TrackerRow({
   row,
   onPublish,
+  onDelete,
   publishState,
   publishUrl,
 }: {
   row: KeywordTrackerRow;
   onPublish: (row: KeywordTrackerRow) => void;
+  onDelete: (keyword: string) => void;
   publishState: PublishState;
   publishUrl: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const hasPosts = (row.posts ?? []).length > 0;
 
   return (
@@ -100,17 +128,28 @@ function TrackerRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-slate-800 text-sm">{row.keyword}</span>
-            {intentBadge(row.intent)}
-            {difficultyBadge(row.difficulty)}
+            {intentBadge(row.intent ?? "")}
+            {difficultyBadge(row.difficulty ?? "")}
           </div>
           {row.content_idea && (
             <p className="text-xs text-slate-500 mt-0.5 truncate">💡 {row.content_idea}</p>
           )}
         </div>
 
+        {/* Google Rank */}
+        <div className="shrink-0 w-24 text-center">
+          <p className="text-[10px] text-slate-400 mb-0.5">Google rank</p>
+          {positionBadge(row.position)}
+          {row.position_checked_at && (
+            <p className="text-[9px] text-slate-300 mt-0.5">
+              {new Date(row.position_checked_at).toLocaleDateString()}
+            </p>
+          )}
+        </div>
+
         {/* Volume */}
-        <div className="text-right shrink-0 w-16">
-          <p className="text-[10px] text-slate-400 mb-0.5">searches/mo</p>
+        <div className="text-right shrink-0 w-14">
+          <p className="text-[10px] text-slate-400 mb-0.5">vol/mo</p>
           {formatVolume(row.search_volume)}
         </div>
 
@@ -124,12 +163,12 @@ function TrackerRow({
               {row.posts.length} post{row.posts.length !== 1 ? "s" : ""} {expanded ? "▲" : "▼"}
             </button>
           ) : (
-            <span className="text-[11px] text-slate-400">No posts yet</span>
+            <span className="text-[11px] text-slate-400">No posts</span>
           )}
         </div>
 
         {/* Publish action */}
-        <div className="shrink-0 w-36 flex justify-end">
+        <div className="shrink-0 w-32 flex justify-end">
           {publishState === "done" ? (
             <a
               href={publishUrl}
@@ -152,8 +191,36 @@ function TrackerRow({
               ) : publishState === "error" ? (
                 "↺ Retry"
               ) : (
-                "→ Publish to Blog"
+                "→ Publish"
               )}
+            </button>
+          )}
+        </div>
+
+        {/* Delete */}
+        <div className="shrink-0">
+          {confirmDelete ? (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => onDelete(row.keyword)}
+                className="text-[10px] px-2 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 font-semibold"
+              >
+                Yes, remove
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="text-[10px] px-2 py-1 border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+              title="Remove keyword"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
@@ -194,7 +261,7 @@ export type SeoHubWorkspaceOpenTab =
   | "autoblog"
   | "scheduler";
 
-export default function SeoHubWorkspace({
+function SeoHubWorkspace({
   onOpenTab,
 }: {
   onOpenTab?: (tab: SeoHubWorkspaceOpenTab) => void;
@@ -229,15 +296,18 @@ export default function SeoHubWorkspace({
   const [quickGenLoading, setQuickGenLoading] = useState(false);
   const [quickGenDone, setQuickGenDone] = useState(false);
 
-  const loadTracker = useCallback(async () => {
-    setTrackerLoading(true);
+  // Tracker filter
+  const [trackerFilter, setTrackerFilter] = useState<TrackerFilter>("all");
+
+  const loadTracker = useCallback(async (silent = false) => {
+    if (!silent) setTrackerLoading(true);
     try {
       const data = await blogApi.getKeywordTracker();
-      setTrackerRows(data.keywords ?? []);
+      setTrackerRows(data.keywords);
     } catch {
       // tracker empty — that's fine
     } finally {
-      setTrackerLoading(false);
+      if (!silent) setTrackerLoading(false);
     }
   }, []);
 
@@ -252,6 +322,15 @@ export default function SeoHubWorkspace({
       setBriefLoading(false);
     }
   }, []);
+
+  async function deleteKeyword(keyword: string) {
+    try {
+      await blogApi.deleteKeyword(keyword);
+      setTrackerRows(prev => prev.filter(r => r.keyword !== keyword));
+    } catch (e) {
+      setTrackerError(e instanceof Error ? e.message : "Failed to remove keyword");
+    }
+  }
 
   async function enrichVolumes() {
     setEnriching(true);
@@ -305,8 +384,8 @@ export default function SeoHubWorkspace({
         content: res.reply,
         tool_steps: res.tool_steps,
       }]);
-      // After assistant responds, refresh tracker (agent may have written posts)
-      setTimeout(loadTracker, 1500);
+      // Silently refresh tracker in background (agent may have added keywords/posts)
+      setTimeout(() => loadTracker(true), 1500);
     } catch (e) {
       setMessages(prev => [...prev, {
         role: "assistant",
@@ -363,7 +442,7 @@ export default function SeoHubWorkspace({
         content: res.reply,
         tool_steps: res.tool_steps,
       }]);
-      setTimeout(() => { loadTracker(); loadBrief(true); }, 1500);
+      setTimeout(() => { loadTracker(true); loadBrief(true); }, 1500);
     } catch (e) {
       setMessages(prev => [...prev, {
         role: "assistant",
@@ -404,7 +483,7 @@ export default function SeoHubWorkspace({
         post_title: post.title,
         post_url: result.post_url,
       }).catch(() => {});
-      setPublishUrls(u => ({ ...u, [key]: result.post_url }));
+      setPublishUrls(u => ({ ...u, [key]: result.post_url ?? "" }));
       setPublishStates(s => ({ ...s, [key]: "done" }));
       await loadTracker();
     } catch (e) {
@@ -486,8 +565,343 @@ export default function SeoHubWorkspace({
         </div>
       )}
 
+      <div className="flex flex-col lg:flex-row gap-4 sm:gap-5 flex-1 min-h-0">
+        {/* ── LEFT: AI Chat ─────────────────────────────────────────────────── */}
+        <div className="flex flex-col w-full lg:w-[480px] xl:w-[520px] shrink-0 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" style={{ minHeight: 520, maxHeight: "min(780px, calc(100vh - 14rem))" }}>
+          {/* Chat header */}
+          <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-gradient-to-r from-emerald-50 to-white shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white text-sm font-bold shrink-0">Z</div>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Zilo SEO Coach</p>
+                <p className="text-[11px] text-emerald-600 font-medium flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                  Can research, write &amp; publish for you
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => { setMessages([]); setConvId(undefined); }}
+              className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100"
+            >
+              New chat
+            </button>
+          </div>
+
+          {/* Messages */}
+          <div ref={messagesScrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            {isEmpty && (
+              <div className="space-y-5">
+                {/* Greeting */}
+                <div className="flex gap-3 items-start">
+                  <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5">Z</div>
+                  <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-slate-800 leading-relaxed max-w-xs">
+                    {name
+                      ? <>Hi! I&apos;m your SEO coach for <strong>{name}</strong>. I can research keywords, write blog posts, audit your site, and publish everything — just ask!</>
+                      : <>Hi! I&apos;m your SEO coach. I can research keywords, write blog posts, audit your site, and publish everything. What would you like to do?</>}
+                  </div>
+                </div>
+
+                {/* Quick action chips */}
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide px-1">Quick actions</p>
+                  <div className="grid grid-cols-1 gap-2">
+                    {QUICK_ACTIONS.map(qa => (
+                      <button
+                        key={qa.label}
+                        onClick={() => send(qa.msg)}
+                        className="flex items-center gap-3 text-left px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:border-emerald-300 hover:bg-emerald-50 transition-colors group"
+                      >
+                        <span className="text-lg shrink-0">{qa.icon}</span>
+                        <span className="text-sm text-slate-700 group-hover:text-emerald-800 font-medium">{qa.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {messages.map((m, i) => (
+              <div key={i} className={`flex gap-2.5 items-start ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                {m.role === "assistant" && (
+                  <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5">Z</div>
+                )}
+                <div className={`flex flex-col gap-1.5 max-w-[85%] ${m.role === "user" ? "items-end" : "items-start"}`}>
+                  {/* Tool steps */}
+                  {m.tool_steps && m.tool_steps.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {Array.from(new Set(m.tool_steps.map(s => s.tool))).map(tool => (
+                        <span key={tool} className="text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">
+                          ⚙ {tool.replace(/_/g, " ")}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                    m.role === "user"
+                      ? "bg-emerald-600 text-white rounded-tr-sm"
+                      : "bg-slate-100 text-slate-800 rounded-tl-sm"
+                  }`}>
+                    {m.role === "assistant" ? (
+                      <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:my-1.5 prose-ul:my-1 prose-li:my-0">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            table: ({ children }) => (
+                              <div className="my-3 overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
+                                <table className="w-full text-xs border-collapse">{children}</table>
+                              </div>
+                            ),
+                            thead: ({ children }) => <thead>{children}</thead>,
+                            th: ({ children }) => (
+                              <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide bg-slate-800 text-white whitespace-nowrap">{children}</th>
+                            ),
+                            td: ({ children }) => (
+                              <td className="px-3 py-2 text-slate-700 border-t border-slate-100">{children}</td>
+                            ),
+                            tr: ({ children, ...props }) => (
+                              <tr className="even:bg-slate-50 odd:bg-white" {...(props as React.HTMLAttributes<HTMLTableRowElement>)}>{children}</tr>
+                            ),
+                          }}
+                        >{m.content}</ReactMarkdown>
+                      </div>
+                    ) : m.content}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {chatLoading && (
+              <div className="flex gap-2.5 items-start">
+                <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0">Z</div>
+                <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 flex gap-1.5 items-center">
+                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Input */}
+          <div className="px-4 py-3 border-t border-slate-100 shrink-0 bg-white">
+            <div className="flex gap-2 items-end">
+              <textarea
+                ref={inputRef}
+                rows={1}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+                }}
+                placeholder="Ask me anything… e.g. 'Write a blog post about our top service'"
+                className="flex-1 resize-none border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 max-h-32"
+                style={{ minHeight: "42px" }}
+              />
+              <button
+                onClick={() => send()}
+                disabled={chatLoading || !input.trim()}
+                className="h-10 w-10 flex items-center justify-center bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-40 shrink-0"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+                </svg>
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-300 mt-1.5 px-1">Enter to send · Shift+Enter for new line</p>
+          </div>
+        </div>
+
+        {/* ── RIGHT: Keyword + Blog Tracker ────────────────────────────────── */}
+        <div className="flex-1 min-w-0 flex flex-col gap-4">
+
+          {/* Tracker header card */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                  📊 Keyword &amp; Blog Tracker
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  All your keywords with search volumes — click <strong>Publish to Blog</strong> to generate &amp; publish a post instantly.
+                </p>
+              </div>
+              <div className="flex gap-2 shrink-0 flex-wrap">
+                {enrichMsg && (
+                  <span className="text-xs text-emerald-700 self-center font-medium">{enrichMsg}</span>
+                )}
+                <button
+                  onClick={enrichVolumes}
+                  disabled={enriching}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 flex items-center gap-1"
+                  title="Look up real search volumes from Google for keywords missing data"
+                >
+                  {enriching ? <><span className="animate-spin inline-block">⚙</span> Fetching…</> : "📊 Get volumes"}
+                </button>
+                <button
+                  onClick={() => loadTracker()}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"
+                >
+                  ↻ Refresh
+                </button>
+                {profile?.business_type && (
+                  <button
+                    onClick={quickGenerateKeywords}
+                    disabled={quickGenLoading}
+                    className="text-xs px-4 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {quickGenLoading ? (
+                      <><span className="animate-spin">⚙</span> Generating…</>
+                    ) : quickGenDone ? (
+                      "✓ Keywords loaded"
+                    ) : (
+                      "🔍 Get keyword ideas"
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Stats row */}
+            {trackerRows.length > 0 && (
+              <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
+                  <p className="text-2xl font-bold text-slate-800">{trackerRows.length}</p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Keywords tracked</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
+                  <p className="text-2xl font-bold text-blue-700">
+                    {trackerRows.filter(r => r.position != null && r.position <= 100).length}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Ranked on Google</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
+                  <p className="text-2xl font-bold text-emerald-700">
+                    {trackerRows.reduce((n, r) => n + (r.posts?.length ?? 0), 0)}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Posts published</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
+                  <p className="text-2xl font-bold text-indigo-700">
+                    {trackerRows.filter(r => r.difficulty?.toLowerCase() === "low" || r.difficulty?.toLowerCase() === "easy").length}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Easy wins</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Error alert */}
+          {trackerError && (
+            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
+              <span className="shrink-0">⚠</span>
+              <span>{trackerError}</span>
+              <button onClick={() => setTrackerError("")} className="ml-auto shrink-0 text-red-400 hover:text-red-600">×</button>
+            </div>
+          )}
+
+          {/* Tracker table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex-1">
+            {/* Filter tabs */}
+            {trackerRows.length > 0 && (
+              <div className="flex items-center gap-1 px-4 py-2 border-b border-slate-100 bg-slate-50/70 flex-wrap">
+                {([
+                  { key: "all", label: `All (${trackerRows.length})` },
+                  { key: "ranked", label: `Ranked (${trackerRows.filter(r => r.position != null).length})` },
+                  { key: "easy", label: `Easy wins (${trackerRows.filter(r => ["low","easy"].includes(r.difficulty?.toLowerCase())).length})` },
+                  { key: "unpublished", label: `No posts (${trackerRows.filter(r => !r.posts?.length).length})` },
+                ] as { key: TrackerFilter; label: string }[]).map(f => (
+                  <button
+                    key={f.key}
+                    onClick={() => setTrackerFilter(f.key)}
+                    className={`text-[11px] px-3 py-1 rounded-full font-semibold transition-colors ${
+                      trackerFilter === f.key
+                        ? "bg-emerald-600 text-white"
+                        : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Table header */}
+            <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50 border-b border-slate-100">
+              <div className="flex-1 text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Keyword</div>
+              <div className="w-24 text-center text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Google Rank</div>
+              <div className="w-14 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Vol/mo</div>
+              <div className="w-20 text-center text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Posts</div>
+              <div className="w-32 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Action</div>
+              <div className="w-6" />
+            </div>
+
+            {trackerLoading ? (
+              <div className="flex items-center justify-center py-16 gap-3 text-slate-400">
+                <span className="animate-spin text-xl">⚙</span>
+                <span className="text-sm">Loading tracker…</span>
+              </div>
+            ) : trackerRows.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-4 px-6 text-center">
+                <div className="text-5xl">🔍</div>
+                <div>
+                  <p className="font-semibold text-slate-700 text-base">No keywords tracked yet</p>
+                  <p className="text-sm text-slate-500 mt-1 max-w-sm">
+                    Click <strong>Get keyword ideas</strong> above, or ask the SEO Coach on the left — it will research keywords and add them here automatically.
+                  </p>
+                </div>
+                {profile?.business_type && (
+                  <button
+                    onClick={quickGenerateKeywords}
+                    disabled={quickGenLoading}
+                    className="mt-2 px-5 py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {quickGenLoading ? "Generating…" : "🔍 Get my keyword ideas now"}
+                  </button>
+                )}
+              </div>
+            ) : (() => {
+                const filtered = trackerRows.filter(r => {
+                  if (trackerFilter === "ranked") return r.position != null;
+                  if (trackerFilter === "easy") return ["low","easy"].includes(r.difficulty?.toLowerCase());
+                  if (trackerFilter === "unpublished") return !r.posts?.length;
+                  return true;
+                });
+                return filtered.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 gap-2 text-center px-6">
+                    <p className="text-slate-500 text-sm">No keywords match this filter.</p>
+                    <button onClick={() => setTrackerFilter("all")} className="text-xs text-emerald-600 hover:underline">Show all</button>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-50">
+                    {filtered.map(row => (
+                      <TrackerRow
+                        key={row.keyword}
+                        row={row}
+                        onPublish={publishKeyword}
+                        onDelete={deleteKeyword}
+                        publishState={publishStates[row.keyword] ?? "idle"}
+                        publishUrl={publishUrls[row.keyword] ?? ""}
+                      />
+                    ))}
+                  </div>
+                );
+              })()
+            }
+          </div>
+
+          {/* Bottom hint */}
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 flex items-center gap-3">
+            <span className="text-emerald-600 text-lg shrink-0">💬</span>
+            <p className="text-xs text-emerald-800">
+              <strong>Pro tip:</strong> Ask the coach: <em>Research 20 keywords for my business and add them to the tracker</em> — it will fill this table automatically, with real search volumes.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* ── SEO Expert Brief ─────────────────────────────────────────────────── */}
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden min-h-[460px]">
         {/* Brief header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-gradient-to-r from-indigo-50/60 to-white">
           <div className="flex items-center gap-2.5">
@@ -514,8 +928,48 @@ export default function SeoHubWorkspace({
         </div>
 
         {briefLoading && !brief && (
-          <div className="flex items-center gap-3 px-5 py-6 text-slate-500 text-sm">
-            <span className="animate-spin">⚙</span> Analysing published posts, keywords, rankings…
+          <div className="p-5 space-y-5 animate-pulse">
+            {/* health row skeleton */}
+            <div className="flex items-start gap-4">
+              <div className="w-20 h-20 rounded-2xl bg-slate-100 shrink-0" />
+              <div className="flex-1 space-y-2 pt-1">
+                <div className="h-3 bg-slate-100 rounded w-3/4" />
+                <div className="h-3 bg-slate-100 rounded w-full" />
+                <div className="h-3 bg-slate-100 rounded w-5/6" />
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <div className="space-y-1.5">
+                    <div className="h-2.5 bg-slate-100 rounded w-1/3" />
+                    <div className="h-2.5 bg-slate-100 rounded w-full" />
+                    <div className="h-2.5 bg-slate-100 rounded w-4/5" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="h-2.5 bg-slate-100 rounded w-1/3" />
+                    <div className="h-2.5 bg-slate-100 rounded w-full" />
+                    <div className="h-2.5 bg-slate-100 rounded w-3/4" />
+                  </div>
+                </div>
+              </div>
+            </div>
+            {/* action cards skeleton */}
+            <div>
+              <div className="h-2.5 bg-slate-100 rounded w-40 mb-3" />
+              <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="border border-slate-100 rounded-xl p-3.5 space-y-2">
+                    <div className="flex gap-2 items-center">
+                      <div className="w-6 h-6 bg-slate-100 rounded" />
+                      <div className="h-3 bg-slate-100 rounded flex-1" />
+                    </div>
+                    <div className="h-2.5 bg-slate-100 rounded w-full" />
+                    <div className="h-2.5 bg-slate-100 rounded w-3/4" />
+                    <div className="flex justify-between items-center pt-1">
+                      <div className="h-5 bg-slate-100 rounded-full w-16" />
+                      <div className="h-6 bg-slate-100 rounded-lg w-16" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
@@ -621,283 +1075,9 @@ export default function SeoHubWorkspace({
           </div>
         )}
       </div>
-
-      <div className="flex flex-col lg:flex-row gap-4 sm:gap-5 flex-1 min-h-0">
-        {/* ── LEFT: AI Chat ─────────────────────────────────────────────────── */}
-        <div className="flex flex-col w-full lg:w-[480px] xl:w-[520px] shrink-0 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" style={{ minHeight: 520, maxHeight: "min(780px, calc(100vh - 14rem))" }}>
-          {/* Chat header */}
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-gradient-to-r from-emerald-50 to-white shrink-0">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white text-sm font-bold shrink-0">Z</div>
-              <div>
-                <p className="text-sm font-semibold text-slate-800">Zilo SEO Coach</p>
-                <p className="text-[11px] text-emerald-600 font-medium flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                  Can research, write &amp; publish for you
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={() => { setMessages([]); setConvId(undefined); }}
-              className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100"
-            >
-              New chat
-            </button>
-          </div>
-
-          {/* Messages */}
-          <div ref={messagesScrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-            {isEmpty && (
-              <div className="space-y-5">
-                {/* Greeting */}
-                <div className="flex gap-3 items-start">
-                  <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5">Z</div>
-                  <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-slate-800 leading-relaxed max-w-xs">
-                    {name
-                      ? <>Hi! I&apos;m your SEO coach for <strong>{name}</strong>. I can research keywords, write blog posts, audit your site, and publish everything — just ask!</>
-                      : <>Hi! I&apos;m your SEO coach. I can research keywords, write blog posts, audit your site, and publish everything. What would you like to do?</>}
-                  </div>
-                </div>
-
-                {/* Quick action chips */}
-                <div className="space-y-2">
-                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide px-1">Quick actions</p>
-                  <div className="grid grid-cols-1 gap-2">
-                    {QUICK_ACTIONS.map(qa => (
-                      <button
-                        key={qa.label}
-                        onClick={() => send(qa.msg)}
-                        className="flex items-center gap-3 text-left px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:border-emerald-300 hover:bg-emerald-50 transition-colors group"
-                      >
-                        <span className="text-lg shrink-0">{qa.icon}</span>
-                        <span className="text-sm text-slate-700 group-hover:text-emerald-800 font-medium">{qa.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {messages.map((m, i) => (
-              <div key={i} className={`flex gap-2.5 items-start ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                {m.role === "assistant" && (
-                  <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5">Z</div>
-                )}
-                <div className={`flex flex-col gap-1.5 max-w-[85%] ${m.role === "user" ? "items-end" : "items-start"}`}>
-                  {/* Tool steps */}
-                  {m.tool_steps && m.tool_steps.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {Array.from(new Set(m.tool_steps.map(s => s.tool))).map(tool => (
-                        <span key={tool} className="text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">
-                          ⚙ {tool.replace(/_/g, " ")}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
-                    m.role === "user"
-                      ? "bg-emerald-600 text-white rounded-tr-sm"
-                      : "bg-slate-100 text-slate-800 rounded-tl-sm"
-                  }`}>
-                    {m.role === "assistant" ? (
-                      <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:my-1.5 prose-ul:my-1 prose-li:my-0">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                      </div>
-                    ) : m.content}
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {chatLoading && (
-              <div className="flex gap-2.5 items-start">
-                <div className="w-7 h-7 rounded-full bg-emerald-600 flex items-center justify-center text-white text-xs font-bold shrink-0">Z</div>
-                <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-4 py-3 flex gap-1.5 items-center">
-                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Input */}
-          <div className="px-4 py-3 border-t border-slate-100 shrink-0 bg-white">
-            <div className="flex gap-2 items-end">
-              <textarea
-                ref={inputRef}
-                rows={1}
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-                }}
-                placeholder="Ask me anything… e.g. 'Write a blog post about our top service'"
-                className="flex-1 resize-none border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 max-h-32"
-                style={{ minHeight: "42px" }}
-              />
-              <button
-                onClick={() => send()}
-                disabled={chatLoading || !input.trim()}
-                className="h-10 w-10 flex items-center justify-center bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-40 shrink-0"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-                </svg>
-              </button>
-            </div>
-            <p className="text-[10px] text-slate-300 mt-1.5 px-1">Enter to send · Shift+Enter for new line</p>
-          </div>
-        </div>
-
-        {/* ── RIGHT: Keyword + Blog Tracker ────────────────────────────────── */}
-        <div className="flex-1 min-w-0 flex flex-col gap-4">
-
-          {/* Tracker header card */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
-                <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
-                  📊 Keyword &amp; Blog Tracker
-                </h2>
-                <p className="text-sm text-slate-500 mt-0.5">
-                  All your keywords with search volumes — click <strong>Publish to Blog</strong> to generate &amp; publish a post instantly.
-                </p>
-              </div>
-              <div className="flex gap-2 shrink-0 flex-wrap">
-                {enrichMsg && (
-                  <span className="text-xs text-emerald-700 self-center font-medium">{enrichMsg}</span>
-                )}
-                <button
-                  onClick={enrichVolumes}
-                  disabled={enriching}
-                  className="text-xs px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 flex items-center gap-1"
-                  title="Look up real search volumes from Google for keywords missing data"
-                >
-                  {enriching ? <><span className="animate-spin inline-block">⚙</span> Fetching…</> : "📊 Get volumes"}
-                </button>
-                <button
-                  onClick={loadTracker}
-                  className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"
-                >
-                  ↻ Refresh
-                </button>
-                {profile?.business_type && (
-                  <button
-                    onClick={quickGenerateKeywords}
-                    disabled={quickGenLoading}
-                    className="text-xs px-4 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
-                  >
-                    {quickGenLoading ? (
-                      <><span className="animate-spin">⚙</span> Generating…</>
-                    ) : quickGenDone ? (
-                      "✓ Keywords loaded"
-                    ) : (
-                      "🔍 Get keyword ideas"
-                    )}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Stats row */}
-            {trackerRows.length > 0 && (
-              <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 gap-3">
-                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
-                  <p className="text-2xl font-bold text-slate-800">{trackerRows.length}</p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">Keywords tracked</p>
-                </div>
-                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
-                  <p className="text-2xl font-bold text-emerald-700">
-                    {trackerRows.reduce((n, r) => n + (r.posts?.length ?? 0), 0)}
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">Posts published</p>
-                </div>
-                <div className="bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
-                  <p className="text-2xl font-bold text-blue-700">
-                    {trackerRows.filter(r => r.difficulty?.toLowerCase() === "low" || r.difficulty?.toLowerCase() === "easy").length}
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">Easy wins</p>
-                </div>
-                <div className="hidden sm:block bg-slate-50 rounded-xl border border-slate-100 p-3 text-center">
-                  <p className="text-2xl font-bold text-slate-800">
-                    {trackerRows.filter(r => r.search_volume > 0).length > 0
-                      ? Math.round(trackerRows.filter(r => r.search_volume > 0).reduce((s, r) => s + r.search_volume, 0) / trackerRows.filter(r => r.search_volume > 0).length).toLocaleString()
-                      : "—"}
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">Avg vol/mo</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Error alert */}
-          {trackerError && (
-            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
-              <span className="shrink-0">⚠</span>
-              <span>{trackerError}</span>
-              <button onClick={() => setTrackerError("")} className="ml-auto shrink-0 text-red-400 hover:text-red-600">×</button>
-            </div>
-          )}
-
-          {/* Tracker table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex-1">
-            {/* Table header */}
-            <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50 border-b border-slate-100">
-              <div className="flex-1 text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Keyword</div>
-              <div className="w-16 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Volume</div>
-              <div className="w-20 text-center text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Posts</div>
-              <div className="w-36 text-right text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Action</div>
-            </div>
-
-            {trackerLoading ? (
-              <div className="flex items-center justify-center py-16 gap-3 text-slate-400">
-                <span className="animate-spin text-xl">⚙</span>
-                <span className="text-sm">Loading tracker…</span>
-              </div>
-            ) : trackerRows.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-4 px-6 text-center">
-                <div className="text-5xl">🔍</div>
-                <div>
-                  <p className="font-semibold text-slate-700 text-base">No keywords tracked yet</p>
-                  <p className="text-sm text-slate-500 mt-1 max-w-sm">
-                    Click <strong>Get keyword ideas</strong> above, or ask the SEO Coach on the left — it will research keywords and add them here automatically.
-                  </p>
-                </div>
-                {profile?.business_type && (
-                  <button
-                    onClick={quickGenerateKeywords}
-                    disabled={quickGenLoading}
-                    className="mt-2 px-5 py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-xl hover:bg-emerald-700 disabled:opacity-50"
-                  >
-                    {quickGenLoading ? "Generating…" : "🔍 Get my keyword ideas now"}
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="divide-y divide-slate-50">
-                {trackerRows.map(row => (
-                  <TrackerRow
-                    key={row.keyword}
-                    row={row}
-                    onPublish={publishKeyword}
-                    publishState={publishStates[row.keyword] ?? "idle"}
-                    publishUrl={publishUrls[row.keyword] ?? ""}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Bottom hint */}
-          <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 flex items-center gap-3">
-            <span className="text-emerald-600 text-lg shrink-0">💬</span>
-            <p className="text-xs text-emerald-800">
-              <strong>Pro tip:</strong> Ask the coach: <em>Research 20 keywords for my business and add them to the tracker</em> — it will fill this table automatically, with real search volumes.
-            </p>
-          </div>
-        </div>
-      </div>
     </div>
+
   );
 }
+
+export default React.memo(SeoHubWorkspace);

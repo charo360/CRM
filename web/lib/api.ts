@@ -6,7 +6,7 @@ import { getToken } from "./auth";
  * using the Next rewrite (`/proxy` → backend `/api/*`). Render/env values often
  * omit `/api` — that produces 404 on routes like the SEO coach.
  */
-function normalizeCrmApiBase(raw: string): string {
+export function normalizeCrmApiBase(raw: string): string {
   const t = raw.trim().replace(/\/+$/, "");
   if (!t) return "http://127.0.0.1:8000/api";
   if (t.endsWith("/proxy") || t === "/proxy") return t;
@@ -15,7 +15,7 @@ function normalizeCrmApiBase(raw: string): string {
   return t;
 }
 
-const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
+export const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
 
 function formatErrorBody(res: Response, rawText: string): string {
   let err: { detail?: unknown; error?: unknown; message?: unknown; details?: unknown } = {};
@@ -461,6 +461,10 @@ export interface BusinessSettings {
   account_mode?: string;
   /** Web onboarding wizard; `false` = show wizard for new web signups. */
   onboarding_v1_completed?: boolean | null;
+  /** Google Analytics 4 Measurement ID (G-XXXXXXXXXX) */
+  ga4_measurement_id?: string;
+  /** Enable/disable behavior-triggered discount campaigns */
+  behavior_discounts_enabled?: boolean;
 }
 
 /** Backend `/business-knowledge` payload (journey + AI fields). */
@@ -779,6 +783,15 @@ export const adminApi = {
     const raw = await res.text();
     if (!res.ok) throw new Error(formatErrorBody(res, raw));
     return (raw ? JSON.parse(raw) : {}) as { ok: boolean };
+  },
+  refreshFavicon: async (id: string) => {
+    const res = await fetch(`/api/admin/users/${id}/refresh-favicon`, {
+      method: "POST",
+      headers: adminHeaders(),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as { status: string; site: string };
   },
 };
 
@@ -1202,6 +1215,24 @@ export const payheroApi = {
     }>("/payhero/stk-push", params),
 };
 
+// ── Supplier connections (CJ + AliExpress per-user credentials) ──────────────
+export interface SupplierConnections {
+  cj: boolean;
+  aliexpress: boolean;
+}
+
+export const supplierApi = {
+  connections: () => api.get<SupplierConnections>("/supplier-connections"),
+  connectCJ: (email: string, api_key: string) =>
+    api.post<{ connected: boolean }>("/supplier-connections/cj", { email, api_key }),
+  disconnectCJ: () =>
+    api.delete<{ connected: boolean }>("/supplier-connections/cj"),
+  connectAliExpress: (app_key: string, app_secret: string, access_token: string) =>
+    api.post<{ connected: boolean }>("/supplier-connections/aliexpress", { app_key, app_secret, access_token }),
+  disconnectAliExpress: () =>
+    api.delete<{ connected: boolean }>("/supplier-connections/aliexpress"),
+};
+
 // ── Assistant ────────────────────────────────────────────────────────────────
 export interface AssistantModel {
   id: string;
@@ -1224,6 +1255,8 @@ export interface AssistantMessage {
   agent?: string;
   /** Tap-to-send follow-ups (e.g. Meta / Google Ads step-by-step) */
   suggestions?: string[];
+  /** Documents attached to this user message (shown as chips in the bubble) */
+  documents?: AssistantDocument[];
 }
 
 export interface AssistantAgent {
@@ -1343,7 +1376,9 @@ export const assistantApi = {
     auto_approve?: boolean;
     agent?: string;
     visibility?: "team" | "private";
+    signal?: AbortSignal;
   }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     let controller!: ReadableStreamDefaultController<string>;
     const stream = new ReadableStream<string>({
@@ -1357,7 +1392,8 @@ export const assistantApi = {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(bodyRest),
+          signal,
         });
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => res.statusText);
@@ -1385,6 +1421,124 @@ export const assistantApi = {
     })();
     return stream;
   },
+  generatePresentationStream: (body: {
+    topic: string;
+    slides: Record<string, unknown>[];
+    conversation_id?: string | null;
+    message_index?: number;
+    edited?: boolean;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/presentation/generate/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  regeneratePresentationSlideStream: (body: {
+    conversation_id: string;
+    message_index: number;
+    slide_index: number;
+    instruction: string;
+    slides: Record<string, unknown>[];
+    image_urls: string[];
+    topic?: string;
+    text_edited?: boolean;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/presentation/regenerate-slide/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  updatePresentationPlan: (body: {
+    conversation_id: string;
+    message_index: number;
+    topic: string;
+    slides: Record<string, unknown>[];
+  }) =>
+    api.post<{
+      success: boolean;
+      slides: Record<string, unknown>[];
+      topic: string;
+      user_edited: boolean;
+      saved_at: string;
+    }>("/assistant/presentation/plan/update", body),
   listDocuments: (conversationId: string) =>
     api.get<{ documents: AssistantDocument[] }>(
       `/assistant/conversations/${conversationId}/documents`
@@ -1418,6 +1572,33 @@ export const assistantApi = {
     a.download = `${filename || "zilo-export"}.${format}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
+  uploadDocumentWithProgress: (
+    file: File,
+    conversationId: string | null | undefined,
+    onProgress: (pct: number) => void,
+  ): Promise<{ conversation_id: string; document: AssistantDocument }> => {
+    return new Promise((resolve, reject) => {
+      const token = getToken();
+      const form = new FormData();
+      form.append("file", file);
+      const qs = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/assistant/upload${qs}`);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) onProgress(Math.round((ev.loaded / ev.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error("Invalid response")); }
+        } else {
+          try { reject(new Error(JSON.parse(xhr.responseText)?.detail ?? xhr.statusText)); } catch { reject(new Error(xhr.statusText)); }
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload failed"));
+      xhr.send(form);
+    });
   },
   uploadDocument: async (file: File, conversationId?: string | null) => {
     const token = getToken();
@@ -1620,6 +1801,16 @@ export interface ScheduledPost {
   assets?: ScheduledPostAsset[];
   image_url?: string;
   publish_error?: string;
+  zernio_post_id?: string;
+  engagement_synced_at?: string;
+  engagement?: {
+    likes: number;
+    comments: number;
+    shares: number;
+    reach: number;
+    clicks: number;
+    saves: number;
+  };
 }
 
 export type ScheduledPostInput = Omit<ScheduledPost, "id" | "created_at" | "updated_at">;
@@ -1639,13 +1830,28 @@ export interface SocialAnalytics {
   avg_engagement_rate: number;
 }
 
+export type SocialPostPublishResult = {
+  success: boolean;
+  zernio_post_id?: string | null;
+  error?: string | null;
+  crm_status?: string;
+};
+
 export const socialSchedulerApi = {
   list: (status?: string) =>
     api.get<{ posts: ScheduledPost[] }>(`/marketing/social-posts${status ? `?status=${status}` : ""}`),
+  get: (id: string) =>
+    api.get<{ post: ScheduledPost }>(`/marketing/social-posts/${id}`),
   create: (body: Partial<ScheduledPostInput> & { title: string; body: string }) =>
-    api.post<{ post: ScheduledPost }>("/marketing/social-posts", body),
+    api.post<{ post: ScheduledPost; publish?: SocialPostPublishResult }>(
+      "/marketing/social-posts",
+      body,
+    ),
   update: (id: string, body: Partial<ScheduledPostInput>) =>
-    api.patch<{ post: ScheduledPost }>(`/marketing/social-posts/${id}`, body),
+    api.patch<{ post: ScheduledPost; publish?: SocialPostPublishResult }>(
+      `/marketing/social-posts/${id}`,
+      body,
+    ),
   delete: (id: string) =>
     api.delete<{ status: string; id: string }>(`/marketing/social-posts/${id}`),
   analytics: (days = 30, channel?: string) =>
@@ -2069,11 +2275,47 @@ export interface SeoKeyword {
   difficulty: string;
   priority: number;
   content_idea: string;
-  /** Present when results come from DataForSEO Labs */
   search_volume?: number | null;
+  local_country?: string | null;
+  global_search_volume?: number | null;
+  top_region?: string | null;
+  top_region_volume?: number | null;
   cpc?: number | null;
   competition?: string | null;
   keyword_difficulty_score?: number | null;
+}
+
+export interface ContentLink {
+  title: string;
+  url: string;
+  published_at: string;
+}
+
+export interface SerpRankingEntry {
+  keyword: string;
+  domain: string;
+  position: number | null;
+  global_position?: number | null;
+  checked_at: string;
+  location_code?: number;
+  search_volume?: number | null;
+  local_country?: string | null;
+  global_search_volume?: number | null;
+  top_region?: string | null;
+  top_region_volume?: number | null;
+  cpc?: number | null;
+  difficulty?: string | null;
+  trend?: "rising" | "declining" | "stable" | null;
+  content_idea?: string | null;
+  posts?: ContentLink[];
+}
+
+export interface AiVisibilityAudit {
+  url: string;
+  ai_score: number | null;
+  grade: string;
+  issues_count: number;
+  created_at: string;
 }
 
 export interface BlogPost {
@@ -2091,10 +2333,20 @@ export interface BlogPost {
   created_at: string;
   updated_at: string;
   published_at?: string;
+  site_post_url?: string;
   /** Calendar generation metadata */
   calendar_week?: number;
   calendar_day?: string;
   word_count?: number;
+  /** Social shares tracking */
+  social_shares?: {
+    platform: string;
+    account_id: string;
+    social_post_id: string;
+    caption: string;
+    link_url: string;
+    shared_at: string;
+  }[];
 }
 
 export interface BlogGenerateResult {
@@ -2128,12 +2380,17 @@ export interface SeoBusinessContext {
   context_snippet: string;
   /** True when DATAFORSEO_TOKEN is set — Keywords tab can use live Google metrics. */
   live_keyword_data?: boolean;
+  website_url?: string;
 }
 
 export interface SeoSummary {
   total_posts: number;
   published_posts: number;
   draft_posts: number;
+  scheduled_posts: number;
+  autoblog_posts: number;
+  keywords_saved: number;
+  rankings_tracked: number;
   total_audits: number;
   avg_seo_score: number | null;
   last_audit: SeoAudit | null;
@@ -2152,7 +2409,7 @@ export const seoApi = {
       keywords: SeoKeyword[];
       business_type: string;
       location: string;
-      keyword_source: "dataforseo" | "ai";
+      keyword_source: "dataforseo" | "vebapi" | "ai";
       excluded_count?: number;
     }>("/seo/keywords", {
       business_type: business_type ?? "",
@@ -2170,7 +2427,14 @@ export const seoApi = {
     business_name?: string;
     include_faq?: boolean;
     model_pref?: string;
+    existing_titles?: string[];
   }) => api.post<BlogGenerateResult>("/seo/blog/generate", body),
+
+  addContentLink: (keyword: string, domain: string, title: string, url: string) =>
+    api.post<{ ok: boolean }>("/seo/content-links", { keyword, domain, title, url }),
+
+  suggestAngles: (keyword: string, existingTitles: string[]) =>
+    api.post<{ keyword: string; angles: { title: string; angle: string }[] }>("/seo/suggest-angles", { keyword, existing_titles: existingTitles }),
 
   // Blog CRUD
   listPosts: () => api.get<BlogPost[]>("/seo/blog/posts"),
@@ -2178,6 +2442,14 @@ export const seoApi = {
   createPost: (body: Partial<BlogPost>) => api.post<BlogPost>("/seo/blog/posts", body),
   updatePost: (id: string, body: Partial<BlogPost>) => api.patch<BlogPost>(`/seo/blog/posts/${id}`, body),
   deletePost: (id: string) => api.delete<{ ok: boolean }>(`/seo/blog/posts/${id}`),
+  shareBlogToSocial: (post_id: string, body: { platform: string; account_id: string; caption: string; link_url?: string; image_url?: string }) =>
+    api.post<{ ok: boolean; social_post_id: string; platform: string }>(`/seo/blog/posts/${post_id}/share-social`, body),
+
+  // Auto-share settings
+  getAutoShareSettings: () =>
+    api.get<{ enabled: boolean; trigger: string; account_ids: string[]; account_platforms: Record<string, string> }>("/seo/social-auto-share/settings"),
+  updateAutoShareSettings: (body: { enabled: boolean; trigger: string; account_ids: string[]; account_platforms: Record<string, string> }) =>
+    api.put<{ ok: boolean; settings: Record<string, unknown> }>("/seo/social-auto-share/settings", body),
 
   // Publish
   publishPost: (body: {
@@ -2270,9 +2542,68 @@ export const seoApi = {
   analyticsEvents: (limit = 50) =>
     api.get<{ id: string; type: string; created_at: string; payload?: Record<string, unknown> }[]>(`/seo/analytics/events?limit=${limit}`),
 
+  // Page indexing breakdown (URL Inspection API)
+  getPageIndexingStatus: (siteUrl?: string, sitemapUrl?: string, maxUrls = 20) =>
+    api.get<{
+      connected: boolean; error?: string;
+      total_inspected?: number; indexed?: number; not_indexed?: number;
+      sitemap_url?: string;
+      reasons?: {
+        reason: string; label: string; color: string; fix: string | null;
+        count: number; urls: string[];
+      }[];
+    }>(
+      `/seo/analytics/search-console/indexing?max_urls=${maxUrls}` +
+      (siteUrl ? `&site_url=${encodeURIComponent(siteUrl)}` : "") +
+      (sitemapUrl ? `&sitemap_url=${encodeURIComponent(sitemapUrl)}` : "")
+    ),
+
+  // List sitemaps for a GSC property
+  listSearchConsoleSitemaps: (siteUrl?: string) =>
+    api.get<{
+      connected: boolean; site_url?: string; error?: string;
+      sitemaps: { path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number; submitted: number; indexed: number }[];
+    }>(`/seo/analytics/search-console/sitemaps${siteUrl ? `?site_url=${encodeURIComponent(siteUrl)}` : ""}`),
+
+  // List verified GSC properties
+  listSearchConsoleSites: () =>
+    api.get<{ connected: boolean; sites: { url: string; level: string }[]; error?: string }>("/seo/analytics/search-console/sites"),
+
+  // Google Search Console (via Composio)
+  getSearchConsoleData: (siteUrl?: string, days = 28, searchType = "web") =>
+    api.get<{
+      connected: boolean; error?: string; site_url?: string; period_days?: number;
+      summary?: { total_clicks: number; total_impressions: number; avg_ctr: number; avg_position: number };
+      top_queries?: { query: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      top_pages?: { page: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      devices?: { device: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      countries?: { country: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      trend?: { date: string; clicks: number; impressions: number }[];
+    }>(`/seo/analytics/search-console?days=${days}&search_type=${searchType}${siteUrl ? `&site_url=${encodeURIComponent(siteUrl)}` : ""}`),
+
+  // Google Analytics 4 (via Composio)
+  getGa4Data: (propertyId?: string, days = 28) =>
+    api.get<{
+      connected: boolean; error?: string; property_id?: string; period_days?: number;
+      summary?: { total_sessions: number; total_users: number; total_views: number };
+      daily?: { date: string; sessions: number; users: number; views: number; bounce_rate: number; avg_session_duration: number }[];
+    }>(`/seo/analytics/ga4${propertyId ? `?property_id=${encodeURIComponent(propertyId)}&days=${days}` : `?days=${days}`}`),
+
+  // Google Ads (via Composio)
+  getGoogleAdsData: (customerId?: string, days = 30) =>
+    api.get<{
+      connected: boolean; error?: string; customer_id?: string; period_days?: number;
+      summary?: { total_spend: number; total_clicks: number; total_impressions: number; avg_ctr: number; avg_cpc: number };
+      campaigns?: { id: string; name: string; status: string; impressions: number; clicks: number; cost: number; ctr: number; avg_cpc: number }[];
+    }>(`/seo/analytics/google-ads${customerId ? `?customer_id=${encodeURIComponent(customerId)}&days=${days}` : `?days=${days}`}`),
+
   // Scheduled posts queue
   scheduledPosts: () =>
     api.get<{ id: string; title: string; scheduled_at: string; platform: string; status: string; content_preview: string }[]>("/seo/blog/scheduled"),
+
+  /** Batch-schedule calendar topics — creates or promotes draft→scheduled with a publish date. */
+  scheduleCalendarPosts: (items: { title: string; keywords: string[]; scheduled_at: string; topic?: string; week?: number; day?: string }[]) =>
+    api.post<{ ok: boolean; scheduled: number; results: { post_id: string; title: string; action: string }[] }>("/seo/blog/schedule-batch", { items }),
 
   /** Scrape a website (homepage + sub-pages) and use LLM to write rich content for all Settings fields. */
   scrapeWebsite: (url: string) =>
@@ -2292,6 +2623,87 @@ export const seoApi = {
         delivery_info?: string;
       };
     }>("/seo/scrape-website", { url }),
+
+  // SERP Rankings
+  getRankings: (keyword?: string, domain?: string, limit = 200) =>
+    api.get<{ rankings: SerpRankingEntry[] }>(
+      `/seo/serp/rankings?limit=${limit}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ""}${domain ? `&domain=${encodeURIComponent(domain)}` : ""}`
+    ),
+  getRankingTrends: (keyword: string, domain: string, days = 30) =>
+    api.get<{ trends: { date: string; position: number | null; checks: number }[]; keyword: string; domain: string }>(
+      `/seo/serp/rankings/trends?keyword=${encodeURIComponent(keyword)}&domain=${encodeURIComponent(domain)}&days=${days}`
+    ),
+  checkRanking: (keyword: string, domain: string, country?: string, article_url?: string, article_title?: string) =>
+    api.post<{ keyword: string; domain: string; position: number | null; article_url?: string; article_title?: string; country: string; checked_at: string; top_results: { pos: number; domain: string; url: string }[]; total_results: number }>(
+      "/seo/serp/check", { keyword, domain, country, article_url, article_title }
+    ),
+  bulkCheckRankings: (keywords: Partial<SeoKeyword>[], domain: string, country?: string) =>
+    api.post<{ results: { keyword: string; position: number | null; checked_at: string }[]; domain: string; checked: number; failed: number }>(
+      "/seo/serp/bulk-check", { keywords, domain, country }
+    ),
+  refreshAllRankings: (country?: string) =>
+    api.post<{ checked: number; failed: number; results: { keyword: string; position: number | null; checked_at: string }[] }>(
+      "/seo/serp/refresh-all", { country }
+    ),
+  backfillVolumes: () =>
+    api.post<{ updated: number }>("/seo/serp/backfill-volumes", {}),
+  deleteRanking: (keyword: string, domain: string) =>
+    api.delete<{ deleted: number }>(`/seo/serp/rankings?keyword=${encodeURIComponent(keyword)}&domain=${encodeURIComponent(domain)}`),
+
+  // AI Visibility Audit History
+  getAiAudits: (limit = 30) =>
+    api.get<{ audits: AiVisibilityAudit[] }>(`/seo/ai-audits?limit=${limit}`),
+
+  // AI-Powered Analysis
+  getGscAiAnalysis: (site_url: string, days = 28) =>
+    api.get<{
+      analysis: {
+        overall_health: "good" | "warning" | "critical";
+        health_reason: string;
+        summary: string;
+        wins: { title: string; detail: string; metric: string }[];
+        concerns: { title: string; detail: string; action: string }[];
+        opportunities: { title: string; action: string; estimated_impact: "low" | "medium" | "high" }[];
+        priority_actions: string[];
+      };
+      raw_data: { total_clicks: number; total_impressions: number; avg_ctr: number; avg_position: number };
+      period_days: number;
+    }>(`/seo/analytics/search-console/ai-analysis?site_url=${encodeURIComponent(site_url)}&days=${days}`),
+
+  getRankAiDiagnosis: () =>
+    api.get<{
+      movers: { keyword: string; current_position: number; previous_position: number; change: number; direction: string; last_checked: string }[];
+      stable_count: number;
+      improved_count: number;
+      declined_count: number;
+      diagnosis: {
+        overall_trend: string;
+        overall_summary: string;
+        diagnoses: { keyword: string; direction: string; change: number; diagnosis: string; action: string }[];
+        top_priority: string;
+      } | null;
+      overall_trend: string;
+      summary?: string;
+    }>("/seo/serp/ai-diagnosis"),
+
+  generateBlogSchema: (payload: { post_id?: string; title?: string; content?: string; keywords?: string[]; url?: string; author?: string }) =>
+    api.post<{ schemas: object[]; script_tags: string; count: number }>("/seo/blog/schema", payload),
+
+  getInternalLinkSuggestions: () =>
+    api.get<{
+      suggestions: {
+        from_post_id: string;
+        from_post_title: string;
+        to_post_id: string;
+        to_post_title: string;
+        anchor_text: string;
+        reason: string;
+        priority: "high" | "medium" | "low";
+        where_to_add: string;
+      }[];
+      summary: string;
+      posts_analyzed: number;
+    }>("/seo/blog/internal-links"),
 };
 
 // ── Zernio Live Ads ───────────────────────────────────────────────────────────
@@ -2522,6 +2934,9 @@ export interface KeywordTrackerRow {
   posts: { title: string; url: string; published_at: string }[];
   created_at: string;
   updated_at: string;
+  position: number | null;
+  position_checked_at: string | null;
+  ranked_domain: string | null;
 }
 
 export const blogApi = {
@@ -2541,7 +2956,7 @@ export const blogApi = {
   activate: (clientId: string) =>
     request<{ status: string }>(`/blog/activate/${clientId}`, { method: "PATCH" }),
   /** Publish a pre-written SEO post directly to the user's WordPress subsite. */
-  publishFromSeo: (body: { title: string; content: string; keywords?: string[]; excerpt?: string }) =>
+  publishFromSeo: (body: { title: string; content: string; keywords?: string[]; excerpt?: string; post_id?: string }) =>
     api.post<{ status: string; post_url: string; post_id: number; blog_url: string }>("/blog/publish-from-seo", body),
   /** Keyword tracker — save a keyword to the tracker table. */
   saveKeywordToTracker: (body: { keyword: string; search_volume?: number; difficulty?: string; intent?: string; content_idea?: string }) =>
@@ -2555,7 +2970,31 @@ export const blogApi = {
   /** Batch-fetch real search volumes from DataForSEO for keywords missing volumes. */
   enrichVolumes: () =>
     api.post<{ ok: boolean; updated: number; checked: number; message?: string }>("/blog/keyword-tracker/enrich-volumes", {}),
+  /** Delete a keyword from the tracker permanently. */
+  deleteKeyword: (keyword: string) =>
+    request<{ ok: boolean; message: string }>(`/blog/keyword-tracker/${encodeURIComponent(keyword)}`, { method: "DELETE" }),
+  /** Regenerate and upload a custom favicon for the user's WordPress subsite. */
+  refreshFavicon: () =>
+    api.post<{ status: string; message: string }>("/blog/refresh-favicon", {}),
 };
+
+export interface SeoCacheToolStat {
+  tool: string;
+  cached: number;
+  hits: number;
+  ttl_days: number;
+}
+
+export interface SeoCacheStats {
+  total_cached: number;
+  valid_cached: number;
+  expired_cached: number;
+  api_calls_saved: number;
+  oldest_entry: string | null;
+  newest_entry: string | null;
+  by_tool: SeoCacheToolStat[];
+  error?: string;
+}
 
 export const seoAgentApi = {
   chat: (message: string, conversation_id?: string, history?: { role: string; content: string }[]) =>
@@ -2581,4 +3020,11 @@ export const seoAgentApi = {
       agent_prompt,
       conversation_id: conversation_id ?? null,
     }),
+
+  cacheStats: () => api.get<SeoCacheStats>("/seo-agent/cache/stats"),
+
+  clearCache: (tool = "") =>
+    api.delete<{ ok: boolean; deleted: number }>(
+      `/seo-agent/cache${tool ? `?tool=${encodeURIComponent(tool)}` : ""}`
+    ),
 };

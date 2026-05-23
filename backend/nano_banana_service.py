@@ -47,7 +47,7 @@ _MAX_RETRIES_PER_KEY = 2  # attempts per key before moving to the next
 
 # Model IDs on OpenRouter — image generation (modalities: ["image","text"])
 NANO_BANANA_2   = "google/gemini-3.1-flash-image-preview"   # Nano Banana 2 — fast
-NANO_BANANA_PRO = "google/gemini-3-pro-image-preview"        # Nano Banana Pro — highest quality
+NANO_BANANA_PRO = "google/gemini-3.1-flash-image-preview"     # Switched to flash — same as NANO_BANANA_2
 
 # Aspect ratio → OpenRouter image_config value
 _ASPECT_MAP: Dict[str, str] = {
@@ -238,6 +238,7 @@ async def generate_creative_image(
     quality: str = "fast",
     logo_url: Optional[str] = None,
     brand_color: str = "",
+    brand_color_mode: str = "dominant",
 ) -> Dict[str, Any]:
     """Call Nano Banana via OpenRouter to generate a creative image.
     Auto-retries across all available OPENROUTER_KEY_* env vars."""
@@ -249,10 +250,21 @@ async def generate_creative_image(
     aspect_ratio = _ASPECT_MAP.get(format, "1:1")
 
     # Build multimodal content — include logo and brand color as references
-    color_note = (
-        f"\n\nBRAND COLOUR MANDATE: {brand_color} — use this as the dominant accent colour: "
-        f"headline text, CTA button fill, and key graphic shapes. ~30% of canvas area."
-    ) if brand_color else ""
+    mode = (brand_color_mode or "dominant").strip().lower()
+    if brand_color:
+        if mode == "subtle":
+            color_note = (
+                f"\n\nBRAND COLOUR NOTE: {brand_color} — use this only as a subtle accent "
+                f"(thin rules, small highlights). Keep it under ~5% of the canvas area. "
+                f"Do NOT make large geometric shapes, big gradients, or full backgrounds using this colour."
+            )
+        else:
+            color_note = (
+                f"\n\nBRAND COLOUR MANDATE: {brand_color} — use this as the dominant accent colour: "
+                f"headline text, CTA button fill, and key graphic shapes. ~30% of canvas area."
+            )
+    else:
+        color_note = ""
 
     if logo_url:
         try:
@@ -286,6 +298,7 @@ async def generate_creative_image(
         "messages": [{"role": "user", "content": message_content}],
         "modalities": ["image", "text"],
         "image_config": {"aspect_ratio": aspect_ratio},
+        "max_tokens": 1024,
     }
     base_headers = {
         "Content-Type": "application/json",
@@ -400,6 +413,7 @@ async def recreate_design_from_reference(
         "messages": [{"role": "user", "content": message_content}],
         "modalities": ["image", "text"],
         "image_config": {"aspect_ratio": aspect_ratio},
+        "max_tokens": 1024,
     }
     base_headers = {
         "Content-Type": "application/json",

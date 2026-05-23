@@ -2546,6 +2546,46 @@ async def list_shopify_products(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="list_shopify_customers",
+    description=(
+        "Fetch customers from the connected Shopify store. "
+        "Returns total count plus a list of customers with name, email, order count, and lifetime value. "
+        "Use this whenever the user asks how many customers they have or wants customer details. "
+        "Requires Shopify to be connected in Integrations."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "default": 50, "description": "Max customers to return (1-250)"},
+        },
+    },
+)
+async def list_shopify_customers(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import shopify_customers_via_composio_or_proxy
+    limit = min(int(args.get("limit", 50)), 250)
+    try:
+        data = await shopify_customers_via_composio_or_proxy(ctx.business_id, limit=limit)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    customers = data.get("customers", [])
+    out = []
+    for c in customers:
+        first = c.get("first_name") or ""
+        last  = c.get("last_name") or ""
+        out.append({
+            "id":           str(c.get("id", "")),
+            "name":         f"{first} {last}".strip() or c.get("email", "Unknown"),
+            "email":        c.get("email"),
+            "phone":        c.get("phone"),
+            "orders_count": c.get("orders_count", 0),
+            "total_spent":  c.get("total_spent", "0.00"),
+            "tags":         c.get("tags"),
+            "created_at":   c.get("created_at"),
+        })
+    return {"count": len(out), "customers": out}
+
+
+@tool(
     name="get_shopify_analytics",
     description=(
         "Get sales analytics from the connected Shopify store: total revenue, order count, "
@@ -3050,6 +3090,752 @@ async def shopify_adjust_inventory(ctx: ToolContext, args: Dict[str, Any]):
             "location_id":       location_id,
             "new_quantity":      level.get("available"),
         }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_refund_order",
+    description=(
+        "Issue a full or partial refund on a Shopify order. "
+        "Requires Shopify to be connected. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["order_id"],
+        "properties": {
+            "order_id":   {"type": "string",  "description": "Shopify order ID (numeric string)"},
+            "full":       {"type": "boolean", "default": True,  "description": "True = full refund, False = partial"},
+            "amount":     {"type": "number",  "description": "Partial refund amount (only used when full=false)"},
+            "reason":     {"type": "string",  "default": "customer", "description": "Reason: customer | inventory | fraud | declined | other"},
+            "notify":     {"type": "boolean", "default": True,  "description": "Notify customer by email"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_refund_order(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    order_id = str(args["order_id"])
+    try:
+        # Fetch order to get transactions
+        order_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                       f"/admin/api/2024-01/orders/{order_id}.json")
+        order = order_data.get("order", {})
+        transactions = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                         f"/admin/api/2024-01/orders/{order_id}/transactions.json")
+        txns = transactions.get("transactions", [])
+        parent_txn = next((t for t in txns if t.get("kind") in ("sale", "capture") and t.get("status") == "success"), None)
+        if not parent_txn:
+            return {"error": "No successful payment transaction found to refund"}
+
+        total = float(order.get("total_price", 0))
+        amount = total if args.get("full", True) else float(args.get("amount") or total)
+        currency = order.get("currency", "USD")
+
+        payload = {
+            "refund": {
+                "notify": args.get("notify", True),
+                "note": args.get("reason", "customer"),
+                "transactions": [{
+                    "parent_id": parent_txn["id"],
+                    "amount": str(round(amount, 2)),
+                    "kind": "refund",
+                    "gateway": parent_txn.get("gateway", ""),
+                }],
+            }
+        }
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   f"/admin/api/2024-01/orders/{order_id}/refunds.json",
+                                   json=payload)
+        refund = result.get("refund", {})
+        return {
+            "success": True,
+            "refund_id": refund.get("id"),
+            "amount": amount,
+            "currency": currency,
+            "order_id": order_id,
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_delete_product",
+    description=(
+        "Permanently delete one or more products from the connected Shopify store. "
+        "Pass a single product_id or a list of product_ids. "
+        "Use list_shopify_products first to find the IDs. "
+        "Always confirm with the user before deleting. This is a destructive, irreversible action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "product_id":  {"type": "string",  "description": "Single Shopify product ID to delete"},
+            "product_ids": {"type": "array", "items": {"type": "string"}, "description": "List of Shopify product IDs to bulk delete"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_delete_product(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    ids: List[str] = args.get("product_ids") or ([args["product_id"]] if args.get("product_id") else [])
+    if not ids:
+        return {"error": "product_id or product_ids required"}
+    deleted, failed = [], []
+    for pid in ids:
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                              f"/admin/api/2024-01/products/{pid}.json")
+            deleted.append(pid)
+        except RuntimeError as e:
+            failed.append({"id": pid, "error": str(e)})
+    return {
+        "success": len(failed) == 0,
+        "deleted_count": len(deleted),
+        "deleted_ids": deleted,
+        "failed": failed,
+    }
+
+
+@tool(
+    name="shopify_update_product",
+    description=(
+        "Edit an existing Shopify product — update its title, description, tags, vendor, "
+        "product type, or status (active/draft/archived). "
+        "Use list_shopify_products first to get the product_id. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {
+            "product_id":    {"type": "string", "description": "Shopify product ID (numeric string)"},
+            "title":         {"type": "string", "description": "New product title"},
+            "description":   {"type": "string", "description": "New product description (plain text or HTML)"},
+            "tags":          {"type": "string", "description": "Comma-separated tags (replaces existing tags)"},
+            "vendor":        {"type": "string", "description": "Brand / supplier name"},
+            "product_type":  {"type": "string", "description": "Product category / type"},
+            "status":        {"type": "string", "description": "active | draft | archived"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_product(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    product_id = str(args["product_id"])
+    update: Dict[str, Any] = {"id": product_id}
+    if args.get("title"):         update["title"]        = args["title"]
+    if args.get("description"):   update["body_html"]    = f"<p>{args['description']}</p>"
+    if args.get("tags") is not None: update["tags"]      = args["tags"]
+    if args.get("vendor"):        update["vendor"]       = args["vendor"]
+    if args.get("product_type"):  update["product_type"] = args["product_type"]
+    if args.get("status"):        update["status"]       = args["status"]
+    if len(update) == 1:
+        return {"error": "At least one field to update is required"}
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/products/{product_id}.json",
+                                   json={"product": update})
+        p = result.get("product", {})
+        return {"success": True, "product_id": p.get("id"), "title": p.get("title"), "status": p.get("status")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_create_collection",
+    description=(
+        "Create a new custom collection (category) in the Shopify store. "
+        "Collections organise products so customers can browse by category. "
+        "Returns the new collection ID which can be used with shopify_add_to_collection. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+            "title":       {"type": "string", "description": "Collection name, e.g. 'Men\\'s Streetwear'"},
+            "description": {"type": "string", "description": "Short description shown on the collection page"},
+            "published":   {"type": "boolean", "description": "Whether to publish immediately (default true)"},
+            "sort_order":  {"type": "string",  "description": "best-selling | alpha-asc | alpha-desc | price-asc | price-desc | created-desc (default: best-selling)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_create_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    payload = {
+        "custom_collection": {
+            "title":      args["title"],
+            "body_html":  f"<p>{args['description']}</p>" if args.get("description") else "",
+            "published":  args.get("published", True),
+            "sort_order": args.get("sort_order", "best-selling"),
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/custom_collections.json", json=payload)
+        c = result.get("custom_collection", {})
+        return {"success": True, "collection_id": c.get("id"), "title": c.get("title"), "handle": c.get("handle")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_add_to_collection",
+    description=(
+        "Add one or more products to a Shopify collection. "
+        "Use shopify_create_collection to get a collection_id first, "
+        "and list_shopify_products to get product_ids. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["collection_id", "product_ids"],
+        "properties": {
+            "collection_id": {"type": "string", "description": "Shopify custom collection ID"},
+            "product_ids":   {"type": "array", "items": {"type": "string"}, "description": "List of Shopify product IDs to add"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_add_to_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    collection_id = str(args["collection_id"])
+    product_ids   = args["product_ids"]
+    added, failed = [], []
+    for pid in product_ids:
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "POST",
+                              "/admin/api/2024-01/collects.json",
+                              json={"collect": {"collection_id": collection_id, "product_id": pid}})
+            added.append(pid)
+        except RuntimeError as e:
+            failed.append({"id": pid, "error": str(e)})
+    return {"success": len(failed) == 0, "added_count": len(added), "added": added, "failed": failed}
+
+
+@tool(
+    name="shopify_delete_collection",
+    description=(
+        "Permanently delete one or more collections (categories) from the Shopify store. "
+        "Works for both custom collections and smart collections. "
+        "Use shopify_list_collections first to get collection IDs. "
+        "Always confirm with the user before deleting. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "collection_id":  {"type": "string", "description": "Single collection ID to delete"},
+            "collection_ids": {"type": "array", "items": {"type": "string"}, "description": "List of collection IDs to bulk delete"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_delete_collection(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    ids: List[str] = args.get("collection_ids") or ([args["collection_id"]] if args.get("collection_id") else [])
+    if not ids:
+        return {"error": "collection_id or collection_ids required"}
+    deleted, failed = [], []
+    for cid in ids:
+        # Try custom collection first, fall back to smart collection
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                              f"/admin/api/2024-01/custom_collections/{cid}.json")
+            deleted.append(cid)
+            continue
+        except RuntimeError:
+            pass
+        try:
+            await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                              f"/admin/api/2024-01/smart_collections/{cid}.json")
+            deleted.append(cid)
+        except RuntimeError as e:
+            failed.append({"id": cid, "error": str(e)})
+    return {
+        "success": len(failed) == 0,
+        "deleted_count": len(deleted),
+        "deleted_ids": deleted,
+        "failed": failed,
+    }
+
+
+@tool(
+    name="shopify_list_collections",
+    description=(
+        "List all custom collections (categories) in the Shopify store. "
+        "Returns collection IDs, titles, and product counts. "
+        "Use this before adding products to collections or to show the user their store structure."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def shopify_list_collections(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    try:
+        custom_result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                          "/admin/api/2024-01/custom_collections.json",
+                                          params={"limit": "250", "fields": "id,title,handle,products_count,published_at"})
+        custom = custom_result.get("custom_collections", [])
+    except RuntimeError:
+        custom = []
+    try:
+        smart_result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                         "/admin/api/2024-01/smart_collections.json",
+                                         params={"limit": "250", "fields": "id,title,handle,products_count,published_at"})
+        smart = smart_result.get("smart_collections", [])
+    except RuntimeError:
+        smart = []
+    all_collections = (
+        [{"id": str(c.get("id")), "title": c.get("title"), "handle": c.get("handle"),
+          "type": "custom", "products_count": c.get("products_count", 0), "published": bool(c.get("published_at"))}
+         for c in custom]
+        + [{"id": str(c.get("id")), "title": c.get("title"), "handle": c.get("handle"),
+            "type": "smart", "products_count": c.get("products_count", 0), "published": bool(c.get("published_at"))}
+           for c in smart]
+    )
+    return {"count": len(all_collections), "collections": all_collections}
+
+
+@tool(
+    name="shopify_bulk_update_prices",
+    description=(
+        "Bulk update prices on multiple Shopify product variants at once. "
+        "Can apply a fixed multiplier (e.g. 2.5x cost price for 60% margin), "
+        "a percentage increase/decrease, or set an explicit price on selected products. "
+        "Use list_shopify_products to get variant IDs first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["variant_ids"],
+        "properties": {
+            "variant_ids":    {"type": "array", "items": {"type": "string"}, "description": "List of Shopify variant IDs to update"},
+            "multiplier":     {"type": "number", "description": "Multiply current price by this factor, e.g. 1.2 = 20% increase, 0.9 = 10% decrease"},
+            "fixed_price":    {"type": "string", "description": "Set all variants to this exact price, e.g. '29.99'"},
+            "compare_at_multiplier": {"type": "number", "description": "Set compare_at_price as this multiple of the new price, e.g. 1.3 for a 30% 'was' price"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_bulk_update_prices(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    variant_ids = args["variant_ids"]
+    multiplier  = args.get("multiplier")
+    fixed_price = args.get("fixed_price")
+    cap_multi   = args.get("compare_at_multiplier")
+
+    if not multiplier and not fixed_price:
+        return {"error": "Either multiplier or fixed_price is required"}
+
+    updated, failed = [], []
+    for vid in variant_ids:
+        try:
+            if multiplier and not fixed_price:
+                # Fetch current price first
+                vdata = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                          f"/admin/api/2024-01/variants/{vid}.json")
+                current = float(vdata.get("variant", {}).get("price", 0))
+                new_price = round(current * multiplier, 2)
+            else:
+                new_price = float(fixed_price)  # type: ignore[arg-type]
+
+            payload: Dict[str, Any] = {"id": vid, "price": str(new_price)}
+            if cap_multi:
+                payload["compare_at_price"] = str(round(new_price * cap_multi, 2))
+
+            await nango_proxy(ctx.business_id, "shopify", "PUT",
+                              f"/admin/api/2024-01/variants/{vid}.json",
+                              json={"variant": payload})
+            updated.append({"variant_id": vid, "new_price": new_price})
+        except RuntimeError as e:
+            failed.append({"variant_id": vid, "error": str(e)})
+
+    return {
+        "success": len(failed) == 0,
+        "updated_count": len(updated),
+        "updated": updated,
+        "failed": failed,
+    }
+
+
+@tool(
+    name="shopify_update_price",
+    description=(
+        "Update the price (and optional compare-at price) of a Shopify product variant. "
+        "Requires Shopify to be connected. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["variant_id", "price"],
+        "properties": {
+            "variant_id":       {"type": "string", "description": "Shopify variant ID (numeric string)"},
+            "price":            {"type": "string", "description": "New price e.g. '29.99'"},
+            "compare_at_price": {"type": "string", "description": "Optional original/crossed-out price e.g. '49.99'"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_price(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    variant_id = str(args["variant_id"])
+    payload: Dict[str, Any] = {"variant": {"id": variant_id, "price": str(args["price"])}}
+    if args.get("compare_at_price"):
+        payload["variant"]["compare_at_price"] = str(args["compare_at_price"])
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/variants/{variant_id}.json",
+                                   json=payload)
+        v = result.get("variant", {})
+        return {
+            "success": True,
+            "variant_id": variant_id,
+            "price": v.get("price"),
+            "compare_at_price": v.get("compare_at_price"),
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_get_policies",
+    description=(
+        "Read the current store policies from the connected Shopify store: "
+        "refund policy, privacy policy, terms of service, shipping policy, and legal notice. "
+        "Use this before setting policies to see what's already there. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def shopify_get_policies(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    query = """
+    {
+      shop {
+        refundPolicy { title body url }
+        privacyPolicy { title body url }
+        termsOfService { title body url }
+        shippingPolicy { title body url }
+        legalNotice { title body url }
+      }
+    }
+    """
+    try:
+        result = await nango_proxy(
+            ctx.business_id, "shopify", "POST",
+            "/admin/api/2024-01/graphql.json",
+            json={"query": query},
+        )
+        shop = (result.get("data") or {}).get("shop", {})
+        policies = {}
+        for key in ("refundPolicy", "privacyPolicy", "termsOfService", "shippingPolicy", "legalNotice"):
+            p = shop.get(key)
+            if p:
+                policies[key] = {
+                    "title": p.get("title"),
+                    "url":   p.get("url"),
+                    "set":   bool(p.get("body")),
+                    "preview": (p.get("body") or "")[:200] + ("…" if len(p.get("body") or "") > 200 else ""),
+                }
+            else:
+                policies[key] = {"set": False}
+        return {"policies": policies}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_set_policy",
+    description=(
+        "Set or update one or more Shopify store policies (refund, privacy, terms of service, shipping, legal notice) "
+        "using the Shopify GraphQL Admin API. "
+        "Pass the policy type and the full policy body text. "
+        "The AI can generate appropriate policy content based on the store niche and location. "
+        "Always show the generated policy text to the user before setting it. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "refund_policy":    {"type": "string", "description": "Full text for the refund/return policy"},
+            "privacy_policy":   {"type": "string", "description": "Full text for the privacy policy"},
+            "terms_of_service": {"type": "string", "description": "Full text for the terms of service"},
+            "shipping_policy":  {"type": "string", "description": "Full text for the shipping policy"},
+            "legal_notice":     {"type": "string", "description": "Full text for the legal notice / imprint"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_set_policy(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+
+    # Build mutation inputs only for provided policies
+    inputs: Dict[str, str] = {}
+    mapping = {
+        "refund_policy":    "refundPolicy",
+        "privacy_policy":   "privacyPolicy",
+        "terms_of_service": "termsOfService",
+        "shipping_policy":  "shippingPolicy",
+        "legal_notice":     "legalNotice",
+    }
+    for arg_key, gql_key in mapping.items():
+        if args.get(arg_key):
+            inputs[gql_key] = args[arg_key]
+
+    if not inputs:
+        return {"error": "At least one policy field is required"}
+
+    # Build dynamic GraphQL mutation
+    mutation_args = ", ".join(f"${k}: ShopPolicyInput" for k in inputs)
+    call_args     = ", ".join(f"{k}: ${k}" for k in inputs)
+    mutation = f"""
+    mutation SetPolicies({mutation_args}) {{
+      shopPoliciesUpdate({call_args}) {{
+        shopPolicies {{ type title url }}
+        userErrors {{ field message }}
+      }}
+    }}
+    """
+    variables = {k: {"body": v} for k, v in inputs.items()}
+
+    try:
+        result = await nango_proxy(
+            ctx.business_id, "shopify", "POST",
+            "/admin/api/2024-01/graphql.json",
+            json={"query": mutation, "variables": variables},
+        )
+        data = (result.get("data") or {}).get("shopPoliciesUpdate", {})
+        errors = data.get("userErrors", [])
+        if errors:
+            return {"error": errors[0].get("message", "Unknown error"), "all_errors": errors}
+        updated = [p.get("type") for p in data.get("shopPolicies", [])]
+        return {
+            "success": True,
+            "updated_policies": updated,
+            "count": len(updated),
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_add_product_images",
+    description=(
+        "Add or replace images on an existing Shopify product. "
+        "Pass a list of public image URLs to attach. "
+        "Use list_shopify_products to get the product_id first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id", "image_urls"],
+        "properties": {
+            "product_id":  {"type": "string", "description": "Shopify product ID"},
+            "image_urls":  {"type": "array", "items": {"type": "string"}, "description": "List of public image URLs to attach"},
+            "replace_all": {"type": "boolean", "description": "True = delete existing images first; False = append (default False)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_add_product_images(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    pid   = str(args["product_id"])
+    urls  = args["image_urls"]
+    added, failed = [], []
+
+    if args.get("replace_all"):
+        try:
+            existing = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                         f"/admin/api/2024-01/products/{pid}/images.json")
+            for img in existing.get("images", []):
+                await nango_proxy(ctx.business_id, "shopify", "DELETE",
+                                  f"/admin/api/2024-01/products/{pid}/images/{img['id']}.json")
+        except RuntimeError:
+            pass
+
+    for url in urls:
+        try:
+            r = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                  f"/admin/api/2024-01/products/{pid}/images.json",
+                                  json={"image": {"src": url}})
+            added.append(r.get("image", {}).get("id"))
+        except RuntimeError as e:
+            failed.append({"url": url, "error": str(e)})
+
+    return {"success": len(failed) == 0, "added_count": len(added), "added_image_ids": added, "failed": failed}
+
+
+@tool(
+    name="shopify_update_customer",
+    description=(
+        "Update a Shopify customer record — edit their first/last name, email, phone, "
+        "note, or tags. Useful for bulk customer cleanup or segmentation. "
+        "Use list_shopify_customers to get customer_ids first. "
+        "Requires Shopify to be connected. Destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["customer_id"],
+        "properties": {
+            "customer_id": {"type": "string", "description": "Shopify customer ID"},
+            "first_name":  {"type": "string"},
+            "last_name":   {"type": "string"},
+            "email":       {"type": "string"},
+            "phone":       {"type": "string"},
+            "note":        {"type": "string", "description": "Internal note on the customer profile"},
+            "tags":        {"type": "string", "description": "Comma-separated tags (replaces existing)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_update_customer(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    cid = str(args["customer_id"])
+    update: Dict[str, Any] = {"id": cid}
+    for field in ("first_name", "last_name", "email", "phone", "note", "tags"):
+        if args.get(field) is not None:
+            update[field] = args[field]
+    if len(update) == 1:
+        return {"error": "At least one field to update is required"}
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/customers/{cid}.json",
+                                   json={"customer": update})
+        c = result.get("customer", {})
+        return {"success": True, "customer_id": c.get("id"), "email": c.get("email"), "tags": c.get("tags")}
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_set_seo_metafields",
+    description=(
+        "Set SEO metafields (title tag and meta description) on a Shopify product "
+        "to improve search engine ranking. "
+        "Use list_shopify_products to get product_ids. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["product_id"],
+        "properties": {
+            "product_id":        {"type": "string", "description": "Shopify product ID"},
+            "seo_title":         {"type": "string", "description": "SEO title tag (50-60 characters ideal)"},
+            "seo_description":   {"type": "string", "description": "Meta description (120-160 characters ideal)"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_set_seo_metafields(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    pid = str(args["product_id"])
+    metafields = []
+    if args.get("seo_title"):
+        metafields.append({"namespace": "global", "key": "title_tag",       "value": args["seo_title"],       "type": "single_line_text_field"})
+    if args.get("seo_description"):
+        metafields.append({"namespace": "global", "key": "description_tag", "value": args["seo_description"], "type": "single_line_text_field"})
+    if not metafields:
+        return {"error": "seo_title or seo_description required"}
+    results = []
+    for mf in metafields:
+        try:
+            r = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                  f"/admin/api/2024-01/products/{pid}/metafields.json",
+                                  json={"metafield": mf})
+            results.append({"key": mf["key"], "id": r.get("metafield", {}).get("id")})
+        except RuntimeError as e:
+            results.append({"key": mf["key"], "error": str(e)})
+    return {"success": all("error" not in r for r in results), "product_id": pid, "metafields": results}
+
+
+@tool(
+    name="shopify_check_low_stock",
+    description=(
+        "Check Shopify inventory levels and return products/variants that are "
+        "below a specified stock threshold. "
+        "Use this for automated restocking alerts or to identify what needs topping up. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "threshold": {"type": "integer", "description": "Alert when quantity is at or below this number (default: 5)"},
+            "limit":     {"type": "integer", "description": "Max products to scan (default: 250)"},
+        },
+    },
+)
+async def shopify_check_low_stock(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    threshold = int(args.get("threshold") or 5)
+    limit     = min(int(args.get("limit") or 250), 250)
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                   "/admin/api/2024-01/products.json",
+                                   params={"limit": str(limit), "status": "active",
+                                           "fields": "id,title,variants"})
+        products  = result.get("products", [])
+        low_stock = []
+        for p in products:
+            for v in p.get("variants", []):
+                qty = v.get("inventory_quantity")
+                if qty is not None and qty <= threshold:
+                    low_stock.append({
+                        "product_id":   str(p["id"]),
+                        "product_title": p["title"],
+                        "variant_id":   str(v["id"]),
+                        "variant_title": v.get("title"),
+                        "quantity":     qty,
+                        "sku":          v.get("sku", ""),
+                    })
+        low_stock.sort(key=lambda x: x["quantity"])
+        return {
+            "threshold":  threshold,
+            "alert_count": len(low_stock),
+            "low_stock":  low_stock,
+            "message":    f"{len(low_stock)} variant(s) at or below {threshold} units" if low_stock else "All products well-stocked",
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="shopify_tag_customer",
+    description=(
+        "Add or replace tags on a Shopify customer. Tags help segment customers for discounts and campaigns. "
+        "Requires Shopify to be connected. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["customer_id", "tags"],
+        "properties": {
+            "customer_id": {"type": "string", "description": "Shopify customer ID (numeric string)"},
+            "tags":        {"type": "string", "description": "Comma-separated tags e.g. 'vip, repeat-buyer, wholesale'"},
+            "merge":       {"type": "boolean", "default": True, "description": "True = add to existing tags, False = replace all tags"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_tag_customer(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    customer_id = str(args["customer_id"])
+    new_tags = str(args["tags"])
+    try:
+        if args.get("merge", True):
+            # Fetch existing tags first
+            cust_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                          f"/admin/api/2024-01/customers/{customer_id}.json")
+            existing = cust_data.get("customer", {}).get("tags", "")
+            existing_set = {t.strip() for t in existing.split(",") if t.strip()}
+            new_set = {t.strip() for t in new_tags.split(",") if t.strip()}
+            merged = ", ".join(sorted(existing_set | new_set))
+            final_tags = merged
+        else:
+            final_tags = new_tags
+        result = await nango_proxy(ctx.business_id, "shopify", "PUT",
+                                   f"/admin/api/2024-01/customers/{customer_id}.json",
+                                   json={"customer": {"id": customer_id, "tags": final_tags}})
+        c = result.get("customer", {})
+        return {"success": True, "customer_id": customer_id, "tags": c.get("tags")}
     except RuntimeError as e:
         return {"error": str(e)}
 
@@ -4606,16 +5392,213 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="check_presentation_requirements",
+    description=(
+        "STEP 0 of the presentation loop — verify you have every fact needed BEFORE building the plan. "
+        "Call as soon as deck_purpose is known — do NOT ask the user for a topic first. "
+        "The tool auto-loads the business name and description from CRM and uses that as the topic. "
+        "Only ask the user for things the CRM and web research cannot answer (e.g. funding ask). "
+        "Auto-loads CRM data AND web-searches for topic- and deck-type-specific context. "
+        "If ready=false, reply using chat_reply from the tool — do NOT paste questions in chat. "
+        "Researched facts appear in the checklist card under 'Researched for you'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "deck_purpose": {
+                "type": "string",
+                "enum": ["investor_pitch", "sales", "internal", "training", "other"],
+                "description": "Deck type from the user's purpose answer.",
+            },
+            "topic": {
+                "type": "string",
+                "description": "Main subject — leave blank to auto-resolve from CRM business name.",
+            },
+            "audience": {
+                "type": "string",
+                "description": "Who the deck is for.",
+            },
+            "user_context": {
+                "type": "object",
+                "description": (
+                    "Facts the user already provided in chat, keyed by requirement id "
+                    "(e.g. funding_ask, market_size, problem_statement, pricing_offer). "
+                    "Merge new answers here after each user reply."
+                ),
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["deck_purpose"],
+    },
+)
+async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]):
+    from .presentation_plan import (
+        CHECKLIST_VERSION,
+        RESEARCHABLE_KEYS,
+        _PURPOSE_REQUIRED_KEYS,
+        _ctx_val,
+        _resolve_deck_purpose,
+        assess_presentation_requirements,
+        auto_research_requirements,
+        build_requirements_checklist,
+        build_agent_requirements_note,
+        build_requirements_chat_reply,
+        finalize_presentation_requirements_assessment,
+        researchable_keys_for_purpose,
+        resolve_presentation_topic,
+        seed_user_context_from_crm,
+        strip_researchable_checklist_items,
+    )
+
+    deck_purpose = (args.get("deck_purpose") or "").strip()
+    topic = (args.get("topic") or "Presentation").strip()
+    audience = (args.get("audience") or "").strip()
+    user_context = dict(args.get("user_context") or {})
+
+    owner: Dict[str, Any] = {}
+    analytics: Dict[str, Any] = {}
+    products: List[Dict[str, Any]] = []
+    team: List[Dict[str, Any]] = []
+
+    try:
+        owner = await get_owner_info(ctx, {}) or {}
+        if owner.get("error"):
+            owner = {}
+    except Exception:
+        logger.exception("[check_presentation_requirements] get_owner_info skipped")
+
+    try:
+        analytics = await get_analytics_summary(ctx, {}) or {}
+        if analytics.get("error"):
+            analytics = {}
+    except Exception:
+        logger.exception("[check_presentation_requirements] get_analytics_summary skipped")
+
+    try:
+        prod_result = await list_products(ctx, {"limit": 20}) or {}
+        products = prod_result.get("products") or []
+    except Exception:
+        logger.exception("[check_presentation_requirements] list_products skipped")
+
+    try:
+        team_result = await list_team(ctx, {}) or {}
+        team = team_result.get("members") or []
+    except Exception:
+        logger.exception("[check_presentation_requirements] list_team skipped")
+
+    purpose = _resolve_deck_purpose(deck_purpose, audience)
+    topic = resolve_presentation_topic(topic, owner)
+    if not (audience or "").strip():
+        if purpose == "investor_pitch":
+            audience = "investors"
+        elif purpose == "sales":
+            audience = "prospective clients"
+        elif purpose == "internal":
+            audience = "internal team"
+        elif purpose == "training":
+            audience = "trainees"
+
+    user_context = seed_user_context_from_crm(
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+    )
+
+    required = _PURPOSE_REQUIRED_KEYS.get(purpose, _PURPOSE_REQUIRED_KEYS["other"])
+    purpose_researchable = researchable_keys_for_purpose(purpose)
+    research_keys_list = [
+        k for k in required
+        if k in purpose_researchable and not _ctx_val(user_context, k)
+    ]
+    researched: Dict[str, str] = {}
+    research_sources: Dict[str, str] = {}
+    if research_keys_list:
+
+        async def _search_fn(query: str) -> Dict[str, Any]:
+            return await web_search(ctx, {"query": query, "max_results": 6})
+
+        researched, research_sources = await auto_research_requirements(
+            deck_purpose=deck_purpose,
+            topic=topic,
+            audience=audience,
+            owner=owner,
+            user_context=user_context,
+            keys=research_keys_list,
+            search_fn=_search_fn,
+        )
+        user_context.update(researched)
+
+    assessment = assess_presentation_requirements(
+        deck_purpose=deck_purpose,
+        topic=topic,
+        audience=audience,
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+        research_keys=set(researched.keys()),
+    )
+    checklist = strip_researchable_checklist_items(
+        build_requirements_checklist(
+            assessment,
+            owner=owner,
+            analytics=analytics,
+            products=products,
+            team=team,
+        )
+    )
+    assessment = finalize_presentation_requirements_assessment(
+        assessment,
+        owner=owner,
+        auto_researched=researched,
+        user_context=user_context,
+        topic=topic,
+        audience=audience,
+        deck_purpose=deck_purpose,
+    )
+    if not assessment.get("ready"):
+        assessment["chat_reply"] = build_requirements_chat_reply(
+            assessment, checklist, researched
+        )
+    assessment["success"] = True
+    assessment["checklist"] = checklist
+    assessment["checklist_ui"] = not assessment.get("ready") and len(checklist) > 0
+    assessment["checklist_version"] = CHECKLIST_VERSION
+    assessment["auto_researched"] = researched
+    assessment["research_sources"] = research_sources
+    assessment["user_context"] = user_context
+    assessment["do_not_ask"] = sorted(purpose_researchable | RESEARCHABLE_KEYS)
+    assessment["agent_reply_hint"] = build_agent_requirements_note(assessment, researched)
+    if not assessment.get("ready"):
+        assessment["chat_reply"] = build_requirements_chat_reply(
+            assessment, checklist, researched
+        )
+    assessment["crm_loaded"] = {
+        "owner": bool(owner),
+        "analytics": bool(analytics),
+        "products_count": len(products),
+        "team_count": len(team),
+    }
+    return assessment
+
+
+@tool(
     name="plan_visual_presentation",
     description=(
-        "STEP 1 of 2 — Plan a visual presentation deck and present the full outline to the user "
-        "for review and approval BEFORE any images are generated. "
-        "This avoids wasting Gemini image credits on a deck the user hasn't approved. "
-        "Call this first whenever a user asks for a presentation, pitch deck, or slideshow. "
-        "It returns a structured slide-by-slide plan showing: slide title, bullet points, "
-        "and the image concept for each slide. "
-        "After showing the plan, ask the user: 'Does this look good, or would you like to change anything?' "
-        "Only call create_visual_presentation once the user explicitly approves."
+        "STEP 1 of the presentation loop — build the slide plan ONLY. "
+        "Call ONLY after check_presentation_requirements returns ready=true "
+        "(or user_context covers every missing field). "
+        "The plan must be client-ready on first pass — use real facts from CRM + user_context. "
+        "Every slide: specific headline, real numbers, 2–3 verb-led bullets, concrete image_prompt. "
+        "Never use placeholders like 'X%', 'TBD', or '[insert]'. "
+        "For the title slide: tagline must be a one-line pitch describing what the company does — NEVER set tagline to the company name. "
+        "Never repeat the same layout twice. Start with layout=title, end with layout=closing. "
+        "The UI renders an interactive plan card — do NOT list slides in chat afterward. "
+        "Do NOT call create_visual_presentation — the user approves on the plan card. "
+        "After this tool returns, reply in 1–2 sentences pointing to the plan card below."
     ),
     parameters={
         "type": "object",
@@ -4628,56 +5611,251 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "Who this deck is for (e.g. 'investors', 'clients', 'internal team').",
             },
+            "deck_purpose": {
+                "type": "string",
+                "enum": ["investor_pitch", "sales", "internal", "training", "other"],
+                "description": "Deck type — pick the closest match so narrative and CTA fit.",
+            },
+            "user_context": {
+                "type": "object",
+                "description": (
+                    "All facts gathered from CRM + user answers (same keys as check_presentation_requirements). "
+                    "Required — planning is blocked if critical fields are still missing."
+                ),
+                "additionalProperties": {"type": "string"},
+            },
             "slides": {
                 "type": "array",
                 "description": (
-                    "The complete planned slide list. Each object must have: "
-                    "title (str), body (list of 3-5 punchy bullet strings — no filler), "
-                    "image_concept (str — vivid 1-sentence description of the background visual), "
-                    "is_title (bool — True only for the first cover slide). "
-                    "Plan 6-10 slides. Start with a cover, end with a strong CTA or summary."
+                    "Complete planned slide list. Plan 8-12 slides. "
+                    "Start with layout='title', end with layout='closing'. "
+                    "Never repeat the same layout twice. "
+                    "Each slide object must include 'title' and 'layout'. "
+                    "Include 'body' (max 4 punchy bullets) as fallback for any layout. "
+                    "For structured layouts also include the matching data field: "
+                    "stat_callout → 'stats' list; icon_grid → 'items' list; "
+                    "flow → 'steps' list; comparison_table → 'columns' + 'features'; "
+                    "timeline → 'milestones' list; two_column → 'left_items' + 'right_items'; "
+                    "title → 'tagline', 'website', 'founder'; "
+                    "closing → 'tagline', 'contact', 'cta'."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
-                        "title":         {"type": "string"},
-                        "body":          {"type": "array", "items": {"type": "string"}},
-                        "image_concept": {"type": "string"},
-                        "is_title":      {"type": "boolean"},
+                        "title":    {"type": "string"},
+                        "layout":   {
+                            "type": "string",
+                            "enum": ["title", "stat_callout", "two_column", "icon_grid",
+                                     "flow", "comparison_table", "timeline", "closing", "content"],
+                            "description": (
+                                "Slide layout type. Use each at most once per deck. "
+                                "title: cover (primary bg). "
+                                "stat_callout: 1-3 large numbers (TAM/SAM/SOM, KPIs, etc.). "
+                                "two_column: bullets left + stats or bullets right. "
+                                "icon_grid: 2x2 or 3x2 icon+label+desc grid. "
+                                "flow: 3-5 numbered horizontal steps. "
+                                "comparison_table: pricing/feature table with alternating rows. "
+                                "timeline: horizontal milestone line. "
+                                "closing: CTA slide (primary bg mirrors title). "
+                                "content: fallback bulleted list (use sparingly)."
+                            ),
+                        },
+                        "body":        {"type": "array", "items": {"type": "string"},
+                                        "description": "Max 3 SHORT punchy bullet strings. Required as fallback for any layout."},
+                        "subtitle":    {"type": "string", "description": "Optional subheader for content slides."},
+                        "tagline":     {"type": "string", "description": "One-line tagline for title/closing."},
+                        "website":     {"type": "string"},
+                        "founder":     {"type": "string"},
+                        "contact":     {"type": "string"},
+                        "cta":         {"type": "string", "description": "e.g. 'Let's talk.' or 'Book a call.'"},
+                        "image_prompt": {"type": "string", "description": "One sentence: real photographic background scene, no glowing/network/tech effects."},
+                        "stats": {
+                            "type": "array",
+                            "description": "For stat_callout. Each: {number, label, sublabel}.",
+                            "items": {"type": "object"},
+                        },
+                        "items": {
+                            "type": "array",
+                            "description": "For icon_grid. Each: {label, description}.",
+                            "items": {"type": "object"},
+                        },
+                        "steps": {
+                            "type": "array",
+                            "description": "For flow. Each: {label, description}.",
+                            "items": {"type": "object"},
+                        },
+                        "columns": {
+                            "type": "array",
+                            "description": "For comparison_table. List of tier/column names.",
+                            "items": {"type": "string"},
+                        },
+                        "features": {
+                            "type": "array",
+                            "description": "For comparison_table. Each: {feature, values[]}.",
+                            "items": {"type": "object"},
+                        },
+                        "milestones": {
+                            "type": "array",
+                            "description": "For timeline. Each: {date, label, description}.",
+                            "items": {"type": "object"},
+                        },
+                        "left_items":  {"type": "array", "items": {"type": "string"},
+                                        "description": "Left column bullets for two_column."},
+                        "right_items": {
+                            "type": "array",
+                            "description": "Right column for two_column: str list OR [{number, label}] for stat callouts.",
+                            "items": {},
+                        },
                     },
-                    "required": ["title", "body", "image_concept"],
+                    "required": ["title", "layout"],
                 },
-            },
-            "style_note": {
-                "type": "string",
-                "description": "Visual tone for all images (e.g. 'dark cinematic', 'bright modern', 'luxury minimal').",
             },
         },
         "required": ["topic", "slides"],
     },
 )
 async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    topic      = (args.get("topic") or "Presentation").strip()
-    audience   = (args.get("audience") or "").strip()
-    slides     = args.get("slides") or []
-    style_note = (args.get("style_note") or "cinematic dark professional").strip()
+    from .presentation_plan import (
+        RESEARCHABLE_KEYS,
+        _PURPOSE_REQUIRED_KEYS,
+        _ctx_val,
+        _resolve_deck_purpose,
+        assess_presentation_requirements,
+        auto_research_requirements,
+        build_agent_requirements_note,
+        finalize_presentation_requirements_assessment,
+        prepare_slide_plan,
+        researchable_keys_for_purpose,
+        resolve_presentation_topic,
+        seed_user_context_from_crm,
+    )
+
+    topic    = (args.get("topic") or "Presentation").strip()
+    audience = (args.get("audience") or "").strip()
+    deck_purpose = (args.get("deck_purpose") or "").strip()
+    user_context = dict(args.get("user_context") or {})
+    slides   = args.get("slides") or []
 
     if not slides:
         return {"error": "slides list is required."}
+
+    owner: Dict[str, Any] = {}
+    analytics: Dict[str, Any] = {}
+    products: List[Dict[str, Any]] = []
+    team: List[Dict[str, Any]] = []
+
+    try:
+        owner = await get_owner_info(ctx, {}) or {}
+        if owner.get("error"):
+            owner = {}
+    except Exception:
+        logger.exception("[plan_visual_presentation] get_owner_info skipped")
+
+    try:
+        analytics = await get_analytics_summary(ctx, {}) or {}
+        if analytics.get("error"):
+            analytics = {}
+    except Exception:
+        logger.exception("[plan_visual_presentation] get_analytics_summary skipped")
+
+    try:
+        prod_result = await list_products(ctx, {"limit": 20}) or {}
+        products = prod_result.get("products") or []
+    except Exception:
+        logger.exception("[plan_visual_presentation] list_products skipped")
+
+    try:
+        team_result = await list_team(ctx, {}) or {}
+        team = team_result.get("members") or []
+    except Exception:
+        logger.exception("[plan_visual_presentation] list_team skipped")
+
+    purpose = _resolve_deck_purpose(deck_purpose, audience)
+    topic = resolve_presentation_topic(topic, owner)
+    user_context = seed_user_context_from_crm(
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+    )
+
+    required = _PURPOSE_REQUIRED_KEYS.get(purpose, _PURPOSE_REQUIRED_KEYS["other"])
+    purpose_researchable = researchable_keys_for_purpose(purpose)
+    research_keys_list = [
+        k for k in required
+        if k in purpose_researchable and not _ctx_val(user_context, k)
+    ]
+    researched: Dict[str, str] = {}
+    if research_keys_list:
+
+        async def _search_fn(query: str) -> Dict[str, Any]:
+            return await web_search(ctx, {"query": query, "max_results": 6})
+
+        researched, _ = await auto_research_requirements(
+            deck_purpose=deck_purpose,
+            topic=topic,
+            audience=audience,
+            owner=owner,
+            user_context=user_context,
+            keys=research_keys_list,
+            search_fn=_search_fn,
+        )
+        user_context.update(researched)
+
+    assessment = assess_presentation_requirements(
+        deck_purpose=deck_purpose,
+        topic=topic,
+        audience=audience,
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        team=team,
+        user_context=user_context,
+        research_keys=set(researched.keys()),
+    )
+    assessment = finalize_presentation_requirements_assessment(
+        assessment,
+        owner=owner,
+        auto_researched=researched,
+        user_context=user_context,
+        topic=topic,
+        audience=audience,
+        deck_purpose=deck_purpose,
+    )
+    if not assessment.get("ready"):
+        return {
+            "success": False,
+            "blocked": True,
+            "error": "Missing required information — ask the user before planning.",
+            "missing": assessment.get("missing") or [],
+            "found": assessment.get("found") or {},
+            "instruction": assessment.get("instruction"),
+            "agent_reply_hint": build_agent_requirements_note(assessment, researched),
+            "do_not_ask": sorted(RESEARCHABLE_KEYS),
+            "user_context": user_context,
+        }
+
+    prepared = prepare_slide_plan(
+        slides, topic=topic, audience=audience, deck_purpose=deck_purpose, owner=owner
+    )
 
     return {
         "success": True,
         "plan_ready": True,
         "topic": topic,
         "audience": audience,
-        "style_note": style_note,
-        "slide_count": len(slides),
-        "slides": slides,
+        "deck_purpose": assessment.get("deck_purpose") or deck_purpose,
+        "slide_count": len(prepared),
+        "slides": prepared,
+        "user_context": user_context,
         "awaiting_approval": True,
         "note": (
-            f"Deck plan ready — {len(slides)} slides. "
-            "Show this plan to the user and ask for approval or changes. "
-            "Do NOT call create_visual_presentation until the user confirms."
+            f"Plan ready — {len(prepared)} slides (enriched with CRM owner info where needed). "
+            "UI plan card is shown to the user. "
+            "Reply in 1–2 sentences only (point them to the card). "
+            "Do NOT list slides in chat. Do NOT call create_visual_presentation — "
+            "the app generates when the user taps Approve on the card."
         ),
     }
 
@@ -4685,13 +5863,11 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="create_visual_presentation",
     description=(
-        "STEP 2 of 2 — Generate the actual visual PowerPoint (.pptx) ONLY after the user has "
-        "approved the plan from plan_visual_presentation. "
-        "Each slide gets a unique Gemini AI-generated full-bleed background image (award-winning, "
-        "cinematic quality), with the slide title and bullets overlaid on a semi-transparent panel. "
-        "Never call this tool speculatively — only after explicit user approval of the slide plan. "
-        "Pass the exact slides array from the approved plan, enriched with a detailed image_prompt "
-        "per slide (expand image_concept into a rich, specific generation prompt)."
+        "Generate the PowerPoint (.pptx) with Gemini AI-designed slides. "
+        "Normally invoked by the app when the user taps Approve on the plan card — "
+        "agents should NOT call this after plan_visual_presentation. "
+        "Each slide is a full AI-rendered image with typography baked in. "
+        "Pass topic + the approved slides array (with image_prompt on each slide)."
     ),
     parameters={
         "type": "object",
@@ -4703,48 +5879,47 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
             "slides": {
                 "type": "array",
                 "description": (
-                    "The APPROVED slide list from plan_visual_presentation, with image_prompt "
-                    "added to each slide (expand the image_concept into a rich, specific, "
-                    "award-winning image generation prompt — include lighting, mood, composition, "
-                    "color palette, no text, no people unless essential). "
-                    "Each slide: title, body (list[str]), image_prompt (str), is_title (bool)."
+                    "The APPROVED slide list from plan_visual_presentation. "
+                    "Pass the full array exactly as planned — each slide must have 'title' and 'layout'. "
+                    "Include any structured data fields (stats, items, steps, columns, features, "
+                    "milestones, left_items, right_items, tagline, cta, contact, etc.) as planned."
                 ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "title":        {"type": "string"},
-                        "body":         {"type": "array", "items": {"type": "string"}},
-                        "image_prompt": {"type": "string"},
-                        "is_title":     {"type": "boolean"},
-                    },
-                    "required": ["title", "image_prompt"],
-                },
+                "items": {"type": "object"},
             },
             "brand_color": {
                 "type": "string",
-                "description": "Hex colour code for the accent bar (e.g. '#4CD137'). From get_owner_info.",
+                "description": "Hex colour (e.g. '#1B4332'). Auto-fetched from get_owner_info if omitted.",
             },
-            "quality": {
-                "type": "string",
-                "enum": ["fast", "pro"],
-                "description": "'pro' for final delivery (recommended), 'fast' for draft preview.",
+            "user_edited": {
+                "type": "boolean",
+                "description": "True when the user edited the plan on the UI card before approving.",
             },
         },
         "required": ["topic", "slides"],
     },
 )
 async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
-    from presentation_service import create_visual_presentation_async
+    from .presentation_plan import finalize_slides_for_generation
 
-    topic       = (args.get("topic") or "Presentation").strip()
-    slides_plan = args.get("slides") or []
-    brand_color = (args.get("brand_color") or "").strip()
-    quality     = (args.get("quality") or "pro").strip()
-
+    topic        = (args.get("topic") or "Presentation").strip()
+    user_edited  = bool(args.get("user_edited"))
+    slides_plan  = finalize_slides_for_generation(
+        args.get("slides") or [],
+        topic=topic,
+        user_edited=user_edited,
+    )
+    brand_color  = (args.get("brand_color") or "").strip()
     if not slides_plan:
         return {"error": "slides list is required — pass the approved plan from plan_visual_presentation."}
-    if len(slides_plan) > 15:
-        slides_plan = slides_plan[:15]
+
+    # Cap bullets to 3 and trim to 80 chars so slides stay uncluttered
+    def _limit(sd: dict) -> dict:
+        sd = dict(sd)
+        body = sd.get("body") or []
+        if body:
+            sd["body"] = [str(b)[:80] for b in body[:3]]
+        return sd
+    slides_plan = [_limit(s) for s in slides_plan]
 
     # Auto-fetch brand color + business name from owner info
     try:
@@ -4752,41 +5927,211 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
         if not brand_color:
             brand_color = owner.get("brand_primary_color") or ""
         business_name = str(owner.get("business_name") or "My Business").strip()
+        logo_url = owner.get("default_logo_url") or None
     except Exception:
         business_name = "My Business"
+        logo_url = None
 
+    from presentation_service import create_visual_presentation_async
     result = await create_visual_presentation_async(
         topic=topic,
         slides_plan=slides_plan,
         business_name=business_name,
         brand_color=brand_color,
-        quality=quality,
+        logo_url=logo_url,
+        quality="pro",
+        ai_designed=True,
+        user_edited=user_edited,
     )
-
     if not result.get("success"):
         return {"error": result.get("error", "Presentation generation failed.")}
-
     return {
         "success": True,
         "url": result["url"],
         "slide_count": result["slide_count"],
-        "images_generated": result["images_generated"],
+        "images_generated": result.get("images_generated", 0),
         "topic": topic,
+        "deck_type": "photo",
         "slides": result.get("slides", slides_plan),
         "image_urls": result.get("image_urls", []),
     }
 
 
 @tool(
+    name="generate_deck",
+    description=(
+        "Full-pipeline deck generator: takes a plain-English brief → runs it through the AI content "
+        "engine (Claude) → builds a polished PPTX using the structured layout pack system. "
+        "Three layout packs available: bold (large stats, high contrast, loose spacing), "
+        "corporate (dense data, tables, tight spacing), story (narrative, imagery-friendly). "
+        "Supports both Western and Africa-first framing — specify region for localized content. "
+        "Use this when the user provides a brief or description and wants a complete deck generated "
+        "in one step WITHOUT manually planning each slide. "
+        "For decks where the user wants to review the plan first, use plan_visual_presentation instead."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "brief": {
+                "type": "string",
+                "description": (
+                    "Plain-English description of the company / product. Include: "
+                    "what it does, who it serves, key problem solved, any known metrics or numbers. "
+                    "More detail = better output. Min 2 sentences."
+                ),
+            },
+            "deck_type": {
+                "type": "string",
+                "enum": ["investor_pitch", "sales", "corporate", "product_launch"],
+                "description": (
+                    "investor_pitch: bold claims, market size, ask slide. "
+                    "sales: client pain, ROI, pricing. "
+                    "corporate: data-heavy, process-focused. "
+                    "product_launch: features, how-it-works, excitement."
+                ),
+            },
+            "pack": {
+                "type": "string",
+                "enum": ["bold", "corporate", "story"],
+                "description": (
+                    "bold: 72pt stats, filled cards, left accent bar — investor pitch default. "
+                    "corporate: 48pt stats, outlined cards, top bar — B2B/enterprise. "
+                    "story: 60pt stats, ghost cards, no bars, light bg — narrative/brand decks."
+                ),
+            },
+            "slides": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Ordered list of slide types to include. "
+                    "Available: title, problem, solution, market, how_it_works, pricing, "
+                    "why_now, team, ask, closing. "
+                    "Default investor deck: ['title','problem','solution','market',"
+                    "'how_it_works','pricing','why_now','team','ask','closing']"
+                ),
+            },
+            "region": {
+                "type": "string",
+                "description": (
+                    "Target market/region for content framing. "
+                    "Use 'africa', 'kenya', 'nigeria', 'ghana', 'east_africa', 'west_africa' "
+                    "for Africa-first framing (mobile money, WhatsApp-native, local platforms). "
+                    "Use 'us', 'europe', or 'global' for Western framing."
+                ),
+            },
+            "extra_context": {
+                "type": "string",
+                "description": "Any extra instructions for the AI content engine (tone, language, specific numbers to use).",
+            },
+            "approved_plan": {
+                "type": "string",
+                "description": (
+                    "The full slide-by-slide outline the user reviewed and approved — paste it verbatim. "
+                    "When provided, the AI content engine will follow it exactly (titles, bullets, structure). "
+                    "ALWAYS pass this when calling generate_deck after plan_visual_presentation approval."
+                ),
+            },
+            "brand_color": {
+                "type": "string",
+                "description": "Primary brand hex color (e.g. '#1B4332'). Auto-fetched from owner info if omitted.",
+            },
+        },
+        "required": ["brief"],
+    },
+)
+async def generate_deck(ctx: ToolContext, args: Dict[str, Any]):
+    import base64, os
+    from deck_content_engine import generate_and_build
+    from image_handler import S3Handler
+
+    brief         = (args.get("brief") or "").strip()
+    deck_type     = (args.get("deck_type") or "investor_pitch").strip()
+    pack          = (args.get("pack") or "bold").strip()
+    region        = (args.get("region") or "global").strip()
+    extra_context = (args.get("extra_context") or "").strip()
+    approved_plan = (args.get("approved_plan") or "").strip()
+    slide_list    = args.get("slides") or None
+    brand_color   = (args.get("brand_color") or "").strip()
+
+    if not brief:
+        return {"error": "brief is required — describe the company or product."}
+
+    # Fetch owner brand info
+    brand_name = "My Business"
+    try:
+        owner = await get_owner_info(ctx, {})
+        if not brand_color:
+            brand_color = owner.get("brand_primary_color") or "#1B4332"
+        brand_name = str(owner.get("business_name") or "My Business").strip()
+        tagline    = str(owner.get("tagline") or "").strip()
+        logo_path  = owner.get("default_logo_url") or ""
+    except Exception:
+        tagline   = ""
+        logo_path = ""
+
+    brand = {
+        "name":        brand_name,
+        "tagline":     tagline,
+        "primary":     brand_color or "#1B4332",
+        "font_header": "Calibri",
+        "font_body":   "Calibri",
+    }
+
+    result = await generate_and_build(
+        brief=brief,
+        brand=brand,
+        deck_type=deck_type,
+        pack=pack,
+        slide_list=slide_list,
+        region=region,
+        extra_context=extra_context,
+        approved_plan=approved_plan,
+        export_pdf=False,
+        export_png=False,
+    )
+
+    if not result.get("success"):
+        return {"error": result.get("error", "Deck generation failed.")}
+
+    # Upload PPTX to S3
+    pptx_path = result.get("pptx_path", "")
+    file_url  = f"/api/media/presentations/{os.path.basename(pptx_path)}"
+    try:
+        from pathlib import Path as _Path
+        _bytes  = _Path(pptx_path).read_bytes()
+        _b64    = base64.b64encode(_bytes).decode()
+        s3_name = os.path.basename(pptx_path)
+        s3_url  = await S3Handler.upload_file(
+            _b64, s3_name,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        if s3_url:
+            file_url = s3_url
+    except Exception as e:
+        import logging as _log
+        _log.warning("[generate_deck] S3 upload: %s", e)
+    finally:
+        try:
+            os.unlink(pptx_path)
+        except Exception:
+            pass
+
+    return {
+        "success":     True,
+        "url":         file_url,
+        "slide_count": result["slide_count"],
+        "pack":        result.get("pack", pack),
+        "deck_type":   deck_type,
+        "region":      region,
+    }
+
+
+@tool(
     name="regenerate_slide",
     description=(
-        "Regenerate a SINGLE slide's background image in an existing visual presentation, "
-        "based on the user's feedback/instruction for that specific slide. "
-        "Only ONE new Gemini image is generated (cheap). The full .pptx is rebuilt with "
-        "that one slide swapped and re-uploaded. "
-        "Use this when the user says things like 'redo slide 3', 'change slide 2 to show a sunset', "
-        "'make slide 4 more dramatic', etc. "
-        "You need the slides array and image_urls array from the previous create_visual_presentation result."
+        "Regenerate ONE slide's AI-designed image based on new instructions, "
+        "then rebuild and re-upload the full .pptx with that slide swapped in. "
+        "Requires slides + image_urls from the previous create_visual_presentation result."
     ),
     parameters={
         "type": "object",
@@ -4811,11 +6156,6 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "description": "The full slides array from the previous create_visual_presentation result.",
                 "items": {"type": "object"},
             },
-            "image_urls": {
-                "type": "array",
-                "description": "The image_urls array from the previous create_visual_presentation result.",
-                "items": {"type": "string"},
-            },
             "topic": {
                 "type": "string",
                 "description": "The presentation topic (from the previous result).",
@@ -4824,63 +6164,77 @@ async def create_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "description": "Hex brand colour (from get_owner_info or previous result).",
             },
-            "quality": {
-                "type": "string",
-                "enum": ["fast", "pro"],
-                "description": "'pro' for final quality (default), 'fast' for quick preview.",
+            "image_urls": {
+                "type": "array",
+                "description": "Image URLs from the previous create_visual_presentation result (one per slide).",
+                "items": {"type": "string"},
             },
         },
-        "required": ["slide_index", "instruction", "slides", "image_urls"],
+        "required": ["slide_index", "instruction", "slides"],
     },
 )
 async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
-    from presentation_service import regenerate_single_slide_async
-
     slide_index  = int(args.get("slide_index", 0))
     instruction  = (args.get("instruction") or "").strip()
     slides_plan  = args.get("slides") or []
     image_urls   = args.get("image_urls") or []
     topic        = (args.get("topic") or "Presentation").strip()
     brand_color  = (args.get("brand_color") or "").strip()
-    quality      = (args.get("quality") or "pro").strip()
 
     if not slides_plan:
         return {"error": "slides array is required — pass it from the previous create_visual_presentation result."}
-    if not image_urls:
-        return {"error": "image_urls array is required — pass it from the previous create_visual_presentation result."}
-    if not instruction:
-        return {"error": "instruction is required — describe what to change on this slide."}
+    if not instruction and not args.get("text_edited"):
+        return {"error": "Describe a visual change and/or pass updated slide text."}
 
+    business_name = "My Business"
+    logo_url = None
     if not brand_color:
         try:
             owner = await get_owner_info(ctx, {})
             brand_color = owner.get("brand_primary_color") or ""
+            business_name = str(owner.get("business_name") or "My Business").strip()
+            logo_url = owner.get("default_logo_url") or None
+        except Exception:
+            pass
+    else:
+        try:
+            owner = await get_owner_info(ctx, {})
+            business_name = str(owner.get("business_name") or "My Business").strip()
+            logo_url = owner.get("default_logo_url") or None
         except Exception:
             pass
 
+    if not image_urls:
+        image_urls = [""] * len(slides_plan)
+
+    from presentation_service import regenerate_single_slide_async
     result = await regenerate_single_slide_async(
         slides_plan=slides_plan,
         image_urls=image_urls,
         slide_index=slide_index,
         instruction=instruction,
         brand_color=brand_color,
-        quality=quality,
+        quality="pro",
         topic=topic,
+        logo_url=logo_url,
+        ai_designed=True,
+        user_edited=bool(args.get("text_edited")),
     )
 
     if not result.get("success"):
-        return {"error": result.get("error", "Slide regeneration failed.")}
+        return {"error": result.get("error", "Presentation regeneration failed.")}
 
     return {
         "success": True,
         "url": result["url"],
         "slide_count": result["slide_count"],
-        "images_generated": result["images_generated"],
-        "regenerated_slide_index": result["regenerated_slide_index"],
-        "regenerated_slide_title": result["regenerated_slide_title"],
-        "topic": topic,
-        "slides": result["slides"],
-        "image_urls": result["image_urls"],
+        "images_generated": result.get("images_generated", 0),
+        "topic": result.get("topic", topic),
+        "regenerated_slide_index": slide_index,
+        "deck_type": "photo",
+        "slides": result.get("slides", slides_plan),
+        "image_urls": result.get("image_urls", image_urls),
+        "ai_designed": True,
     }
 
 
@@ -5735,47 +7089,32 @@ def _detect_fabricated_facts(
     },
 )
 async def _presign_s3_url(url: str) -> str:
-    """Return a publicly accessible URL for a private S3 object.
+    """Return a publicly accessible URL for a private S3 object (stable proxy when possible).
 
-    Strategy (in order):
-    1. If BACKEND_PUBLIC_URL is set, return a proxy URL through our own server
-       (/api/images/s3/<key>) — most reliable, avoids S3 direct-access issues.
-    2. Otherwise generate an S3 presigned URL (GET, 1-hour TTL).
-    3. On any error, return the original URL unchanged (safe degradation).
+    Converts any S3 URL — including expired presigned links — to /api/images/s3 proxy.
     """
-    if not url or "amazonaws.com" not in url:
-        return url
-    # Already presigned — skip
-    if "X-Amz-Signature" in url or "x-amz-signature" in url:
+    if not url:
         return url
     try:
-        import os as _os
         from image_handler import S3Handler
-
+        resolved = S3Handler.resolve_accessible_url(url)
+        if resolved != url:
+            return resolved
+        if "amazonaws.com" not in url:
+            return url
         bucket, key = S3Handler.parse_s3_source_to_bucket_key(url)
+        if not key:
+            return url
         if not bucket:
+            import os as _os
             bucket = (_os.environ.get("AWS_BUCKET_NAME") or "").strip()
-
-        # Prefer backend proxy — external services can call our own endpoint
-        backend_url = (
-            _os.environ.get("BACKEND_PUBLIC_URL")
-            or _os.environ.get("PUBLIC_BASE_URL")
-            or ""
-        ).rstrip("/")
-        if backend_url and key:
-            proxy = f"{backend_url}/api/images/s3/{key}"
-            logger.debug("[_make_accessible_url] Using proxy URL for %s → %s", key[:60], proxy[:80])
-            return proxy
-
-        # Fallback: presign directly against S3
         import asyncio as _asyncio
-        presigned = await _asyncio.get_event_loop().run_in_executor(
+        return await _asyncio.get_event_loop().run_in_executor(
             None,
             lambda: S3Handler.generate_presigned_get_url(bucket, key, expires_in=3600),
         )
-        return presigned
     except Exception as _e:
-        logger.warning("[_make_accessible_url] Could not build accessible URL for %s: %s", url[:80], _e)
+        logger.warning("[_presign_s3_url] Could not build accessible URL for %s: %s", url[:80], _e)
         return url
 
 
@@ -6186,7 +7525,7 @@ async def browse_presentation_themes(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "boolean",
                 "description": (
                     "Set to true ONLY when the user explicitly chooses the premium AI-designed option. "
-                    "Uses the create-pdf-slides endpoint which costs ~100 credits per slide — warn the user before calling. "
+                    "Uses the 2Slides template endpoint. Prefer create_visual_presentation (Gemini-powered, no credits) for new decks. "
                     "Produces a fully AI-designed deck with no template selection required. Default: false."
                 ),
             },
@@ -11577,6 +12916,1373 @@ async def get_keyword_suggestions(ctx: ToolContext, args: Dict[str, Any]) -> Dic
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# CJDROPSHIPPING + MARKET INTELLIGENCE TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+import re as _re_cj
+
+def _cj_parse_price(raw) -> float:
+    """Parse CJ sellPrice safely — handles float, int, or range strings like '5.99 -- 12.99'."""
+    if raw is None:
+        return 0.0
+    s = str(raw).strip()
+    if not s:
+        return 0.0
+    m = _re_cj.match(r"[\d.]+", s)
+    return float(m.group()) if m else 0.0
+
+@tool(
+    name="get_cj_categories",
+    description=(
+        "Get the list of CJdropshipping product categories with their IDs. "
+        "Use this before search_cj_products when the user wants to browse by category "
+        "or when you need a category_id to filter product searches."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_cj_categories(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+    try:
+        data = await cj_get("/product/getCategory", {})
+    except RuntimeError as e:
+        return {"error": str(e)}
+    raw = data if isinstance(data, list) else data.get("list", []) if isinstance(data, dict) else []
+    categories = [
+        {"id": str(c.get("categoryId", "")), "name": c.get("categoryEnName") or c.get("categoryName", "")}
+        for c in raw if c.get("categoryId")
+    ]
+    return {"categories": categories, "tip": "Pass a category id to search_cj_products as category_id to filter results."}
+
+
+@tool(
+    name="search_cj_products",
+    description=(
+        "Search CJdropshipping supplier catalog for real products to sell. "
+        "Returns product name, cost price, sale price suggestion, images, shipping time, and CJ product ID. "
+        "Use this when a user wants to find products to source and sell in their Shopify store."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword":      {"type": "string",  "description": "Search term e.g. 'wireless earbuds', 'yoga mat', 'phone case'"},
+            "category_id":  {"type": "string",  "description": "Optional CJ category ID to filter results"},
+            "min_price":    {"type": "number",  "description": "Minimum product cost price in USD"},
+            "max_price":    {"type": "number",  "description": "Maximum product cost price in USD"},
+            "page_size":    {"type": "integer", "description": "Number of results to return (default 20, max 50)"},
+        },
+    },
+)
+async def search_cj_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    params: Dict[str, Any] = {
+        "productNameEn": args["keyword"],
+        "pageNum":       1,
+        "pageSize":      min(int(args.get("page_size", 20)), 50),
+    }
+    if args.get("category_id"):
+        params["categoryId"] = args["category_id"]
+    if args.get("min_price") is not None:
+        params["minPrice"] = args["min_price"]
+    if args.get("max_price") is not None:
+        params["maxPrice"] = args["max_price"]
+
+    try:
+        data = await cj_get("/product/list", params)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    raw_list = data.get("list", []) if isinstance(data, dict) else []
+    products = []
+    for p in raw_list:
+        cost = _cj_parse_price(p.get("sellPrice"))
+        products.append({
+            "cj_pid":          p.get("pid", ""),
+            "title":           p.get("productNameEn") or p.get("productName", ""),
+            "category":        p.get("categoryName", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "currency":        "USD",
+            "image_url":       p.get("productImage", ""),
+            "is_free_shipping": p.get("isFreeShipping", False),
+            "supplier":        p.get("supplierName", ""),
+            "listed_count":    p.get("listedNum", 0),
+        })
+
+    return {
+        "keyword":       args["keyword"],
+        "total_found":   data.get("total", len(products)) if isinstance(data, dict) else len(products),
+        "products":      products,
+        "tip": "Use import_cj_product_to_shopify to add any product to the user's Shopify store.",
+    }
+
+
+@tool(
+    name="get_cj_hot_products",
+    description=(
+        "Get trending / hot-selling products from CJdropshipping — products with high order volumes across all CJ stores. "
+        "Use this to show what's selling well in a category right now across the market (not just the user's store)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "category_id": {"type": "string",  "description": "Optional CJ category ID (leave blank for all categories)"},
+            "page_size":   {"type": "integer", "description": "Number of results (default 20)"},
+        },
+    },
+)
+async def get_cj_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    params: Dict[str, Any] = {
+        "pageNum":  1,
+        "pageSize": min(int(args.get("page_size", 20)), 50),
+    }
+    if args.get("category_id"):
+        params["categoryId"] = args["category_id"]
+
+    try:
+        data = await cj_get("/product/list", params)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    raw_list = data.get("list", []) if isinstance(data, dict) else []
+    # Sort by listedNum (how many stores have listed this product) as a proxy for popularity
+    raw_list.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+    products = []
+    for p in raw_list:
+        cost = _cj_parse_price(p.get("sellPrice"))
+        products.append({
+            "cj_pid":          p.get("pid", ""),
+            "title":           p.get("productNameEn") or p.get("productName", ""),
+            "category":        p.get("categoryName", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("productImage", ""),
+            "listed_by_stores": p.get("listedNum", 0),
+            "is_free_shipping": p.get("isFreeShipping", False),
+            "supplier":        p.get("supplierName", ""),
+        })
+
+    return {
+        "source":   "CJdropshipping — sorted by store popularity",
+        "products": products,
+        "tip": "listed_by_stores = how many Shopify/WooCommerce stores are already selling this product on CJ.",
+    }
+
+
+@tool(
+    name="get_market_trends",
+    description=(
+        "Get Google Trends data for product keywords — shows rising/falling search interest over the past 12 months. "
+        "Use this to identify trending product categories before sourcing them. "
+        "Compare multiple keywords to see which has more demand."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keywords"],
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "1–5 product keywords to compare e.g. ['wireless earbuds', 'bone conduction headphones']",
+            },
+            "geo": {"type": "string", "description": "Country code e.g. 'US', 'GB', 'ZA' (default: worldwide)"},
+            "timeframe": {"type": "string", "description": "Timeframe: 'today 12-m' (default), 'today 3-m', 'today 1-m'"},
+        },
+    },
+)
+async def get_market_trends(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        return {"error": "pytrends not installed. Run: pip install pytrends"}
+
+    keywords  = args["keywords"][:5]
+    geo       = args.get("geo", "")
+    timeframe = args.get("timeframe", "today 12-m")
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+
+        def _fetch():
+            pt = TrendReq(hl="en-US", tz=0, timeout=(10, 30))
+            pt.build_payload(keywords, cat=0, timeframe=timeframe, geo=geo, gprop="")
+            interest = pt.interest_over_time()
+            related  = pt.related_queries()
+            return interest, related
+
+        interest_df, related_dict = await loop.run_in_executor(None, _fetch)
+
+        summary = {}
+        if not interest_df.empty:
+            for kw in keywords:
+                if kw in interest_df.columns:
+                    col = interest_df[kw]
+                    summary[kw] = {
+                        "current_interest": int(col.iloc[-1]),
+                        "peak_interest":    int(col.max()),
+                        "avg_interest":     int(col.mean()),
+                        "trend":            "rising" if col.iloc[-1] > col.mean() else "declining",
+                    }
+
+        rising = {}
+        for kw in keywords:
+            kw_data = related_dict.get(kw, {})
+            top = kw_data.get("rising")
+            if top is not None and not top.empty:
+                rising[kw] = top.head(5)["query"].tolist()
+
+        return {
+            "timeframe": timeframe,
+            "geo":       geo or "Worldwide",
+            "keywords":  summary,
+            "rising_related_queries": rising,
+        }
+    except Exception as e:
+        return {"error": f"Google Trends fetch failed: {e}"}
+
+
+@tool(
+    name="import_cj_product_to_shopify",
+    description=(
+        "Import a CJdropshipping product into the user's Shopify store. "
+        "Fetches full product details from CJ (images, variants, description) and creates the Shopify listing. "
+        "Stores the CJ cost price in the database for margin tracking. "
+        "Requires both Shopify and CJdropshipping to be configured. This is a destructive action."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["cj_pid"],
+        "properties": {
+            "cj_pid":       {"type": "string", "description": "CJ product ID from search_cj_products or get_cj_hot_products"},
+            "sale_price":   {"type": "number", "description": "Price to sell at in your store (USD). Default: 2.5x cost price"},
+            "product_title": {"type": "string", "description": "Override the product title (optional)"},
+        },
+    },
+    destructive=True,
+)
+async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    cj_pid = args["cj_pid"]
+
+    # 1. Fetch full product detail from CJ using the correct detail endpoint
+    try:
+        detail = await cj_get("/product/query", {"pid": cj_pid})
+        # /product/query returns the product directly or in a list
+        if isinstance(detail, dict) and "list" in detail:
+            prod = (detail["list"] or [{}])[0]
+        else:
+            prod = detail if isinstance(detail, dict) else {}
+    except RuntimeError:
+        # Fall back to list endpoint to get basic product data
+        try:
+            detail2 = await cj_get("/product/list", {"pid": cj_pid, "pageSize": 1})
+            items = detail2.get("list", []) if isinstance(detail2, dict) else []
+            prod = items[0] if items else {}
+        except RuntimeError as e2:
+            return {"error": f"CJ product fetch failed: {e2}"}
+
+    cost_price  = _cj_parse_price(prod.get("sellPrice"))
+    sale_price  = float(args.get("sale_price") or round(cost_price * 2.5, 2))
+    title       = args.get("product_title") or prod.get("productNameEn") or prod.get("productName", "")
+    description = prod.get("productDescription", "") or prod.get("remark", "")
+    images      = prod.get("productImages", []) or ([prod.get("productImage")] if prod.get("productImage") else [])
+
+    # Build variants from CJ variants list
+    cj_variants = prod.get("variants", [])
+    if isinstance(cj_variants, list) and cj_variants:
+        variants = [
+            {
+                "title":                v.get("variantNameEn", "Default Title"),
+                "price":                str(sale_price),
+                "compare_at_price":     str(round(sale_price * 1.3, 2)),
+                "inventory_management": "shopify",
+                "inventory_quantity":   50,
+            }
+            for v in cj_variants[:30]
+        ]
+    else:
+        variants = [{
+            "title": "Default Title",
+            "price": str(sale_price),
+            "compare_at_price": str(round(sale_price * 1.3, 2)),
+            "inventory_management": "shopify",
+            "inventory_quantity": 50,
+        }]
+
+    shopify_payload = {
+        "product": {
+            "title":       title,
+            "body_html":   f"<p>{description}</p>" if description else "",
+            "vendor":      "CJdropshipping",
+            "product_type": prod.get("categoryName", ""),
+            "status":      "active",
+            "tags":        f"dropship,cj,{prod.get('categoryName', '')}",
+            "variants":    variants,
+            "images":      [{"src": img} for img in images[:5] if img],
+        }
+    }
+
+    # 2. Create product in Shopify
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/products.json",
+                                   json=shopify_payload)
+        shopify_product = result.get("product", {})
+        shopify_id = shopify_product.get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify create failed: {e}"}
+
+    # 3. Store CJ cost price mapping in DB for margin tracking
+    if shopify_id:
+        await ctx.db.cj_products.update_one(
+            {"user_id": ctx.business_id, "cj_pid": cj_pid},
+            {"$set": {
+                "user_id":           ctx.business_id,
+                "shopify_product_id": str(shopify_id),
+                "cj_pid":            cj_pid,
+                "cost_price":        cost_price,
+                "sale_price":        sale_price,
+                "supplier":          "cj",
+                "title":             title,
+                "imported_at":       __import__("datetime").datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+
+    return {
+        "success":          True,
+        "shopify_product_id": shopify_id,
+        "title":            title,
+        "cost_price":       cost_price,
+        "sale_price":       sale_price,
+        "margin_per_unit":  round(sale_price - cost_price, 2),
+        "margin_pct":       f"{round((sale_price - cost_price) / sale_price * 100, 1)}%" if sale_price else "N/A",
+        "images_imported":  len(images[:5]),
+        "variants_imported": len(variants),
+    }
+
+
+@tool(
+    name="cj_fulfill_order",
+    description=(
+        "Fulfill a Shopify order using CJdropshipping. "
+        "Looks up the order's shipping address and CJ-sourced line items, then places the fulfillment order with CJ. "
+        "Use this when a customer has paid and the order contains CJ-sourced products. "
+        "Returns a CJ order number to use with cj_get_order_status and cj_sync_tracking_to_shopify."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["shopify_order_id"],
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID (numeric)"},
+            "shipping_method": {"type": "string", "description": "CJ shipping method code e.g. 'CJPacket_Ordinary' (default). Leave blank for cheapest available."},
+        },
+    },
+    destructive=True,
+)
+async def cj_fulfill_order(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get, cj_post
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    order_id = str(args["shopify_order_id"])
+
+    # 1. Fetch Shopify order for shipping address + line items
+    try:
+        ord_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{order_id}.json")
+        order = ord_data.get("order", {})
+    except RuntimeError as e:
+        return {"error": f"Failed to fetch Shopify order: {e}"}
+
+    if not order:
+        return {"error": "Order not found"}
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    customer_name = f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip() or "Customer"
+    shipping_info = {
+        "shippingCustomerName": customer_name,
+        "shippingPhone":        ship.get("phone") or order.get("phone") or "0000000000",
+        "shippingAddress":      ship.get("address1", ""),
+        "shippingCity":         ship.get("city", ""),
+        "shippingProvince":     ship.get("province", ""),
+        "shippingZip":          ship.get("zip", ""),
+        "shippingCountryCode":  ship.get("country_code", "US"),
+    }
+
+    # 2. Find which line items are CJ-sourced
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    cj_mappings = {}
+    if shopify_pids:
+        async for doc in ctx.db.cj_products.find(
+            {"user_id": ctx.business_id, "shopify_product_id": {"$in": shopify_pids}}
+        ):
+            cj_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not cj_mappings:
+        return {"error": "No CJ-sourced products found in this order. Only CJ-imported products can be fulfilled via CJ."}
+
+    # 3. Build CJ products list — fetch variant ID for each CJ product
+    cj_products_payload = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in cj_mappings:
+            continue
+        cj_pid = cj_mappings[pid]["cj_pid"]
+        quantity = int(li.get("quantity", 1))
+
+        # Get variant ID from CJ
+        vid = None
+        try:
+            detail = await cj_get("/product/query", {"pid": cj_pid})
+            variants = []
+            if isinstance(detail, dict):
+                variants = detail.get("variants", []) or (detail.get("list", [{}])[0] or {}).get("variants", [])
+            if variants:
+                vid = variants[0].get("vid") or variants[0].get("variantId")
+        except Exception:
+            pass
+
+        entry: Dict[str, Any] = {"quantity": quantity}
+        if vid:
+            entry["vid"] = str(vid)
+        else:
+            entry["pid"] = cj_pid
+        cj_products_payload.append(entry)
+
+    if not cj_products_payload:
+        return {"error": "Could not resolve CJ variant IDs for order line items"}
+
+    # 4. Create CJ order
+    cj_order_num = f"ZILO-{order_id}"
+    payload = {
+        "orderNumber":   cj_order_num,
+        "products":      cj_products_payload,
+        **shipping_info,
+    }
+    if args.get("shipping_method"):
+        payload["shippingCountry"] = shipping_info["shippingCountryCode"]
+
+    try:
+        result = await cj_post("/order/create", payload)
+    except RuntimeError as e:
+        return {"error": f"CJ order creation failed: {e}"}
+
+    cj_order_id = result.get("orderId") or result.get("orderNum") or cj_order_num
+
+    # 5. Store mapping in DB
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "shopify_order_id": order_id},
+        {"$set": {
+            "user_id":          ctx.business_id,
+            "shopify_order_id": order_id,
+            "cj_order_id":      str(cj_order_id),
+            "cj_order_num":     cj_order_num,
+            "status":           "created",
+            "created_at":       datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+
+    return {
+        "success":          True,
+        "cj_order_id":      str(cj_order_id),
+        "cj_order_num":     cj_order_num,
+        "shopify_order_id": order_id,
+        "items_fulfilled":  len(cj_products_payload),
+        "next_step":        "Use cj_get_order_status to track progress, then cj_sync_tracking_to_shopify when shipped.",
+    }
+
+
+@tool(
+    name="cj_get_order_status",
+    description=(
+        "Check the fulfillment status of a CJ order. "
+        "Returns the current status (e.g. CREATED, IN_PRODUCTION, IN_TRANSIT, DELIVERED), "
+        "tracking number, and shipping carrier when available. "
+        "You can pass either the CJ order number or the Shopify order ID."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID — will look up the CJ order number automatically"},
+            "cj_order_num":     {"type": "string", "description": "CJ order number (e.g. ZILO-123456) — use if you already know it"},
+        },
+    },
+)
+async def cj_get_order_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        return {"error": "CJdropshipping module not available"}
+
+    cj_order_num = args.get("cj_order_num")
+    if not cj_order_num and args.get("shopify_order_id"):
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": str(args["shopify_order_id"])}
+        )
+        if not doc:
+            return {"error": "No CJ fulfillment found for this Shopify order. Use cj_fulfill_order first."}
+        cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+
+    if not cj_order_num:
+        return {"error": "Provide either shopify_order_id or cj_order_num"}
+
+    try:
+        data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+    except RuntimeError as e:
+        return {"error": f"CJ status fetch failed: {e}"}
+
+    order_detail = data if isinstance(data, dict) else {}
+    status       = order_detail.get("orderStatus", "UNKNOWN")
+    tracking_num = order_detail.get("trackNumber") or order_detail.get("trackingNumber")
+    carrier      = order_detail.get("shippingCarrier") or order_detail.get("logisticName")
+
+    # Update DB with latest status
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "cj_order_num": cj_order_num},
+        {"$set": {
+            "status":        status,
+            "tracking_num":  tracking_num,
+            "carrier":       carrier,
+            "last_checked":  datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "cj_order_num":  cj_order_num,
+        "status":        status,
+        "tracking_num":  tracking_num,
+        "carrier":       carrier,
+        "shipped":       status in ("IN_TRANSIT", "DELIVERED", "PICKED", "PACKED"),
+        "delivered":     status == "DELIVERED",
+        "tip": "If tracking_num is available, use cj_sync_tracking_to_shopify to push it to Shopify.",
+    }
+
+
+@tool(
+    name="cj_sync_tracking_to_shopify",
+    description=(
+        "Get the tracking number from a CJ fulfillment and push it to the matching Shopify order. "
+        "This triggers Shopify's shipping confirmation email to the customer. "
+        "Call this once cj_get_order_status shows the order is IN_TRANSIT."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID"},
+            "cj_order_num":     {"type": "string", "description": "CJ order number (optional — auto-looked up from shopify_order_id if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def cj_sync_tracking_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from cj_dropship.client import cj_get
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    shopify_order_id = str(args.get("shopify_order_id", ""))
+    cj_order_num     = args.get("cj_order_num")
+
+    # Resolve CJ order num from DB if not provided
+    if not cj_order_num and shopify_order_id:
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": shopify_order_id}
+        )
+        if not doc:
+            return {"error": "No CJ fulfillment found for this Shopify order. Use cj_fulfill_order first."}
+        cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+
+    if not cj_order_num:
+        return {"error": "Provide either shopify_order_id or cj_order_num"}
+
+    # 1. Get tracking from CJ
+    try:
+        data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num})
+    except RuntimeError as e:
+        return {"error": f"CJ tracking fetch failed: {e}"}
+
+    order_detail = data if isinstance(data, dict) else {}
+    tracking_num = order_detail.get("trackNumber") or order_detail.get("trackingNumber")
+    carrier      = order_detail.get("shippingCarrier") or order_detail.get("logisticName") or ""
+    status       = order_detail.get("orderStatus", "")
+
+    if not tracking_num:
+        return {
+            "success": False,
+            "cj_status": status,
+            "message": "Tracking number not yet assigned by CJ. Try again when status is IN_TRANSIT.",
+        }
+
+    # 2. Look up Shopify order ID from DB if not provided
+    if not shopify_order_id:
+        doc = await ctx.db.cj_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "cj_order_num": cj_order_num}
+        )
+        shopify_order_id = doc.get("shopify_order_id", "") if doc else ""
+
+    if not shopify_order_id:
+        return {"error": "Could not resolve Shopify order ID. Pass shopify_order_id explicitly."}
+
+    # 3. Get fulfillment orders from Shopify
+    try:
+        fo_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                    f"/admin/api/2024-01/orders/{shopify_order_id}/fulfillment_orders.json")
+        fo_list = fo_data.get("fulfillment_orders", [])
+        open_fos = [fo for fo in fo_list if fo.get("status") == "open"]
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment order fetch failed: {e}"}
+
+    if not open_fos:
+        return {"error": "No open fulfillment orders on this Shopify order — may already be fulfilled"}
+
+    # 4. Create Shopify fulfillment with tracking
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": [
+                {
+                    "fulfillment_order_id": fo["id"],
+                    "fulfillment_order_line_items": [
+                        {"id": li["id"], "quantity": li["fulfillable_quantity"]}
+                        for li in fo.get("line_items", [])
+                    ],
+                }
+                for fo in open_fos
+            ],
+            "tracking_info": {"number": tracking_num, "company": carrier},
+            "notify_customer": True,
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/fulfillments.json", json=payload)
+        fulfillment_id = result.get("fulfillment", {}).get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment create failed: {e}"}
+
+    # 5. Update DB
+    await ctx.db.cj_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "cj_order_num": cj_order_num},
+        {"$set": {
+            "status":            "synced_to_shopify",
+            "tracking_num":      tracking_num,
+            "carrier":           carrier,
+            "shopify_fulfillment_id": str(fulfillment_id),
+            "synced_at":         datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "success":              True,
+        "tracking_num":         tracking_num,
+        "carrier":              carrier,
+        "shopify_order_id":     shopify_order_id,
+        "shopify_fulfillment_id": str(fulfillment_id),
+        "message":              f"Tracking {tracking_num} pushed to Shopify. Customer notified.",
+    }
+
+
+@tool(
+    name="shopify_product_analytics",
+    description=(
+        "Get per-product sales performance for the Shopify store: units sold, revenue, refund count, "
+        "and profit margin (if the product was sourced via CJdropshipping). "
+        "Use this to identify best sellers, worst performers, and high-margin products."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "days":     {"type": "integer", "description": "Lookback period in days (default 30)"},
+            "limit":    {"type": "integer", "description": "Max products to return (default 20)"},
+            "sort_by":  {"type": "string",  "description": "'revenue' (default), 'units', 'margin', 'refunds'"},
+        },
+    },
+)
+async def shopify_product_analytics(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from .composio_helper import composio_proxy as nango_proxy
+    from datetime import datetime, timedelta
+
+    days  = int(args.get("days", 30))
+    limit = int(args.get("limit", 20))
+    sort_by = args.get("sort_by", "revenue")
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+
+    try:
+        orders_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                        "/admin/api/2024-01/orders.json",
+                                        params={
+                                            "status": "any",
+                                            "financial_status": "paid",
+                                            "created_at_min": since,
+                                            "limit": "250",
+                                            "fields": "id,line_items,refunds,financial_status",
+                                        })
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    orders = orders_data.get("orders", [])
+
+    # Aggregate by product
+    product_stats: Dict[str, Dict] = {}
+    for order in orders:
+        for item in order.get("line_items", []):
+            pid   = str(item.get("product_id", ""))
+            title = item.get("title", "Unknown")
+            qty   = int(item.get("quantity", 0))
+            rev   = float(item.get("price", 0)) * qty
+            key   = pid or title
+
+            if key not in product_stats:
+                product_stats[key] = {
+                    "product_id": pid,
+                    "title":      title,
+                    "units_sold": 0,
+                    "revenue":    0.0,
+                    "refunds":    0,
+                    "cost_price": None,
+                }
+            product_stats[key]["units_sold"] += qty
+            product_stats[key]["revenue"]    += rev
+
+        for refund in order.get("refunds", []):
+            for ri in refund.get("refund_line_items", []):
+                li   = ri.get("line_item", {})
+                pid  = str(li.get("product_id", ""))
+                title = li.get("title", "")
+                key  = pid or title
+                if key in product_stats:
+                    product_stats[key]["refunds"] += int(ri.get("quantity", 1))
+
+    # Enrich with CJ cost prices
+    cj_docs = await ctx.db.cj_products.find({"user_id": ctx.business_id}).to_list(500)
+    cost_map = {str(d["shopify_product_id"]): d["cost_price"] for d in cj_docs if d.get("shopify_product_id")}
+
+    results = []
+    for key, s in product_stats.items():
+        cost = cost_map.get(s["product_id"])
+        margin = round(s["revenue"] - (cost * s["units_sold"]), 2) if cost else None
+        results.append({
+            **s,
+            "revenue":      round(s["revenue"], 2),
+            "cost_price":   cost,
+            "gross_margin": margin,
+            "margin_pct":   f"{round(margin / s['revenue'] * 100, 1)}%" if margin and s["revenue"] else "N/A",
+        })
+
+    sort_keys = {"revenue": "revenue", "units": "units_sold", "margin": "gross_margin", "refunds": "refunds"}
+    sk = sort_keys.get(sort_by, "revenue")
+    results.sort(key=lambda x: (x.get(sk) or 0), reverse=True)
+
+    return {
+        "period_days": days,
+        "products":    results[:limit],
+        "total_products_with_sales": len(results),
+        "note": "gross_margin only available for products sourced via CJdropshipping",
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ALIEXPRESS DROPSHIPPING TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_aliexpress_categories",
+    description=(
+        "Get AliExpress DS product categories with their IDs. "
+        "Use before search_aliexpress_products when the user wants to browse by category."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_aliexpress_categories(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    try:
+        data = await ae_get_categories()
+    except RuntimeError as e:
+        return {"error": str(e)}
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    out = [{"id": str(c.get("category_id", "")), "name": c.get("category_name", "")} for c in (cats or []) if c.get("category_id")]
+    return {"categories": out, "tip": "Pass a category id to search_aliexpress_products as category_id."}
+
+
+@tool(
+    name="search_aliexpress_products",
+    description=(
+        "Search AliExpress DS catalog for real dropship products. "
+        "Returns product ID, title, cost price, sale price suggestion, images, and shipping info. "
+        "Use when a user wants to source products from AliExpress."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword":     {"type": "string",  "description": "Search term e.g. 'bluetooth speaker', 'cat toy'"},
+            "category_id": {"type": "string",  "description": "AliExpress category ID (optional)"},
+            "min_price":   {"type": "number",  "description": "Min cost price USD"},
+            "max_price":   {"type": "number",  "description": "Max cost price USD"},
+            "page_size":   {"type": "integer", "description": "Results to return (default 20, max 50)"},
+            "sort":        {"type": "string",  "description": "SALE_PRICE_ASC | SALE_PRICE_DESC | LAST_VOLUME_DESC (default: LAST_VOLUME_DESC for best sellers)"},
+        },
+    },
+)
+async def search_aliexpress_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    try:
+        data = await ae_ds_search(
+            keyword=args["keyword"],
+            category_id=args.get("category_id"),
+            min_price=args.get("min_price"),
+            max_price=args.get("max_price"),
+            page_size=int(args.get("page_size", 20)),
+            sort=args.get("sort", "LAST_VOLUME_DESC"),
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    # Unwrap products list — AE response structure varies
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    out = []
+    for p in products_raw:
+        cost = float(p.get("sale_price", p.get("target_sale_price", 0)) or 0)
+        out.append({
+            "ae_pid":          str(p.get("product_id", p.get("product_main_image_url", ""))),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", p.get("first_level_category_name", "")),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "currency":        p.get("target_sale_price_currency", "USD"),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "detail_url":      p.get("product_detail_url", ""),
+        })
+    return {
+        "keyword":     args["keyword"],
+        "total_found": data.get("total_record_count", len(out)),
+        "products":    out,
+        "tip":         "Use import_aliexpress_product_to_shopify to add any product to Shopify.",
+    }
+
+
+@tool(
+    name="get_aliexpress_hot_products",
+    description=(
+        "Get best-selling / trending products from AliExpress DS — sorted by order volume. "
+        "Use to find what's selling well right now across AliExpress."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword":     {"type": "string",  "description": "Category or niche keyword (optional)"},
+            "category_id": {"type": "string",  "description": "AliExpress category ID (optional)"},
+            "page_size":   {"type": "integer", "description": "Number of results (default 20)"},
+        },
+    },
+)
+async def get_aliexpress_hot_products(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+    keyword = args.get("keyword", "")
+    if not keyword and not args.get("category_id"):
+        keyword = "bestseller"
+    try:
+        data = await ae_ds_search(
+            keyword=keyword,
+            category_id=args.get("category_id"),
+            page_size=int(args.get("page_size", 20)),
+            sort="LAST_VOLUME_DESC",
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    out = []
+    for p in products_raw:
+        cost = float(p.get("sale_price", p.get("target_sale_price", 0)) or 0)
+        out.append({
+            "ae_pid":          str(p.get("product_id", "")),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+        })
+    return {"source": "AliExpress DS — sorted by order volume", "products": out}
+
+
+@tool(
+    name="import_aliexpress_product_to_shopify",
+    description=(
+        "Import an AliExpress DS product into the user's Shopify store. "
+        "Fetches full product detail (images, variants, description) and creates the Shopify listing. "
+        "Stores AliExpress cost price for margin tracking. Requires Shopify + AliExpress configured."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["ae_pid"],
+        "properties": {
+            "ae_pid":         {"type": "string", "description": "AliExpress product ID from search_aliexpress_products"},
+            "sale_price":     {"type": "number", "description": "Selling price in USD (default: 2.5x cost)"},
+            "product_title":  {"type": "string", "description": "Override product title (optional)"},
+            "ship_to_country":{"type": "string", "description": "Target country code e.g. US, GB, ZA (default: US)"},
+        },
+    },
+    destructive=True,
+)
+async def import_aliexpress_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_product_detail
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    ae_pid     = str(args["ae_pid"])
+    ship_to    = args.get("ship_to_country", "US")
+
+    # 1. Fetch full product detail
+    try:
+        raw = await ae_ds_product_detail(ae_pid, ship_to=ship_to)
+    except RuntimeError as e:
+        return {"error": f"AliExpress product fetch failed: {e}"}
+
+    # Unwrap nested response
+    prod = (
+        raw.get("result", raw)
+        if "result" in raw
+        else raw
+    )
+    ae_item = prod.get("ae_item_base_info_dto", prod)
+    ae_sku_list = prod.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+    ae_images   = prod.get("ae_multimedia_info_dto", {}).get("image_urls", "")
+
+    title       = args.get("product_title") or ae_item.get("subject", "")
+    description = ae_item.get("detail", "")
+    images      = [i.strip() for i in ae_images.split(";") if i.strip()][:5] if ae_images else []
+
+    # Cost from first SKU or base price
+    cost_price = 0.0
+    if ae_sku_list:
+        try:
+            cost_price = float(ae_sku_list[0].get("sku_price", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    if not cost_price:
+        try:
+            cost_price = float(ae_item.get("min_activity_amount", ae_item.get("price", 0)) or 0)
+        except (TypeError, ValueError):
+            pass
+
+    sale_price = float(args.get("sale_price") or round(cost_price * 2.5, 2))
+
+    # Build Shopify variants from AliExpress SKUs
+    if ae_sku_list:
+        variants = [
+            {
+                "title":                (s.get("sku_attr", "Default Title") or "Default Title"),
+                "price":                str(sale_price),
+                "compare_at_price":     str(round(sale_price * 1.3, 2)),
+                "inventory_management": "shopify",
+                "inventory_quantity":   int(s.get("sku_available_stock", 50) or 50),
+            }
+            for s in ae_sku_list[:30]
+        ]
+    else:
+        variants = [{
+            "title": "Default Title",
+            "price": str(sale_price),
+            "compare_at_price": str(round(sale_price * 1.3, 2)),
+            "inventory_management": "shopify",
+            "inventory_quantity": 50,
+        }]
+
+    shopify_payload = {
+        "product": {
+            "title":        title,
+            "body_html":    f"<p>{description}</p>" if description else "",
+            "vendor":       "AliExpress",
+            "product_type": ae_item.get("category_id", ""),
+            "status":       "active",
+            "tags":         "dropship,aliexpress",
+            "variants":     variants,
+            "images":       [{"src": img} for img in images if img],
+        }
+    }
+
+    # 2. Create Shopify product
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/products.json",
+                                   json=shopify_payload)
+        shopify_product = result.get("product", {})
+        shopify_id = shopify_product.get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify create failed: {e}"}
+
+    # 3. Store mapping for margin tracking
+    if shopify_id:
+        await ctx.db.ae_products.update_one(
+            {"user_id": ctx.business_id, "ae_pid": ae_pid},
+            {"$set": {
+                "user_id":            ctx.business_id,
+                "shopify_product_id": str(shopify_id),
+                "ae_pid":             ae_pid,
+                "cost_price":         cost_price,
+                "sale_price":         sale_price,
+                "supplier":           "aliexpress",
+                "title":              title,
+                "imported_at":        datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+
+    return {
+        "success":           True,
+        "shopify_product_id": shopify_id,
+        "title":             title,
+        "cost_price":        cost_price,
+        "sale_price":        sale_price,
+        "margin_per_unit":   round(sale_price - cost_price, 2),
+        "margin_pct":        f"{round((sale_price - cost_price) / sale_price * 100, 1)}%" if sale_price else "N/A",
+        "images_imported":   len(images),
+        "variants_imported": len(variants),
+    }
+
+
+@tool(
+    name="aliexpress_fulfill_order",
+    description=(
+        "Fulfill a Shopify order using AliExpress DS. "
+        "Looks up the order shipping address and AliExpress-sourced line items, "
+        "then places the order with AliExpress DS. "
+        "Returns an AliExpress order ID for tracking."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["shopify_order_id"],
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID (numeric)"},
+        },
+    },
+    destructive=True,
+)
+async def aliexpress_fulfill_order(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_create_order, ae_ds_product_detail
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    order_id = str(args["shopify_order_id"])
+
+    # 1. Fetch Shopify order
+    try:
+        ord_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{order_id}.json")
+        order = ord_data.get("order", {})
+    except RuntimeError as e:
+        return {"error": f"Failed to fetch Shopify order: {e}"}
+    if not order:
+        return {"error": "Order not found"}
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+
+    # 2. Find AliExpress-sourced line items
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    ae_mappings: Dict[str, Any] = {}
+    if shopify_pids:
+        async for doc in ctx.db.ae_products.find(
+            {"user_id": ctx.business_id, "shopify_product_id": {"$in": shopify_pids}}
+        ):
+            ae_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not ae_mappings:
+        return {"error": "No AliExpress-sourced products found in this order. Only AliExpress-imported products can be fulfilled via AliExpress."}
+
+    # 3. Build AliExpress DS order payload
+    ae_product_items = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in ae_mappings:
+            continue
+        ae_pid    = ae_mappings[pid]["ae_pid"]
+        quantity  = int(li.get("quantity", 1))
+        # Get sku_id from product detail
+        sku_id = None
+        try:
+            detail    = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"))
+            sku_list  = detail.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+            if sku_list:
+                sku_id = sku_list[0].get("sku_id")
+        except Exception:
+            pass
+        item: Dict[str, Any] = {"product_id": ae_pid, "product_count": quantity}
+        if sku_id:
+            item["sku_id"] = str(sku_id)
+        ae_product_items.append(item)
+
+    if not ae_product_items:
+        return {"error": "Could not resolve AliExpress SKU IDs for order line items"}
+
+    order_payload = {
+        "logistics_address": {
+            "contact_person":  f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip(),
+            "mobile_no":       ship.get("phone") or order.get("phone") or "",
+            "address":         ship.get("address1", ""),
+            "city":            ship.get("city", ""),
+            "province":        ship.get("province", ""),
+            "zip":             ship.get("zip", ""),
+            "country":         ship.get("country_code", "US"),
+        },
+        "product_items": ae_product_items,
+    }
+
+    try:
+        result = await ae_ds_create_order(order_payload)
+    except RuntimeError as e:
+        return {"error": f"AliExpress order creation failed: {e}"}
+
+    ae_order_id = str(result.get("order_id", result.get("ae_order_id", f"AE-{order_id}")))
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "shopify_order_id": order_id},
+        {"$set": {
+            "user_id":          ctx.business_id,
+            "shopify_order_id": order_id,
+            "ae_order_id":      ae_order_id,
+            "status":           "created",
+            "created_at":       datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+
+    return {
+        "success":          True,
+        "ae_order_id":      ae_order_id,
+        "shopify_order_id": order_id,
+        "items_fulfilled":  len(ae_product_items),
+        "next_step":        "Use aliexpress_get_order_status to track, then aliexpress_sync_tracking_to_shopify when shipped.",
+    }
+
+
+@tool(
+    name="aliexpress_get_order_status",
+    description=(
+        "Check the status of an AliExpress DS fulfillment order. "
+        "Returns status, tracking number and carrier when shipped. "
+        "Pass either shopify_order_id (auto-lookup) or ae_order_id."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID for auto-lookup"},
+            "ae_order_id":      {"type": "string", "description": "AliExpress order ID if already known"},
+        },
+    },
+)
+async def aliexpress_get_order_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_get_order
+    except ImportError:
+        return {"error": "AliExpress module not available"}
+
+    ae_order_id = args.get("ae_order_id")
+    if not ae_order_id and args.get("shopify_order_id"):
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": str(args["shopify_order_id"])}
+        )
+        if not doc:
+            return {"error": "No AliExpress fulfillment found. Use aliexpress_fulfill_order first."}
+        ae_order_id = doc.get("ae_order_id")
+
+    if not ae_order_id:
+        return {"error": "Provide shopify_order_id or ae_order_id"}
+
+    try:
+        data = await ae_ds_get_order(ae_order_id)
+    except RuntimeError as e:
+        return {"error": f"AliExpress order status fetch failed: {e}"}
+
+    order_info   = data.get("result", data) if isinstance(data, dict) else {}
+    status       = order_info.get("order_status", "UNKNOWN")
+    logistics    = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+    tracking_num = logistics[0].get("logistics_no") if logistics else None
+    carrier      = logistics[0].get("logistics_company") if logistics else None
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "ae_order_id": ae_order_id},
+        {"$set": {"status": status, "tracking_num": tracking_num, "carrier": carrier, "last_checked": datetime.utcnow()}},
+    )
+
+    return {
+        "ae_order_id":  ae_order_id,
+        "status":       status,
+        "tracking_num": tracking_num,
+        "carrier":      carrier,
+        "shipped":      status in ("FINISH", "IN_CANCEL", "PLACE_ORDER_SUCCESS"),
+        "tip":          "If tracking_num is available, use aliexpress_sync_tracking_to_shopify.",
+    }
+
+
+@tool(
+    name="aliexpress_sync_tracking_to_shopify",
+    description=(
+        "Push AliExpress tracking number to Shopify, triggering the shipping confirmation email to the customer."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "shopify_order_id": {"type": "string", "description": "Shopify order ID"},
+            "ae_order_id":      {"type": "string", "description": "AliExpress order ID (auto-looked up if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def aliexpress_sync_tracking_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from aliexpress.client import ae_ds_get_order
+        from .composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        return {"error": f"Module not available: {e}"}
+
+    shopify_order_id = str(args.get("shopify_order_id", ""))
+    ae_order_id      = args.get("ae_order_id")
+
+    if not ae_order_id and shopify_order_id:
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "shopify_order_id": shopify_order_id}
+        )
+        if not doc:
+            return {"error": "No AliExpress fulfillment found for this order."}
+        ae_order_id = doc.get("ae_order_id")
+
+    if not ae_order_id:
+        return {"error": "Provide shopify_order_id or ae_order_id"}
+
+    # Get tracking from AliExpress
+    try:
+        data = await ae_ds_get_order(ae_order_id)
+    except RuntimeError as e:
+        return {"error": f"AliExpress tracking fetch failed: {e}"}
+
+    order_info   = data.get("result", data) if isinstance(data, dict) else {}
+    logistics    = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+    tracking_num = logistics[0].get("logistics_no") if logistics else None
+    carrier      = logistics[0].get("logistics_company", "") if logistics else ""
+    status       = order_info.get("order_status", "")
+
+    if not tracking_num:
+        return {"success": False, "ae_status": status,
+                "message": "Tracking not yet assigned. Try again when order is shipped."}
+
+    # Resolve shopify_order_id from DB if not provided
+    if not shopify_order_id:
+        doc = await ctx.db.ae_order_fulfillments.find_one(
+            {"user_id": ctx.business_id, "ae_order_id": ae_order_id}
+        )
+        shopify_order_id = doc.get("shopify_order_id", "") if doc else ""
+
+    if not shopify_order_id:
+        return {"error": "Could not resolve Shopify order ID. Pass shopify_order_id explicitly."}
+
+    # Push to Shopify fulfillment
+    try:
+        fo_data  = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}/fulfillment_orders.json")
+        open_fos = [fo for fo in fo_data.get("fulfillment_orders", []) if fo.get("status") == "open"]
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment order fetch failed: {e}"}
+
+    if not open_fos:
+        return {"error": "No open Shopify fulfillment orders — may already be fulfilled"}
+
+    payload = {
+        "fulfillment": {
+            "line_items_by_fulfillment_order": [
+                {
+                    "fulfillment_order_id": fo["id"],
+                    "fulfillment_order_line_items": [
+                        {"id": li["id"], "quantity": li["fulfillable_quantity"]}
+                        for li in fo.get("line_items", [])
+                    ],
+                }
+                for fo in open_fos
+            ],
+            "tracking_info": {"number": tracking_num, "company": carrier},
+            "notify_customer": True,
+        }
+    }
+    try:
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   "/admin/api/2024-01/fulfillments.json", json=payload)
+        fulfillment_id = result.get("fulfillment", {}).get("id")
+    except RuntimeError as e:
+        return {"error": f"Shopify fulfillment create failed: {e}"}
+
+    await ctx.db.ae_order_fulfillments.update_one(
+        {"user_id": ctx.business_id, "ae_order_id": ae_order_id},
+        {"$set": {
+            "status":                  "synced_to_shopify",
+            "tracking_num":            tracking_num,
+            "carrier":                 carrier,
+            "shopify_fulfillment_id":  str(fulfillment_id),
+            "synced_at":               datetime.utcnow(),
+        }},
+    )
+
+    return {
+        "success":               True,
+        "tracking_num":          tracking_num,
+        "carrier":               carrier,
+        "shopify_order_id":      shopify_order_id,
+        "shopify_fulfillment_id": str(fulfillment_id),
+        "message":               f"Tracking {tracking_num} pushed to Shopify. Customer notified.",
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # AUTOBLOGGING TOOLS (SEO Agent)
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -11724,3 +14430,2014 @@ async def publish_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str,
         category=args.get("category", "Business"),
     )
     return result
+
+
+@tool(
+    name="shopify_publish_blog_post",
+    description=(
+        "Publish a blog article to the connected Shopify store's blog. "
+        "Auto-fetches Shopify credentials — no token needed. "
+        "Use generate_blog_post first to create the content, then call this to publish. "
+        "Requires Shopify to be connected."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+            "title":      {"type": "string", "description": "Article title"},
+            "content":    {"type": "string", "description": "Article body (HTML or markdown)"},
+            "excerpt":    {"type": "string", "description": "Short summary shown in blog listings (optional)"},
+            "tags":       {"type": "string", "description": "Comma-separated tags e.g. 'seo, tips, marketing'"},
+            "published":  {"type": "boolean", "default": True, "description": "True = live immediately, False = save as draft"},
+        },
+    },
+    destructive=True,
+)
+async def shopify_publish_blog_post(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    import httpx as _httpx
+
+    title   = args["title"]
+    content = args.get("content", "")
+    # Convert markdown to basic HTML paragraphs if not already HTML
+    if content and not content.strip().startswith("<"):
+        lines = content.strip().split("\n\n")
+        content = "".join(f"<p>{p.strip()}</p>" for p in lines if p.strip())
+
+    try:
+        # Get first blog on the store to post into
+        blogs_data = await nango_proxy(ctx.business_id, "shopify", "GET",
+                                       "/admin/api/2024-01/blogs.json")
+        blogs = blogs_data.get("blogs", [])
+        if not blogs:
+            # Create a default blog if none exists
+            new_blog = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                         "/admin/api/2024-01/blogs.json",
+                                         json={"blog": {"title": "News"}})
+            blog_id = new_blog["blog"]["id"]
+        else:
+            blog_id = blogs[0]["id"]
+
+        article_payload: Dict[str, Any] = {
+            "article": {
+                "title":      title,
+                "body_html":  content,
+                "published":  args.get("published", True),
+            }
+        }
+        if args.get("excerpt"):
+            article_payload["article"]["summary_html"] = args["excerpt"]
+        if args.get("tags"):
+            article_payload["article"]["tags"] = args["tags"]
+
+        result = await nango_proxy(ctx.business_id, "shopify", "POST",
+                                   f"/admin/api/2024-01/blogs/{blog_id}/articles.json",
+                                   json=article_payload)
+        article = result.get("article", {})
+        return {
+            "success":    True,
+            "article_id": article.get("id"),
+            "title":      article.get("title"),
+            "url":        article.get("url") or f"/blogs/{blogs[0].get('handle', 'news')}/{article.get('handle', '')}",
+            "published":  article.get("published_at") is not None,
+        }
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# VEBAPI SEO TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+_VEBAPI_BASE = "https://vebapi.com/api"
+
+
+def _veb_key() -> str:
+    key = os.environ.get("VEBAPI_KEY", "").strip()
+    if not key:
+        raise RuntimeError("VEBAPI_KEY not set.")
+    return key
+
+
+async def _veb_get_call(endpoint: str, params: dict) -> dict:
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as hc:
+        resp = await hc.get(
+            f"{_VEBAPI_BASE}{endpoint}",
+            headers={"X-API-KEY": _veb_key()},
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _parse_veb_vol(v) -> int:
+    if v is None:
+        return 0
+    s = str(v).replace(",", "").replace("K", "000").strip()
+    try:
+        return int(float(s))
+    except Exception:
+        return 0
+
+
+@tool(
+    name="veb_page_analysis",
+    description=(
+        "Comprehensive on-page SEO analysis of a website via VebAPI. Returns overall score, "
+        "category breakdowns (SEO, speed, UX), and a full list of issues to fix. "
+        "Use for website audits and technical SEO reviews."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def veb_page_analysis(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/page-analysis-version-2", {"url": args["url"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Page analysis failed: {e}"}
+
+
+@tool(
+    name="veb_ai_visibility_audit",
+    description=(
+        "Check how visible a website is to AI search engines (ChatGPT, Perplexity, Gemini). "
+        "Checks llms.txt, AI indexability, and AI search readiness score."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def veb_ai_visibility_audit(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/ai-visibility-analyzer", {"url": args["url"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"AI visibility audit failed: {e}"}
+
+
+@tool(
+    name="veb_speed_check",
+    description=(
+        "Check website loading speed and Core Web Vitals (FCP, LCP, CLS, TBT). "
+        "Returns performance score and suggestions to improve speed."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def veb_speed_check(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/loading-speed-data-v2", {"url": args["url"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Speed check failed: {e}"}
+
+
+@tool(
+    name="veb_ai_crawler_check",
+    description=(
+        "Check whether a website allows AI bots to crawl it — GPTBot, Google-Extended, "
+        "PerplexityBot, ClaudeBot. Use when asked about AI crawler access."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https:// (e.g. example.com)"},
+        },
+    },
+)
+async def veb_ai_crawler_check(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/ai-seo-crawler", {"domain": args["domain"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"AI crawler check failed: {e}"}
+
+
+@tool(
+    name="veb_backlinks",
+    description=(
+        "Analyze backlinks for a domain. analysis_type options: "
+        "'all' (overview), 'new' (recent), 'poor' (toxic/low quality), 'referral' (referring domains)."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https://"},
+            "analysis_type": {
+                "type": "string",
+                "enum": ["all", "new", "poor", "referral"],
+                "description": "Type of backlink analysis",
+            },
+        },
+    },
+)
+async def veb_backlinks(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    endpoint_map = {
+        "all": "/backlink-data",
+        "new": "/new-backlinks",
+        "poor": "/poorbacklinks",
+        "referral": "/referral-domains",
+    }
+    endpoint = endpoint_map.get(args.get("analysis_type", "all"), "/backlink-data")
+    try:
+        data = await _veb_get_call(endpoint, {"domain": args["domain"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Backlink analysis failed: {e}"}
+
+
+@tool(
+    name="veb_domain_data",
+    description=(
+        "Get domain WHOIS data including registration date, expiry, registrar, DNS records, and name servers."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https://"},
+        },
+    },
+)
+async def veb_domain_data(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/domain-name-data-v2", {"domain": args["domain"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Domain data lookup failed: {e}"}
+
+
+@tool(
+    name="veb_top_search_keywords",
+    description=(
+        "Get all keywords a domain currently ranks for on Google, with positions and volumes. "
+        "Great for seeing your full ranking profile or analyzing competitors."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["domain"],
+        "properties": {
+            "domain": {"type": "string", "description": "Domain without https://"},
+            "country": {"type": "string", "description": "2-letter ISO country code (KE, NG, US, GB)"},
+        },
+    },
+)
+async def veb_top_search_keywords(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        params = {"domain": args["domain"]}
+        if args.get("country"):
+            params["country"] = args["country"]
+        data = await _veb_get_call("/topsearch-keywords", params)
+        return data if isinstance(data, dict) else {"keywords": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Top keyword lookup failed: {e}"}
+
+
+@tool(
+    name="veb_google_serp",
+    description=(
+        "Get live Google search results for a keyword. Shows who ranks in the top 10 "
+        "with domain authority. Use to see competition for any keyword."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword to check in Google"},
+            "country": {"type": "string", "description": "2-letter ISO country code (default: KE)"},
+        },
+    },
+)
+async def veb_google_serp(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/seo/google-serp", {
+            "keyword": args["keyword"],
+            "country": args.get("country", "KE"),
+        })
+        return data if isinstance(data, dict) else {"results": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"SERP lookup failed: {e}"}
+
+
+@tool(
+    name="veb_google_ai_serp",
+    description=(
+        "Access Google AI Mode search results for a query — the AI-generated answer panel "
+        "with sources. Use when asked what Google AI says about a topic."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": {"type": "string", "description": "Search query for Google AI Mode"},
+            "country": {"type": "string", "description": "2-letter ISO country code (default: KE)"},
+        },
+    },
+)
+async def veb_google_ai_serp(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/google-ai-mode-serp", {
+            "keyword": args["query"],
+            "country": args.get("country", "KE"),
+        })
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Google AI SERP lookup failed: {e}"}
+
+
+@tool(
+    name="veb_instagram_hashtags",
+    description="Generate high-quality Instagram hashtags for a keyword or topic.",
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Topic or keyword for hashtag generation"},
+        },
+    },
+)
+async def veb_instagram_hashtags(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/instagramhashtags", {"keyword": args["keyword"]})
+        return data if isinstance(data, dict) else {"hashtags": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Hashtag generation failed: {e}"}
+
+
+@tool(
+    name="veb_youtube_research",
+    description=(
+        "YouTube SEO research — get keyword volumes or generate video tags. "
+        "research_type: 'keywords' for YouTube search volume data, 'tags' for video tag suggestions."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword or video topic to research"},
+            "research_type": {
+                "type": "string",
+                "enum": ["keywords", "tags"],
+                "description": "'keywords' for search volume, 'tags' for video tags",
+            },
+        },
+    },
+)
+async def veb_youtube_research(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        if args.get("research_type") == "tags":
+            data = await _veb_get_call("/youtube-tag-generator", {"keyword": args["keyword"]})
+        else:
+            data = await _veb_get_call("/youtube-keyword-research", {"keyword": args["keyword"]})
+        return data if isinstance(data, dict) else {"result": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"YouTube research failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DATAFORSEO SERP RANKING CHECK
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="check_serp_position",
+    description=(
+        "Check where a website currently ranks on Google for a specific keyword using DataForSEO. "
+        "Returns position (1-100) or 'not ranked'. Use when asked about current Google rankings."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword", "domain"],
+        "properties": {
+            "keyword": {"type": "string", "description": "The keyword to check ranking for"},
+            "domain": {"type": "string", "description": "Domain to check (no https://, no www)"},
+            "location": {"type": "string", "description": "Country for SERP check (e.g. Kenya, Nigeria, USA)"},
+        },
+    },
+)
+async def check_serp_position(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx
+
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+
+    location_map = {
+        "kenya": 2404, "nigeria": 2566, "usa": 2710, "united states": 2710,
+        "uk": 2826, "united kingdom": 2826, "india": 2356, "australia": 2036,
+        "south africa": 2713, "ghana": 2288,
+    }
+    loc = (args.get("location") or "kenya").lower()
+    loc_code = location_map.get(loc, 2404)
+    domain = args["domain"].replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.post(
+                "https://api.dataforseo.com/v3/serp/google/organic/live/advanced",
+                headers={"Authorization": f"Basic {token}", "Content-Type": "application/json"},
+                json=[{"keyword": args["keyword"], "location_code": loc_code, "language_code": "en",
+                       "device": "desktop", "depth": 100}],
+            )
+        data = resp.json()
+        tasks = data.get("tasks") or []
+        if not tasks or tasks[0].get("status_code") != 20000:
+            return {"error": tasks[0].get("status_message", "DataForSEO error") if tasks else "No response"}
+
+        items = (tasks[0].get("result") or [{}])[0].get("items") or []
+        found_pos = None
+        found_url = None
+        top10 = []
+
+        for item in items:
+            if item.get("type") != "organic":
+                continue
+            pos = item.get("rank_absolute")
+            item_domain = (item.get("domain") or "").replace("www.", "")
+            if pos and pos <= 10:
+                top10.append({"position": pos, "domain": item_domain, "title": item.get("title", "")})
+            if found_pos is None and domain in item_domain:
+                found_pos = pos
+                found_url = item.get("url", "")
+
+        return {
+            "keyword": args["keyword"],
+            "domain": domain,
+            "position": found_pos,
+            "url": found_url,
+            "ranked": found_pos is not None,
+            "top_10": top10[:10],
+        }
+    except Exception as e:
+        return {"error": f"SERP check failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# VEBAPI KEYWORD RESEARCH + GEO BREAKDOWN
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="veb_keyword_research",
+    description=(
+        "Get keyword ideas and search volumes from VebAPI. "
+        "Use as a fallback when DataForSEO is unavailable, or for a second opinion on keyword volume."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Seed keyword to research"},
+            "country": {"type": "string", "description": "2-letter ISO country code (KE, NG, US, GB). Default: KE"},
+        },
+    },
+)
+async def veb_keyword_research(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        data = await _veb_get_call("/seo/keywordresearch", {
+            "keyword": args["keyword"],
+            "country": args.get("country", "KE"),
+        })
+        return data if isinstance(data, dict) else {"keywords": data}
+    except RuntimeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Keyword research failed: {e}"}
+
+
+@tool(
+    name="get_keyword_geo_breakdown",
+    description=(
+        "Get search volume for a keyword across 12 countries simultaneously. "
+        "Use when asked 'where is this keyword popular', 'global volume', or for international SEO."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword to check globally"},
+        },
+    },
+)
+async def get_keyword_geo_breakdown(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+    markets = [
+        (2710, "USA"), (2826, "UK"), (2124, "Canada"), (2036, "Australia"),
+        (2356, "India"), (2566, "Nigeria"), (2404, "Kenya"), (2713, "South Africa"),
+        (2076, "Brazil"), (2840, "Germany"), (2682, "Saudi Arabia"), (2784, "UAE"),
+    ]
+    headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+    results = {}
+    try:
+        async with _httpx.AsyncClient(timeout=40) as hc:
+            for loc_code, country in markets:
+                try:
+                    resp = await hc.post(
+                        "https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live",
+                        headers=headers,
+                        json=[{"keywords": [args["keyword"]], "location_code": loc_code, "language_code": "en"}],
+                    )
+                    tasks = resp.json().get("tasks") or []
+                    if tasks and tasks[0].get("status_code") == 20000:
+                        items = tasks[0].get("result") or []
+                        if items:
+                            results[country] = int(items[0].get("search_volume") or 0)
+                except Exception:
+                    pass
+        if not results:
+            return {"error": f"No global data found for '{args['keyword']}'"}
+        sorted_res = sorted(results.items(), key=lambda x: x[1], reverse=True)
+        return {
+            "keyword": args["keyword"],
+            "markets": [{"country": c, "volume": v} for c, v in sorted_res],
+            "total_volume": sum(results.values()),
+            "strongest_market": sorted_res[0][0] if sorted_res else None,
+        }
+    except Exception as e:
+        return {"error": f"Geo breakdown failed: {e}"}
+
+
+@tool(
+    name="get_competitor_keywords",
+    description=(
+        "Find what keywords a competitor's website ranks for on Google using DataForSEO. "
+        "Use when asked about competitor rankings or to discover new keyword opportunities."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["competitor_domain"],
+        "properties": {
+            "competitor_domain": {"type": "string", "description": "Competitor domain (no https://)"},
+            "location": {"type": "string", "description": "Country (e.g. Kenya, Nigeria, USA). Default: Kenya"},
+            "limit": {"type": "integer", "description": "Number of keywords to return (default 15)"},
+        },
+    },
+)
+async def get_competitor_keywords(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+    loc_map = {
+        "kenya": 2404, "nigeria": 2566, "usa": 2710, "united states": 2710,
+        "uk": 2826, "united kingdom": 2826, "india": 2356, "australia": 2036,
+        "south africa": 2713, "ghana": 2288,
+    }
+    loc = (args.get("location") or "kenya").lower()
+    loc_code = loc_map.get(loc, 2404)
+    limit = min(int(args.get("limit") or 15), 50)
+    domain = args["competitor_domain"].replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.post(
+                "https://api.dataforseo.com/v3/dataforseo_labs/google/ranked_keywords/live",
+                headers={"Authorization": f"Basic {token}", "Content-Type": "application/json"},
+                json=[{"target": domain, "location_code": loc_code, "language_code": "en", "limit": limit}],
+            )
+        data = resp.json()
+        tasks = data.get("tasks") or []
+        if not tasks or tasks[0].get("status_code") != 20000:
+            return {"error": tasks[0].get("status_message", "DataForSEO error") if tasks else "No response"}
+        items = (tasks[0].get("result") or [{}])[0].get("items") or []
+        keywords = []
+        for item in items:
+            kd = item.get("keyword_data") or {}
+            ki = kd.get("keyword_info") or {}
+            se = item.get("ranked_serp_element") or {}
+            sr = se.get("serp_item") or {}
+            keywords.append({
+                "keyword": kd.get("keyword", ""),
+                "position": sr.get("rank_absolute"),
+                "volume": ki.get("search_volume", 0),
+                "url": sr.get("url", ""),
+            })
+        return {"domain": domain, "keywords": keywords, "total": len(keywords)}
+    except Exception as e:
+        return {"error": f"Competitor keyword lookup failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO KEYWORD TRACKER (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="add_keywords_to_tracker",
+    description=(
+        "Save keywords to the user's SEO keyword tracker. "
+        "ALWAYS call this after keyword research so the user can track and manage their keywords."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["keywords_csv"],
+        "properties": {
+            "keywords_csv": {
+                "type": "string",
+                "description": (
+                    "Pipe-separated rows: keyword|search_volume|difficulty|intent|content_idea. "
+                    "One keyword per line. search_volume is an integer (0 if unknown). "
+                    "difficulty: low/medium/high. intent: informational/transactional/local."
+                ),
+            },
+        },
+    },
+)
+async def add_keywords_to_tracker(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    saved, skipped = 0, 0
+    for line in (args.get("keywords_csv") or "").strip().splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if not parts or not parts[0]:
+            continue
+        keyword = parts[0]
+        try:
+            vol = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        except Exception:
+            vol = 0
+        difficulty = parts[2] if len(parts) > 2 else ""
+        intent = parts[3] if len(parts) > 3 else ""
+        content_idea = parts[4] if len(parts) > 4 else ""
+        try:
+            await ctx.db.keyword_tracker.update_one(
+                {"user_id": uid, "keyword": keyword},
+                {"$set": {
+                    "user_id": uid, "keyword": keyword, "search_volume": vol,
+                    "difficulty": difficulty, "intent": intent,
+                    "content_idea": content_idea, "updated_at": datetime.utcnow(),
+                }, "$setOnInsert": {"created_at": datetime.utcnow(), "posts": []}},
+                upsert=True,
+            )
+            saved += 1
+        except Exception:
+            skipped += 1
+    return {"saved": saved, "skipped": skipped, "message": f"Saved {saved} keywords to tracker."}
+
+
+@tool(
+    name="get_saved_keywords",
+    description="Get all keywords saved in the user's SEO keyword tracker with volumes, difficulty, and intent.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_saved_keywords(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    docs = await ctx.db.keyword_tracker.find({"user_id": uid}).sort("search_volume", -1).to_list(200)
+    if not docs:
+        return {"count": 0, "keywords": [], "message": "No keywords saved yet. Try researching keywords first."}
+    keywords = [
+        {
+            "keyword": d.get("keyword"),
+            "search_volume": d.get("search_volume", 0),
+            "difficulty": d.get("difficulty", ""),
+            "intent": d.get("intent", ""),
+            "content_idea": d.get("content_idea", ""),
+            "posts_count": len(d.get("posts") or []),
+        }
+        for d in docs
+    ]
+    return {"count": len(keywords), "keywords": keywords}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO RANKINGS TRACKER (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_rankings",
+    description=(
+        "Get all tracked keyword rankings from the SEO rankings tracker. "
+        "Shows current position, domain, and when it was last checked."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_rankings(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    rows = await ctx.db.seo_serp_rankings.find({"user_id": uid}).sort("checked_at", -1).to_list(500)
+    if not rows:
+        return {"count": 0, "rankings": [], "message": "No rankings tracked yet. Use check_serp_position to start tracking."}
+    seen: dict = {}
+    for r in rows:
+        key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+        if key not in seen:
+            seen[key] = r
+    rankings = [
+        {
+            "keyword": r.get("keyword"),
+            "domain": r.get("domain"),
+            "position": r.get("position"),
+            "checked_at": r.get("checked_at").isoformat() if r.get("checked_at") else None,
+        }
+        for r in seen.values()
+    ]
+    return {"count": len(rankings), "rankings": rankings}
+
+
+@tool(
+    name="refresh_all_rankings",
+    description=(
+        "Re-check Google positions for ALL tracked keywords using live DataForSEO data. "
+        "Use when the user asks to refresh or update their rankings."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def refresh_all_rankings(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    token = os.environ.get("DATAFORSEO_TOKEN", "").strip()
+    if not token:
+        return {"error": "DATAFORSEO_TOKEN not set"}
+    uid = ctx.business_id
+    rows = await ctx.db.seo_serp_rankings.find({"user_id": uid}).sort("checked_at", -1).to_list(500)
+    if not rows:
+        return {"message": "No keywords being tracked yet."}
+    seen: dict = {}
+    for r in rows:
+        key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+        if key not in seen:
+            seen[key] = r
+    headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+    updated, failed = 0, 0
+    async with _httpx.AsyncClient(timeout=30) as hc:
+        for r in list(seen.values())[:20]:
+            kw = r.get("keyword", "")
+            domain = r.get("domain", "")
+            loc = r.get("location_code", 2404)
+            lang = r.get("language_code", "en")
+            try:
+                resp = await hc.post(
+                    "https://api.dataforseo.com/v3/serp/google/organic/live/regular",
+                    headers=headers,
+                    json=[{"keyword": kw, "location_code": loc, "language_code": lang, "depth": 100}],
+                )
+                tasks = resp.json().get("tasks") or []
+                if tasks and tasks[0].get("status_code") == 20000:
+                    items = (tasks[0].get("result") or [{}])[0].get("items") or []
+                    pos = None
+                    for item in items:
+                        if item.get("type") == "organic" and domain in (item.get("domain") or "").replace("www.", ""):
+                            pos = item.get("rank_absolute")
+                            break
+                    await ctx.db.seo_serp_rankings.insert_one({
+                        "_id": str(uuid.uuid4()),
+                        "user_id": uid, "keyword": kw, "domain": domain,
+                        "position": pos, "location_code": loc, "language_code": lang,
+                        "checked_at": datetime.utcnow(),
+                    })
+                    updated += 1
+            except Exception:
+                failed += 1
+    return {"updated": updated, "failed": failed, "message": f"Refreshed {updated} rankings."}
+
+
+@tool(
+    name="delete_ranking",
+    description="Remove a keyword from the SEO rankings tracker.",
+    parameters={
+        "type": "object",
+        "required": ["keyword"],
+        "properties": {
+            "keyword": {"type": "string", "description": "Keyword to stop tracking"},
+            "domain": {"type": "string", "description": "Domain for the keyword (optional, removes all if omitted)"},
+        },
+    },
+    destructive=True,
+)
+async def delete_ranking(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    query: dict = {"user_id": uid, "keyword": args["keyword"]}
+    if args.get("domain"):
+        query["domain"] = args["domain"]
+    result = await ctx.db.seo_serp_rankings.delete_many(query)
+    return {"deleted": result.deleted_count, "message": f"Removed '{args['keyword']}' from rankings tracker."}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AI-POWERED WEBSITE AUDIT & FIX
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="audit_website",
+    description=(
+        "Crawl and audit a website URL for SEO issues without needing an API key. "
+        "Returns a score, grade, and list of on-page issues. "
+        "Use as fallback if veb_page_analysis is unavailable."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Full website URL (https://example.com)"},
+        },
+    },
+)
+async def audit_website(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    from html.parser import HTMLParser
+
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.title = ""; self.meta: dict = {}
+            self.h1s: list = []; self.h2s: list = []
+            self.imgs_no_alt = 0; self.total_imgs = 0
+            self._in_title = False
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "title": self._in_title = True
+            if tag == "meta":
+                name = a.get("name", "").lower()
+                content = a.get("content", "")
+                if name in ("description", "keywords"): self.meta[name] = content
+            if tag == "h1": self.h1s.append("")
+            if tag == "h2": self.h2s.append("")
+            if tag == "img":
+                self.total_imgs += 1
+                if not a.get("alt"): self.imgs_no_alt += 1
+        def handle_endtag(self, tag):
+            if tag == "title": self._in_title = False
+        def handle_data(self, data):
+            if self._in_title: self.title += data
+            if self.h1s and data.strip(): self.h1s[-1] += data
+            if self.h2s and data.strip(): self.h2s[-1] += data
+
+    url = args["url"]
+    try:
+        async with _httpx.AsyncClient(timeout=15, follow_redirects=True) as hc:
+            resp = await hc.get(url, headers={"User-Agent": "ZiloSEOBot/1.0"})
+        p = _P(); p.feed(resp.text)
+        issues = []
+        score = 100
+        if not p.title: issues.append({"severity": "critical", "message": "Missing <title> tag"}); score -= 20
+        elif len(p.title) > 60: issues.append({"severity": "warning", "message": f"Title too long ({len(p.title)} chars, max 60)"}); score -= 5
+        desc = p.meta.get("description", "")
+        if not desc: issues.append({"severity": "critical", "message": "Missing meta description"}); score -= 15
+        elif len(desc) > 160: issues.append({"severity": "warning", "message": f"Meta description too long ({len(desc)} chars)"}); score -= 5
+        if len(p.h1s) == 0: issues.append({"severity": "critical", "message": "No H1 tag found"}); score -= 15
+        elif len(p.h1s) > 1: issues.append({"severity": "warning", "message": f"Multiple H1 tags ({len(p.h1s)}) — use only one"}); score -= 5
+        if p.imgs_no_alt > 0: issues.append({"severity": "warning", "message": f"{p.imgs_no_alt}/{p.total_imgs} images missing alt text"}); score -= min(p.imgs_no_alt * 2, 10)
+        if len(p.h2s) == 0: issues.append({"severity": "info", "message": "No H2 tags — add subheadings for better structure"}); score -= 5
+        score = max(0, score)
+        grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
+        try:
+            await ctx.db.seo_audits.insert_one({
+                "_id": str(uuid.uuid4()), "user_id": ctx.business_id, "url": url,
+                "score": score, "grade": grade, "issues_count": len(issues),
+                "created_at": datetime.utcnow(),
+            })
+        except Exception:
+            pass
+        return {"url": url, "score": score, "grade": grade, "title": p.title, "meta_description": desc,
+                "h1_count": len(p.h1s), "h2_count": len(p.h2s),
+                "images_missing_alt": p.imgs_no_alt, "total_images": p.total_imgs,
+                "issues": issues}
+    except Exception as e:
+        return {"error": f"Audit failed: {e}"}
+
+
+@tool(
+    name="fix_seo_issues",
+    description=(
+        "Get AI-written fixes for every SEO issue on a website. "
+        "Returns ready-to-use replacement copy for titles, meta descriptions, etc."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "Website URL to audit and fix"},
+        },
+    },
+)
+async def fix_seo_issues(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    from html.parser import HTMLParser
+
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.title = ""; self.meta: dict = {}; self.h1s: list = []
+            self._in_title = False
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "title": self._in_title = True
+            if tag == "meta":
+                n = a.get("name", "").lower()
+                if n in ("description", "keywords"): self.meta[n] = a.get("content", "")
+            if tag == "h1": self.h1s.append("")
+        def handle_endtag(self, tag):
+            if tag == "title": self._in_title = False
+        def handle_data(self, d):
+            if self._in_title: self.title += d
+            if self.h1s and d.strip(): self.h1s[-1] += d
+
+    url = args["url"]
+    try:
+        async with _httpx.AsyncClient(timeout=15, follow_redirects=True) as hc:
+            resp = await hc.get(url, headers={"User-Agent": "ZiloSEOBot/1.0"})
+        p = _P(); p.feed(resp.text)
+        issues_text = []
+        if not p.title: issues_text.append("MISSING TITLE TAG")
+        elif len(p.title) > 60: issues_text.append(f"TITLE TOO LONG: '{p.title}' ({len(p.title)} chars)")
+        desc = p.meta.get("description", "")
+        if not desc: issues_text.append("MISSING META DESCRIPTION")
+        elif len(desc) > 160: issues_text.append(f"META DESCRIPTION TOO LONG: '{desc}' ({len(desc)} chars)")
+        if not p.h1s: issues_text.append("MISSING H1 TAG")
+        elif len(p.h1s) > 1: issues_text.append(f"MULTIPLE H1 TAGS: {p.h1s}")
+        if not issues_text:
+            return {"message": "No critical SEO issues found on this page.", "url": url}
+        prompt = f"""You are an SEO expert. Fix these SEO issues for the website: {url}
+
+Issues:
+{chr(10).join(f'- {i}' for i in issues_text)}
+
+Provide specific replacement copy:
+1. Optimized title tag (max 60 chars, include primary keyword)
+2. Meta description (max 160 chars, include keyword + CTA)
+3. H1 tag recommendation
+4. Brief explanation of each fix
+
+Be specific and actionable."""
+        # Try Anthropic/OpenAI
+        claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if claude_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": claude_key, "anthropic-version": "2023-06-01"},
+                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 1000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            fix_text = r.json()["content"][0]["text"]
+        elif openai_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    json={"model": "gpt-4o-mini", "max_tokens": 1000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            fix_text = r.json()["choices"][0]["message"]["content"]
+        else:
+            fix_text = "No AI provider configured."
+        return {"url": url, "issues_found": issues_text, "fixes": fix_text}
+    except Exception as e:
+        return {"error": f"Fix generation failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO BLOG POST MANAGEMENT (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="list_saved_posts",
+    description=(
+        "List all blog posts saved in the SEO hub (drafts and published). "
+        "Use when the user asks to see their blog posts, drafts, or content."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Filter by status: 'draft', 'published', or omit for all"},
+        },
+    },
+)
+async def list_saved_posts(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    query: dict = {"user_id": uid}
+    if args.get("status"):
+        query["status"] = args["status"]
+    docs = await ctx.db.seo_blog_posts.find(query).sort("created_at", -1).limit(30).to_list(30)
+    if not docs:
+        return {"count": 0, "posts": [], "message": "No blog posts saved yet."}
+    posts = [
+        {
+            "id": str(d.get("_id")),
+            "title": d.get("title", "Untitled"),
+            "status": d.get("status", "draft"),
+            "keywords": d.get("keywords") or d.get("tags") or [],
+            "created_at": d.get("created_at").isoformat() if d.get("created_at") else None,
+            "published_at": d.get("published_at").isoformat() if d.get("published_at") else None,
+        }
+        for d in docs
+    ]
+    return {"count": len(posts), "posts": posts}
+
+
+@tool(
+    name="publish_to_my_site",
+    description=(
+        "Publish a saved SEO blog post to the user's Zilo website with one click. "
+        "No credentials needed — uses the user's linked Zilo site automatically."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["post_id"],
+        "properties": {
+            "post_id": {"type": "string", "description": "ID of the saved post (from list_saved_posts)"},
+        },
+    },
+    destructive=True,
+)
+async def publish_to_my_site(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    uid = ctx.business_id
+    post_id = args["post_id"]
+    try:
+        doc = await ctx.db.seo_blog_posts.find_one({"_id": post_id, "user_id": uid})
+        if not doc:
+            return {"error": f"Post '{post_id}' not found. Use list_saved_posts to see your posts."}
+        blog = await ctx.db.blogs.find_one({"client_id": uid})
+        if not blog:
+            return {"error": "No Zilo site found. Set up your website first."}
+        wp_slug = blog.get("wp_slug", "")
+        wp_base = os.environ.get("WP_BASE_URL", "https://zilo.pro").rstrip("/")
+        site_url = f"https://{wp_slug}.zilo.pro" if wp_slug else wp_base
+        wp_user = os.environ.get("WP_ADMIN_USER", "")
+        wp_pass = os.environ.get("WP_ADMIN_APP_PASSWORD", "")
+        import base64
+        creds = base64.b64encode(f"{wp_user}:{wp_pass}".encode()).decode()
+        payload = {
+            "title": doc.get("title", ""),
+            "content": doc.get("content", ""),
+            "excerpt": doc.get("meta_description", ""),
+            "status": "publish",
+        }
+        if doc.get("tags"):
+            payload["tags"] = doc["tags"][:5]
+        async with _httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.post(
+                f"{site_url}/wp-json/wp/v2/posts",
+                headers={"Authorization": f"Basic {creds}"},
+                json=payload,
+            )
+        if resp.status_code in (200, 201):
+            await ctx.db.seo_blog_posts.update_one(
+                {"_id": post_id},
+                {"$set": {"status": "published", "published_at": datetime.utcnow(),
+                          "published_url": resp.json().get("link", "")}},
+            )
+            return {"success": True, "url": resp.json().get("link", site_url),
+                    "message": f"Published '{doc.get('title')}' to your Zilo site."}
+        return {"error": f"WordPress returned {resp.status_code}: {resp.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Publish failed: {e}"}
+
+
+@tool(
+    name="delete_blog_post",
+    description="Delete a saved SEO blog post permanently.",
+    parameters={
+        "type": "object",
+        "required": ["post_id"],
+        "properties": {
+            "post_id": {"type": "string", "description": "ID of the post to delete (from list_saved_posts)"},
+        },
+    },
+    destructive=True,
+)
+async def delete_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    result = await ctx.db.seo_blog_posts.delete_one({"_id": args["post_id"], "user_id": uid})
+    if result.deleted_count:
+        return {"success": True, "message": "Blog post deleted."}
+    return {"error": "Post not found or you don't have permission to delete it."}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO CONTENT CALENDAR (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_content_calendar",
+    description="View the user's SEO content calendar — all scheduled posts by week with keywords.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_content_calendar(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    items = await ctx.db.seo_content_calendar.find({"user_id": uid}).sort("week", 1).to_list(100)
+    if not items:
+        return {"count": 0, "items": [], "message": "No content scheduled yet. Use schedule_content to add posts."}
+    calendar = [
+        {
+            "id": str(d.get("_id")),
+            "week": d.get("week"),
+            "title": d.get("title", ""),
+            "keywords": d.get("keywords") or [],
+            "status": d.get("status", "planned"),
+            "post_id": d.get("post_id"),
+        }
+        for d in items
+    ]
+    return {"count": len(calendar), "items": calendar}
+
+
+@tool(
+    name="schedule_content",
+    description=(
+        "Add a blog post idea to the SEO content calendar for a specific week. "
+        "Use when the user wants to plan upcoming content."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "week"],
+        "properties": {
+            "title": {"type": "string", "description": "Blog post title or topic"},
+            "week": {"type": "string", "description": "Week identifier (e.g. '2025-W22' or 'Week 1')"},
+            "keywords": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Target keywords for this post",
+            },
+        },
+    },
+)
+async def schedule_content(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    item_id = str(uuid.uuid4())
+    await ctx.db.seo_content_calendar.insert_one({
+        "_id": item_id, "user_id": uid,
+        "title": args["title"], "week": args["week"],
+        "keywords": args.get("keywords") or [],
+        "status": "planned", "created_at": datetime.utcnow(),
+    })
+    return {"id": item_id, "message": f"Scheduled '{args['title']}' for {args['week']}."}
+
+
+@tool(
+    name="generate_content_calendar",
+    description=(
+        "Generate an AI-powered SEO content calendar with blog post ideas, "
+        "target keywords, and a publishing schedule. "
+        "Use when the user wants a content plan for the coming weeks."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "weeks": {"type": "integer", "description": "Number of weeks to plan (default 4)"},
+            "posts_per_week": {"type": "integer", "description": "Posts per week (default 2)"},
+            "focus": {"type": "string", "description": "Topic focus or niche (optional)"},
+        },
+    },
+)
+async def generate_content_calendar(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    user = await ctx.db.users.find_one({"_id": ctx.business_id}) or {}
+    bk = user.get("business_knowledge") or {}
+    biz_name = user.get("business_name", "the business")
+    biz_type = bk.get("business_type") or user.get("business_type", "business")
+    description = bk.get("business_description") or bk.get("products_services") or ""
+    weeks = min(int(args.get("weeks") or 4), 12)
+    posts_per_week = min(int(args.get("posts_per_week") or 2), 5)
+    focus = args.get("focus") or ""
+    prompt = f"""Create a {weeks}-week SEO content calendar for {biz_name} ({biz_type}).
+Business description: {description}
+{f'Focus area: {focus}' if focus else ''}
+{posts_per_week} posts per week.
+
+For each post include:
+- Week number
+- Blog post title (SEO optimized)
+- Target keyword (1 primary keyword)
+- Search intent (informational/transactional/local)
+- Brief content outline (2-3 bullet points)
+
+Format as a clear week-by-week plan."""
+    claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    try:
+        if claude_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": claude_key, "anthropic-version": "2023-06-01"},
+                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 2000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            calendar_text = r.json()["content"][0]["text"]
+        elif openai_key:
+            async with _httpx.AsyncClient(timeout=60) as hc:
+                r = await hc.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_key}"},
+                    json={"model": "gpt-4o-mini", "max_tokens": 2000,
+                          "messages": [{"role": "user", "content": prompt}]},
+                )
+            calendar_text = r.json()["choices"][0]["message"]["content"]
+        else:
+            return {"error": "No AI provider configured."}
+        return {"weeks": weeks, "posts_per_week": posts_per_week, "calendar": calendar_text}
+    except Exception as e:
+        return {"error": f"Calendar generation failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO SUMMARY / OVERVIEW (DB)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="get_seo_summary",
+    description=(
+        "Get a complete overview of the user's SEO activity — "
+        "blog post counts, latest audit score, tracked rankings, and saved keywords. "
+        "Use when asked for an SEO status update or overview."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def get_seo_summary(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import asyncio as _asyncio
+    uid = ctx.business_id
+    try:
+        total_posts, published_posts, drafts, total_audits, latest_audit, total_rankings, total_keywords = await _asyncio.gather(
+            ctx.db.seo_blog_posts.count_documents({"user_id": uid}),
+            ctx.db.seo_blog_posts.count_documents({"user_id": uid, "status": "published"}),
+            ctx.db.seo_blog_posts.count_documents({"user_id": uid, "status": "draft"}),
+            ctx.db.seo_audits.count_documents({"user_id": uid}),
+            ctx.db.seo_audits.find_one({"user_id": uid}, sort=[("created_at", -1)]),
+            ctx.db.seo_serp_rankings.count_documents({"user_id": uid}),
+            ctx.db.keyword_tracker.count_documents({"user_id": uid}),
+        )
+        return {
+            "blog_posts": {"total": total_posts, "published": published_posts, "drafts": drafts},
+            "audits": {
+                "total": total_audits,
+                "latest_score": latest_audit.get("score") if latest_audit else None,
+                "latest_grade": latest_audit.get("grade") if latest_audit else None,
+                "latest_url": latest_audit.get("url") if latest_audit else None,
+            },
+            "rankings_tracked": total_rankings,
+            "keywords_saved": total_keywords,
+        }
+    except Exception as e:
+        return {"error": f"SEO summary failed: {e}"}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SEO AI INTELLIGENCE TOOLS
+# ═════════════════════════════════════════════════════════════════════════════
+
+async def _ai_call(prompt: str, max_tokens: int = 1500) -> str:
+    import httpx as _httpx
+    claude_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if claude_key:
+        async with _httpx.AsyncClient(timeout=60) as hc:
+            r = await hc.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": claude_key, "anthropic-version": "2023-06-01"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": prompt}]},
+            )
+        return r.json()["content"][0]["text"]
+    elif openai_key:
+        async with _httpx.AsyncClient(timeout=60) as hc:
+            r = await hc.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openai_key}"},
+                json={"model": "gpt-4o-mini", "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": prompt}]},
+            )
+        return r.json()["choices"][0]["message"]["content"]
+    return "No AI provider configured."
+
+
+@tool(
+    name="diagnose_rank_changes",
+    description=(
+        "AI diagnosis of recent keyword ranking changes. "
+        "Detects which keywords moved 3+ positions in the last 45 days and explains WHY "
+        "each change happened (algorithm, content, competition, technical) and what to do. "
+        "Use when the user asks why rankings dropped/rose or wants ranking insights."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def diagnose_rank_changes(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from datetime import datetime, timedelta
+    uid = ctx.business_id
+    cutoff = datetime.utcnow() - timedelta(days=45)
+    try:
+        rows = await ctx.db.seo_serp_rankings.find(
+            {"user_id": uid, "checked_at": {"$gte": cutoff}}
+        ).sort("checked_at", 1).to_list(500)
+        if not rows:
+            return {"message": "No ranking history found. Track some keywords first using check_serp_position."}
+        by_kw: dict = {}
+        for r in rows:
+            k = r.get("keyword", "")
+            by_kw.setdefault(k, []).append(r)
+        movers = []
+        for kw, history in by_kw.items():
+            if len(history) < 2:
+                continue
+            first_pos = history[0].get("position") or 0
+            last_pos = history[-1].get("position") or 0
+            if first_pos and last_pos and abs(last_pos - first_pos) >= 3:
+                movers.append({
+                    "keyword": kw,
+                    "from": first_pos,
+                    "to": last_pos,
+                    "change": last_pos - first_pos,
+                    "domain": history[-1].get("domain", ""),
+                })
+        if not movers:
+            return {"message": "No significant ranking changes detected in the last 45 days (need 3+ position moves)."}
+        movers.sort(key=lambda x: abs(x["change"]), reverse=True)
+        summary_lines = [f"- '{m['keyword']}': #{m['from']} → #{m['to']} ({'+' if m['change'] > 0 else ''}{m['change']})" for m in movers[:10]]
+        prompt = f"""You are an expert SEO strategist. A website has these keyword ranking changes over the last 45 days:
+
+{chr(10).join(summary_lines)}
+
+For each keyword, diagnose:
+1. The most likely reason for the position change (algorithm update, content quality, competition, backlinks, technical issue, or seasonal)
+2. A specific, actionable next step to improve or maintain the ranking
+
+Format as a JSON object with:
+- "overall_summary": one sentence overview
+- "top_priority": the single most important action
+- "keywords": array of {{"keyword": "...", "direction": "up"|"down", "diagnosis": "...", "action": "..."}}
+
+Reply with ONLY valid JSON."""
+        raw = await _ai_call(prompt, max_tokens=1500)
+        try:
+            import json as _json
+            parsed = _json.loads(raw)
+        except Exception:
+            parsed = {"overall_summary": raw, "keywords": [], "top_priority": ""}
+        return {"movers_count": len(movers), "analysis": parsed}
+    except Exception as e:
+        return {"error": f"Rank diagnosis failed: {e}"}
+
+
+@tool(
+    name="suggest_internal_links",
+    description=(
+        "AI-powered internal linking suggestions across your blog posts. "
+        "Analyses all blog posts and recommends which posts should link to which others, "
+        "with the exact anchor text and where to add the link. "
+        "Use when the user asks about internal linking, link structure, or improving SEO through links."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def suggest_internal_links(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    try:
+        posts_raw = await ctx.db.seo_blog_posts.find(
+            {"user_id": uid},
+            {"title": 1, "slug": 1, "keywords": 1, "content": 1, "status": 1}
+        ).sort("created_at", -1).to_list(40)
+        if len(posts_raw) < 2:
+            return {"message": "You need at least 2 blog posts to get internal linking suggestions."}
+        posts_info = []
+        for p in posts_raw:
+            content_preview = (p.get("content") or "")[:300]
+            posts_info.append(
+                f"- ID={str(p['_id'])} | Title: {p.get('title','')} | "
+                f"Keywords: {p.get('keywords','')} | Preview: {content_preview}"
+            )
+        prompt = f"""You are an SEO internal linking expert. Here are {len(posts_raw)} blog posts:
+
+{chr(10).join(posts_info)}
+
+Suggest the top 8 internal link opportunities. For each suggestion:
+- Which post should ADD a link (from_title)
+- Which post it should LINK TO (to_title)
+- The exact anchor text to use (relevant keyword phrase, not 'click here')
+- Why this link helps SEO (brief reason)
+
+Return ONLY a JSON array of objects with fields: from_title, to_title, anchor_text, reason"""
+        raw = await _ai_call(prompt, max_tokens=1200)
+        try:
+            import json as _json
+            start = raw.find("[")
+            end = raw.rfind("]") + 1
+            suggestions = _json.loads(raw[start:end]) if start >= 0 else []
+        except Exception:
+            suggestions = []
+        return {"post_count": len(posts_raw), "suggestions": suggestions}
+    except Exception as e:
+        return {"error": f"Internal link suggestions failed: {e}"}
+
+
+@tool(
+    name="generate_schema_markup",
+    description=(
+        "Generate Schema.org JSON-LD structured data markup for a blog post. "
+        "Produces ready-to-paste <script type='application/ld+json'> tags for rich results "
+        "(Article, FAQPage, HowTo). Pass post_id if you know it, or provide title + keywords. "
+        "Use when the user asks for schema markup, structured data, or rich snippets."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "post_id": {"type": "string", "description": "Blog post ID (optional if title provided)"},
+            "title": {"type": "string", "description": "Post title (used if post_id not given)"},
+            "keywords": {"type": "string", "description": "Target keywords for the post"},
+        },
+    },
+)
+async def generate_schema_markup(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    uid = ctx.business_id
+    post_id = (args.get("post_id") or "").strip()
+    title = (args.get("title") or "").strip()
+    keywords = (args.get("keywords") or "").strip()
+    try:
+        post = None
+        if post_id:
+            from bson import ObjectId
+            try:
+                post = await ctx.db.seo_blog_posts.find_one({"_id": ObjectId(post_id), "user_id": uid})
+            except Exception:
+                pass
+        if post:
+            title = post.get("title") or title
+            keywords = post.get("keywords") or keywords
+            content_preview = (post.get("content") or "")[:800]
+        else:
+            content_preview = ""
+        if not title:
+            return {"error": "Provide a post_id or title to generate schema markup."}
+        prompt = f"""Generate Schema.org JSON-LD structured data for this blog post.
+
+Title: {title}
+Keywords: {keywords}
+Content preview: {content_preview}
+
+Generate ALL applicable schemas from: Article/BlogPosting, FAQPage (if FAQs can be inferred), HowTo (if steps can be inferred).
+
+Return ONLY a JSON object with:
+- "schemas": array of complete JSON-LD objects (each with "@context", "@type", and all required fields)
+- "script_tags": a string containing the ready-to-paste <script> tags
+
+Use realistic values. For author/publisher use the blog name if available, otherwise "Zilo Blog".
+datePublished: use today's date {datetime.utcnow().strftime('%Y-%m-%d')}."""
+        raw = await _ai_call(prompt, max_tokens=2000)
+        try:
+            import json as _json
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            parsed = _json.loads(raw[start:end]) if start >= 0 else {}
+        except Exception:
+            parsed = {}
+        script_tags = parsed.get("script_tags") or raw
+        if post_id and post:
+            await ctx.db.seo_blog_posts.update_one(
+                {"_id": post.get("_id")},
+                {"$set": {"schema_markup": script_tags, "schema_updated_at": datetime.utcnow()}}
+            )
+        return {"title": title, "script_tags": script_tags, "schemas": parsed.get("schemas", [])}
+    except Exception as e:
+        return {"error": f"Schema generation failed: {e}"}
+
+
+@tool(
+    name="analyze_search_console",
+    description=(
+        "AI analysis of Google Search Console data. Fetches GSC performance metrics and "
+        "provides plain-English insights: health rating, wins, concerns, opportunities, "
+        "and priority actions. Use when the user asks what their GSC data means, "
+        "wants Search Console insights, or asks about organic search performance."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "site_url": {"type": "string", "description": "Website URL (from GSC). Leave blank to auto-detect from business profile."},
+            "days": {"type": "integer", "default": 28, "description": "Number of days to analyse (default 28)"},
+        },
+    },
+)
+async def analyze_search_console(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import httpx as _httpx
+    uid = ctx.business_id
+    days = int(args.get("days") or 28)
+    site_url = (args.get("site_url") or "").strip()
+    try:
+        if not site_url:
+            biz = await ctx.db.businesses.find_one({"_id": uid}) or \
+                  await ctx.db.users.find_one({"_id": uid})
+            site_url = (biz or {}).get("website_url") or (biz or {}).get("website") or ""
+        if not site_url:
+            return {"error": "No site URL found. Provide site_url or add your website to your business profile."}
+        from datetime import date, timedelta
+        end_date = date.today().isoformat()
+        start_date = (date.today() - timedelta(days=days)).isoformat()
+        gsc_data: dict = {}
+        try:
+            composio_key = os.environ.get("COMPOSIO_API_KEY", "")
+            if composio_key:
+                async with _httpx.AsyncClient(timeout=30) as hc:
+                    r = await hc.post(
+                        "https://backend.composio.dev/api/v2/actions/GOOGLEWEBSEARCH_QUERY/execute",
+                        headers={"x-api-key": composio_key},
+                        json={
+                            "connectedAccountId": uid,
+                            "input": {
+                                "siteUrl": site_url,
+                                "startDate": start_date,
+                                "endDate": end_date,
+                                "dimensions": ["query"],
+                                "rowLimit": 25,
+                            }
+                        },
+                    )
+                gsc_data = r.json().get("response", {}).get("data", {})
+        except Exception:
+            pass
+        rows = gsc_data.get("rows", [])
+        if rows:
+            data_summary = f"Top queries ({len(rows)} rows):\n"
+            for row in rows[:15]:
+                keys = row.get("keys", [])
+                clicks = row.get("clicks", 0)
+                impressions = row.get("impressions", 0)
+                ctr = row.get("ctr", 0)
+                position = row.get("position", 0)
+                data_summary += f"  '{', '.join(keys)}': {clicks} clicks, {impressions} impr, CTR {ctr:.1%}, pos {position:.1f}\n"
+        else:
+            data_summary = "No GSC data available via API (GSC may not be connected yet)."
+        prompt = f"""You are an expert SEO analyst. Analyse this Google Search Console data for {site_url} over the last {days} days:
+
+{data_summary}
+
+Provide a JSON analysis with:
+- "health": "excellent"|"good"|"needs_attention"|"critical"
+- "health_reason": one sentence why
+- "summary": 2-3 sentence plain-English overview of performance
+- "wins": array of 2-3 positive observations (strings)
+- "concerns": array of 2-3 issues to address (strings)
+- "opportunities": array of 2-3 growth opportunities (strings)
+- "priority_actions": ordered array of 3 specific next steps (strings)
+
+If no data is available, still provide general GSC setup advice.
+Return ONLY valid JSON."""
+        raw = await _ai_call(prompt, max_tokens=1200)
+        try:
+            import json as _json
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            parsed = _json.loads(raw[start:end]) if start >= 0 else {}
+        except Exception:
+            parsed = {"summary": raw}
+        return {"site_url": site_url, "days": days, "analysis": parsed}
+    except Exception as e:
+        return {"error": f"Search Console analysis failed: {e}"}
+
+
+# ── Smart Discovery / Market Intelligence tools ────────────────────────────────
+
+@tool(
+    name="get_market_trends",
+    description="Get Google Trends interest score and direction for a keyword or product niche. Returns trend over time, % change, rising/falling direction, and related rising search queries. Use to gauge whether demand for a product is growing.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "Product or niche to analyze (e.g. 'resistance bands', 'yoga mat')"},
+            "country": {"type": "string", "description": "2-letter country code (default US)", "default": "US"},
+        },
+        "required": ["keyword"],
+    },
+)
+async def get_market_trends(keyword: str, country: str = "US", **_):
+    try:
+        from market_intelligence.trends import get_interest_over_time, get_related_rising
+        import asyncio as _asyncio
+        trend, rising = await _asyncio.gather(
+            get_interest_over_time(keyword, geo=country),
+            get_related_rising(keyword, geo=country),
+        )
+        return {**trend, "rising_queries": rising[:8]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="search_facebook_ads",
+    description="Search the Facebook Ad Library for active ads about a product or niche. Shows how many competitors are advertising it and sample ad copy. High ad count = validated product (people spend money because it converts).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "Product to search for in Facebook ads"},
+            "country": {"type": "string", "description": "2-letter country code (default US)", "default": "US"},
+        },
+        "required": ["keyword"],
+    },
+)
+async def search_facebook_ads(keyword: str, country: str = "US", **_):
+    try:
+        from market_intelligence.fb_ads import search_ads
+        return await search_ads(keyword, countries=[country], limit=10)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="find_winning_products",
+    description="Full market intelligence analysis for a niche. Combines Google Trends (demand), CJ hot products (proven sales), and Facebook Ad Library (competitor ad spend) to score and rank the best product opportunities. Use when a user asks what to sell, what's trending, or wants winning products in a niche.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "niche": {"type": "string", "description": "Product niche or category (e.g. 'women fitness gear', 'pet accessories', 'kitchen gadgets')"},
+            "country": {"type": "string", "description": "2-letter country code (default US)", "default": "US"},
+            "limit": {"type": "integer", "description": "Max products to return (default 8)", "default": 8},
+        },
+        "required": ["niche"],
+    },
+)
+async def find_winning_products(niche: str, country: str = "US", limit: int = 8, **_):
+    try:
+        from market_intelligence.analyzer import find_winning_products as _analyze
+        return await _analyze(niche, country=country, limit=limit)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="get_cj_hot_products",
+    description="Get CJ Dropshipping hot products ranked by order volume — real global sales data showing what's actually selling right now. Use to find proven products to add to a store.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "Optional keyword to filter (leave empty for overall hot products)"},
+            "limit": {"type": "integer", "description": "Max products to return (default 10)", "default": 10},
+        },
+        "required": [],
+    },
+)
+async def get_cj_hot_products_tool(keyword: str = "", limit: int = 10, **kwargs):
+    try:
+        from cj_dropship.client import cj_get
+        ctx = kwargs.get("_ctx")
+        cj_creds = None
+        if ctx:
+            business_id = getattr(ctx, "business_id", None) or getattr(ctx, "user_id", None)
+            if business_id:
+                doc = await ctx.db.supplier_connections.find_one({"user_id": business_id, "supplier": "cj"})
+                cj_creds = doc.get("credentials") if doc else None
+        params: dict = {"pageNum": 1, "pageSize": min(limit, 50)}
+        if keyword:
+            params["productNameEn"] = keyword
+        data = await cj_get("/product/list", params, creds=cj_creds)
+        raw = data.get("list", []) if isinstance(data, dict) else []
+        raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+        products = []
+        for p in raw[:limit]:
+            try:
+                cost = float(str(p.get("sellPrice", 0)).split()[0].replace(",", "") or 0)
+            except Exception:
+                cost = 0.0
+            products.append({
+                "title":     p.get("productNameEn") or p.get("productName", ""),
+                "category":  p.get("categoryName", ""),
+                "cost":      cost,
+                "sell_price": round(cost * 2.5, 2),
+                "margin":    round(cost * 1.5, 2),
+                "orders":    int(p.get("listedNum", 0) or 0),
+                "cj_pid":    p.get("pid", ""),
+                "image":     p.get("productImage", ""),
+            })
+        return {"products": products, "keyword": keyword}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Email Marketing tools ──────────────────────────────────────────────────────
+
+@tool(
+    name="list_email_campaigns",
+    description=(
+        "List all email marketing campaigns for this business. "
+        "Returns name, subject, status (draft/scheduled/sent), recipient count, and send stats. "
+        "Use to show the user their campaign history or check what's pending."
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+async def list_email_campaigns(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        docs = await ctx.db.email_campaigns.find(
+            {"user_id": ctx.business_id},
+            {"body_html": 0},
+        ).sort("created_at", -1).limit(50).to_list(50)
+        campaigns = []
+        for d in docs:
+            campaigns.append({
+                "id":         str(d.get("_id", "")),
+                "name":       d.get("name", ""),
+                "subject":    d.get("subject", ""),
+                "status":     d.get("status", "draft"),
+                "recipients": len(d.get("recipient_emails", [])),
+                "stats":      d.get("stats", {}),
+                "sent_at":    str(d.get("sent_at", "")),
+                "created_at": str(d.get("created_at", "")),
+            })
+        return {"campaigns": campaigns, "total": len(campaigns)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="create_email_campaign",
+    description=(
+        "Create a new email marketing campaign. "
+        "Can target specific email addresses or all contacts with certain tags. "
+        "Use generate_email_campaign_content first to draft the subject and body, "
+        "then call this to save it. Returns a campaign_id to use with send_email_campaign."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["name", "subject", "body_html"],
+        "properties": {
+            "name":              {"type": "string",  "description": "Internal campaign name (e.g. 'June Flash Sale')"},
+            "subject":           {"type": "string",  "description": "Email subject line"},
+            "body_html":         {"type": "string",  "description": "Full HTML body of the email"},
+            "body_text":         {"type": "string",  "description": "Plain text fallback (optional)"},
+            "recipient_emails":  {"type": "array", "items": {"type": "string"}, "description": "Explicit list of recipient email addresses"},
+            "recipient_tags":    {"type": "array", "items": {"type": "string"}, "description": "Send to all contacts/customers with these tags"},
+            "from_name":         {"type": "string",  "description": "Sender display name (overrides account default)"},
+            "from_email":        {"type": "string",  "description": "Sender address (overrides account default)"},
+        },
+    },
+)
+async def create_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        doc = {
+            "user_id":          ctx.business_id,
+            "name":             args["name"],
+            "subject":          args["subject"],
+            "from_name":        args.get("from_name", ""),
+            "from_email":       args.get("from_email", ""),
+            "body_html":        args["body_html"],
+            "body_text":        args.get("body_text", ""),
+            "recipient_emails": args.get("recipient_emails", []),
+            "recipient_tags":   args.get("recipient_tags", []),
+            "status":           "draft",
+            "stats":            {"sent": 0, "failed": 0},
+            "created_at":       _dt.now(_tz.utc),
+            "updated_at":       _dt.now(_tz.utc),
+        }
+        result = await ctx.db.email_campaigns.insert_one(doc)
+        return {
+            "success":     True,
+            "campaign_id": str(result.inserted_id),
+            "name":        args["name"],
+            "status":      "draft",
+            "tip":         "Use send_email_campaign to send it now or schedule_email_campaign to send later.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="send_email_campaign",
+    description=(
+        "Send an email campaign to all its recipients. "
+        "Pass campaign_id from create_email_campaign or list_email_campaigns. "
+        "Use preview_only=true to get a preview of the email (subject, from, to, body snippet) without sending — always do this first so the user can see it. "
+        "Omit test_email to auto-send the test to the owner's signup email. "
+        "This is a destructive action — emails cannot be unsent."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["campaign_id"],
+        "properties": {
+            "campaign_id":  {"type": "string",  "description": "Campaign ID from create_email_campaign"},
+            "test_email":   {"type": "string",  "description": "Test recipient — leave empty to use the owner's signup email automatically"},
+            "preview_only": {"type": "boolean", "description": "If true, return a preview of the email without sending. Use this first to show the user what will be sent."},
+        },
+    },
+    destructive=True,
+)
+async def send_email_campaign(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        import re as _re
+        from bson import ObjectId
+        from email_marketing.client import send_email, send_bulk
+        from datetime import datetime as _dt, timezone as _tz
+
+        campaign_id = args["campaign_id"]
+        doc = await ctx.db.email_campaigns.find_one(
+            {"_id": ObjectId(campaign_id), "user_id": ctx.business_id}
+        )
+        if not doc:
+            return {"error": f"Campaign {campaign_id} not found"}
+
+        settings_doc = await ctx.db.email_settings.find_one({"user_id": ctx.business_id})
+        settings: Dict[str, Any] = dict(settings_doc) if settings_doc else {"provider": "platform"}
+        provider = (settings.get("provider") or "platform").lower()
+        # Only apply per-campaign from_name; never override from_email on platform provider
+        # (platform always uses the verified Resend domain — arbitrary addresses cause failures)
+        if doc.get("from_name"):
+            settings["from_name"] = doc["from_name"]
+        if doc.get("from_email") and provider not in ("platform", "resend"):
+            settings["from_email"] = doc["from_email"]
+        # Fetch user doc once — for from_name fallback + reply_to + from_email slug
+        user_doc = await ctx.db.users.find_one({"_id": ctx.business_id})
+        business_name = (user_doc or {}).get("business_name", "") if user_doc else ""
+        owner_email   = (user_doc or {}).get("email", "") if user_doc else ""
+        # Auto-fill from_name with business name when using Zilo platform sending
+        if not settings.get("from_name") and provider in ("platform", "resend"):
+            if business_name:
+                settings["from_name"] = business_name
+        # Generate per-user from_email as {slug}@zilo.pro for platform sends
+        if provider in ("platform", "resend") and not settings.get("from_email"):
+            slug = _re.sub(r"[^a-z0-9]+", "-", business_name.lower()).strip("-") if business_name else "noreply"
+            settings["from_email"] = f"{slug}@zilo.pro"
+        # reply-to = client's own email so customer replies land in their inbox
+        reply_to = owner_email
+
+        # Build a preview snippet (strip HTML tags, first 200 chars)
+        body_snippet = _re.sub(r"<[^>]+>", " ", doc.get("body_html", ""))
+        body_snippet = " ".join(body_snippet.split())[:200]
+
+        # Preview-only mode — return details without sending
+        if args.get("preview_only"):
+            return {
+                "preview": True,
+                "subject":      doc["subject"],
+                "from":         f"{settings.get('from_name', '')} <{settings.get('from_email', '')}>",
+                "reply_to":     reply_to,
+                "recipient_count": len(doc.get("recipient_emails", [])),
+                "recipient_tags":  doc.get("recipient_tags", []),
+                "body_snippet": body_snippet,
+                "campaign_id":  campaign_id,
+            }
+
+        # Test send — auto-default to owner's signup email when test_email not supplied
+        if "test_email" in args:
+            send_to = args["test_email"] or owner_email
+            if not send_to:
+                return {"error": "No test email address available — please provide one."}
+            from_display = f"{settings.get('from_name', '')} <{settings.get('from_email', '')}>".strip()
+            await send_email(settings, to=[send_to], subject=f"[TEST] {doc['subject']}",
+                             html=doc["body_html"], text=doc.get("body_text", ""),
+                             reply_to=reply_to)
+            return {
+                "success": True, "test": True,
+                "sent_to":  send_to,
+                "from":     from_display,
+                "reply_to": reply_to,
+                "subject":  doc["subject"],
+                "preview":  body_snippet,
+            }
+
+        # Collect recipients
+        recipients = set(doc.get("recipient_emails", []))
+        for tag in (doc.get("recipient_tags") or []):
+            async for c in ctx.db.contacts.find({"user_id": ctx.business_id, "tags": tag}, {"email": 1}):
+                if c.get("email"):
+                    recipients.add(c["email"])
+            async for c in ctx.db.customers.find({"user_id": ctx.business_id, "tags": tag}, {"email": 1}):
+                if c.get("email"):
+                    recipients.add(c["email"])
+        recipients = [e for e in recipients if e and "@" in e]
+        if not recipients:
+            return {"error": "No valid recipients found. Add email addresses or set recipient_tags."}
+
+        await ctx.db.email_campaigns.update_one(
+            {"_id": ObjectId(campaign_id)},
+            {"$set": {"status": "sending", "updated_at": _dt.now(_tz.utc)}},
+        )
+        result = await send_bulk(settings, recipients=recipients,
+                                  subject=doc["subject"], html=doc["body_html"],
+                                  text=doc.get("body_text", ""), reply_to=reply_to)
+        final_status = "sent" if result["failed"] == 0 else "partial"
+        await ctx.db.email_campaigns.update_one(
+            {"_id": ObjectId(campaign_id)},
+            {"$set": {"status": final_status, "sent_at": _dt.now(_tz.utc),
+                      "stats": {"sent": result["sent"], "failed": result["failed"]},
+                      "updated_at": _dt.now(_tz.utc)}},
+        )
+        return {
+            "success": True, "status": final_status,
+            "sent": result["sent"], "failed": result["failed"],
+            "campaign": doc.get("name", ""),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="get_email_campaign_stats",
+    description="Get send statistics for all email campaigns: total sent, failed, campaign breakdown.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_email_campaign_stats(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        total       = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id})
+        sent        = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id, "status": "sent"})
+        draft       = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id, "status": "draft"})
+        scheduled   = await ctx.db.email_campaigns.count_documents({"user_id": ctx.business_id, "status": "scheduled"})
+        pipeline = [
+            {"$match": {"user_id": ctx.business_id, "status": {"$in": ["sent", "partial"]}}},
+            {"$group": {"_id": None, "emails_sent": {"$sum": "$stats.sent"}, "emails_failed": {"$sum": "$stats.failed"}}},
+        ]
+        agg = await ctx.db.email_campaigns.aggregate(pipeline).to_list(1)
+        totals = agg[0] if agg else {}
+        return {
+            "campaigns": {"total": total, "sent": sent, "draft": draft, "scheduled": scheduled},
+            "emails_sent": totals.get("emails_sent", 0),
+            "emails_failed": totals.get("emails_failed", 0),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="configure_email_provider",
+    description=(
+        "Set up the email sending provider for this business. "
+        "Options: 'platform' (Zilo's built-in Resend — zero setup), "
+        "'sendgrid' (user's own API key), 'brevo' (user's Brevo API key), "
+        "'mailgun' (user's Mailgun API key + domain), "
+        "'smtp' (user's own SMTP server credentials). "
+        "Always use 'platform' as the default unless the user specifically wants their own provider."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["provider"],
+        "properties": {
+            "provider":   {"type": "string",  "description": "platform | sendgrid | brevo | mailgun | smtp"},
+            "from_name":  {"type": "string",  "description": "Sender display name (e.g. 'My Brand')"},
+            "from_email": {"type": "string",  "description": "Sender email address"},
+            "api_key":    {"type": "string",  "description": "API key for sendgrid/brevo/mailgun"},
+            "domain":     {"type": "string",  "description": "Domain for mailgun (e.g. mg.mybrand.com)"},
+            "smtp_host":  {"type": "string",  "description": "SMTP hostname"},
+            "smtp_port":  {"type": "integer", "description": "SMTP port (587 or 465)"},
+            "smtp_user":  {"type": "string",  "description": "SMTP username"},
+            "smtp_pass":  {"type": "string",  "description": "SMTP password"},
+        },
+    },
+)
+async def configure_email_provider(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        provider = args["provider"].lower()
+        creds: Dict[str, Any] = {}
+        if provider in ("sendgrid", "brevo"):
+            creds["api_key"] = args.get("api_key", "")
+        elif provider == "mailgun":
+            creds["api_key"] = args.get("api_key", "")
+            creds["domain"]  = args.get("domain", "")
+        elif provider == "smtp":
+            creds = {
+                "host":     args.get("smtp_host", ""),
+                "port":     args.get("smtp_port", 587),
+                "username": args.get("smtp_user", ""),
+                "password": args.get("smtp_pass", ""),
+                "use_tls":  True,
+            }
+        await ctx.db.email_settings.update_one(
+            {"user_id": ctx.business_id},
+            {"$set": {
+                "user_id":     ctx.business_id,
+                "provider":    provider,
+                "from_name":   args.get("from_name", ""),
+                "from_email":  args.get("from_email", ""),
+                "credentials": creds,
+                "updated_at":  _dt.now(_tz.utc),
+            }},
+            upsert=True,
+        )
+        return {
+            "success":  True,
+            "provider": provider,
+            "message":  f"Email provider set to {provider}. Use send_email_campaign to test it.",
+        }
+    except Exception as e:
+        return {"error": str(e)}

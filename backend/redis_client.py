@@ -139,7 +139,7 @@ async def dequeue_job(queue: str, timeout: int = 5) -> Optional[dict]:
         return None
 
 
-async def dequeue_job_multi(queues: list, timeout: int = 30) -> Optional[tuple]:
+async def dequeue_job_multi(queues: list, timeout: int = 60) -> Optional[tuple]:
     """
     Block-pop from multiple queues with a single Redis command.
     Returns (queue_name, job_dict) or None on timeout / unavailable.
@@ -155,8 +155,13 @@ async def dequeue_job_multi(queues: list, timeout: int = 30) -> Optional[tuple]:
             return (queue_name, json.loads(raw))
         return None
     except Exception as e:
-        logging.warning(f"[Queue] dequeue_job_multi error: {e}")
-        await asyncio.sleep(30)
+        err_str = str(e).lower()
+        if "max requests limit exceeded" in err_str or "max_requests_limit" in err_str:
+            logging.warning(f"[Queue] Upstash rate limit hit — backing off 10 minutes")
+            await asyncio.sleep(600)
+        else:
+            logging.warning(f"[Queue] dequeue_job_multi error: {e}")
+            await asyncio.sleep(30)
         return None
 
 

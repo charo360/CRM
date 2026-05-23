@@ -76,8 +76,8 @@ MODEL_REGISTRY: Dict[str, Dict[str, str]] = {
     "deepseek-v4-flash":       {"provider": "deepseek",  "model": "deepseek-v4-flash",         "label": "DeepSeek V4 Flash (fast)"},
     "claude-sonnet-4.6":       {"provider": "anthropic", "model": "claude-sonnet-4-6",         "label": "Claude Sonnet 4.6"},
     "claude-3.5-sonnet":       {"provider": "anthropic", "model": "claude-3-5-sonnet-latest",  "label": "Claude 3.5 Sonnet"},
-    "grok-4.20":               {"provider": "grok",      "model": "grok-4.20",                 "label": "Grok 4.20"},
-    "grok-4.20-reasoning":     {"provider": "grok",      "model": "grok-4.20-reasoning",       "label": "Grok 4.20 Reasoning"},
+    "grok-4.3":                {"provider": "grok",      "model": "grok-4.3",                  "label": "Grok 4.3"},
+    "grok-4-0709":             {"provider": "grok",      "model": "grok-4-0709",               "label": "Grok 4 (0709)"},
 }
 
 DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-v4-pro")
@@ -109,6 +109,26 @@ def resolve_model(model_id: Optional[str]) -> Dict[str, str]:
         if _provider_available(cfg["provider"]):
             return {**cfg, "id": mid}
     raise RuntimeError("No LLM provider is configured. Set at least one API key (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc).")
+
+
+# ── Persistent HTTP client (shared across all non-streaming LLM calls) ────────
+# Creating a new httpx.AsyncClient per request incurs TCP + TLS setup overhead
+# (~50-200ms). A shared client with connection keepalive eliminates that.
+_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=120.0,
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,
+            ),
+        )
+    return _HTTP_CLIENT
 
 
 # ── Chat entrypoint ───────────────────────────────────────────────────────────
@@ -158,13 +178,17 @@ async def chat_with_tools(
                 return await _call_openai_compatible(attempt_cfg, messages, tools, temperature, timeout)
             if p == "anthropic":
                 return await _call_anthropic(attempt_cfg, messages, tools, temperature, timeout, attachments=attachments)
-        except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+        except (httpx.TimeoutException, httpx.HTTPStatusError, KeyError, ValueError, RuntimeError) as exc:
             if attempt_cfg is not providers_to_try[-1]:
                 logger.warning("[models] provider %s failed (%s), trying fallback", attempt_cfg["provider"], exc)
                 last_exc = exc
                 continue
             raise
-        except Exception:
+        except Exception as exc:
+            logger.warning("[models] provider %s unexpected error (%s), trying fallback", attempt_cfg.get("provider"), exc)
+            if attempt_cfg is not providers_to_try[-1]:
+                last_exc = exc
+                continue
             raise
 
     raise last_exc
@@ -203,16 +227,17 @@ async def _call_openai_compatible(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json=payload,
-        )
-        if r.status_code >= 400:
-            logger.error("[models] %s chat/completions %s: %s", provider, r.status_code, r.text[:500])
-        r.raise_for_status()
-        data = r.json()
+    client = _get_http_client()
+    r = await client.post(
+        f"{base}/chat/completions",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=timeout,
+    )
+    if r.status_code >= 400:
+        logger.error("[models] %s chat/completions %s: %s", provider, r.status_code, r.text[:500])
+    r.raise_for_status()
+    data = r.json()
 
     choice = data["choices"][0]
     msg = choice["message"]
@@ -351,10 +376,17 @@ async def _call_anthropic(
         "input_schema": t["function"]["parameters"],
     } for t in tools]
 
+    _LONG_FORM_SIGNALS = (
+        "business plan", "proposal", "contract", "press release",
+        "pitch deck", "presentation", "executive summary", "investment memo",
+        "brochure", "slide deck", "powerpoint",
+    )
+    _recent_text = " ".join(str(m.get("content", "")) for m in messages[-4:]).lower()
+    _max_tok = 4096 if any(s in _recent_text for s in _LONG_FORM_SIGNALS) else 2048
     payload: Dict[str, Any] = {
         "model": cfg["model"],
         "messages": a_messages,
-        "max_tokens": 8192,
+        "max_tokens": _max_tok,
         "temperature": temperature,
     }
     if system_text:
@@ -362,18 +394,19 @@ async def _call_anthropic(
     if a_tools:
         payload["tools"] = a_tools
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    client = _get_http_client()
+    r = await client.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    data = r.json()
 
     content_text = ""
     tool_calls = []
@@ -568,10 +601,17 @@ async def _stream_anthropic(
         a_messages.append({"role": role, "content": m.get("content") or ""})
         j += 1
 
+    _LONG_FORM_SIGNALS = (
+        "business plan", "proposal", "contract", "press release",
+        "pitch deck", "presentation", "executive summary", "investment memo",
+        "brochure", "slide deck", "powerpoint",
+    )
+    _recent_text = " ".join(str(m.get("content", "")) for m in messages[-4:]).lower()
+    _max_tok = 4096 if any(s in _recent_text for s in _LONG_FORM_SIGNALS) else 2048
     payload: Dict[str, Any] = {
         "model": cfg["model"],
         "messages": a_messages,
-        "max_tokens": 8192,
+        "max_tokens": _max_tok,
         "temperature": temperature,
         "stream": True,
     }

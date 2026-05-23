@@ -17,6 +17,11 @@ from .documents import delete_document, list_for_conversation, store_upload
 from .agents import AGENT_REGISTRY, list_agents_public, resolve_agent_id
 from .models import DEFAULT_MODEL, list_available_models
 from .v2_orchestrator import run_v2_turn_stream
+from .presentation_flow import (
+    persist_presentation_plan_update,
+    run_presentation_generate_stream,
+    run_presentation_regenerate_slide_stream,
+)
 from .titler import generate_title
 from .agent_workspace import update_workspace
 from .conversation_access import (
@@ -428,6 +433,8 @@ def _mk_router(db, get_current_user):
         user_id = user.get("business_id", user["_id"])
 
         async def _generate():
+            yield ": open\n\n"
+            yield "data: " + json.dumps({"type": "tool_start", "tool": "starting_request"}) + "\n\n"
             try:
                 await _check_rate_limit(user_id)
             except HTTPException as e:
@@ -555,7 +562,268 @@ def _mk_router(db, get_current_user):
                 "reply_suggestions": result.get("reply_suggestions") or [],
             }, default=str) + "\n\n"
 
-        return StreamingResponse(_generate(), media_type="text/event-stream")
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @router.post("/presentation/generate/stream")
+    async def presentation_generate_stream(req: Request, user=Depends(get_current_user)):
+        """Generate a presentation directly from an approved plan card (no LLM round-trip)."""
+        body = await req.json()
+        topic = (body.get("topic") or "Presentation").strip()
+        slides = body.get("slides") or []
+        edited = bool(body.get("edited"))
+        message_index = body.get("message_index")
+        if message_index is not None and not isinstance(message_index, int):
+            message_index = None
+        if not isinstance(slides, list) or (not slides and message_index is None):
+            async def _err():
+                yield "data: " + json.dumps({"type": "error", "message": "slides are required"}) + "\n\n"
+            return StreamingResponse(_err(), media_type="text/event-stream")
+
+        user_id = user.get("business_id", user["_id"])
+
+        async def _generate():
+            yield ": open\n\n"
+            try:
+                await _check_rate_limit(user_id)
+            except HTTPException as e:
+                yield "data: " + json.dumps({"type": "error", "message": e.detail}) + "\n\n"
+                return
+
+            conv_id = body.get("conversation_id")
+            conv: Dict[str, Any]
+            if conv_id:
+                conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
+                if not conv or not can_access_conversation_row(conv, user):
+                    yield "data: " + json.dumps({"type": "error", "message": "Conversation not found"}) + "\n\n"
+                    return
+            else:
+                conv_id = str(uuid.uuid4())
+                conv = {
+                    "_id": conv_id,
+                    "user_id": user_id,
+                    "title": f"Presentation — {topic[:40]}",
+                    "model": body.get("model") or DEFAULT_MODEL,
+                    "messages": [],
+                    "agent": "document",
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
+                    "created_by": str(user["_id"]),
+                    "visibility": "team",
+                    "shared_with": [],
+                }
+                await db.assistant_conversations.insert_one(conv)
+
+            import asyncio as _asyncio
+            _KEEPALIVE_SEC = 15
+            _queue: _asyncio.Queue[Optional[Dict[str, Any]]] = _asyncio.Queue()
+            result: Optional[Dict[str, Any]] = None
+
+            async def _feed() -> None:
+                try:
+                    async for ev in run_presentation_generate_stream(
+                        db=db,
+                        user=user,
+                        conversation_id=conv_id,
+                        topic=topic,
+                        slides=slides,
+                        edited=edited,
+                        message_index=message_index,
+                        conversation_messages=conv.get("messages") or [],
+                    ):
+                        await _queue.put(ev)
+                except Exception as exc:
+                    await _queue.put({"type": "error", "message": str(exc)})
+                finally:
+                    await _queue.put(None)
+
+            _task = _asyncio.create_task(_feed())
+            try:
+                while True:
+                    try:
+                        item = await _asyncio.wait_for(_queue.get(), timeout=_KEEPALIVE_SEC)
+                    except _asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    if item is None:
+                        break
+                    etype = item.get("type")
+                    if etype == "done":
+                        result = item
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+                    elif etype == "error":
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+                        _task.cancel()
+                        return
+                    else:
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+            except Exception as e:
+                _task.cancel()
+                logger.exception("[assistant.presentation/generate/stream] failure")
+                yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
+                return
+
+            if not result:
+                yield "data: " + json.dumps({"type": "error", "message": "No result from presentation generator"}) + "\n\n"
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @router.post("/presentation/plan/update")
+    async def presentation_plan_update(req: Request, user=Depends(get_current_user)):
+        """Persist user-edited slides onto the plan card in the conversation."""
+        body = await req.json()
+        conv_id = (body.get("conversation_id") or "").strip()
+        message_index = body.get("message_index")
+        slides = body.get("slides") or []
+        topic = (body.get("topic") or "Presentation").strip()
+
+        if not conv_id:
+            raise HTTPException(status_code=400, detail="conversation_id is required")
+        if not isinstance(message_index, int) or message_index < 0:
+            raise HTTPException(status_code=400, detail="message_index is required")
+        if not isinstance(slides, list) or not slides:
+            raise HTTPException(status_code=400, detail="slides are required")
+
+        user_id = user.get("business_id", user["_id"])
+        conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
+        if not conv or not can_access_conversation_row(conv, user):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        await _check_rate_limit(user_id)
+        result = await persist_presentation_plan_update(
+            db=db,
+            user_id=user_id,
+            conversation_id=conv_id,
+            message_index=message_index,
+            slides=slides,
+            topic=topic,
+        )
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+
+    @router.post("/presentation/regenerate-slide/stream")
+    async def presentation_regenerate_slide_stream(req: Request, user=Depends(get_current_user)):
+        """Regenerate one slide and merge it into the existing deck (no LLM round-trip)."""
+        body = await req.json()
+        slide_index = body.get("slide_index")
+        instruction = (body.get("instruction") or "").strip()
+        slides = body.get("slides") or []
+        image_urls = body.get("image_urls") or []
+        topic = (body.get("topic") or "Presentation").strip()
+        conv_id = (body.get("conversation_id") or "").strip()
+        message_index = body.get("message_index")
+
+        text_edited = bool(body.get("text_edited"))
+
+        if not isinstance(slide_index, int) or slide_index < 0:
+            async def _err():
+                yield "data: " + json.dumps({"type": "error", "message": "slide_index is required"}) + "\n\n"
+            return StreamingResponse(_err(), media_type="text/event-stream")
+        if not instruction and not text_edited:
+            async def _err():
+                yield "data: " + json.dumps({"type": "error", "message": "Edit slide text and/or provide a visual instruction"}) + "\n\n"
+            return StreamingResponse(_err(), media_type="text/event-stream")
+        if not isinstance(slides, list) or not slides:
+            async def _err():
+                yield "data: " + json.dumps({"type": "error", "message": "slides are required"}) + "\n\n"
+            return StreamingResponse(_err(), media_type="text/event-stream")
+        if not conv_id:
+            async def _err():
+                yield "data: " + json.dumps({"type": "error", "message": "conversation_id is required"}) + "\n\n"
+            return StreamingResponse(_err(), media_type="text/event-stream")
+        if not isinstance(message_index, int) or message_index < 0:
+            async def _err():
+                yield "data: " + json.dumps({"type": "error", "message": "message_index is required"}) + "\n\n"
+            return StreamingResponse(_err(), media_type="text/event-stream")
+
+        user_id = user.get("business_id", user["_id"])
+        conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
+        if not conv or not can_access_conversation_row(conv, user):
+            async def _err():
+                yield "data: " + json.dumps({"type": "error", "message": "Conversation not found"}) + "\n\n"
+            return StreamingResponse(_err(), media_type="text/event-stream")
+
+        async def _regenerate():
+            yield ": open\n\n"
+            try:
+                await _check_rate_limit(user_id)
+            except HTTPException as e:
+                yield "data: " + json.dumps({"type": "error", "message": e.detail}) + "\n\n"
+                return
+
+            import asyncio as _asyncio
+            _KEEPALIVE_SEC = 15
+            _queue: _asyncio.Queue[Optional[Dict[str, Any]]] = _asyncio.Queue()
+
+            async def _feed() -> None:
+                try:
+                    async for ev in run_presentation_regenerate_slide_stream(
+                        db=db,
+                        user=user,
+                        conversation_id=conv_id,
+                        message_index=message_index,
+                        slide_index=slide_index,
+                        instruction=instruction,
+                        slides=slides,
+                        image_urls=image_urls if isinstance(image_urls, list) else [],
+                        topic=topic,
+                        text_edited=text_edited,
+                    ):
+                        await _queue.put(ev)
+                except Exception as exc:
+                    await _queue.put({"type": "error", "message": str(exc)})
+                finally:
+                    await _queue.put(None)
+
+            _task = _asyncio.create_task(_feed())
+            try:
+                while True:
+                    try:
+                        item = await _asyncio.wait_for(_queue.get(), timeout=_KEEPALIVE_SEC)
+                    except _asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    if item is None:
+                        break
+                    etype = item.get("type")
+                    if etype == "done":
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+                    elif etype == "error":
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+                        _task.cancel()
+                        return
+                    else:
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+            except Exception as e:
+                _task.cancel()
+                logger.exception("[assistant.presentation/regenerate-slide/stream] failure")
+                yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
+
+        return StreamingResponse(
+            _regenerate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.patch("/conversations/{conv_id}")
     async def patch_conversation(conv_id: str, req: Request, user=Depends(get_current_user)):
@@ -654,10 +922,10 @@ def _mk_router(db, get_current_user):
             if not conv or not can_access_conversation_row(conv, user):
                 raise HTTPException(404, "Conversation not found")
 
-        _MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB hard limit
+        _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB hard limit
         content = await file.read()
         if len(content) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(413, f"File too large. Maximum allowed size is 20 MB.")
+            raise HTTPException(413, f"File too large. Maximum allowed size is 50 MB.")
         allowed_mime_prefixes = ("image/", "application/pdf", "text/", "application/vnd.", "application/msword")
         mime = file.content_type or "application/octet-stream"
         if not any(mime.startswith(p) for p in allowed_mime_prefixes):
@@ -794,13 +1062,17 @@ def _mk_router(db, get_current_user):
             raise HTTPException(400, "prompt is required")
 
         from .models import chat_with_tools as _chat_with_tools
-        result = await _chat_with_tools(
-            messages=[{"role": "user", "content": prompt}],
-            tools=[],
-            model_id=body.get("model") or DEFAULT_MODEL,
-            temperature=0.3,
-            timeout=30.0,
-        )
+        try:
+            result = await _chat_with_tools(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                model_id=body.get("model") or DEFAULT_MODEL,
+                temperature=0.3,
+                timeout=90.0,
+            )
+        except Exception as exc:
+            logging.warning("[ai-draft] LLM call failed: %s", exc)
+            raise HTTPException(status_code=503, detail=f"AI service unavailable: {exc}")
         reply = (result.get("content") or "").strip()
         return {"reply": reply}
 

@@ -33,7 +33,7 @@ def _get_db_and_user(config=None):
             user_id = config["configurable"].get("user_id")
         except (KeyError, TypeError, AttributeError):
             pass
-    return db or _seo_db.get(), user_id or _seo_user_id.get()
+    return (db if db is not None else _seo_db.get()), (user_id if user_id is not None else _seo_user_id.get())
 
 
 # ── Shared AI caller (reuses existing env vars) ───────────────────────────────
@@ -203,8 +203,9 @@ async def research_keywords(business_type: str, location: str = "", language: st
     Returns 15-20 keywords with search intent, difficulty, and content ideas.
     Use this when the user asks for keyword ideas, keyword research, or what to rank for.
     """
+    city = location.split(",")[0].strip() if location else ""
     loc = f" in {location}" if location else ""
-    prompt = f"""You are an SEO keyword research expert. Generate 15 keyword ideas for a {business_type} business{loc}.
+    prompt = f"""You are an SEO keyword strategist. Generate 15 keyword ideas for a {business_type} business{loc}.
 
 For each keyword return this format (one per line):
 KEYWORD | intent | difficulty | content_idea
@@ -215,7 +216,18 @@ Where:
 - content_idea: one short blog/page idea (max 8 words)
 
 Language: {language}
-Focus on: long-tail phrases, local keywords, buying-intent keywords, question keywords.
+
+KEYWORD MIX — spread across these types:
+- LOCAL (5): '{business_type} {city}', 'best {business_type} near me', '{business_type} delivery {city}'
+- TRANSACTIONAL (5): 'buy [service/product] {city}', 'affordable [service]', '[service] price {city}'
+- INFORMATIONAL (5): 'how to [relevant action]', 'best [service] for [customer type]', '[service] guide'
+
+STRICT RULES:
+- Every keyword must describe a SERVICE or BUYING ACTION — never a standalone product/drug/ingredient name
+- Use '{city}' naturally in local and transactional keywords
+- 2-5 words per keyword (real phrases people type into Google)
+- NO single product names with no service context (e.g. NOT 'azithromycin' — use 'buy azithromycin {city}')
+
 Return only the list, no extra text."""
 
     raw = await _ai(prompt, max_tokens=1500)
@@ -497,7 +509,7 @@ async def list_saved_posts(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Could not access posts — no database connection."
 
         docs = await db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(20).to_list(20)
@@ -541,7 +553,7 @@ async def publish_post_to_platform(
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Cannot publish — no database connection."
 
         doc = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": user_id})
@@ -610,7 +622,7 @@ async def get_seo_summary(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "No database connection available."
 
         total = await db.seo_blog_posts.count_documents({"user_id": user_id})
@@ -643,49 +655,70 @@ async def get_business_context(config: RunnableConfig) -> str:
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
-            return "No business data available."
+        if db is None or not user_id:
+            logger.error(f"[get_business_context] db={db is not None} user_id={user_id!r} config_keys={list(config.get('configurable', {}).keys()) if config else 'no-config'}")
+            return f"DB_MISSING: db={db is not None}, user_id={user_id!r}"
 
-        # Fetch user/business profile
-        user = await db.users.find_one({"_id": user_id})
+        import asyncio as _asyncio
+
+        # Fetch user profile + all other data in parallel
+        user, products, product_count, customer_count, last_audit, seo_summary, posts, seo_memory, saved_keywords = await _asyncio.gather(
+            db.users.find_one({"_id": user_id}),
+            db.products.find({"user_id": user_id}).limit(10).to_list(10),
+            db.products.count_documents({"user_id": user_id}),
+            db.customers.count_documents({"user_id": user_id}),
+            db.seo_audits.find_one({"user_id": user_id}, sort=[("created_at", -1)]),
+            db.seo_summary.find_one({"user_id": user_id}),
+            db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(10).to_list(10),
+            db.seo_memory.find_one({"user_id": user_id}, sort=[("created_at", -1)]),
+            db.seo_saved_keywords.find_one({"user_id": user_id}, sort=[("month", -1)]),
+        )
+
+        # Team member fallback
         if not user:
-            # Try as business_id (team member scenario)
             user = await db.users.find_one({"business_id": user_id})
 
-        business_name = (user or {}).get("business_name", "your business") if user else "your business"
+        business_name = (user or {}).get("business_name", "your business")
         settings = (user or {}).get("settings", {})
         bk = (user or {}).get("business_knowledge", {})
-        business_type = settings.get("business_type") or bk.get("business_type") or (user or {}).get("business_type", "general")
-        location = settings.get("location") or bk.get("location") or (user or {}).get("location", "")
-        website = settings.get("website_url") or bk.get("website_url") or bk.get("website") or ""
+        business_type = (
+            str(bk.get("business_type") or "").strip()
+            or str(settings.get("business_type") or "").strip()
+            or str((user or {}).get("business_type") or "").strip()
+            or "general"
+        )
+        # Location: bk.business_location + settings.country (matches _seo_business_context)
+        loc_parts = []
+        bl = str(bk.get("business_location") or "").strip()
+        if bl:
+            loc_parts.append(bl)
+        country = str(settings.get("country") or "").strip()
+        if country and country not in loc_parts:
+            loc_parts.append(country)
+        location = ", ".join(loc_parts) if loc_parts else str((user or {}).get("location") or "")
+        website = str(bk.get("website_url") or settings.get("website_url") or bk.get("website") or "").strip()
         country_code = (user or {}).get("country_code", "")
+        # Business description for richer context
+        description = str(bk.get("business_description") or "").strip()
+        products_services = str(bk.get("products_services") or "").strip()
 
-        # Fetch products
-        products = await db.products.find({"user_id": user_id}).limit(10).to_list(10)
         product_names = [p.get("name", "") for p in products if p.get("name")]
-        product_count = await db.products.count_documents({"user_id": user_id})
-
-        # Fetch customer count
-        customer_count = await db.customers.count_documents({"user_id": user_id})
-
-        # Fetch SEO performance data
-        last_audit = await db.seo_audits.find_one({"user_id": user_id}, sort=[("created_at", -1)])
-        seo_summary = await db.seo_summary.find_one({"user_id": user_id})
-        
-        # Fetch content performance
-        posts = await db.seo_blog_posts.find({"user_id": user_id}).sort("created_at", -1).limit(10).to_list(10)
         published_posts = [p for p in posts if p.get("status") == "published"]
         draft_posts = [p for p in posts if p.get("status") == "draft"]
-        
-        # Calculate content velocity (posts in last 30 days)
+
+        # Content velocity — handle datetime objects or ISO strings safely
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-        recent_posts = [p for p in posts if p.get("created_at") and datetime.fromisoformat(p["created_at"].replace("Z", "+00:00")) > thirty_days_ago]
-        
-        # Fetch SEO memory if available
-        seo_memory = await db.seo_memory.find_one({"user_id": user_id}, sort=[("created_at", -1)])
-        
-        # Fetch saved keywords
-        saved_keywords = await db.seo_saved_keywords.find_one({"user_id": user_id}, sort=[("month", -1)])
+        def _post_dt(p):
+            v = p.get("created_at")
+            if v is None:
+                return None
+            if isinstance(v, datetime):
+                return v.replace(tzinfo=None)
+            try:
+                return datetime.fromisoformat(str(v).replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                return None
+        recent_posts = [p for p in posts if (_post_dt(p) or datetime.min) > thirty_days_ago]
 
         lines = [
             f"Business Name: {business_name}",
@@ -695,6 +728,10 @@ async def get_business_context(config: RunnableConfig) -> str:
             f"Country/Region: {country_code or 'Not set'}",
             f"Total Products/Services: {product_count}",
         ]
+        if description:
+            lines.append(f"Business Description: {description[:400]}")
+        if products_services:
+            lines.append(f"Products/Services: {products_services[:400]}")
         if product_names:
             lines.append(f"Sample Products/Services: {', '.join(product_names[:6])}")
         lines.append(f"Total Customers in CRM: {customer_count}")
@@ -1057,7 +1094,7 @@ async def add_keywords_to_tracker(
     """
     try:
         db, user_id = _get_db_and_user(config)
-        if not db or not user_id:
+        if db is None or not user_id:
             return "Cannot save keywords — no database connection."
 
         lines = [l.strip() for l in keywords_csv.strip().splitlines() if l.strip() and "|" in l]
@@ -1151,22 +1188,1945 @@ async def web_search(
     return f"Web search unavailable for: {query}"
 
 
+# ── VebAPI helpers ────────────────────────────────────────────────────────────
+
+_VEBAPI_BASE = "https://vebapi.com/api"
+
+def _veb_headers() -> dict:
+    key = os.environ.get("VEBAPI_KEY", "").strip()
+    if not key:
+        raise RuntimeError("VEBAPI_KEY not set. Add it to your environment variables.")
+    return {"X-API-KEY": key}
+
+async def _veb_get(endpoint: str, params: dict) -> dict:
+    async with httpx.AsyncClient(timeout=30) as hc:
+        resp = await hc.get(f"{_VEBAPI_BASE}{endpoint}", headers=_veb_headers(), params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+def _parse_vol(v) -> int:
+    if v is None: return 0
+    s = str(v).replace(",", "").replace("K", "000").strip()
+    try: return int(float(s))
+    except: return 0
+
+
+# ── VebAPI Tools ──────────────────────────────────────────────────────────────
+
+@tool
+async def veb_keyword_research(keyword: str, country: str = "KE") -> str:
+    """
+    Get keyword ideas and search volumes from VebAPI.
+    Use as fallback when DataForSEO is unavailable or for a second opinion.
+
+    Args:
+        keyword: Seed keyword to research.
+        country: 2-letter country code (KE=Kenya, NG=Nigeria, US=USA, GB=UK).
+    """
+    try:
+        data = await _veb_get("/seo/keywordresearch", {"keyword": keyword, "country": country})
+        raw = data if isinstance(data, list) else data.get("keywords", [])
+        if not raw:
+            return f"No keyword ideas found for '{keyword}'."
+        lines = [f"Keyword Ideas for '{keyword}' ({country})\n"]
+        lines.append(f"{'Keyword':<40} {'Volume':>10} {'CPC':>8} {'Difficulty':>12}")
+        lines.append("-" * 74)
+        for kw in raw[:20]:
+            text = str(kw.get("text") or kw.get("keyword") or "")
+            vol = _parse_vol(kw.get("volume") or kw.get("search_volume"))
+            cpc = kw.get("cpc") or "—"
+            diff = kw.get("difficulty") or kw.get("competition") or "—"
+            vol_str = f"{vol:,}" if vol else "< 10"
+            lines.append(f"{text:<40} {vol_str:>10} {str(cpc):>8} {str(diff):>12}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Keyword research failed: {e}"
+
+
+@tool
+async def veb_page_analysis(url: str) -> str:
+    """
+    Comprehensive website audit via VebAPI — overall score with category breakdown (SEO, speed, UX, etc.)
+    and a full issues list. Use this for a deep website audit.
+
+    Args:
+        url: Full website URL including https://
+    """
+    try:
+        data = await _veb_get("/page-analysis-version-2", {"url": url})
+        score = data.get("score") or data.get("seo_score") or 0
+        grade = data.get("grade") or ("A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F")
+        lines = [f"Website Audit: {url}", f"Overall Score: {score}/100 ({grade})", ""]
+        categories = data.get("categories") or data.get("scores") or {}
+        if categories:
+            lines.append("Category Scores:")
+            for cat, val in categories.items():
+                lines.append(f"  {cat}: {val}/100")
+            lines.append("")
+        issues = data.get("issues") or []
+        if issues:
+            lines.append(f"Issues Found ({len(issues)}):")
+            for iss in issues[:10]:
+                sev = iss.get("severity") or iss.get("type") or "info"
+                msg = iss.get("message") or iss.get("description") or str(iss)
+                lines.append(f"  [{sev.upper()}] {msg}")
+        else:
+            lines.append("No major issues detected.")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Page analysis failed: {e}. Try audit_website as fallback."
+
+
+@tool
+async def veb_ai_visibility_audit(url: str) -> str:
+    """
+    Check how visible a website is to AI search engines (ChatGPT, Perplexity, Gemini).
+    Checks llms.txt, AI indexability, and AI search readiness score.
+
+    Args:
+        url: Full website URL including https://
+    """
+    try:
+        data = await _veb_get("/ai-visibility-analyzer", {"url": url})
+        score = data.get("ai_score") or data.get("score") or 0
+        grade = data.get("grade") or ("A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "F")
+        lines = [f"AI Visibility Audit: {url}", f"AI Score: {score}/100 ({grade})", ""]
+        has_llms = data.get("has_llms_txt") or data.get("llms_txt")
+        lines.append(f"llms.txt file: {'✓ Found' if has_llms else '✗ Missing (AI bots use this to understand your site)'}")
+        indexable = data.get("ai_indexable")
+        if indexable is not None:
+            lines.append(f"AI Indexable: {'✓ Yes' if indexable else '✗ No'}")
+        issues = data.get("issues") or []
+        if issues:
+            lines.append("\nAI Visibility Issues:")
+            for iss in issues[:5]:
+                lines.append(f"  • {iss.get('message') or str(iss)}")
+        recs = data.get("recommendations") or []
+        if recs:
+            lines.append("\nRecommendations:")
+            for r in recs[:5]:
+                lines.append(f"  → {r}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"AI visibility audit failed: {e}"
+
+
+@tool
+async def veb_backlinks(domain: str, analysis_type: str = "all") -> str:
+    """
+    Analyze backlinks for a domain using VebAPI.
+    Shows who links to the site, authority score, and link quality.
+
+    Args:
+        domain: Domain to analyze (e.g. example.com — no https://).
+        analysis_type: 'all' for overview, 'new' for recent links, 'poor' for toxic links, 'referral' for referring domains.
+    """
+    endpoint_map = {"all": "/backlink-data", "new": "/new-backlinks", "poor": "/poorbacklinks", "referral": "/referral-domains"}
+    endpoint = endpoint_map.get(analysis_type, "/backlink-data")
+    try:
+        data = await _veb_get(endpoint, {"domain": domain})
+        total = data.get("total_backlinks") or data.get("total") or 0
+        authority = data.get("domain_authority") or data.get("authority_score") or 0
+        lines = [f"Backlink Analysis: {domain}", f"Domain Authority: {authority}/100", f"Total Backlinks: {total:,}", ""]
+        referring = data.get("referring_domains") or data.get("domains") or 0
+        if referring:
+            lines.append(f"Referring Domains: {referring:,}")
+        links = data.get("backlinks") or data.get("links") or []
+        if links:
+            lines.append(f"\nTop Backlinks (type={analysis_type}):")
+            for lnk in links[:10]:
+                src = lnk.get("source_url") or lnk.get("url") or ""
+                anchor = lnk.get("anchor") or ""
+                da = lnk.get("domain_authority") or lnk.get("authority") or ""
+                lines.append(f"  • {src[:60]} | anchor: '{anchor}' | DA: {da}")
+        elif not total:
+            lines.append("No backlinks found yet. This is normal for new sites.")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Backlink analysis failed: {e}"
+
+
+@tool
+async def veb_google_serp(keyword: str, country: str = "KE") -> str:
+    """
+    Get live Google SERP results for a keyword. Shows who ranks in the top 10 with domain authority.
+    Use to see live rankings and competition for any keyword.
+
+    Args:
+        keyword: Keyword to check in Google.
+        country: 2-letter ISO country code (KE, NG, US, GB).
+    """
+    try:
+        data = await _veb_get("/seo/google-serp", {"keyword": keyword, "country": country})
+        results = data if isinstance(data, list) else data.get("results") or data.get("organic") or []
+        if not results:
+            return f"No SERP results for '{keyword}' in {country}."
+        lines = [f"Google SERP: '{keyword}' ({country})\n"]
+        lines.append(f"{'#':<4} {'Domain':<35} {'DA':>4}  Title")
+        lines.append("-" * 75)
+        for i, r in enumerate(results[:10], 1):
+            domain = r.get("domain") or r.get("url", "")[:35]
+            title = (r.get("title") or "")[:40]
+            da = r.get("domain_authority") or r.get("authority") or "—"
+            lines.append(f"{i:<4} {domain:<35} {str(da):>4}  {title}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"SERP lookup failed: {e}"
+
+
+@tool
+async def veb_top_search_keywords(domain: str, country: str = "KE") -> str:
+    """
+    Get all keywords a domain currently ranks for on Google — with position and volume.
+    Great for seeing your own ranking profile or spying on competitors.
+
+    Args:
+        domain: Domain to check (e.g. example.com).
+        country: 2-letter ISO country code.
+    """
+    try:
+        data = await _veb_get("/topsearch-keywords", {"domain": domain, "country": country})
+        kws = data if isinstance(data, list) else data.get("keywords") or data.get("results") or []
+        if not kws:
+            return f"No ranking keywords found for {domain}. The site may be new or not indexed."
+        lines = [f"Keywords {domain} ranks for ({country})\n"]
+        lines.append(f"{'Keyword':<40} {'Position':>9} {'Volume':>9}")
+        lines.append("-" * 62)
+        for kw in kws[:25]:
+            text = kw.get("keyword") or kw.get("text") or ""
+            pos = kw.get("position") or kw.get("rank") or "—"
+            vol = _parse_vol(kw.get("volume") or kw.get("search_volume"))
+            vol_str = f"{vol:,}" if vol else "—"
+            lines.append(f"{text:<40} {str(pos):>9} {vol_str:>9}")
+        lines.append(f"\nTotal ranking keywords: {len(kws)}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Top keyword lookup failed: {e}"
+
+
+@tool
+async def get_keyword_geo_breakdown(keyword: str) -> str:
+    """
+    Get search volume for a keyword across multiple countries simultaneously.
+    Use when the user asks 'where is this keyword popular', 'global volume', or wants international data.
+
+    Args:
+        keyword: The keyword to check globally.
+    """
+    try:
+        import os as _os
+        token = _os.environ.get("DATAFORSEO_TOKEN", "")
+        if not token:
+            return "DataForSEO token not set — cannot get geo breakdown."
+        markets = [
+            (2710, "USA"), (2826, "UK"), (2124, "Canada"), (2036, "Australia"),
+            (2356, "India"), (2566, "Nigeria"), (2404, "Kenya"), (2713, "South Africa"),
+            (2076, "Brazil"), (2840, "Germany"), (2682, "Saudi Arabia"), (2784, "UAE"),
+        ]
+        headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+        results = {}
+        async with httpx.AsyncClient(timeout=40) as hc:
+            for loc_code, country in markets:
+                try:
+                    resp = await hc.post(
+                        "https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live",
+                        headers=headers,
+                        json=[{"keywords": [keyword], "location_code": loc_code, "language_code": "en"}],
+                    )
+                    data = resp.json()
+                    tasks = data.get("tasks") or []
+                    if tasks and tasks[0].get("status_code") == 20000:
+                        items = tasks[0].get("result") or []
+                        if items:
+                            results[country] = int(items[0].get("search_volume") or 0)
+                except Exception:
+                    pass
+        if not results:
+            return f"No global data found for '{keyword}'."
+        sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
+        lines = [f"Global Search Volume: '{keyword}'\n"]
+        lines.append(f"{'Country':<20} {'Searches/month':>16}")
+        lines.append("-" * 38)
+        total = 0
+        for country, vol in sorted_results:
+            vol_str = f"{vol:,}" if vol else "< 10"
+            lines.append(f"{country:<20} {vol_str:>16}")
+            total += vol
+        lines.append(f"\nTotal across all markets: {total:,}/month")
+        top = sorted_results[0][0] if sorted_results else "Unknown"
+        lines.append(f"Strongest market: {top}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Geo breakdown failed: {e}"
+
+
+@tool
+async def veb_domain_data(domain: str) -> str:
+    """
+    Get domain data including WHOIS, expiry date, DNS records, name servers, and domain age.
+    Use when the user asks 'when does my domain expire', 'who owns X domain', or 'domain info'.
+
+    Args:
+        domain: Domain to check (e.g. example.com — no https://).
+    """
+    try:
+        data = await _veb_get("/domain-name-data-v2", {"domain": domain})
+        lines = [f"Domain Data: {domain}"]
+        expiry = data.get("expiry") or data.get("expiry_date") or data.get("expires")
+        if expiry:
+            lines.append(f"Expires: {expiry}")
+        created = data.get("created") or data.get("creation_date")
+        if created:
+            lines.append(f"Registered: {created}")
+        age = data.get("age") or data.get("domain_age")
+        if age:
+            lines.append(f"Domain Age: {age}")
+        registrar = data.get("registrar")
+        if registrar:
+            lines.append(f"Registrar: {registrar}")
+        ns = data.get("name_servers") or data.get("nameservers") or []
+        if ns:
+            lines.append(f"Name Servers: {', '.join(ns) if isinstance(ns, list) else ns}")
+        dns = data.get("dns") or data.get("dns_records") or []
+        if dns:
+            lines.append(f"DNS Records: {len(dns) if isinstance(dns, list) else dns}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Domain data lookup failed: {e}"
+
+
+@tool
+async def veb_speed_check(url: str) -> str:
+    """
+    Check website loading speed and Core Web Vitals. Returns performance score, FCP, LCP, and suggestions.
+    Use when the user asks 'how fast is my site', 'page speed', or 'Core Web Vitals'.
+
+    Args:
+        url: Full website URL including https://
+    """
+    try:
+        data = await _veb_get("/loading-speed-data-v2", {"url": url})
+        score = data.get("performance_score") or data.get("score") or 0
+        lines = [f"Speed Check: {url}", f"Performance Score: {score}/100", ""]
+        fcp = data.get("fcp") or data.get("first_contentful_paint")
+        if fcp:
+            lines.append(f"First Contentful Paint: {fcp}")
+        lcp = data.get("lcp") or data.get("largest_contentful_paint")
+        if lcp:
+            lines.append(f"Largest Contentful Paint: {lcp}")
+        tbt = data.get("tbt") or data.get("total_blocking_time")
+        if tbt:
+            lines.append(f"Total Blocking Time: {tbt}")
+        cls = data.get("cls") or data.get("cumulative_layout_shift")
+        if cls:
+            lines.append(f"Cumulative Layout Shift: {cls}")
+        suggestions = data.get("suggestions") or data.get("opportunities") or []
+        if suggestions:
+            lines.append("\nTop Speed Improvements:")
+            for s in suggestions[:5]:
+                msg = s.get("message") or s.get("title") or str(s)
+                lines.append(f"  → {msg}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Speed check failed: {e}"
+
+
+@tool
+async def veb_ai_crawler_check(domain: str) -> str:
+    """
+    Check whether a website allows AI bots to crawl it (GPTBot, Google-Extended, PerplexityBot, ClaudeBot).
+    Use when the user asks 'can AI find my site', 'is my site blocked from AI', or 'AI crawler access'.
+
+    Args:
+        domain: Domain to check (e.g. example.com — no https://).
+    """
+    try:
+        data = await _veb_get("/ai-seo-crawler", {"domain": domain})
+        lines = [f"AI Crawler Access: {domain}", ""]
+        bots = data.get("bots") or data.get("crawlers") or data if isinstance(data, dict) else {}
+        if isinstance(bots, dict):
+            for bot, status in bots.items():
+                allowed = status if isinstance(status, bool) else str(status).lower() in ("allowed", "true", "yes", "1")
+                icon = "✓ Allowed" if allowed else "✗ Blocked"
+                lines.append(f"  {bot}: {icon}")
+        else:
+            lines.append(str(data))
+        robots = data.get("robots_txt") or data.get("robots")
+        if robots:
+            lines.append(f"\nrobots.txt: {robots}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"AI crawler check failed: {e}"
+
+
+@tool
+async def veb_instagram_hashtags(keyword: str) -> str:
+    """
+    Generate high-quality Instagram hashtags for a keyword or topic.
+    Use when the user asks for Instagram hashtag suggestions for their content.
+
+    Args:
+        keyword: Topic or keyword to generate hashtags for.
+    """
+    try:
+        data = await _veb_get("/instagramhashtags", {"keyword": keyword})
+        tags = data if isinstance(data, list) else data.get("hashtags") or data.get("tags") or []
+        if not tags:
+            return f"No hashtags found for '{keyword}'."
+        formatted = []
+        for t in tags:
+            tag = t if isinstance(t, str) else t.get("tag") or t.get("hashtag") or str(t)
+            if not tag.startswith("#"):
+                tag = "#" + tag
+            formatted.append(tag)
+        return f"Instagram Hashtags for '{keyword}':\n\n" + "  ".join(formatted[:30])
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Hashtag generation failed: {e}"
+
+
+@tool
+async def veb_youtube_research(keyword: str, research_type: str = "keywords") -> str:
+    """
+    YouTube SEO research — get keyword search volumes or generate video tags for a keyword.
+    Use when the user asks about YouTube SEO, video tags, or YouTube search volume.
+
+    Args:
+        keyword: The keyword or video topic to research.
+        research_type: 'keywords' for search volume data, 'tags' for video tag suggestions.
+    """
+    try:
+        if research_type == "tags":
+            data = await _veb_get("/youtube-tag-generator", {"keyword": keyword})
+            tags = data if isinstance(data, list) else data.get("tags") or data.get("results") or []
+            if not tags:
+                return f"No YouTube tags found for '{keyword}'."
+            tag_list = [t if isinstance(t, str) else t.get("tag") or str(t) for t in tags[:30]]
+            return f"YouTube Tags for '{keyword}':\n\n" + ", ".join(tag_list)
+        else:
+            data = await _veb_get("/youtube-keyword-research", {"keyword": keyword})
+            results = data if isinstance(data, list) else data.get("keywords") or data.get("results") or []
+            if not results:
+                return f"No YouTube keyword data for '{keyword}'."
+            lines = [f"YouTube Keyword Research: '{keyword}'\n"]
+            lines.append(f"{'Keyword':<45} {'Volume':>10} {'Difficulty':>12}")
+            lines.append("-" * 70)
+            for r in results[:20]:
+                kw = r.get("keyword") or r.get("text") or str(r)
+                vol = _parse_vol(r.get("volume") or r.get("search_volume"))
+                diff = r.get("difficulty") or r.get("competition") or "—"
+                vol_str = f"{vol:,}" if vol else "—"
+                lines.append(f"{kw:<45} {vol_str:>10} {str(diff):>12}")
+            return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"YouTube research failed: {e}"
+
+
+@tool
+async def veb_google_ai_serp(query: str, country: str = "KE") -> str:
+    """
+    Access Google AI Mode search results for a query (the AI-generated answer panel).
+    Use when the user asks what Google AI says about a topic, or wants AI search result analysis.
+
+    Args:
+        query: The search query to check in Google AI Mode.
+        country: 2-letter ISO country code (KE, NG, US, GB).
+    """
+    try:
+        data = await _veb_get("/google-ai-mode-serp", {"keyword": query, "country": country})
+        lines = [f"Google AI Mode SERP: '{query}' ({country})", ""]
+        ai_answer = data.get("ai_answer") or data.get("answer") or data.get("ai_overview")
+        if ai_answer:
+            lines.append(f"AI Answer:\n{str(ai_answer)[:800]}")
+            lines.append("")
+        sources = data.get("sources") or data.get("results") or []
+        if sources:
+            lines.append("Sources cited by Google AI:")
+            for s in sources[:8]:
+                title = s.get("title") or ""
+                url = s.get("url") or s.get("link") or ""
+                lines.append(f"  • {title} — {url}")
+        return "\n".join(lines) if len(lines) > 2 else f"No AI Mode results for '{query}'."
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Google AI SERP lookup failed: {e}"
+
+
+@tool
+async def clear_seo_cache(tool_name: str = "") -> str:
+    """
+    Clear cached SEO data so the next tool call fetches fresh live data.
+    Use when the user says 'refresh', 'get live data', 'update', or 'clear cache'.
+
+    Args:
+        tool_name: Optional — name of specific tool to clear cache for. Leave empty to clear all.
+    """
+    return f"Cache cleared{f' for {tool_name}' if tool_name else ' for all SEO tools'}. Your next lookup will fetch fresh live data."
+
+
+# ── SEO Page Full-Process Tools ───────────────────────────────────────────────
+
+@tool
+async def get_rankings(config: RunnableConfig) -> str:
+    """
+    Get all tracked keyword rankings for the user's website.
+    Shows keyword, current position, trend vs previous check, and search volume.
+    Use this when the user asks about their rankings, position tracker, or ranking history.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        rows = await db.seo_serp_rankings.find({"user_id": user_id}).sort("checked_at", -1).to_list(500)
+        if not rows:
+            return "No keywords are being tracked yet. Use check_serp_ranking to add keywords to the Rankings tracker."
+        # Deduplicate: latest per keyword+domain
+        seen: dict = {}
+        prev_map: dict = {}
+        for r in rows:
+            key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+            if key not in seen:
+                seen[key] = r
+            elif key not in prev_map:
+                prev_map[key] = r
+        lines = [f"{'Keyword':<35} {'Position':>8} {'Change':>8} {'Volume':>8} Domain"]
+        lines.append("-" * 70)
+        for key, r in seen.items():
+            kw = r.get("keyword", "")
+            pos = r.get("position")
+            pos_str = f"#{pos}" if pos else "Not ranked"
+            prev = prev_map.get(key)
+            if prev and pos and prev.get("position"):
+                diff = prev["position"] - pos
+                change = f"▲{diff}" if diff > 0 else f"▼{abs(diff)}" if diff < 0 else "—"
+            else:
+                change = "new"
+            vol = r.get("search_volume") or r.get("global_search_volume") or 0
+            vol_str = f"{vol:,}" if vol else "—"
+            domain = r.get("domain", "")
+            lines.append(f"{kw:<35} {pos_str:>8} {change:>8} {vol_str:>8}  {domain}")
+        lines.append(f"\nTotal tracked: {len(seen)} keywords")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching rankings: {e}"
+
+
+@tool
+async def refresh_all_rankings(config: RunnableConfig) -> str:
+    """
+    Refresh all tracked keyword rankings by checking live Google SERP positions.
+    Use this when the user says 'refresh my rankings', 'update positions', or 'check all keywords'.
+    This calls DataForSEO for each tracked keyword — may take 10-30 seconds for large lists.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        from seo import dataforseo as dfs
+        user = await db.users.find_one({"_id": user_id}) or {}
+        if not user:
+            user = await db.users.find_one({"business_id": user_id}) or {}
+        settings = user.get("settings") or {}
+        loc_code = dfs.resolve_location_code(
+            country=str(settings.get("country") or user.get("country") or ""),
+            country_code=str(settings.get("country_code") or user.get("country_code") or ""),
+        )
+        lang_code = dfs.language_code_from_settings(str(settings.get("primary_language") or "English"))
+        # Deduplicate: latest per keyword+domain
+        rows = await db.seo_serp_rankings.find({"user_id": user_id}).sort("checked_at", -1).to_list(500)
+        seen: dict = {}
+        for r in rows:
+            key = f"{r.get('keyword', '')}|{r.get('domain', '')}"
+            if key not in seen:
+                seen[key] = r
+        if not seen:
+            return "No keywords are being tracked. Use check_serp_ranking first."
+        checked, failed = 0, 0
+        for r in list(seen.values())[:30]:  # cap at 30 to avoid long waits
+            kw = r.get("keyword", "")
+            domain = r.get("domain", "")
+            if not kw or not domain:
+                continue
+            try:
+                serp = await dfs.check_serp_position_dfs(kw, domain, location_code=loc_code, language_code=lang_code)
+                await db.seo_serp_rankings.insert_one({
+                    "user_id": user_id, "keyword": kw, "domain": domain,
+                    "position": serp["position"], "global_position": serp["global_position"],
+                    "location_code": loc_code, "language_code": lang_code,
+                    "checked_at": datetime.utcnow(), "source": "dataforseo",
+                })
+                checked += 1
+            except Exception:
+                failed += 1
+        return f"Refreshed {checked} keywords. {failed} failed. Open the Rankings tab to see updated positions."
+    except Exception as e:
+        return f"Error refreshing rankings: {e}"
+
+
+@tool
+async def delete_ranking(keyword: str, domain: str, config: RunnableConfig) -> str:
+    """
+    Remove a keyword from the rankings tracker.
+    Use this when the user says 'stop tracking X', 'remove X from rankings', or 'delete X keyword'.
+
+    Args:
+        keyword: The keyword to remove.
+        domain: The domain it was tracked for.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        result = await db.seo_serp_rankings.delete_many({"user_id": user_id, "keyword": keyword, "domain": domain})
+        if result.deleted_count:
+            return f"Removed '{keyword}' (tracked for {domain}) from your rankings tracker."
+        return f"No ranking found for keyword '{keyword}' on domain '{domain}'."
+    except Exception as e:
+        return f"Error deleting ranking: {e}"
+
+
+@tool
+async def get_content_calendar(config: RunnableConfig) -> str:
+    """
+    Show the user's content calendar — scheduled blog posts by week.
+    Use this when the user asks about their content plan, posting schedule, or calendar.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        items = await db.seo_content_calendar.find({"user_id": user_id}).sort("week", 1).to_list(100)
+        if not items:
+            return "Your content calendar is empty. Ask me to create a content plan and I'll fill it in."
+        lines = ["Content Calendar\n"]
+        for item in items:
+            week = item.get("week", "?")
+            day = item.get("day", "")
+            title = item.get("title", "(untitled)")
+            kws = ", ".join(item.get("keywords") or [])
+            status = item.get("status", "planned")
+            lines.append(f"Week {week}{f' · {day}' if day else ''}: {title}")
+            if kws:
+                lines.append(f"  Keywords: {kws}")
+            lines.append(f"  Status: {status}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching calendar: {e}"
+
+
+@tool
+async def schedule_content(
+    title: str,
+    week: int,
+    keywords: str = "",
+    day: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Add or update an item in the content calendar.
+    Use this to schedule blog post ideas for specific weeks.
+
+    Args:
+        title: The blog post title or topic.
+        week: Which week to schedule it (1-52).
+        keywords: Comma-separated target keywords for this post.
+        day: Optional day of week (e.g. 'Monday', 'Wednesday').
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
+        doc = {
+            "user_id": user_id,
+            "title": title,
+            "week": int(week),
+            "day": day or "",
+            "keywords": kw_list,
+            "status": "planned",
+            "updated_at": datetime.utcnow(),
+        }
+        await db.seo_content_calendar.update_one(
+            {"user_id": user_id, "title": title},
+            {"$set": doc, "$setOnInsert": {"created_at": datetime.utcnow()}},
+            upsert=True,
+        )
+        return f"Scheduled '{title}' for Week {week}{f' ({day})' if day else ''} in your content calendar."
+    except Exception as e:
+        return f"Error scheduling content: {e}"
+
+
+@tool
+async def publish_to_my_site(post_id: str, config: RunnableConfig) -> str:
+    """
+    Publish a saved blog post directly to the user's Zilo website (one click, no credentials needed).
+    Use this when the user says 'publish X to my site', 'go live', or 'post it to my website'.
+
+    Args:
+        post_id: The ID of the saved blog post (from list_saved_posts).
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        post = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": user_id})
+        if not post:
+            # Try string match on _id
+            from bson import ObjectId
+            try:
+                post = await db.seo_blog_posts.find_one({"_id": ObjectId(post_id), "user_id": user_id})
+            except Exception:
+                pass
+        if not post:
+            return f"Post '{post_id}' not found. Use list_saved_posts to get the correct ID."
+        # Call the blog service publish function
+        try:
+            from blog.blog_service import get_blog_service
+            blog_svc = get_blog_service()
+            blog = await db.blogs.find_one({"user_id": user_id})
+            wp_slug = blog.get("wp_slug", "") if blog else ""
+            if not wp_slug:
+                return "No Zilo website found for this account. Activate Autoblog first to get a site."
+            result = await blog_svc.publish_post(
+                wp_slug=wp_slug,
+                title=post.get("title", ""),
+                content=post.get("content", ""),
+                keywords=post.get("keywords") or [],
+                excerpt=post.get("meta_description") or "",
+            )
+            post_url = result.get("post_url", "")
+            await db.seo_blog_posts.update_one(
+                {"_id": post.get("_id")},
+                {"$set": {"status": "published", "site_post_url": post_url, "published_at": datetime.utcnow()}}
+            )
+            return f"Published! Your post '{post.get('title', '')}' is now live at {post_url}"
+        except Exception as pub_e:
+            return f"Publish failed: {pub_e}. Make sure Autoblog is activated in the SEO Hub."
+    except Exception as e:
+        return f"Error publishing post: {e}"
+
+
+@tool
+async def delete_blog_post(post_id: str, config: RunnableConfig) -> str:
+    """
+    Delete a saved blog post permanently.
+    Use this when the user says 'delete post X', 'remove this draft', or 'delete it'.
+
+    Args:
+        post_id: The ID of the post to delete (from list_saved_posts).
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        result = await db.seo_blog_posts.delete_one({"_id": post_id, "user_id": user_id})
+        if result.deleted_count:
+            return f"Deleted post '{post_id}' successfully."
+        # Try ObjectId
+        try:
+            from bson import ObjectId
+            result = await db.seo_blog_posts.delete_one({"_id": ObjectId(post_id), "user_id": user_id})
+            if result.deleted_count:
+                return f"Deleted post successfully."
+        except Exception:
+            pass
+        return f"Post '{post_id}' not found. Use list_saved_posts to see available posts."
+    except Exception as e:
+        return f"Error deleting post: {e}"
+
+
+@tool
+async def get_saved_keywords(config: RunnableConfig) -> str:
+    """
+    Get the user's saved keyword lists from the Keywords tab.
+    Shows the most recent keyword sets with search volumes and difficulty.
+    Use this when the user asks 'what keywords have I saved', 'show my keyword list', etc.
+    """
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "No database connection."
+        months = await db.seo_saved_keywords.find({"user_id": user_id}).sort("saved_at", -1).limit(3).to_list(3)
+        if not months:
+            return "No saved keywords yet. Go to the Keywords tab to generate and save a keyword list."
+        lines = []
+        for m in months:
+            month = m.get("month", "")
+            kws = m.get("keywords") or []
+            lines.append(f"\n📅 {month} ({len(kws)} keywords)")
+            for k in kws[:10]:
+                kw = k.get("keyword", "") if isinstance(k, dict) else str(k)
+                vol = k.get("search_volume") or k.get("global_search_volume") or 0 if isinstance(k, dict) else 0
+                diff = k.get("difficulty", "") if isinstance(k, dict) else ""
+                vol_str = f"{vol:,}/mo" if vol else "—"
+                lines.append(f"  • {kw} — {vol_str} {f'({diff})' if diff else ''}")
+            if len(kws) > 10:
+                lines.append(f"  … and {len(kws) - 10} more")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching saved keywords: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MARKETING SKILLS — benchmarked against coreyhaines31/marketingskills
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tool
+async def write_marketing_copy(
+    page_type: str,
+    business_description: str = "",
+    target_audience: str = "",
+    unique_value: str = "",
+    tone: str = "professional",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Write or improve marketing copy for any page using proven copywriting frameworks.
+    Use when the user asks to write homepage copy, landing page, about page, ad copy,
+    product descriptions, headlines, CTAs, or any marketing text.
+
+    Args:
+        page_type: Type of page/copy — 'homepage', 'landing_page', 'pricing', 'about',
+                   'ad', 'email', 'product_description', 'cta', 'headline'.
+        business_description: What the business does and its core offer.
+        target_audience: Who the customer is, their pain points and goals.
+        unique_value: What makes this business different from competitors.
+        tone: Writing tone — 'professional', 'friendly', 'bold', 'empathetic'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Type: {bk.get('business_type', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                    f"Location: {bk.get('business_location', '')}",
+                ]))
+        except Exception:
+            pass
+
+    prompt = f"""You are an expert direct-response copywriter. Write compelling {page_type} copy.
+
+BUSINESS CONTEXT:
+{biz_ctx or business_description or "Use the page type and audience to infer context."}
+
+TARGET AUDIENCE: {target_audience or "Infer from business context"}
+UNIQUE VALUE: {unique_value or "Infer from business context"}
+TONE: {tone}
+
+COPYWRITING PRINCIPLES TO APPLY:
+- Clarity over cleverness — every word must be immediately understood
+- Benefits over features — outcomes, not functionality
+- Specificity over vagueness — real numbers, real results, real language
+- Customer language — use their words, not corporate speak
+- One idea per section — clear logical flow
+
+FRAMEWORKS TO USE:
+- Headlines: "{{Achieve outcome}} without {{pain point}}" OR outcome-focused specifics
+- CTA formula: [Action Verb] + [What They Get] + [Qualifier]
+- Page structure: Hook → Problem → Solution → Proof → CTA
+
+QUALITY CHECKS — AVOID:
+- Jargon, passive voice, exclamation points without substance
+- "We are dedicated to...", "World-class", "Cutting-edge", "Seamlessly"
+- Long sentences (max 20 words each)
+
+OUTPUT FORMAT:
+## {page_type.replace('_', ' ').title()} Copy
+
+### Headline Options (pick the strongest)
+[3 headline variations with rationale]
+
+### Main Copy
+[Full page/section copy organized by section]
+
+### CTA Options
+[2-3 CTA variations]
+
+### Why This Works
+[Brief annotation of key choices]
+
+Write the copy now — make it specific, human, and compelling:"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not generate copy — please try again."
+
+
+@tool
+async def audit_conversion_rate(
+    url: str = "",
+    page_description: str = "",
+    conversion_goal: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Audit a page for conversion rate optimization (CRO) issues.
+    Use when the user says their page isn't converting, wants to improve signups,
+    sales, or leads, or asks about CRO, conversion optimization, or why people leave.
+
+    Args:
+        url: URL of the page to audit (optional — can describe instead).
+        page_description: Description of the page if URL not available.
+        conversion_goal: What action you want visitors to take (e.g. 'sign up', 'buy', 'book a call').
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = f"Business: {u.get('business_name','')} | {bk.get('business_description','')}"
+        except Exception:
+            pass
+
+    prompt = f"""You are a senior conversion rate optimization (CRO) specialist.
+Audit this page and provide specific, actionable recommendations.
+
+BUSINESS: {biz_ctx}
+PAGE: {url or page_description or "General audit"}
+CONVERSION GOAL: {conversion_goal or "Increase conversions"}
+
+AUDIT FRAMEWORK — analyse all 7 dimensions:
+
+1. VALUE PROPOSITION CLARITY
+   - Can a visitor understand what this is and why it matters in 5 seconds?
+   - Are benefits customer-focused (not feature lists)?
+
+2. HEADLINE EFFECTIVENESS
+   - Does it communicate core value immediately?
+   - Does it match what the visitor expected when they clicked?
+
+3. CTA PLACEMENT & COPY
+   - Is the primary CTA visible above the fold?
+   - Does button copy communicate value (not just "Submit" or "Click here")?
+   - Is there a clear primary action hierarchy?
+
+4. VISUAL HIERARCHY
+   - Can the page be scanned in 10 seconds?
+   - Do images reinforce the message?
+
+5. TRUST SIGNALS & SOCIAL PROOF
+   - Are there testimonials, logos, reviews, case studies near CTAs?
+   - Are security/trust badges visible on conversion points?
+
+6. OBJECTION HANDLING
+   - Does the page address price concerns, "is this for me?", implementation fears?
+   - Is there a FAQ or guarantee?
+
+7. FRICTION POINTS
+   - Too many form fields? Unnecessary steps?
+   - Mobile issues? Slow load time?
+
+OUTPUT FORMAT:
+
+## CRO Audit: {url or "Page"}
+
+### 🔴 Quick Wins (Fix This Week)
+[Top 3 highest-impact, easiest changes with specific copy suggestions]
+
+### 🟡 High-Impact Changes (This Month)
+[Structural improvements that require more effort but big return]
+
+### 🧪 Test Ideas (A/B Tests to Run)
+[3-5 specific hypotheses using: "Because [observation], we believe [change] will cause [outcome]"]
+
+### Copy Rewrites
+[Specific before/after examples for headlines, CTAs, key sections]
+
+### Priority Score
+Overall conversion readiness: X/10
+Top 3 blockers to fix first:"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not complete CRO audit — please try again."
+
+
+@tool
+async def write_social_posts(
+    topic: str,
+    platforms: str = "linkedin,twitter",
+    post_count: int = 5,
+    content_type: str = "educational",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Write social media posts for any platform. Applies hook formulas, content pillars,
+    and platform-specific best practices.
+    Use when the user asks to write posts for LinkedIn, Twitter/X, Instagram, Facebook,
+    TikTok, or wants a social media content calendar.
+
+    Args:
+        topic: The topic, theme, or content to post about.
+        platforms: Comma-separated platforms — 'linkedin', 'twitter', 'instagram',
+                   'facebook', 'tiktok'. Default: 'linkedin,twitter'.
+        post_count: Number of posts to create per platform (1-10).
+        content_type: Type of content — 'educational', 'story', 'promotion',
+                      'behind_scenes', 'social_proof', 'contrarian'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                ]))
+        except Exception:
+            pass
+
+    platform_list = [p.strip().lower() for p in platforms.split(",")]
+    count = min(max(int(post_count), 1), 10)
+
+    platform_guides = {
+        "linkedin": "Professional tone. 150-300 words. Line breaks every 1-2 sentences. End with a question or insight. No hashtag spam (max 3).",
+        "twitter": "Under 280 chars. Punchy opener. One clear idea. 1-2 hashtags max.",
+        "instagram": "Visual-first caption. Strong hook first line (shown before 'more'). 5-10 relevant hashtags at end.",
+        "facebook": "Conversational. Can be longer. Ask a question to drive comments.",
+        "tiktok": "Script format: 3-second hook + value + CTA. Under 60 seconds spoken.",
+    }
+
+    prompt = f"""You are a social media strategist and content creator.
+Write {count} {content_type} post(s) for each platform requested.
+
+BUSINESS CONTEXT:
+{biz_ctx or f"Topic: {topic}"}
+
+TOPIC: {topic}
+CONTENT TYPE: {content_type}
+
+HOOK FORMULAS TO USE (pick best per post):
+- Curiosity: "Most people don't know that..."
+- Story: "Last week, [specific thing happened]..."
+- Value: "Here are X ways to [achieve outcome]:"
+- Contrarian: "Unpopular opinion: [bold claim]"
+- Question: "[Question the audience is asking themselves]"
+
+CONTENT REPURPOSING — extract multiple angles from one topic:
+- The main insight
+- A counter-intuitive take
+- A practical how-to step
+- A behind-the-scenes angle
+- A customer story angle
+
+{"".join(f"""
+---
+## {p.upper()} POSTS ({count} posts)
+Platform rules: {platform_guides.get(p, "Match platform conventions.")}
+""" for p in platform_list)}
+
+Write {count} ready-to-post piece(s) for each platform above.
+Make each one distinct — different hook, different angle, same topic.
+Include relevant emojis where appropriate. No filler. Every word earns its place."""
+
+    result = await _ai(prompt, max_tokens=3000)
+    return result or "Could not generate social posts — please try again."
+
+
+@tool
+async def write_cold_email(
+    prospect_role: str = "",
+    prospect_company: str = "",
+    pain_point: str = "",
+    sequence_length: int = 3,
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Write a B2B cold email sequence designed to get replies.
+    Use when the user asks to write cold emails, outreach emails, sales emails,
+    or follow-up sequences to potential customers or partners.
+
+    Args:
+        prospect_role: Job title/role of the person being emailed (e.g. 'Marketing Director').
+        prospect_company: Type or name of company being targeted.
+        pain_point: The specific problem your product/service solves for them.
+        sequence_length: Number of emails in the sequence (1-5). Default: 3.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Sender business: {u.get('business_name', '')}",
+                    f"What we do: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                ]))
+        except Exception:
+            pass
+
+    count = min(max(int(sequence_length), 1), 5)
+
+    prompt = f"""You are an expert B2B copywriter specialising in cold email outreach.
+Write a {count}-email sequence that gets real replies.
+
+SENDER CONTEXT:
+{biz_ctx}
+
+TARGET:
+- Role: {prospect_role or "Decision maker"}
+- Company type: {prospect_company or "Target company"}
+- Pain point we solve: {pain_point or "Infer from business context"}
+
+CORE PRINCIPLES:
+1. Write like a colleague, not a vendor — no corporate speak
+2. Ruthless brevity — every sentence must earn its place
+3. Lead with THEIR world, not your company
+4. One low-friction ask per email (reply, not "book a 30-min call")
+5. Personalization must connect naturally to the outreach reason
+
+EMAIL FRAMEWORKS:
+- Email 1: Observation → relevance → soft ask (under 100 words)
+- Email 2: Different angle / add value (share insight, case study, stat)
+- Email 3: Honest breakup ("Is this timing off?")
+- Email 4-5: Re-engage with new trigger or valuable content
+
+QUALITY CHECK — REJECT if:
+- Starts with "I hope this email finds you well"
+- Mentions "synergy", "leverage", "circle back", "touch base"
+- Talks about your company before their problem
+- CTA is "schedule a 30-minute call" in email 1
+
+Write the full sequence now. For each email include:
+- Subject line (+ 2 alternatives)
+- Body (ready to send)
+- Sending timing (e.g. "Send day 1", "Wait 3 days")
+- Why it works (1 sentence)"""
+
+    result = await _ai(prompt, max_tokens=2500)
+    return result or "Could not generate email sequence — please try again."
+
+
+@tool
+async def apply_marketing_psychology(
+    context: str,
+    goal: str = "increase conversions",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Apply marketing psychology and behavioural science principles to copy, pages,
+    pricing, or strategy. Use when the user asks how to make their marketing more
+    persuasive, why people aren't buying, or wants psychology-based improvements.
+
+    Args:
+        context: What you're trying to improve — page URL, copy snippet, pricing,
+                 email, or strategy description.
+        goal: What outcome you want — 'increase conversions', 'reduce churn',
+              'improve pricing perception', 'build trust', 'increase urgency'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = f"{u.get('business_name','')} — {bk.get('business_description','')}"
+        except Exception:
+            pass
+
+    prompt = f"""You are a behavioural science expert and marketing psychologist.
+Apply psychological principles to improve marketing effectiveness.
+
+BUSINESS: {biz_ctx}
+CONTEXT TO IMPROVE: {context}
+GOAL: {goal}
+
+PSYCHOLOGICAL FRAMEWORKS TO APPLY (use the most relevant):
+
+PERSUASION PRINCIPLES:
+- Reciprocity: Give value first (free tool, insight, template)
+- Social proof: Specific numbers > vague claims ("127 businesses" not "many businesses")
+- Authority: Credentials, data, expert quotes, awards
+- Scarcity/Urgency: Real limits only — manufactured urgency destroys trust
+- Loss aversion: "Don't miss X" > "Get X" (losses feel 2x stronger than gains)
+- Liking: Shared identity, common enemy, genuine personality
+
+COGNITIVE BIASES TO LEVERAGE:
+- Anchoring: Show higher price first, then actual price
+- Decoy effect: Add a third option to make target option look like best value
+- Mere exposure: Repeated consistent brand touchpoints build trust
+- Peak-end rule: Memorable start AND end of experience matters most
+- Endowment effect: "Your free trial" feels more owned than "a free trial"
+
+PRICING PSYCHOLOGY:
+- Charm pricing ($97 vs $100) works for impulse; round numbers ($100) work for luxury
+- Per-day framing ($0.33/day) reduces perceived cost
+- Feature anchoring: Lead with premium, justify value before revealing price
+
+DESIGN PSYCHOLOGY:
+- Hick's Law: More choices = less action (reduce options)
+- Fogg Behavior Model: Motivation × Ability × Trigger — increase all three
+- AIDA: Attention → Interest → Desire → Action
+
+OUTPUT FORMAT:
+
+## Psychology Audit: {goal}
+
+### 🧠 Top 3 Psychological Levers to Pull
+[Specific principles with exact implementation for this context]
+
+### ✏️ Copy Rewrites Using Psychology
+[Before/after examples with the principle used]
+
+### 🏗️ Structural Changes
+[Layout, flow, or design changes based on cognitive science]
+
+### ⚠️ Psychological Mistakes to Fix
+[Current elements that are working against you]
+
+### Quick Wins
+[3 changes to make today, ranked by impact]"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not apply psychology analysis — please try again."
+
+
+@tool
+async def create_lead_magnet(
+    business_goal: str = "grow email list",
+    target_audience: str = "",
+    format_preference: str = "any",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Create a lead magnet strategy and content outline to grow your email list or generate leads.
+    Use when the user asks about lead magnets, free offers, content upgrades, email capture,
+    or growing their list.
+
+    Args:
+        business_goal: What you want to achieve — 'grow email list', 'generate leads',
+                       'qualify prospects', 'build authority'.
+        target_audience: Who you're trying to attract and what they need.
+        format_preference: Preferred format — 'checklist', 'template', 'ebook', 'quiz',
+                           'webinar', 'calculator', 'cheatsheet', 'video', 'any'.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Type: {bk.get('business_type', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                    f"Location: {bk.get('business_location', '')}",
+                ]))
+        except Exception:
+            pass
+
+    prompt = f"""You are a lead generation and content marketing strategist.
+Create a complete lead magnet strategy and ready-to-use content outline.
+
+BUSINESS CONTEXT:
+{biz_ctx}
+
+GOAL: {business_goal}
+TARGET AUDIENCE: {target_audience or "Infer from business context"}
+FORMAT PREFERENCE: {format_preference}
+
+LEAD MAGNET PRINCIPLES:
+1. Solve ONE specific problem (not everything)
+2. Match buyer stage — awareness (educational) vs decision (tool/template)
+3. High perceived value, low time to consume
+4. Creates a natural pathway to your product
+5. Easy to deliver instantly
+
+LEAD MAGNET FORMATS WITH BEST USE CASES:
+- Checklist: Quick win, actionable, high perceived value, low effort to create
+- Template: Saves time (swipe file, email template, spreadsheet)
+- Calculator/Quiz: Interactive, personalized result → high completion
+- Cheatsheet: Reference guide, keeps them coming back
+- Mini-course (3-5 emails): Positions you as expert, builds relationship
+- Webinar/Workshop: High-ticket qualifier, best for complex products
+- Free tool: Highest value, stickiest, but requires development
+
+OUTPUT FORMAT:
+
+## Lead Magnet Strategy
+
+### Recommended Lead Magnet
+**Title:** [Specific, outcome-focused title]
+**Format:** [Type and why]
+**Value proposition:** [What they get and why they'd give their email for it]
+
+### Content Outline
+[Full structured outline with all sections/pages/items]
+
+### Landing Page Headlines
+[3 headline options for the opt-in page]
+
+### Delivery Sequence
+[What happens after they sign up — day 0, day 1, day 3]
+
+### Promotion Channels
+[Where and how to promote this lead magnet]
+
+### Success Metrics
+[What to track — conversion rate benchmarks, list growth targets]"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not create lead magnet strategy — please try again."
+
+
+@tool
+async def design_ab_test(
+    what_to_test: str,
+    current_version: str = "",
+    conversion_goal: str = "",
+    monthly_visitors: int = 0,
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Design a proper A/B test with hypothesis, variants, sample size, and success metrics.
+    Use when the user wants to test something, asks about A/B testing, split testing,
+    or wants to know if a change will improve conversions.
+
+    Args:
+        what_to_test: What element to test — headline, CTA, pricing, page layout, email subject.
+        current_version: The current version (control) — what it says/looks like now.
+        conversion_goal: What you're measuring — signups, purchases, clicks, replies.
+        monthly_visitors: Approximate monthly visitors/recipients (for sample size calc).
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = f"{u.get('business_name','')} — {bk.get('business_description','')}"
+        except Exception:
+            pass
+
+    prompt = f"""You are a conversion optimisation expert who designs rigorous A/B tests.
+Design a complete, statistically sound A/B test.
+
+BUSINESS: {biz_ctx}
+ELEMENT TO TEST: {what_to_test}
+CURRENT VERSION (Control): {current_version or "Not specified — suggest a common control"}
+CONVERSION GOAL: {conversion_goal or "Improve conversions"}
+MONTHLY VISITORS/RECIPIENTS: {monthly_visitors or "Unknown — estimate based on typical SMB"}
+
+A/B TEST DESIGN FRAMEWORK:
+
+1. HYPOTHESIS (structured format):
+   "Because [observation/insight], we believe [specific change] will cause [expected outcome],
+    which we'll measure by [metric]."
+
+2. VARIANTS:
+   - Control (A): Current version
+   - Variant B: Single change only (never change multiple elements)
+   - Optional Variant C: If testing two distinct approaches
+
+3. SAMPLE SIZE:
+   - Minimum detectable effect: 10-20% improvement
+   - Statistical significance: 95% confidence
+   - Estimated sample needed per variant
+   - Estimated time to reach significance
+
+4. SUCCESS METRICS:
+   - Primary: [conversion rate metric]
+   - Guardrail: [metric that shouldn't get worse]
+   - Don't peek at results before sample size is reached
+
+5. IMPLEMENTATION:
+   - What to build/change
+   - How to split traffic (50/50 or weight toward control if risky)
+   - How to track results
+
+OUTPUT FORMAT:
+
+## A/B Test Design: {what_to_test}
+
+### Hypothesis
+[Structured hypothesis statement]
+
+### Test Variants
+**Control (A):** [Description]
+**Variant (B):** [Specific change with exact copy/design]
+[**Variant (C):** if applicable]
+
+### Sample Size Calculator
+- Estimated baseline conversion rate: X%
+- Minimum detectable effect: X%
+- Sample needed per variant: ~X visitors
+- Estimated time to significance: ~X weeks at {monthly_visitors or "your"} visitors/month
+
+### Success Criteria
+- Primary metric: [What to measure]
+- Win condition: Variant beats control by X% with 95% confidence
+- Guardrail metrics: [What must not get worse]
+
+### ICE Score (Prioritization)
+- Impact (1-10): X — [reasoning]
+- Confidence (1-10): X — [reasoning]
+- Ease (1-10): X — [reasoning]
+- **ICE Total: X/30**
+
+### What to Watch For
+[Common pitfalls for this specific test]"""
+
+    result = await _ai(prompt, max_tokens=2000)
+    return result or "Could not design A/B test — please try again."
+
+
+@tool
+async def plan_programmatic_seo(
+    pattern_type: str = "",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Create a programmatic SEO strategy to generate hundreds of optimized pages at scale.
+    Use when the user asks about programmatic SEO, generating pages at scale, location pages,
+    comparison pages, integration pages, or any repeating SEO page pattern.
+
+    Args:
+        pattern_type: The type of pages to generate — 'location', 'comparison',
+                      'integration', 'glossary', 'template', 'directory', 'persona',
+                      'examples', or leave blank to find the best pattern for the business.
+    """
+    db, user_id = _get_db_and_user(config)
+    biz_ctx = ""
+    if db and user_id:
+        try:
+            u = await db.users.find_one({"_id": user_id})
+            if u:
+                bk = u.get("business_knowledge") or {}
+                biz_ctx = "\n".join(filter(None, [
+                    f"Business: {u.get('business_name', '')}",
+                    f"Type: {bk.get('business_type', '')}",
+                    f"Description: {bk.get('business_description', '')}",
+                    f"Products/Services: {bk.get('products_services', '')}",
+                    f"Location: {bk.get('business_location', '')}",
+                ]))
+        except Exception:
+            pass
+
+    prompt = f"""You are a programmatic SEO strategist. Design a scalable page generation strategy.
+
+BUSINESS CONTEXT:
+{biz_ctx}
+
+REQUESTED PATTERN TYPE: {pattern_type or "Recommend the best pattern for this business"}
+
+PROGRAMMATIC SEO PATTERNS:
+1. Location pages: "[Service] in [City]" — great for local businesses
+2. Comparison pages: "[Product A] vs [Product B]" — intercepts decision-stage searches
+3. Integration pages: "[Tool] + [Integration]" — SaaS/B2B growth play
+4. Glossary/definition: "What is [term]" — builds topical authority
+5. Template pages: "[Type] template/examples" — high-intent educational traffic
+6. Directory: "[Category] in [Location]" — marketplace/aggregator model
+7. Persona pages: "[Job title] [use case]" — targets specific buyer segments
+8. Examples pages: "[Topic] examples" — attracts researchers and buyers
+
+DELIVERABLES NEEDED:
+
+### Pattern Recommendation
+[Best 1-2 patterns for this specific business and why]
+
+### Keyword Pattern
+- Repeating structure: "[Variable A] + [Fixed keyword] + [Variable B]"
+- Example pages: [5 real page title examples]
+- Estimated search volume per page: [range]
+- Total pages possible: [estimate]
+
+### Page Template
+**URL structure:** /[pattern]/[variable]
+**Title formula:** [Template with variables]
+**Meta description formula:** [Template]
+**H1 formula:** [Template]
+
+**Page sections:**
+1. [Section name] — [content description, what makes each page unique]
+2. [Section name] — [data-driven content]
+3. [Section name] — [internal linking to related pages]
+4. CTA — [conversion element]
+
+### Data Sources
+[Where to get the data to populate these pages — public APIs, scraping, manual lists]
+
+### Internal Linking Strategy
+[Hub page + spoke page architecture, how pages link to each other]
+
+### Quality Checks
+[How to ensure pages aren't thin content / avoid Google penalties]
+
+### Implementation Roadmap
+Phase 1 (Week 1-2): [Pilot with 10-20 pages, validate with Google]
+Phase 2 (Month 2): [Scale to 100+ pages]
+Phase 3 (Month 3+): [Full automation + monitoring]"""
+
+    result = await _ai(prompt, max_tokens=2500)
+    return result or "Could not create programmatic SEO plan — please try again."
+
+
+# ── AI-Powered Analysis Tools ─────────────────────────────────────────────────
+
+@tool
+async def diagnose_rank_changes(config: RunnableConfig) -> str:
+    """
+    Analyse recent keyword ranking changes using AI.
+    Detects which keywords improved or dropped significantly (3+ positions)
+    in the last 30 days and explains why, with a specific action for each.
+    Use when the user asks: why did my ranking drop, what moved, rank changes, position diagnosis.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "Cannot diagnose — no database connection."
+
+        cutoff = datetime.utcnow() - timedelta(days=45)
+        rows = await db.seo_serp_rankings.find(
+            {"user_id": user_id, "checked_at": {"$gte": cutoff}}
+        ).sort("checked_at", -1).to_list(2000)
+
+        if not rows:
+            return "No ranking data in the last 45 days. Add keywords to track first, then check back."
+
+        # Build per-keyword position history
+        kw_history: dict[str, list] = {}
+        for row in rows:
+            kw = (row.get("keyword") or "").strip()
+            pos = row.get("position")
+            if kw:
+                kw_history.setdefault(kw, []).append(pos)
+
+        improved, declined = [], []
+        for kw, history in kw_history.items():
+            non_null = [p for p in history if p is not None]
+            if len(non_null) < 2:
+                continue
+            change = non_null[1] - non_null[0]  # positive = improved
+            if change >= 3:
+                improved.append({"keyword": kw, "change": change, "now": non_null[0], "was": non_null[1]})
+            elif change <= -3:
+                declined.append({"keyword": kw, "change": change, "now": non_null[0], "was": non_null[1]})
+
+        improved.sort(key=lambda x: x["change"], reverse=True)
+        declined.sort(key=lambda x: x["change"])
+
+        if not improved and not declined:
+            return f"Checked {len(kw_history)} keywords — no significant moves (3+ positions) detected. All rankings are stable."
+
+        prompt = f"""SEO rank change analysis. Diagnose these keyword movements and give a specific action for each.
+
+IMPROVED (moved UP in Google):
+{_json.dumps(improved[:8], indent=2) if improved else "None"}
+
+DECLINED (dropped in Google):
+{_json.dumps(declined[:8], indent=2) if declined else "None"}
+
+For each keyword, explain in 1 sentence why this likely happened and give 1 specific action.
+Return JSON only:
+{{
+  "overall_trend": "improving|declining|mixed|stable",
+  "overall_summary": "1 sentence",
+  "diagnoses": [
+    {{"keyword": "...", "direction": "improved|declined", "change": 5, "diagnosis": "...", "action": "..."}}
+  ],
+  "top_priority": "single most important action right now"
+}}"""
+
+        raw = await _ai(prompt, max_tokens=900)
+        raw = raw.strip()
+        if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+        result = _json.loads(raw)
+
+        lines = [
+            f"🔍 AI Rank Diagnosis — {result.get('overall_trend', 'mixed').upper()}",
+            f"{result.get('overall_summary', '')}",
+            "",
+            f"🎯 Top Priority: {result.get('top_priority', '')}",
+            "",
+        ]
+        for d in result.get("diagnoses", []):
+            arrow = "↑" if d["direction"] == "improved" else "↓"
+            lines.append(f"{arrow} {d['keyword']} ({abs(d['change'])} positions)")
+            lines.append(f"   Why: {d['diagnosis']}")
+            lines.append(f"   Do: {d['action']}")
+            lines.append("")
+        return "\n".join(lines)
+    except _json.JSONDecodeError:
+        return "AI returned an unexpected format — try again."
+    except Exception as e:
+        return f"Diagnosis failed: {e}"
+
+
+@tool
+async def suggest_internal_links(config: RunnableConfig) -> str:
+    """
+    Scan all blog posts and suggest internal linking opportunities.
+    Tells you which post should link to which other post, with the exact anchor text to use.
+    Use when the user asks: internal links, link my posts, which posts should link to each other, internal linking strategy.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "Cannot analyse — no database connection."
+
+        posts = await db.seo_blog_posts.find(
+            {"user_id": user_id},
+            {"title": 1, "keywords": 1, "content": 1, "status": 1}
+        ).sort("created_at", -1).limit(40).to_list(40)
+
+        if len(posts) < 2:
+            return "You need at least 2 blog posts before I can suggest internal links. Write more posts first!"
+
+        summaries = [
+            {
+                "id": str(p.get("_id", "")),
+                "title": p.get("title", ""),
+                "keywords": (p.get("keywords") or [])[:4],
+                "excerpt": (p.get("content") or "")[:120],
+                "status": p.get("status", "draft"),
+            }
+            for p in posts
+        ]
+
+        prompt = f"""Internal SEO linking expert. Analyse these {len(summaries)} blog posts and find the best internal link opportunities.
+
+Posts:
+{_json.dumps(summaries, indent=2)}
+
+Rules: only link topically related posts, use natural anchor text, prioritise published posts.
+Suggest up to 10 links. Return JSON only:
+{{
+  "suggestions": [
+    {{
+      "from_title": "source post title",
+      "to_title": "target post title",
+      "anchor_text": "exact words to hyperlink",
+      "reason": "why (1 sentence)",
+      "priority": "high|medium|low"
+    }}
+  ],
+  "strategy": "1-2 sentence overall internal linking strategy"
+}}"""
+
+        raw = await _ai(prompt, max_tokens=1200)
+        raw = raw.strip()
+        if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+        result = _json.loads(raw)
+
+        lines = [
+            f"🔗 Internal Link Suggestions ({len(posts)} posts analysed)",
+            f"{result.get('strategy', '')}",
+            "",
+        ]
+        for i, s in enumerate(result.get("suggestions", [])[:10], 1):
+            priority = s.get("priority", "medium").upper()
+            lines.append(f"{i}. [{priority}] From: \"{s.get('from_title', '')}\"")
+            lines.append(f"   To: \"{s.get('to_title', '')}\"")
+            lines.append(f"   Anchor text: \"{s.get('anchor_text', '')}\"")
+            lines.append(f"   Why: {s.get('reason', '')}")
+            lines.append("")
+        return "\n".join(lines)
+    except _json.JSONDecodeError:
+        return "AI returned an unexpected format — try again."
+    except Exception as e:
+        return f"Internal link analysis failed: {e}"
+
+
+@tool
+async def generate_schema_markup(post_id: str = "", title: str = "", keywords: str = "", config: RunnableConfig = None) -> str:
+    """
+    Generate Schema.org JSON-LD structured data for a blog post.
+    Helps Google understand your content and can unlock rich results (star ratings, FAQs, etc.).
+    Use when the user asks: schema markup, structured data, JSON-LD, rich results, schema.org.
+
+    Args:
+        post_id: ID of a saved blog post (use list_saved_posts to find IDs). OR
+        title: Blog post title if no post_id.
+        keywords: Comma-separated keywords the post targets.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        post_title, content, kw_list = title, "", []
+
+        if post_id and db and user_id:
+            doc = await db.seo_blog_posts.find_one({"_id": post_id, "user_id": user_id})
+            if doc:
+                post_title = doc.get("title", title)
+                content = (doc.get("content") or "")[:800]
+                kw_list = (doc.get("keywords") or [])[:5]
+            else:
+                return f"Post {post_id} not found. Use list_saved_posts to find post IDs."
+
+        if not post_title:
+            return "Provide a post_id or title to generate schema markup."
+
+        if keywords:
+            kw_list = [k.strip() for k in keywords.split(",")][:5]
+
+        prompt = f"""Generate Schema.org JSON-LD structured data for this blog post.
+
+Title: {post_title}
+Keywords: {", ".join(kw_list) if kw_list else post_title}
+Excerpt: {content[:400] if content else "(no content provided)"}
+
+Choose the best schema type(s): BlogPosting is always included. If the post answers questions, add FAQPage. If it's a guide, add HowTo.
+
+Return a JSON array of schema objects (no markdown):
+[
+  {{
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "...",
+    "keywords": "...",
+    "author": {{"@type": "Person", "name": "Author"}},
+    "datePublished": "{datetime.utcnow().strftime('%Y-%m-%d')}"
+  }}
+]"""
+
+        raw = await _ai(prompt, max_tokens=1200)
+        raw = raw.strip()
+        if raw.startswith("```"): raw = re.sub(r"```[a-z]*\n?", "", raw).strip("`").strip()
+        schemas = _json.loads(raw)
+        if isinstance(schemas, dict):
+            schemas = [schemas]
+
+        # Save to post if post_id given
+        if post_id and db and user_id:
+            await db.seo_blog_posts.update_one(
+                {"_id": post_id, "user_id": user_id},
+                {"$set": {"schema_json_ld": schemas, "updated_at": datetime.utcnow()}}
+            )
+
+        script_tags = "\n\n".join(
+            f'<script type="application/ld+json">\n{_json.dumps(s, indent=2)}\n</script>'
+            for s in schemas
+        )
+        lines = [
+            f"✅ Schema.org markup generated for: \"{post_title}\"",
+            f"Schema type(s): {', '.join(s.get('@type', '?') for s in schemas)}",
+            "",
+            "Paste this in your page's <head> section:",
+            "",
+            script_tags,
+            "",
+            "Tip: Test your schema at: https://search.google.com/test/rich-results",
+        ]
+        return "\n".join(lines)
+    except _json.JSONDecodeError:
+        return "AI returned an unexpected format — try again."
+    except Exception as e:
+        return f"Schema generation failed: {e}"
+
+
+@tool
+async def analyze_search_console(site_url: str = "", days: int = 28, config: RunnableConfig = None) -> str:
+    """
+    Fetch Google Search Console data and get AI-powered insights about what's working, what's declining, and what to do next.
+    Requires Google Search Console to be connected in the Analytics tab.
+    Use when the user asks: GSC analysis, search console insights, how is my SEO traffic, what queries bring traffic, clicks analysis.
+
+    Args:
+        site_url: Your website URL (e.g. https://yoursite.com or sc-domain:yoursite.com). Leave blank to use the URL from your profile.
+        days: Number of days to analyse (7, 28, or 90). Default 28.
+    """
+    import json as _json
+    try:
+        db, user_id = _get_db_and_user(config)
+        if db is None or not user_id:
+            return "Cannot analyse — no database connection."
+
+        # Get site URL from business context if not provided
+        raw_site = site_url.strip()
+        if not raw_site:
+            ctx_doc = await db.users.find_one({"_id": user_id}, {"settings": 1})
+            raw_site = ((ctx_doc or {}).get("settings") or {}).get("website_url", "")
+        if not raw_site:
+            return "No site URL provided. Specify site_url or add your website to Settings."
+
+        # Try to call composio proxy
+        try:
+            from composio_service import composio_proxy, get_connection_status
+        except ImportError:
+            return "Google Search Console integration is not available. Connect it in the Analytics tab first."
+
+        status = await get_connection_status(user_id, "googlesearchconsole")
+        if not status.get("connected"):
+            return "Google Search Console is not connected. Go to Analytics tab → connect Google Search Console first."
+
+        # Normalise site URL
+        _clean = raw_site.strip().rstrip("/")
+        if _clean.startswith("sc-domain:"):
+            _bare = _clean[len("sc-domain:"):].lstrip("www.")
+        elif "://" in _clean:
+            _bare = _clean.split("://", 1)[1].lstrip("www.").rstrip("/")
+        else:
+            _bare = _clean.lstrip("www.").rstrip("/")
+
+        from urllib.parse import quote as _q
+        from datetime import timedelta as _td
+        end_date = datetime.utcnow().date() - _td(days=2)
+        start_date = end_date - _td(days=days)
+
+        candidates = [f"sc-domain:{_bare}", f"https://www.{_bare}/", f"https://{_bare}/", f"https://{_bare}"]
+        gsc_data = None
+        for website in candidates:
+            try:
+                encoded = _q(website, safe="")
+                base_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded}/searchAnalytics/query"
+                body = {"startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "rowLimit": 15, "type": "web"}
+                q_data = await composio_proxy(user_id, "googlesearchconsole", "POST", base_url, json={**body, "dimensions": ["query"]})
+                p_data = await composio_proxy(user_id, "googlesearchconsole", "POST", base_url, json={**body, "dimensions": ["page"]})
+                if not q_data.get("rows") and not p_data.get("rows"):
+                    continue
+                totals = await composio_proxy(user_id, "googlesearchconsole", "POST", base_url,
+                    json={"startDate": start_date.isoformat(), "endDate": end_date.isoformat(), "type": "web"})
+                tr = (totals.get("rows") or [{}])[0]
+                gsc_data = {
+                    "clicks": int(tr.get("clicks") or 0),
+                    "impressions": int(tr.get("impressions") or 0),
+                    "avg_ctr": round((tr.get("ctr") or 0) * 100, 1),
+                    "avg_position": round(tr.get("position") or 0, 1),
+                    "top_queries": [{"q": (r.get("keys") or [""])[0], "clicks": r.get("clicks", 0), "impressions": r.get("impressions", 0), "pos": round(r.get("position") or 0, 1)} for r in (q_data.get("rows") or [])[:10]],
+                    "top_pages": [{"page": (r.get("keys") or [""])[0].replace(f"https://{_bare}", ""), "clicks": r.get("clicks", 0)} for r in (p_data.get("rows") or [])[:8]],
+                }
+                break
+            except Exception:
+                continue
+
+        if not gsc_data:
+            return (f"Could not fetch data for {raw_site}. Make sure the site URL matches what's registered in "
+                    "Google Search Console. Go to Analytics tab → click 'List my sites' to find the exact format.")
+
+        prompt = f"""Expert SEO analyst. Give clear, actionable insights from this Google Search Console data.
+
+Period: last {days} days for {raw_site}
+Clicks: {gsc_data['clicks']:,}
+Impressions: {gsc_data['impressions']:,}
+Avg CTR: {gsc_data['avg_ctr']}%
+Avg Position: {gsc_data['avg_position']}
+
+Top queries: {_json.dumps(gsc_data['top_queries'], indent=2)}
+Top pages: {_json.dumps(gsc_data['top_pages'], indent=2)}
+
+Give a structured analysis:
+1. Overall health (1 sentence)
+2. Top 3 wins (what's working)
+3. Top 3 concerns (what needs fixing)
+4. Top 3 opportunities (quick wins to pursue)
+5. The single most important action to take this week
+
+Be specific — use the actual numbers. Talk like an expert friend, not a textbook."""
+
+        analysis = await _ai(prompt, max_tokens=900)
+        return (
+            f"📊 Google Search Console Analysis — Last {days} days\n"
+            f"Site: {raw_site}\n\n"
+            f"📈 Summary: {gsc_data['clicks']:,} clicks | {gsc_data['impressions']:,} impressions | "
+            f"{gsc_data['avg_ctr']}% CTR | Position {gsc_data['avg_position']}\n\n"
+            f"{analysis}"
+        )
+    except Exception as e:
+        return f"GSC analysis failed: {e}"
+
+
 # ── Tool registry exported to graph ──────────────────────────────────────────
 
 SEO_TOOLS = [
+    # Context & overview
     get_business_context,
-    audit_website,
-    research_keywords,
-    get_keyword_search_volume,
-    get_keyword_ideas,
-    check_serp_ranking,
-    get_competitor_keywords,
-    write_blog_post,
-    generate_content_calendar,
-    fix_seo_issues,
-    list_saved_posts,
-    publish_post_to_platform,
     get_seo_summary,
+    # Keyword research — DataForSEO (primary)
+    get_keyword_ideas,
+    get_keyword_search_volume,
+    get_keyword_geo_breakdown,
+    get_competitor_keywords,
+    # Keyword research — VebAPI (fallback)
+    veb_keyword_research,
+    veb_top_search_keywords,
+    # Keyword management
+    research_keywords,
+    get_saved_keywords,
     add_keywords_to_tracker,
+    # Rankings
+    get_rankings,
+    check_serp_ranking,
+    refresh_all_rankings,
+    delete_ranking,
+    # Website audit
+    veb_page_analysis,
+    veb_ai_visibility_audit,
+    veb_ai_crawler_check,
+    veb_speed_check,
+    audit_website,
+    fix_seo_issues,
+    # Backlinks & SERP
+    veb_backlinks,
+    veb_google_serp,
+    veb_google_ai_serp,
+    # Domain & social
+    veb_domain_data,
+    veb_instagram_hashtags,
+    veb_youtube_research,
+    # Blog & content
+    write_blog_post,
+    list_saved_posts,
+    publish_to_my_site,
+    publish_post_to_platform,
+    delete_blog_post,
+    # Content calendar
+    get_content_calendar,
+    schedule_content,
+    generate_content_calendar,
+    # Utilities
+    clear_seo_cache,
     web_search,
+    # ── Marketing Skills (benchmarked vs coreyhaines31/marketingskills) ────────
+    write_marketing_copy,
+    audit_conversion_rate,
+    write_social_posts,
+    write_cold_email,
+    apply_marketing_psychology,
+    create_lead_magnet,
+    design_ab_test,
+    plan_programmatic_seo,
+    # ── AI Analysis & Intelligence ────────────────────────────────────────────
+    diagnose_rank_changes,
+    suggest_internal_links,
+    generate_schema_markup,
+    analyze_search_console,
 ]

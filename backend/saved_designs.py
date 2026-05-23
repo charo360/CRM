@@ -24,13 +24,9 @@ _BRAND_LABEL = {
 
 
 def _absolutize_url(url: str) -> str:
-    """Make relative upload paths fetchable by remote renderers when possible."""
-    if not url or url.startswith("http://") or url.startswith("https://"):
-        return url
-    base = (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("SERVER_URL") or os.environ.get("WEBHOOK_BASE_URL") or "").rstrip("/")
-    if not base:
-        return url
-    return f"{base}{url if url.startswith('/') else '/' + url}"
+    """Make relative upload paths fetchable; refresh expired S3 presigned URLs to stable proxy URLs."""
+    from image_handler import S3Handler
+    return S3Handler.resolve_accessible_url(url)
 
 
 async def insert_saved_design(

@@ -25,6 +25,7 @@ import {
   Plug,
 } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
 
 export default function DashboardPage() {
   const { currency, ui, accountMode } = useBusiness();
@@ -55,8 +56,8 @@ export default function DashboardPage() {
     setSendingPulse(true);
     try {
       await api.post("/daily-pulse/send", {});
-      alert("Daily pulse sent to all customers!");
-    } catch { alert("Failed to send pulse"); }
+      toast.success("Daily pulse sent to all customers!");
+    } catch { toast.error("Failed to send pulse"); }
     finally { setSendingPulse(false); }
   }
 

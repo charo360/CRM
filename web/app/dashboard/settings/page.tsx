@@ -10,9 +10,9 @@ import {
   BusinessSettings,
   BusinessKnowledge,
 } from "@/lib/api";
-import { getUser, setUser } from "@/lib/auth";
+import { getUser, setUser, getBusinessId } from "@/lib/auth";
 import { useBusiness } from "@/contexts/BusinessContext";
-import { Save, Loader2, Building, Globe, MessageSquare, Zap, Briefcase, Sparkles, RefreshCw, Link } from "lucide-react";
+import { Save, Loader2, Building, Globe, MessageSquare, Zap, Briefcase, Sparkles, RefreshCw, Link, Copy, Check, Code2 } from "lucide-react";
 import { TypeFields } from "./TypeFields";
 import {
   ALL_CURRENCY_CODES,
@@ -86,6 +86,8 @@ export default function SettingsPage() {
   const [aiAboutBusy, setAiAboutBusy] = useState(false);
   const [scraping, setScraping] = useState(false);
   const [scrapeMsg, setScrapeMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [businessId, setBusinessId] = useState<string | null>(null);
+  const [snippetCopied, setSnippetCopied] = useState(false);
 
   const currencyDisplay = useMemo(() => {
     try {
@@ -109,6 +111,17 @@ export default function SettingsPage() {
     if (!cur || ALL_CURRENCY_CODES.includes(cur)) return currencyOptions;
     return [{ value: cur, label: cur }, ...currencyOptions];
   }, [currencyOptions, userSettings.currency]);
+
+  useEffect(() => {
+    setBusinessId(getBusinessId());
+  }, []);
+
+  const copySnippet = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setSnippetCopied(true);
+      setTimeout(() => setSnippetCopied(false), 2000);
+    });
+  };
 
   const loadSettings = useCallback(async () => {
     try {
@@ -672,6 +685,89 @@ export default function SettingsPage() {
               placeholder="Common Q&A..."
               rows={4}
             />
+
+            {/* Behavior-Triggered Discounts Feature Toggle */}
+            <div className="border-t border-slate-200 pt-6">
+              <h3 className="text-sm font-semibold text-slate-900 mb-4">Marketing Automation</h3>
+              <div className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-xl p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center flex-shrink-0">
+                      <span className="text-white text-lg">⚡</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Behavior-Triggered Discounts</p>
+                      <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                        Automatically send personalized discounts based on visitor behavior — cart abandonment, exit intent, browsing patterns and more.
+                      </p>
+                      {userSettings.behavior_discounts_enabled && (
+                        <a
+                          href="/dashboard/marketing/behavior-discounts"
+                          className="inline-block mt-2 text-xs font-medium text-green-700 hover:text-green-800 underline"
+                        >
+                          Manage Campaigns →
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={userSettings.behavior_discounts_enabled || false}
+                      onChange={(e) => updateUser("behavior_discounts_enabled", e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-green-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+                  </label>
+                </div>
+                {userSettings.behavior_discounts_enabled ? (
+                  <div className="mt-3 flex items-center gap-2 text-xs text-green-700">
+                    <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse inline-block"></span>
+                    <span className="font-medium">Active</span>
+                    <span className="text-green-600">— Campaigns are running and tracking visitor behavior</span>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-slate-500">Enable to boost conversions with smart, timely discount offers. Expected: 15–30% conversion lift.</p>
+                )}
+              </div>
+
+              {/* Auto-generated install snippet */}
+              {userSettings.behavior_discounts_enabled && businessId && (
+                <div className="mt-4 border-t border-green-200 pt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Code2 className="w-4 h-4 text-green-700" />
+                      <span className="text-xs font-semibold text-green-900">Your Install Code</span>
+                    </div>
+                    <button
+                      onClick={() => copySnippet(`<!-- GA4 Tracking -->\n<script async src="https://www.googletagmanager.com/gtag/js?id=${userSettings.ga4_measurement_id || 'G-XXXXXXXXXX'}"></script>\n<script>\n  window.dataLayer = window.dataLayer || [];\n  function gtag(){dataLayer.push(arguments);}\n  gtag('js', new Date());\n  gtag('config', '${userSettings.ga4_measurement_id || 'G-XXXXXXXXXX'}');\n</script>\n\n<!-- Zilo Behavior Tracker -->\n<script src="https://crm.zilo.pro/tracking/zilo-behavior-tracker.js"></script>\n<script>\n  ZiloBehaviorTracker.init({\n    businessId: '${businessId}',\n    apiUrl: 'https://crm.zilo.pro/api'\n  });\n</script>`)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700 transition-colors font-medium"
+                    >
+                      {snippetCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                      {snippetCopied ? 'Copied!' : 'Copy Code'}
+                    </button>
+                  </div>
+                  <pre className="bg-slate-900 text-green-400 text-[10px] rounded-lg p-3 overflow-x-auto leading-relaxed whitespace-pre-wrap break-all">{`<!-- GA4 Tracking -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=${userSettings.ga4_measurement_id || 'G-XXXXXXXXXX'}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', '${userSettings.ga4_measurement_id || 'G-XXXXXXXXXX'}');
+</script>
+
+<!-- Zilo Behavior Tracker -->
+<script src="https://crm.zilo.pro/tracking/zilo-behavior-tracker.js"></script>
+<script>
+  ZiloBehaviorTracker.init({
+    businessId: '${businessId}',
+    apiUrl: 'https://crm.zilo.pro/api'
+  });
+</script>`}</pre>
+                  <p className="text-[10px] text-green-700 mt-2">Paste this into your website&apos;s &lt;head&gt; section. Your Business ID is pre-filled automatically.</p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

@@ -1,17 +1,27 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import {
   marketingApi,
   socialSchedulerApi,
+  uploadApi,
   type ScheduledPost,
   type ScheduledPostAsset,
   type SocialAnalytics,
 } from "@/lib/api";
 import { MarketingApiBanner } from "@/components/marketing/MarketingApiBanner";
 import { BulkScheduleSection } from "@/components/marketing/BulkScheduleSection";
-import { type SocialChannel, fileToPreviewDataUrl } from "@/lib/marketing-stubs";
+import {
+  type SocialChannel,
+  fileToPreviewDataUrl,
+} from "@/lib/marketing-stubs";
 import {
   POST_KIND_LABELS,
   PLACEMENT_PRESETS,
@@ -26,6 +36,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Clock,
   Copy,
   Eye,
@@ -113,13 +124,266 @@ function fmt(n: number): string {
 
 // ── Analytics tab ─────────────────────────────────────────────────────────────
 
+type AnalyticsPostRow = SocialAnalytics["top_posts"][number];
+
 function SkeletonCard({ wide }: { wide?: boolean }) {
   return (
-    <div className={`animate-pulse rounded-xl border border-slate-100 bg-white p-4 shadow-sm ${wide ? "col-span-2" : ""}`}>
-      <div className="mb-3 h-4 w-8 rounded-md bg-slate-100" />
-      <div className="h-6 w-16 rounded-md bg-slate-100" />
-      <div className="mt-2 h-3 w-24 rounded-md bg-slate-100" />
+    <div
+      className={`animate-pulse rounded-lg border border-slate-200 bg-white p-4 ${wide ? "col-span-2" : ""}`}
+    >
+      <div className="mb-3 h-4 w-8 rounded bg-slate-100" />
+      <div className="h-6 w-16 rounded bg-slate-100" />
+      <div className="mt-2 h-3 w-24 rounded bg-slate-100" />
     </div>
+  );
+}
+
+function AnalyticsPostDetailDrawer({
+  row,
+  open,
+  onClose,
+}: {
+  row: AnalyticsPostRow | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [visible, setVisible] = React.useState(false);
+  const [post, setPost] = React.useState<ScheduledPost | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!open || !row) {
+      setVisible(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setVisible(true));
+    setLoading(true);
+    setError(null);
+    setPost(null);
+    void socialSchedulerApi
+      .get(row.id)
+      .then((res) => setPost(res.post))
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "Failed to load post"),
+      )
+      .finally(() => setLoading(false));
+    return () => cancelAnimationFrame(frame);
+  }, [open, row]);
+
+  if (!open || !row) return null;
+
+  const metrics = post?.engagement ?? {
+    likes: row.likes,
+    comments: row.comments,
+    shares: row.shares,
+    reach: row.reach,
+    clicks: row.clicks,
+    saves: 0,
+  };
+  const engagementRate =
+    metrics.reach > 0
+      ? (
+          ((metrics.likes + metrics.comments + metrics.shares) / metrics.reach) *
+          100
+        ).toFixed(2)
+      : "0.00";
+  const syncedAt = post?.engagement_synced_at ?? row.engagement_synced_at;
+  const publishedDate = new Date(row.date);
+
+  const metricItems = [
+    { label: "Reach", value: fmt(metrics.reach), icon: Eye },
+    { label: "Likes", value: fmt(metrics.likes), icon: ThumbsUp },
+    { label: "Comments", value: fmt(metrics.comments), icon: MessageCircle },
+    { label: "Shares", value: fmt(metrics.shares), icon: Share2 },
+    { label: "Clicks", value: fmt(metrics.clicks), icon: MousePointer },
+    { label: "Saves", value: fmt(metrics.saves), icon: BarChart2 },
+  ];
+
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        className={`fixed inset-0 z-40 bg-slate-900/30 transition-opacity duration-200 ${
+          visible ? "opacity-100" : "opacity-0"
+        }`}
+        onClick={onClose}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Post analytics details"
+        className={`fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-slate-200 bg-white transition-transform duration-200 ease-out ${
+          visible ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        <div className="flex shrink-0 items-start justify-between border-b border-slate-200 px-5 py-4">
+          <div className="min-w-0 pr-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+              Published post
+            </p>
+            <h2 className="mt-1 truncate text-base font-semibold text-slate-900">
+              {post?.title || row.title || "Untitled"}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              {publishedDate.toLocaleDateString(undefined, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {row.channels.map((ch) => (
+                <span
+                  key={ch}
+                  className={`rounded px-2 py-0.5 text-[10px] font-semibold capitalize ${
+                    CHANNEL_COLOURS[ch] ?? "bg-slate-100 text-slate-700"
+                  }`}
+                >
+                  {ch}
+                </span>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-400">
+              <Loader2 size={16} className="animate-spin" />
+              Loading post…
+            </div>
+          )}
+
+          {error && !loading && (
+            <div className="mx-5 mt-5 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5">
+              <AlertCircle size={14} className="mt-0.5 shrink-0 text-red-500" />
+              <p className="text-xs text-red-700">{error}</p>
+            </div>
+          )}
+
+          {!loading && (
+            <div className="space-y-5 p-5">
+              <div>
+                <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Engagement
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {metricItems.map((m) => (
+                    <div
+                      key={m.label}
+                      className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5"
+                    >
+                      <div className="mb-1 flex items-center gap-1.5 text-slate-400">
+                        <m.icon size={12} />
+                        <span className="text-[10px] font-medium">{m.label}</span>
+                      </div>
+                      <p className="text-lg font-semibold tabular-nums text-slate-900">
+                        {m.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-xs">
+                  <span className="text-slate-500">Engagement rate</span>
+                  <span className="font-semibold text-slate-900">
+                    {engagementRate}%
+                  </span>
+                </div>
+              </div>
+
+              {(post?.body || post?.title) && (
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    Content
+                  </p>
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    {post?.body ? (
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
+                        {post.body}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-slate-400 italic">No caption</p>
+                    )}
+                    {post?.link_url && (
+                      <p className="mt-2 truncate text-xs text-brand-dark">
+                        {post.link_url}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(post?.image_url || post?.assets?.[0]?.preview_data_url) && (
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    Media
+                  </p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={
+                      post?.assets?.[0]?.preview_data_url ?? post?.image_url ?? ""
+                    }
+                    alt=""
+                    className="w-full rounded-lg border border-slate-200 object-cover"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-2 border-t border-slate-200 pt-4 text-xs">
+                {/* <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Post ID</span>
+                  <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600">
+                    {row.id.slice(0, 8)}…
+                  </code>
+                </div>
+                {row.zernio_post_id && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Platform ID</span>
+                    <code className="max-w-[180px] truncate rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600">
+                      {row.zernio_post_id}
+                    </code>
+                  </div>
+                )} */}
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Metrics sync</span>
+                  {syncedAt ? (
+                    <span className="inline-flex items-center gap-1 font-medium text-emerald-700">
+                      <CheckCircle2 size={11} />
+                      {new Date(syncedAt).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 font-medium text-amber-600">
+                      <Clock size={11} />
+                      Pending
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Engagement score</span>
+                  <span className="font-semibold text-slate-900">
+                    {row.engagement_score}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -130,6 +394,19 @@ function AnalyticsTab() {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [lastFetched, setLastFetched] = React.useState<Date | null>(null);
+  const [selectedPost, setSelectedPost] =
+    React.useState<AnalyticsPostRow | null>(null);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+
+  const openPostDetail = (row: AnalyticsPostRow) => {
+    setSelectedPost(row);
+    setDrawerOpen(true);
+  };
+
+  const closePostDetail = () => {
+    setDrawerOpen(false);
+    setTimeout(() => setSelectedPost(null), 200);
+  };
 
   const load = React.useCallback(async (d: Period, ch: string) => {
     setLoading(true);
@@ -150,43 +427,42 @@ function AnalyticsTab() {
   }, [load, days, channel]);
 
   const channelEntries = Object.entries(data?.by_channel ?? {}).sort(
-    (a, b) => b[1].reach - a[1].reach
+    (a, b) => b[1].reach - a[1].reach,
   );
   const maxReach = channelEntries[0]?.[1].reach ?? 1;
 
   return (
-    <div className="space-y-6">
-
-      {/* ── Controls bar ── */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Period toggle */}
-          <div className="flex items-center gap-1 rounded-xl bg-slate-100 p-1">
+    <div className="space-y-5">
+      {/* Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center rounded-lg border border-slate-200 p-0.5">
             {PERIOD_OPTIONS.map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setDays(p)}
-                className={`rounded-lg px-3 py-1 text-xs font-semibold transition-all ${
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                   days === p
-                    ? "bg-white text-slate-900 shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:text-slate-800"
                 }`}
               >
-                {p}d
+                {p} days
               </button>
             ))}
           </div>
 
-          {/* Platform filter */}
           <select
             value={channel}
             onChange={(e) => setChannel(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-brand focus:ring-1 focus:ring-brand/20"
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-slate-400"
           >
             <option value="">All platforms</option>
             {CHANNELS.map((c) => (
-              <option key={c.id} value={c.id}>{c.label}</option>
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
             ))}
           </select>
         </div>
@@ -194,14 +470,18 @@ function AnalyticsTab() {
         <div className="flex items-center gap-3">
           {lastFetched && !loading && (
             <span className="text-[11px] text-slate-400">
-              Updated {lastFetched.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              Updated{" "}
+              {lastFetched.toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
             </span>
           )}
           <button
             type="button"
             onClick={() => void load(days, channel)}
             disabled={loading}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors"
           >
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
             {loading ? "Loading…" : "Refresh"}
@@ -209,30 +489,31 @@ function AnalyticsTab() {
         </div>
       </div>
 
-      {/* ── Error ── */}
       {error && (
-        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
           <AlertCircle size={15} className="mt-0.5 shrink-0 text-red-500" />
           <p className="text-sm text-red-700">{error}</p>
         </div>
       )}
 
-      {/* ── Skeleton while first load ── */}
       {loading && !data && (
-        <div className="space-y-6">
+        <div className="space-y-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {[...Array(4)].map((_, i) => <SkeletonCard key={i} />)}
+            {[...Array(4)].map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
           </div>
           <div className="grid grid-cols-3 gap-3">
-            {[...Array(3)].map((_, i) => <SkeletonCard key={i} />)}
+            {[...Array(3)].map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
           </div>
         </div>
       )}
 
-      {/* ── Data ── */}
       {data && (
         <>
-          {/* Primary KPI cards */}
+          {/* Primary KPIs */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               {
@@ -240,119 +521,147 @@ function AnalyticsTab() {
                 value: fmt(data.totals.reach),
                 sub: `${days}-day window`,
                 icon: Eye,
-                iconColor: "text-brand-dark",
               },
               {
                 label: "Total likes",
                 value: fmt(data.totals.likes),
-                sub: "across all platforms",
+                sub: "all platforms",
                 icon: ThumbsUp,
-                iconColor: "text-pink-500",
               },
               {
                 label: "Comments",
                 value: fmt(data.totals.comments),
-                sub: "on published posts",
+                sub: "published posts",
                 icon: MessageCircle,
-                iconColor: "text-amber-500",
               },
               {
                 label: "Avg engagement",
                 value: `${data.avg_engagement_rate}%`,
                 sub: "rate per post",
                 icon: TrendingUp,
-                iconColor: "text-emerald-500",
               },
             ].map((c) => (
               <div
                 key={c.label}
-                className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                className="rounded-lg border border-slate-200 bg-white p-4"
               >
-                <div className="mb-3">
-                  <c.icon size={15} className={c.iconColor} />
+                <div className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                  <c.icon size={15} />
                 </div>
-                <p className="text-2xl font-bold tracking-tight text-slate-900">{c.value}</p>
-                <p className="mt-0.5 text-[11px] font-semibold text-slate-600">{c.label}</p>
-                <p className="text-[10px] text-slate-400">{c.sub}</p>
+                <p className="text-2xl font-semibold tabular-nums tracking-tight text-slate-900">
+                  {c.value}
+                </p>
+                <p className="mt-0.5 text-xs font-medium text-slate-600">
+                  {c.label}
+                </p>
+                <p className="text-[11px] text-slate-400">{c.sub}</p>
               </div>
             ))}
           </div>
 
           {/* Secondary stats */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {[
-              { label: "Shares", value: fmt(data.totals.shares), icon: Share2, color: "text-sky-500" },
-              { label: "Clicks", value: fmt(data.totals.clicks), icon: MousePointer, color: "text-violet-500" },
-              { label: "Avg reach / post", value: fmt(data.avg_reach_per_post), icon: BarChart2, color: "text-brand-dark" },
+              { label: "Shares", value: fmt(data.totals.shares), icon: Share2 },
+              {
+                label: "Clicks",
+                value: fmt(data.totals.clicks),
+                icon: MousePointer,
+              },
+              {
+                label: "Avg reach / post",
+                value: fmt(data.avg_reach_per_post),
+                icon: BarChart2,
+              },
             ].map((c) => (
               <div
                 key={c.label}
-                className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 shadow-sm"
+                className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3"
               >
-                <c.icon size={16} className={`shrink-0 ${c.color}`} />
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                  <c.icon size={15} />
+                </div>
                 <div>
-                  <p className="text-lg font-bold text-slate-900">{c.value}</p>
-                  <p className="text-[11px] text-slate-500">{c.label}</p>
+                  <p className="text-lg font-semibold tabular-nums text-slate-900">
+                    {c.value}
+                  </p>
+                  <p className="text-xs text-slate-500">{c.label}</p>
                 </div>
               </div>
             ))}
           </div>
 
-          {/* By platform */}
+          {/* Platform breakdown */}
           {channelEntries.length > 0 && (
-            <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-900">Platform breakdown</h3>
-                  <p className="text-[11px] text-slate-400">Sorted by reach</p>
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Platform breakdown
+                  </h3>
+                  <p className="text-xs text-slate-500">Sorted by reach</p>
                 </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
-                  {channelEntries.length} platform{channelEntries.length > 1 ? "s" : ""}
+                <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                  {channelEntries.length} platform
+                  {channelEntries.length > 1 ? "s" : ""}
                 </span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[560px] text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      <th className="px-5 py-3 text-left">Platform</th>
-                      <th className="px-5 py-3 text-left">Reach</th>
-                      <th className="px-5 py-3 text-right">Posts</th>
-                      <th className="px-5 py-3 text-right">Likes</th>
-                      <th className="px-5 py-3 text-right">Comments</th>
-                      <th className="px-5 py-3 text-right">Shares</th>
-                      <th className="px-5 py-3 text-right">Clicks</th>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="px-5 py-2.5 text-left">Platform</th>
+                      <th className="px-5 py-2.5 text-left">Reach</th>
+                      <th className="px-5 py-2.5 text-right">Posts</th>
+                      <th className="px-5 py-2.5 text-right">Likes</th>
+                      <th className="px-5 py-2.5 text-right">Comments</th>
+                      <th className="px-5 py-2.5 text-right">Shares</th>
+                      <th className="px-5 py-2.5 text-right">Clicks</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
+                  <tbody className="divide-y divide-slate-100">
                     {channelEntries.map(([ch, stats]) => {
                       const pct = Math.round((stats.reach / maxReach) * 100);
                       return (
-                        <tr key={ch} className="group hover:bg-slate-50/60 transition-colors">
-                          <td className="px-5 py-3.5">
+                        <tr key={ch} className="hover:bg-slate-50/80">
+                          <td className="px-5 py-3">
                             <span
-                              className={`inline-flex items-center rounded-lg px-2.5 py-1 text-[11px] font-bold capitalize ${
-                                CHANNEL_COLOURS[ch] ?? "bg-slate-100 text-slate-700"
+                              className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] font-semibold capitalize ${
+                                CHANNEL_COLOURS[ch] ??
+                                "bg-slate-100 text-slate-700"
                               }`}
                             >
                               {ch}
                             </span>
                           </td>
-                          <td className="px-5 py-3.5">
+                          <td className="px-5 py-3">
                             <div className="flex items-center gap-2.5">
-                              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-100">
+                              <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-100">
                                 <div
-                                  className="h-full rounded-full bg-brand transition-all duration-500"
+                                  className="h-full rounded-full bg-slate-800"
                                   style={{ width: `${pct}%` }}
                                 />
                               </div>
-                              <span className="text-xs font-semibold text-slate-800">{fmt(stats.reach)}</span>
+                              <span className="text-xs font-medium tabular-nums text-slate-800">
+                                {fmt(stats.reach)}
+                              </span>
                             </div>
                           </td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">{stats.posts}</td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">{fmt(stats.likes)}</td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">{fmt(stats.comments)}</td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">{fmt(stats.shares)}</td>
-                          <td className="px-5 py-3.5 text-right text-xs text-slate-600">{fmt(stats.clicks)}</td>
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                            {stats.posts}
+                          </td>
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                            {fmt(stats.likes)}
+                          </td>
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                            {fmt(stats.comments)}
+                          </td>
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                            {fmt(stats.shares)}
+                          </td>
+                          <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                            {fmt(stats.clicks)}
+                          </td>
                         </tr>
                       );
                     })}
@@ -362,47 +671,68 @@ function AnalyticsTab() {
             </div>
           )}
 
-          {/* Top posts */}
-          <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          {/* Published posts */}
+          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
               <div>
-                <h3 className="text-sm font-semibold text-slate-900">Published posts</h3>
-                <p className="text-[11px] text-slate-400">Engagement over the last {days} days</p>
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Published posts
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Click a row to view details · last {days} days
+                </p>
               </div>
               {data.unsynced_posts > 0 && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700">
+                <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
                   <Clock size={10} />
                   {data.unsynced_posts} awaiting sync
                 </span>
               )}
             </div>
             {data.top_posts.length === 0 ? (
-              <div className="flex flex-col items-center gap-3 px-4 py-14 text-center">
-                <div className="rounded-full bg-slate-100 p-3">
+              <div className="flex flex-col items-center gap-2 px-4 py-14 text-center">
+                <div className="rounded-lg bg-slate-100 p-3">
                   <BarChart2 size={20} className="text-slate-400" />
                 </div>
-                <p className="text-sm font-medium text-slate-600">No published posts yet</p>
-                <p className="text-xs text-slate-400">Posts published in the last {days} days will appear here.</p>
+                <p className="text-sm font-medium text-slate-600">
+                  No published posts yet
+                </p>
+                <p className="text-xs text-slate-400">
+                  Posts published in the last {days} days will appear here.
+                </p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[680px] text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      <th className="px-5 py-3 text-left">Post</th>
-                      <th className="px-5 py-3 text-left">Channels</th>
-                      <th className="px-5 py-3 text-right">Reach</th>
-                      <th className="px-5 py-3 text-right">Likes</th>
-                      <th className="px-5 py-3 text-right">Comments</th>
-                      <th className="px-5 py-3 text-right">Shares</th>
-                      <th className="px-5 py-3 text-right">Synced</th>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="px-5 py-2.5 text-left">Post</th>
+                      <th className="px-5 py-2.5 text-left">Channels</th>
+                      <th className="px-5 py-2.5 text-right">Reach</th>
+                      <th className="px-5 py-2.5 text-right">Likes</th>
+                      <th className="px-5 py-2.5 text-right">Comments</th>
+                      <th className="px-5 py-2.5 text-right">Shares</th>
+                      <th className="px-5 py-2.5 text-right">Synced</th>
+                      <th className="w-10 px-2 py-2.5" />
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
+                  <tbody className="divide-y divide-slate-100">
                     {data.top_posts.map((p) => (
-                      <tr key={p.id} className="hover:bg-slate-50/60 transition-colors">
-                        <td className="px-5 py-3.5 max-w-[200px]">
-                          <p className="truncate text-xs font-semibold text-slate-900">
+                      <tr
+                        key={p.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openPostDetail(p)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            openPostDetail(p);
+                          }
+                        }}
+                        className="cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none"
+                      >
+                        <td className="max-w-[220px] px-5 py-3">
+                          <p className="truncate text-xs font-medium text-slate-900">
                             {p.title || "Untitled"}
                           </p>
                           <p className="text-[10px] text-slate-400">
@@ -413,13 +743,14 @@ function AnalyticsTab() {
                             })}
                           </p>
                         </td>
-                        <td className="px-5 py-3.5">
+                        <td className="px-5 py-3">
                           <div className="flex flex-wrap gap-1">
                             {p.channels.map((ch) => (
                               <span
                                 key={ch}
-                                className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold capitalize ${
-                                  CHANNEL_COLOURS[ch] ?? "bg-slate-100 text-slate-700"
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold capitalize ${
+                                  CHANNEL_COLOURS[ch] ??
+                                  "bg-slate-100 text-slate-700"
                                 }`}
                               >
                                 {ch}
@@ -427,25 +758,38 @@ function AnalyticsTab() {
                             ))}
                           </div>
                         </td>
-                        <td className="px-5 py-3.5 text-right text-xs font-semibold text-slate-900">{fmt(p.reach)}</td>
-                        <td className="px-5 py-3.5 text-right text-xs text-slate-600">{fmt(p.likes)}</td>
-                        <td className="px-5 py-3.5 text-right text-xs text-slate-600">{fmt(p.comments)}</td>
-                        <td className="px-5 py-3.5 text-right text-xs text-slate-600">{fmt(p.shares)}</td>
-                        <td className="px-5 py-3.5 text-right">
+                        <td className="px-5 py-3 text-right text-xs font-medium tabular-nums text-slate-900">
+                          {fmt(p.reach)}
+                        </td>
+                        <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                          {fmt(p.likes)}
+                        </td>
+                        <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                          {fmt(p.comments)}
+                        </td>
+                        <td className="px-5 py-3 text-right text-xs tabular-nums text-slate-600">
+                          {fmt(p.shares)}
+                        </td>
+                        <td className="px-5 py-3 text-right">
                           {p.engagement_synced_at ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                              <CheckCircle2 size={9} />
-                              {new Date(p.engagement_synced_at).toLocaleTimeString([], {
+                            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-700">
+                              <CheckCircle2 size={10} />
+                              {new Date(
+                                p.engagement_synced_at,
+                              ).toLocaleTimeString([], {
                                 hour: "2-digit",
                                 minute: "2-digit",
                               })}
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-600">
-                              <Clock size={9} />
+                            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600">
+                              <Clock size={10} />
                               Pending
                             </span>
                           )}
+                        </td>
+                        <td className="px-2 py-3 text-slate-300">
+                          <ChevronRight size={14} />
                         </td>
                       </tr>
                     ))}
@@ -455,12 +799,18 @@ function AnalyticsTab() {
             )}
           </div>
 
-          {/* Footer note */}
           <p className="text-center text-[11px] text-slate-400">
-            {data.total_posts} published post{data.total_posts !== 1 ? "s" : ""} · Metrics sync every 30 min
+            {data.total_posts} published post{data.total_posts !== 1 ? "s" : ""}{" "}
+            · Metrics sync every 30 min
           </p>
         </>
       )}
+
+      <AnalyticsPostDetailDrawer
+        row={selectedPost}
+        open={drawerOpen}
+        onClose={closePostDetail}
+      />
     </div>
   );
 }
@@ -477,15 +827,30 @@ function SummaryCards({ rows }: { rows: ScheduledPost[] }) {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {[
-        { label: "Total posts", value: counts.total, icon: CalendarClock, color: "text-brand" },
-        { label: "Scheduled", value: counts.scheduled, icon: Clock, color: "text-blue-500" },
+        {
+          label: "Total posts",
+          value: counts.total,
+          icon: CalendarClock,
+          color: "text-brand",
+        },
+        {
+          label: "Scheduled",
+          value: counts.scheduled,
+          icon: Clock,
+          color: "text-blue-500",
+        },
         {
           label: "Published",
           value: counts.published,
           icon: CheckCircle2,
           color: "text-emerald-500",
         },
-        { label: "Drafts", value: counts.draft, icon: FileText, color: "text-slate-400" },
+        {
+          label: "Drafts",
+          value: counts.draft,
+          icon: FileText,
+          color: "text-slate-400",
+        },
       ].map((c) => (
         <div
           key={c.label}
@@ -510,7 +875,9 @@ function PostPreview({ modal }: { modal: Partial<ScheduledPost> }) {
   const isVideo = firstAsset?.mime_type?.startsWith("video/");
   const channels = (modal.channels ?? []) as SocialChannel[];
 
-  const scheduledDate = modal.scheduled_at ? new Date(modal.scheduled_at) : null;
+  const scheduledDate = modal.scheduled_at
+    ? new Date(modal.scheduled_at)
+    : null;
   const validDate = scheduledDate && !isNaN(scheduledDate.getTime());
 
   return (
@@ -527,7 +894,9 @@ function PostPreview({ modal }: { modal: Partial<ScheduledPost> }) {
             P
           </div>
           <div className="min-w-0">
-            <p className="text-[12px] font-semibold text-slate-900 truncate">Your Page</p>
+            <p className="text-[12px] font-semibold text-slate-900 truncate">
+              Your Page
+            </p>
             <p className="text-[10px] text-slate-400">
               {validDate
                 ? scheduledDate!.toLocaleString(undefined, {
@@ -544,21 +913,29 @@ function PostPreview({ modal }: { modal: Partial<ScheduledPost> }) {
         {/* Caption */}
         <div className="px-3 pb-2">
           {modal.title ? (
-            <p className="text-[12px] font-semibold text-slate-900 truncate">{modal.title}</p>
+            <p className="text-[12px] font-semibold text-slate-900 truncate">
+              {modal.title}
+            </p>
           ) : null}
           {modal.body ? (
             <p className="mt-0.5 text-[11px] text-slate-700 line-clamp-4 whitespace-pre-wrap">
               {modal.body}
             </p>
           ) : (
-            <p className="text-[11px] text-slate-400 italic">Start typing to preview…</p>
+            <p className="text-[11px] text-slate-400 italic">
+              Start typing to preview…
+            </p>
           )}
         </div>
 
         {/* Media */}
         {imgSrc && !isVideo ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={imgSrc} alt="" className="w-full aspect-video object-cover" />
+          <img
+            src={imgSrc}
+            alt=""
+            className="w-full aspect-video object-cover"
+          />
         ) : isVideo ? (
           <div className="w-full aspect-video bg-slate-900 flex items-center justify-center">
             <p className="text-white text-xs font-medium">Video</p>
@@ -619,15 +996,25 @@ function PostPreview({ modal }: { modal: Partial<ScheduledPost> }) {
               return (
                 <div key={ch}>
                   <div className="flex justify-between text-[10px] mb-0.5">
-                    <span className="capitalize font-medium text-slate-600">{ch}</span>
-                    <span className={over ? "font-semibold text-red-500" : "text-slate-400"}>
+                    <span className="capitalize font-medium text-slate-600">
+                      {ch}
+                    </span>
+                    <span
+                      className={
+                        over ? "font-semibold text-red-500" : "text-slate-400"
+                      }
+                    >
                       {len.toLocaleString()}/{limit.toLocaleString()}
                     </span>
                   </div>
                   <div className="h-1 w-full rounded-full bg-slate-200 overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all duration-200 ${
-                        over ? "bg-red-500" : pct > 90 ? "bg-amber-400" : "bg-brand"
+                        over
+                          ? "bg-red-500"
+                          : pct > 90
+                            ? "bg-amber-400"
+                            : "bg-brand"
                       }`}
                       style={{ width: `${pct}%` }}
                     />
@@ -649,10 +1036,14 @@ function PostPreview({ modal }: { modal: Partial<ScheduledPost> }) {
             {channels
               .filter((ch) => BEST_TIMES[ch])
               .map((ch) => (
-                <div key={ch} className="flex items-start gap-1.5 text-[10px] text-slate-500">
+                <div
+                  key={ch}
+                  className="flex items-start gap-1.5 text-[10px] text-slate-500"
+                >
                   <Clock size={9} className="mt-0.5 shrink-0 text-slate-400" />
                   <span>
-                    <span className="font-semibold capitalize">{ch}</span>: {BEST_TIMES[ch]}
+                    <span className="font-semibold capitalize">{ch}</span>:{" "}
+                    {BEST_TIMES[ch]}
                   </span>
                 </div>
               ))}
@@ -686,7 +1077,11 @@ function emptyForm(): Partial<ScheduledPost> {
   };
 }
 
-function rowPreview(r: ScheduledPost): { url?: string; video: boolean; count: number } {
+function rowPreview(r: ScheduledPost): {
+  url?: string;
+  video: boolean;
+  count: number;
+} {
   const a = r.assets;
   if (a?.length) {
     const first = a[0];
@@ -717,7 +1112,9 @@ export default function SocialSchedulerPage() {
   const [activeTab, setActiveTab] = useState<"posts" | "analytics">("posts");
 
   // Delete confirmation dialog
-  const [pendingDelete, setPendingDelete] = useState<ScheduledPost | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ScheduledPost | null>(
+    null,
+  );
   const [deleting, setDeleting] = useState(false);
 
   // Drawer UX state
@@ -774,8 +1171,13 @@ export default function SocialSchedulerPage() {
   }, [modal]);
 
   const filtered = useMemo(() => {
-    if (filter === "all") return rows;
-    return rows.filter((r) => r.status === filter);
+    const list =
+      filter === "all" ? rows : rows.filter((r) => r.status === filter);
+    return [...list].sort(
+      (a, b) =>
+        new Date(b.created_at || b.scheduled_at).getTime() -
+        new Date(a.created_at || a.scheduled_at).getTime(),
+    );
   }, [rows, filter]);
 
   // ── Close drawer with animation ──────────────────────────────────────────────
@@ -789,7 +1191,9 @@ export default function SocialSchedulerPage() {
 
   function openNew() {
     setModal(emptyForm());
-    requestAnimationFrame(() => requestAnimationFrame(() => setDrawerOpen(true)));
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setDrawerOpen(true)),
+    );
   }
 
   function openEdit(row: ScheduledPost) {
@@ -798,7 +1202,9 @@ export default function SocialSchedulerPage() {
       : row.scheduled_at;
     // Normalise whitespace-only body so the required-field indicator shows correctly
     setModal({ ...row, scheduled_at: at, body: row.body?.trim() ?? "" });
-    requestAnimationFrame(() => requestAnimationFrame(() => setDrawerOpen(true)));
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setDrawerOpen(true)),
+    );
   }
 
   // ── Actions ──────────────────────────────────────────────────────────────────
@@ -806,7 +1212,9 @@ export default function SocialSchedulerPage() {
   async function duplicatePost(row: ScheduledPost) {
     const bodyText = (row.body ?? "").trim();
     if (!bodyText) {
-      toast.error("Cannot duplicate — the original post has no caption. Edit it first to add one.");
+      toast.error(
+        "Cannot duplicate — the original post has no caption. Edit it first to add one.",
+      );
       return;
     }
     try {
@@ -833,7 +1241,9 @@ export default function SocialSchedulerPage() {
 
   async function quickToggleStatus(row: ScheduledPost) {
     try {
-      await socialSchedulerApi.update(row.id, { status: STATUS_NEXT[row.status] ?? "draft" });
+      await socialSchedulerApi.update(row.id, {
+        status: STATUS_NEXT[row.status] ?? "draft",
+      });
       await refresh();
     } catch {
       toast.error("Failed to update status");
@@ -859,15 +1269,52 @@ export default function SocialSchedulerPage() {
     if (!fileList?.length) return;
     const newAssets: ScheduledPostAsset[] = [];
     for (const file of Array.from(fileList)) {
-      if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) continue;
+      if (!file.type.startsWith("image/") && !file.type.startsWith("video/"))
+        continue;
       const isVid = file.type.startsWith("video/");
       const preview = !isVid ? await fileToPreviewDataUrl(file) : undefined;
-      newAssets.push({ file_name: file.name, mime_type: file.type, preview_data_url: preview });
+      newAssets.push({
+        file_name: file.name,
+        mime_type: file.type,
+        preview_data_url: preview,
+      });
     }
     if (newAssets.length === 0) return;
     setModal((prev) =>
-      prev ? { ...prev, assets: [...(prev.assets ?? []), ...newAssets] } : prev
+      prev ? { ...prev, assets: [...(prev.assets ?? []), ...newAssets] } : prev,
     );
+  }
+
+  async function ensurePublicMedia(
+    assets?: ScheduledPostAsset[],
+    imageUrl?: string,
+  ): Promise<{ assets?: ScheduledPostAsset[]; image_url?: string }> {
+    const nextAssets = [...(assets ?? [])];
+    for (let i = 0; i < nextAssets.length; i++) {
+      const asset = nextAssets[i];
+      if (asset.s3_url?.startsWith("http")) continue;
+      const preview = asset.preview_data_url;
+      if (!preview?.startsWith("data:")) continue;
+      const { image_url: uploadedUrl } = await uploadApi.imageBase64(
+        preview,
+        asset.file_name || "social-post.jpg",
+      );
+      nextAssets[i] = { ...asset, s3_url: uploadedUrl };
+    }
+
+    let nextImageUrl = imageUrl;
+    if (nextImageUrl?.startsWith("data:")) {
+      const { image_url: uploadedUrl } = await uploadApi.imageBase64(
+        nextImageUrl,
+        "social-post.jpg",
+      );
+      nextImageUrl = uploadedUrl;
+    }
+
+    return {
+      assets: nextAssets.length ? nextAssets : assets,
+      image_url: nextImageUrl,
+    };
   }
 
   async function saveModal() {
@@ -887,36 +1334,75 @@ export default function SocialSchedulerPage() {
     setBodyError(false);
     setSaveError(null);
 
-    const preset = presetById(modal.placement_id as PostPlacementId | undefined);
-    const w = modal.placement_id === "custom" ? (modal.placement_width ?? 1080) : preset.width;
-    const h = modal.placement_id === "custom" ? (modal.placement_height ?? 1080) : preset.height;
+    const preset = presetById(
+      modal.placement_id as PostPlacementId | undefined,
+    );
+    const w =
+      modal.placement_id === "custom"
+        ? (modal.placement_width ?? 1080)
+        : preset.width;
+    const h =
+      modal.placement_id === "custom"
+        ? (modal.placement_height ?? 1080)
+        : preset.height;
 
-    const payload = {
-      title: (modal.title ?? "").trim(),
-      body: (modal.body ?? "").trim(),
-      channels: (modal.channels?.length ? modal.channels : ["facebook"]) as SocialChannel[],
-      scheduled_at: modal.scheduled_at
-        ? new Date(modal.scheduled_at).toISOString()
-        : new Date().toISOString(),
-      status: (modal.status ?? "draft") as ScheduledPost["status"],
-      post_kind: modal.post_kind,
-      placement_id: modal.placement_id,
-      placement_width: w,
-      placement_height: h,
-      link_url: modal.link_url?.trim() || undefined,
-      assets: modal.assets,
-      image_url: modal.image_url,
-    };
+    const status = (modal.status ?? "draft") as ScheduledPost["status"];
 
     setSaving(true);
     try {
-      if (modal.id) {
-        await socialSchedulerApi.update(modal.id, payload);
-      } else {
-        await socialSchedulerApi.create(payload);
+      const media = await ensurePublicMedia(modal.assets, modal.image_url);
+      if (media.assets) {
+        setModal((prev) => (prev ? { ...prev, assets: media.assets } : prev));
       }
+      if (media.image_url && media.image_url !== modal.image_url) {
+        setModal((prev) =>
+          prev ? { ...prev, image_url: media.image_url } : prev,
+        );
+      }
+
+      const payload = {
+        title: (modal.title ?? "").trim(),
+        body: (modal.body ?? "").trim(),
+        channels: (modal.channels?.length
+          ? modal.channels
+          : ["facebook"]) as SocialChannel[],
+        scheduled_at:
+          status === "published"
+            ? new Date().toISOString()
+            : modal.scheduled_at
+              ? new Date(modal.scheduled_at).toISOString()
+              : new Date().toISOString(),
+        status,
+        post_kind: modal.post_kind,
+        placement_id: modal.placement_id,
+        placement_width: w,
+        placement_height: h,
+        link_url: modal.link_url?.trim() || undefined,
+        assets: media.assets ?? modal.assets,
+        image_url: media.image_url ?? modal.image_url,
+      };
+
+      const res = modal.id
+        ? await socialSchedulerApi.update(modal.id, payload)
+        : await socialSchedulerApi.create(payload);
+
+      if (res.publish && !res.publish.success) {
+        const pubErr =
+          res.publish.error || "Failed to publish to social media.";
+        setSaveError(pubErr);
+        toast.error(pubErr);
+        await refresh();
+        return;
+      }
+
       await refresh();
-      toast.success(modal.id ? "Post updated" : "Post scheduled");
+      if (status === "published") {
+        toast.success("Post published to social media");
+      } else if (status === "scheduled") {
+        toast.success(modal.id ? "Post updated" : "Post scheduled");
+      } else {
+        toast.success(modal.id ? "Post updated" : "Draft saved");
+      }
       closeDrawer();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to save post";
@@ -932,7 +1418,9 @@ export default function SocialSchedulerPage() {
     setAiLoading(true);
     setAiError(null);
     try {
-      const channels = (modal.channels?.length ? modal.channels : ["facebook"]) as string[];
+      const channels = (
+        modal.channels?.length ? modal.channels : ["facebook"]
+      ) as string[];
       const { title, body } = await marketingApi.draftSocialPost({
         prompt: aiPrompt.trim(),
         channels,
@@ -964,14 +1452,18 @@ export default function SocialSchedulerPage() {
         <div>
           <div className="mb-1 flex items-center gap-2 text-brand-dark">
             <CalendarClock size={20} />
-            <span className="text-[11px] font-semibold uppercase tracking-wide">Marketing</span>
+            <span className="text-[11px] font-semibold uppercase tracking-wide">
+              Marketing
+            </span>
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">Social scheduler</h1>
+          <h1 className="text-2xl font-bold text-slate-900">
+            Social scheduler
+          </h1>
           <p className="mt-1 text-sm text-slate-500">
             Text, image, video, carousel, and link posts — each with a{" "}
-            <strong className="text-slate-700">placement / size</strong> preset. Use{" "}
-            <strong className="text-slate-700">Draft with AI</strong> to generate title and caption
-            from a short brief.
+            <strong className="text-slate-700">placement / size</strong> preset.
+            Use <strong className="text-slate-700">Draft with AI</strong> to
+            generate title and caption from a short brief.
           </p>
         </div>
         {activeTab === "posts" && (
@@ -998,7 +1490,11 @@ export default function SocialSchedulerPage() {
                 : "text-slate-500 hover:text-slate-700"
             }`}
           >
-            {tab === "posts" ? <CalendarClock size={14} /> : <BarChart2 size={14} />}
+            {tab === "posts" ? (
+              <CalendarClock size={14} />
+            ) : (
+              <BarChart2 size={14} />
+            )}
             {tab === "posts" ? "Posts" : "Analytics"}
           </button>
         ))}
@@ -1016,7 +1512,9 @@ export default function SocialSchedulerPage() {
 
           {/* Filter pills */}
           <div className="flex flex-wrap items-center gap-2">
-            {(["all", "draft", "scheduled", "published", "failed"] as const).map((f) => (
+            {(
+              ["all", "draft", "scheduled", "published", "failed"] as const
+            ).map((f) => (
               <button
                 key={f}
                 type="button"
@@ -1039,178 +1537,217 @@ export default function SocialSchedulerPage() {
               <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/70 backdrop-blur-[2px]">
                 <div className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 shadow-md">
                   <Loader2 size={16} className="animate-spin text-brand-dark" />
-                  <span className="text-xs font-medium text-slate-600">Loading posts…</span>
+                  <span className="text-xs font-medium text-slate-600">
+                    Loading posts…
+                  </span>
                 </div>
               </div>
             )}
             <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-left text-sm">
-              <thead className="border-b border-slate-100 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="w-14 px-4 py-3"> </th>
-                  <th className="px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Size</th>
-                  <th className="px-4 py-3">Title</th>
-                  <th className="px-4 py-3">Channels</th>
-                  <th className="px-4 py-3">When</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="w-28 px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filtered.length === 0 ? (
+              <table className="w-full min-w-[900px] text-left text-sm">
+                <thead className="border-b border-slate-100 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                   <tr>
-                    <td colSpan={8} className="px-4 py-16 text-center">
-                      <div className="flex flex-col items-center gap-3 text-slate-400">
-                        <CalendarClock size={32} className="opacity-30" />
-                        <p className="text-sm">No posts yet.</p>
-                        <button
-                          type="button"
-                          onClick={openNew}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-dark px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand"
-                        >
-                          <Plus size={13} /> Create your first post
-                        </button>
-                      </div>
-                    </td>
+                    <th className="w-14 px-4 py-3"> </th>
+                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">Size</th>
+                    <th className="px-4 py-3">Title</th>
+                    <th className="px-4 py-3">Channels</th>
+                    <th className="px-4 py-3">When</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="w-28 px-4 py-3 text-right">Actions</th>
                   </tr>
-                ) : (
-                  filtered.map((r) => {
-                    const pv = rowPreview(r);
-                    const pk = r.post_kind as PostKind | undefined;
-                    const place = presetById(r.placement_id as PostPlacementId | undefined);
-                    const dim =
-                      r.placement_id === "custom" && r.placement_width && r.placement_height
-                        ? `${r.placement_width}×${r.placement_height}`
-                        : `${place.width}×${place.height}`;
-                    return (
-                      <tr key={r.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="px-4 py-3">
-                          <div className="relative h-10 w-10">
-                            {pv.url && !pv.video ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={pv.url}
-                                alt=""
-                                className="h-10 w-10 rounded-md border border-slate-200 object-cover"
-                              />
-                            ) : pv.video ? (
-                              <div className="flex h-10 w-10 items-center justify-center rounded-md border border-slate-200 bg-slate-900 text-[9px] font-bold text-white">
-                                VID
-                              </div>
-                            ) : (
-                              <div className="flex h-10 w-10 items-center justify-center rounded-md border border-dashed border-slate-200 bg-slate-50">
-                                <ImageIcon size={14} className="text-slate-300" />
-                              </div>
-                            )}
-                            {pv.count > 1 ? (
-                              <span className="absolute -bottom-1 -right-1 rounded-full bg-brand-dark px-1 text-[9px] font-bold text-white">
-                                {pv.count}
-                              </span>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="px-4 py-16 text-center">
+                        <div className="flex flex-col items-center gap-3 text-slate-400">
+                          <CalendarClock size={32} className="opacity-30" />
+                          <p className="text-sm">No posts yet.</p>
+                          <button
+                            type="button"
+                            onClick={openNew}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-dark px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand"
+                          >
+                            <Plus size={13} /> Create your first post
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    filtered.map((r) => {
+                      const pv = rowPreview(r);
+                      const pk = r.post_kind as PostKind | undefined;
+                      const place = presetById(
+                        r.placement_id as PostPlacementId | undefined,
+                      );
+                      const dim =
+                        r.placement_id === "custom" &&
+                        r.placement_width &&
+                        r.placement_height
+                          ? `${r.placement_width}×${r.placement_height}`
+                          : `${place.width}×${place.height}`;
+                      return (
+                        <tr
+                          key={r.id}
+                          className="hover:bg-slate-50/80 transition-colors"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="relative h-10 w-10">
+                              {pv.url && !pv.video ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={pv.url}
+                                  alt=""
+                                  className="h-10 w-10 rounded-md border border-slate-200 object-cover"
+                                />
+                              ) : pv.video ? (
+                                <div className="flex h-10 w-10 items-center justify-center rounded-md border border-slate-200 bg-slate-900 text-[9px] font-bold text-white">
+                                  VID
+                                </div>
+                              ) : (
+                                <div className="flex h-10 w-10 items-center justify-center rounded-md border border-dashed border-slate-200 bg-slate-50">
+                                  <ImageIcon
+                                    size={14}
+                                    className="text-slate-300"
+                                  />
+                                </div>
+                              )}
+                              {pv.count > 1 ? (
+                                <span className="absolute -bottom-1 -right-1 rounded-full bg-brand-dark px-1 text-[9px] font-bold text-white">
+                                  {pv.count}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-[11px] text-slate-700">
+                            {pk
+                              ? ((POST_KIND_LABELS as Record<string, string>)[
+                                  pk
+                                ] ?? pk)
+                              : "—"}
+                            {r.link_url ? (
+                              <p className="mt-0.5 truncate text-[10px] text-brand-dark">
+                                {r.link_url}
+                              </p>
                             ) : null}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-[11px] text-slate-700">
-                          {pk ? (POST_KIND_LABELS as Record<string, string>)[pk] ?? pk : "—"}
-                          {r.link_url ? (
-                            <p className="mt-0.5 truncate text-[10px] text-brand-dark">
-                              {r.link_url}
+                          </td>
+                          <td className="px-4 py-3 text-[11px] text-slate-600">
+                            <p className="font-medium text-slate-800">
+                              {place.label}
                             </p>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3 text-[11px] text-slate-600">
-                          <p className="font-medium text-slate-800">{place.label}</p>
-                          <p className="text-[10px] text-slate-500">
-                            {dim}px · {place.aspect}
-                          </p>
-                        </td>
-                        <td className="px-4 py-3">
-                          <p className="font-medium text-slate-900">{r.title}</p>
-                          <p className="line-clamp-1 text-xs text-slate-500">{r.body}</p>
-                          {r.assets?.length ? (
-                            <p className="mt-0.5 line-clamp-2 text-[10px] text-slate-400">
-                              {r.assets.map((a) => a.file_name).join(" · ")}
+                            <p className="text-[10px] text-slate-500">
+                              {dim}px · {place.aspect}
                             </p>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex flex-wrap gap-1">
-                            {r.channels.map((c) => (
-                              <span
-                                key={c}
-                                className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium capitalize ${
-                                  CHANNEL_COLOURS[c] ?? "bg-slate-100 text-slate-700"
-                                }`}
+                          </td>
+                          <td className="px-4 py-3">
+                            <p className="font-medium text-slate-900">
+                              {r.title}
+                            </p>
+                            <p className="line-clamp-1 text-xs text-slate-500">
+                              {r.body}
+                            </p>
+                            {r.assets?.length ? (
+                              <p className="mt-0.5 line-clamp-2 text-[10px] text-slate-400">
+                                {r.assets.map((a) => a.file_name).join(" · ")}
+                              </p>
+                            ) : null}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap gap-1">
+                              {r.channels.map((c) => (
+                                <span
+                                  key={c}
+                                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium capitalize ${
+                                    CHANNEL_COLOURS[c] ??
+                                    "bg-slate-100 text-slate-700"
+                                  }`}
+                                >
+                                  {c}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-slate-600">
+                            {formatDateTime(r.scheduled_at)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <button
+                              type="button"
+                              title={
+                                r.status === "failed" && r.publish_error
+                                  ? r.publish_error
+                                  : "Click to toggle status"
+                              }
+                              onClick={() => void quickToggleStatus(r)}
+                              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium cursor-pointer hover:opacity-75 transition-opacity ${
+                                STATUS_STYLE[r.status] ?? "bg-slate-100"
+                              }`}
+                            >
+                              {STATUS_ICON[r.status]}
+                              {r.status}
+                            </button>
+                            {r.status === "failed" && r.publish_error && (
+                              <p
+                                className="mt-0.5 max-w-[180px] truncate text-[10px] text-red-500"
+                                title={r.publish_error}
                               >
-                                {c}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-600">
-                          {formatDateTime(r.scheduled_at)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <button
-                            type="button"
-                            title="Click to toggle status"
-                            onClick={() => void quickToggleStatus(r)}
-                            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium cursor-pointer hover:opacity-75 transition-opacity ${
-                              STATUS_STYLE[r.status] ?? "bg-slate-100"
-                            }`}
-                          >
-                            {STATUS_ICON[r.status]}
-                            {r.status}
-                          </button>
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => openEdit(r)}
-                            className="mr-0.5 inline-flex rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                            title="Edit"
-                          >
-                            <Pencil size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void duplicatePost(r)}
-                            className="mr-0.5 inline-flex rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                            title="Duplicate"
-                          >
-                            <Copy size={13} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setPendingDelete(r)}
-                            className="inline-flex rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
-                            title="Delete"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-            </div>{/* /overflow-x-auto */}
+                                {r.publish_error}
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => openEdit(r)}
+                              className="mr-0.5 inline-flex rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                              title="Edit"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void duplicatePost(r)}
+                              className="mr-0.5 inline-flex rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                              title="Duplicate"
+                            >
+                              <Copy size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPendingDelete(r)}
+                              className="inline-flex rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
+                              title="Delete"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {/* /overflow-x-auto */}
           </div>
 
           <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-xs text-slate-600">
-            <p className="font-semibold text-slate-800">Ready for integration</p>
+            <p className="font-semibold text-slate-800">
+              Ready for integration
+            </p>
             <ul className="mt-2 list-inside list-disc space-y-1">
               <li>
-                OAuth per network under Integrations → token refresh and page/account pickers.
+                OAuth per network under Integrations → token refresh and
+                page/account pickers.
               </li>
               <li>
-                Bulk designs: batch upload to storage, then attach returned media IDs to each
-                scheduled row.
+                Bulk designs: batch upload to storage, then attach returned
+                media IDs to each scheduled row.
               </li>
               <li>
-                Worker: cron or queue consumes scheduled rows and updates status to
-                published/failed.
+                Worker: cron or queue consumes scheduled rows and updates status
+                to published/failed.
               </li>
             </ul>
           </section>
@@ -1260,7 +1797,6 @@ export default function SocialSchedulerPage() {
                 )}
               </div>
 
-
               <button
                 type="button"
                 onClick={closeDrawer}
@@ -1280,11 +1816,13 @@ export default function SocialSchedulerPage() {
                     <div className="rounded-xl border border-brand/20 bg-gradient-to-br from-brand/8 to-violet-50/60 p-4">
                       <div className="flex items-center gap-2 text-brand-dark">
                         <Sparkles size={15} className="shrink-0" />
-                        <span className="text-xs font-semibold">Draft with AI</span>
+                        <span className="text-xs font-semibold">
+                          Draft with AI
+                        </span>
                       </div>
                       <p className="mt-1 text-[11px] text-slate-500">
-                        Describe your post — tone, offer, CTA. Selected channels are sent to the
-                        model.
+                        Describe your post — tone, offer, CTA. Selected channels
+                        are sent to the model.
                       </p>
                       <textarea
                         className="mt-2.5 min-h-[64px] w-full rounded-lg border border-brand/25 bg-white px-3 py-2 text-sm outline-none focus:border-brand resize-none"
@@ -1337,7 +1875,9 @@ export default function SocialSchedulerPage() {
                         placeholder="Spring promo launch"
                       />
                       {titleError && (
-                        <p className="mt-1 text-xs text-red-500">Title is required.</p>
+                        <p className="mt-1 text-xs text-red-500">
+                          Title is required.
+                        </p>
                       )}
                     </div>
 
@@ -1349,9 +1889,14 @@ export default function SocialSchedulerPage() {
                         </label>
                         <span
                           className={`text-[10px] font-medium ${(() => {
-                            const activeChannels = (modal.channels ?? []) as SocialChannel[];
+                            const activeChannels = (modal.channels ??
+                              []) as SocialChannel[];
                             const limit = activeChannels.length
-                              ? Math.min(...activeChannels.map((c) => CHAR_LIMITS[c] ?? 9999))
+                              ? Math.min(
+                                  ...activeChannels.map(
+                                    (c) => CHAR_LIMITS[c] ?? 9999,
+                                  ),
+                                )
                               : 9999;
                             const len = (modal.body ?? "").length;
                             return len > limit
@@ -1364,10 +1909,13 @@ export default function SocialSchedulerPage() {
                           {(modal.body ?? "").length}
                           {" / "}
                           {(() => {
-                            const activeChannels = (modal.channels ?? []) as SocialChannel[];
+                            const activeChannels = (modal.channels ??
+                              []) as SocialChannel[];
                             return activeChannels.length
                               ? Math.min(
-                                  ...activeChannels.map((c) => CHAR_LIMITS[c] ?? 9999)
+                                  ...activeChannels.map(
+                                    (c) => CHAR_LIMITS[c] ?? 9999,
+                                  ),
                                 ).toLocaleString()
                               : "∞";
                           })()}
@@ -1387,7 +1935,9 @@ export default function SocialSchedulerPage() {
                         placeholder="Write your post caption… hashtags welcome."
                       />
                       {bodyError && (
-                        <p className="mt-1 text-xs text-red-500">Caption is required.</p>
+                        <p className="mt-1 text-xs text-red-500">
+                          Caption is required.
+                        </p>
                       )}
                     </div>
                   </div>
@@ -1401,53 +1951,56 @@ export default function SocialSchedulerPage() {
                     {/* Existing assets grid */}
                     {((modal.assets?.length ?? 0) > 0 || modal.image_url) && (
                       <div className="flex flex-wrap gap-2">
-                        {modal.assets?.length
-                          ? modal.assets.map((a, i) => (
-                              <div key={i} className="group relative">
-                                {a.preview_data_url && a.mime_type.startsWith("image/") ? (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img
-                                    src={a.preview_data_url}
-                                    alt=""
-                                    className="h-16 w-16 rounded-lg border border-slate-200 object-cover"
-                                  />
-                                ) : (
-                                  <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-[9px] font-bold text-slate-500">
-                                    {a.mime_type.startsWith("video/") ? "VIDEO" : "FILE"}
-                                  </div>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => removeModalAsset(i)}
-                                  className="absolute -right-1.5 -top-1.5 hidden h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white shadow-sm group-hover:flex"
-                                  title="Remove"
-                                >
-                                  <X size={10} />
-                                </button>
-                                <p className="mt-0.5 max-w-[64px] truncate text-[9px] text-slate-500">
-                                  {a.file_name}
-                                </p>
-                              </div>
-                            ))
-                          : modal.image_url
-                            ? (
-                                <div className="group relative">
-                                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                                  <img
-                                    src={modal.image_url}
-                                    alt="Design"
-                                    className="h-16 w-16 rounded-lg border border-slate-200 object-cover"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => setModal({ ...modal, image_url: undefined })}
-                                    className="absolute -right-1.5 -top-1.5 hidden h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white shadow-sm group-hover:flex"
-                                  >
-                                    <X size={10} />
-                                  </button>
+                        {modal.assets?.length ? (
+                          modal.assets.map((a, i) => (
+                            <div key={i} className="group relative">
+                              {a.preview_data_url &&
+                              a.mime_type.startsWith("image/") ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={a.preview_data_url}
+                                  alt=""
+                                  className="h-16 w-16 rounded-lg border border-slate-200 object-cover"
+                                />
+                              ) : (
+                                <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-[9px] font-bold text-slate-500">
+                                  {a.mime_type.startsWith("video/")
+                                    ? "VIDEO"
+                                    : "FILE"}
                                 </div>
-                              )
-                            : null}
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => removeModalAsset(i)}
+                                className="absolute -right-1.5 -top-1.5 hidden h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white shadow-sm group-hover:flex"
+                                title="Remove"
+                              >
+                                <X size={10} />
+                              </button>
+                              <p className="mt-0.5 max-w-[64px] truncate text-[9px] text-slate-500">
+                                {a.file_name}
+                              </p>
+                            </div>
+                          ))
+                        ) : modal.image_url ? (
+                          <div className="group relative">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={modal.image_url}
+                              alt="Design"
+                              className="h-16 w-16 rounded-lg border border-slate-200 object-cover"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setModal({ ...modal, image_url: undefined })
+                              }
+                              className="absolute -right-1.5 -top-1.5 hidden h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white shadow-sm group-hover:flex"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     )}
 
@@ -1455,7 +2008,9 @@ export default function SocialSchedulerPage() {
                     <div
                       role="button"
                       tabIndex={0}
-                      onKeyDown={(e) => e.key === "Enter" && mediaInputRef.current?.click()}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" && mediaInputRef.current?.click()
+                      }
                       onClick={() => mediaInputRef.current?.click()}
                       onDragOver={(e) => {
                         e.preventDefault();
@@ -1482,7 +2037,8 @@ export default function SocialSchedulerPage() {
                           Drop media or click to browse
                         </p>
                         <p className="text-[11px] text-slate-400">
-                          PNG, JPG, WebP, GIF, MP4, MOV… Multiple files for carousel.
+                          PNG, JPG, WebP, GIF, MP4, MOV… Multiple files for
+                          carousel.
                         </p>
                       </div>
                       <input
@@ -1532,16 +2088,22 @@ export default function SocialSchedulerPage() {
                     </p>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs font-medium text-slate-700">Date & time</label>
+                        <label className="text-xs font-medium text-slate-700">
+                          Date & time
+                        </label>
                         <input
                           type="datetime-local"
                           className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand"
                           value={modal.scheduled_at?.slice(0, 16) ?? ""}
-                          onChange={(e) => setModal({ ...modal, scheduled_at: e.target.value })}
+                          onChange={(e) =>
+                            setModal({ ...modal, scheduled_at: e.target.value })
+                          }
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-medium text-slate-700">Status</label>
+                        <label className="text-xs font-medium text-slate-700">
+                          Status
+                        </label>
                         <select
                           className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand"
                           value={modal.status ?? "draft"}
@@ -1554,9 +2116,20 @@ export default function SocialSchedulerPage() {
                         >
                           <option value="draft">Draft</option>
                           <option value="scheduled">Scheduled</option>
-                          <option value="published">Published (manual)</option>
-                          <option value="failed">Failed (manual)</option>
+                          <option value="published">Publish now</option>
                         </select>
+                        {(modal.status ?? "draft") === "published" && (
+                          <p className="mt-1.5 text-[11px] text-slate-500">
+                            Sends immediately to connected social accounts via
+                            Zernio.
+                          </p>
+                        )}
+                        {(modal.status ?? "draft") === "scheduled" && (
+                          <p className="mt-1.5 text-[11px] text-slate-500">
+                            Queues the post for the date above. Past times
+                            publish on save.
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1575,7 +2148,9 @@ export default function SocialSchedulerPage() {
                         />
                         Advanced settings
                       </span>
-                      {(modal.post_kind ?? modal.link_url ?? modal.placement_id) && (
+                      {(modal.post_kind ??
+                        modal.link_url ??
+                        modal.placement_id) && (
                         <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] text-brand-dark">
                           configured
                         </span>
@@ -1602,7 +2177,9 @@ export default function SocialSchedulerPage() {
                               }
                             >
                               <option value="">Auto / unset</option>
-                              {(Object.keys(POST_KIND_LABELS) as PostKind[]).map((k) => (
+                              {(
+                                Object.keys(POST_KIND_LABELS) as PostKind[]
+                              ).map((k) => (
                                 <option key={k} value={k}>
                                   {POST_KIND_LABELS[k]}
                                 </option>
@@ -1610,7 +2187,9 @@ export default function SocialSchedulerPage() {
                             </select>
                           </div>
                           <div>
-                            <label className="text-xs font-medium text-slate-700">Link URL</label>
+                            <label className="text-xs font-medium text-slate-700">
+                              Link URL
+                            </label>
                             <input
                               className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand"
                               value={modal.link_url ?? ""}
@@ -1658,7 +2237,8 @@ export default function SocialSchedulerPage() {
                                 onChange={(e) =>
                                   setModal({
                                     ...modal,
-                                    placement_width: Number(e.target.value) || 1080,
+                                    placement_width:
+                                      Number(e.target.value) || 1080,
                                   })
                                 }
                               />
@@ -1675,7 +2255,8 @@ export default function SocialSchedulerPage() {
                                 onChange={(e) =>
                                   setModal({
                                     ...modal,
-                                    placement_height: Number(e.target.value) || 1080,
+                                    placement_height:
+                                      Number(e.target.value) || 1080,
                                   })
                                 }
                               />
@@ -1750,10 +2331,16 @@ export default function SocialSchedulerPage() {
               </div>
             </div>
 
-            <h2 id="del-title" className="mb-1 text-center text-base font-semibold text-slate-900">
+            <h2
+              id="del-title"
+              className="mb-1 text-center text-base font-semibold text-slate-900"
+            >
               Delete post?
             </h2>
-            <p id="del-desc" className="mb-6 text-center text-sm text-slate-500">
+            <p
+              id="del-desc"
+              className="mb-6 text-center text-sm text-slate-500"
+            >
               <span className="font-medium text-slate-700">
                 &ldquo;{pendingDelete.title || "Untitled post"}&rdquo;
               </span>{" "}
@@ -1787,7 +2374,11 @@ export default function SocialSchedulerPage() {
                 }}
                 className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-red-500 py-2.5 text-sm font-medium text-white transition hover:bg-red-600 disabled:opacity-60"
               >
-                {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                {deleting ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Trash2 size={14} />
+                )}
                 {deleting ? "Deleting…" : "Delete"}
               </button>
             </div>

@@ -17,6 +17,66 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
+
+def _wp_cli_path() -> str:
+    return os.getenv("WP_CLI_PATH", "/var/www/html/zilo")
+
+
+def _wp_bridge_url() -> str:
+    return os.getenv("WP_BRIDGE_URL", "").rstrip("/")
+
+
+def _wp_bridge_secret() -> str:
+    return os.getenv("WP_BRIDGE_SECRET", "")
+
+
+async def _wp_cli(*args, url: str = None) -> SimpleNamespace:
+    """Run a WP-CLI command via HTTP bridge or local subprocess."""
+    bridge_url = _wp_bridge_url()
+    if bridge_url:
+        secret = _wp_bridge_secret()
+        payload: dict = {"args": list(args)}
+        if url:
+            payload["url"] = url
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    f"{bridge_url}/wp-bridge.php",
+                    json=payload,
+                    headers={"X-Bridge-Key": secret},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                return SimpleNamespace(
+                    returncode=data.get("returncode", 1),
+                    stdout=data.get("stdout", ""),
+                    stderr=data.get("stderr", ""),
+                )
+            else:
+                logger.warning(f"[wp-bridge] HTTP {resp.status_code}: {resp.text[:200]}")
+                return SimpleNamespace(returncode=1, stdout="", stderr=f"Bridge HTTP {resp.status_code}")
+        except Exception as exc:
+            logger.warning(f"[wp-bridge] request failed: {exc}")
+            return SimpleNamespace(returncode=1, stdout="", stderr=str(exc))
+    else:
+        import subprocess
+        cmd = ["wp", "--allow-root", f"--path={_wp_cli_path()}"]
+        if url:
+            cmd.append(f"--url={url}")
+        cmd.extend(args)
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=True, timeout=90
+            )
+            return SimpleNamespace(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        except Exception as exc:
+            return SimpleNamespace(returncode=1, stdout="", stderr=str(exc))
+
+
 # Lazy imports to avoid circular import issues at module load time
 async def _seed_products(site_url, business_name, industry, location):
     from blog.product_seeder import seed_products
@@ -639,6 +699,9 @@ class ZiloBlogService:
         # 3. Apply industry-specific theme
         await self._apply_industry_theme(slug, industry)
 
+        # 3a. Upload Zilo logo as site favicon (replaces default WordPress W icon)
+        await self._generate_and_set_favicon(subsite_url=site_url, slug=slug)
+
         # 3b. Create industry homepage (hero + features + CTA, Astra-styled)
         await self._create_industry_homepage(slug, site_url, business_name, industry)
 
@@ -767,16 +830,21 @@ class ZiloBlogService:
         # Look up blog record for industry/business context used for image generation
         blog = await self.db.blogs.find_one({"wp_slug": wp_slug})
         client_id = blog.get("client_id") if blog else None
+        industry = (blog.get("industry", "") if blog else "") or "business"
 
         # Generate and upload featured image via Gemini (non-blocking — post publishes even if this fails)
         featured_media_id = await self._generate_and_upload_featured_image(
             subsite_url=subsite_url,
             title=title,
             business_name=blog.get("business_name", "") if blog else "",
-            industry=blog.get("industry", "business") if blog else "business",
+            industry=industry,
             location=blog.get("location", "") if blog else "",
             wp_slug=wp_slug,
         )
+
+        # Get or create a WP category based on the industry (e.g. "Plumbing", "Restaurant")
+        category_name = (category or industry).title()
+        category_id = await self._get_or_create_wp_category(subsite_url, category_name)
 
         kw_list = keywords if isinstance(keywords, list) else []
         focus_kw = (kw_list[0] if kw_list and isinstance(kw_list[0], str) else "") or ""
@@ -793,6 +861,8 @@ class ZiloBlogService:
         }
         if featured_media_id:
             post_payload["featured_media"] = featured_media_id
+        if category_id:
+            post_payload["categories"] = [category_id]
 
         post_url = f"{subsite_url}/wp-json/wp/v2/posts"
         headers = _wp_headers()
@@ -922,6 +992,93 @@ class ZiloBlogService:
         except Exception as exc:
             logger.warning("[blog] WP media upload error: %s", exc)
             return None
+
+    async def _get_or_create_wp_category(self, subsite_url: str, category_name: str) -> "int | None":
+        """Returns the WP category ID for category_name, creating it if it doesn't exist."""
+        try:
+            headers = _wp_headers()
+            async with httpx.AsyncClient(timeout=15) as hc:
+                r = await hc.get(
+                    f"{subsite_url}/wp-json/wp/v2/categories",
+                    headers=headers,
+                    params={"search": category_name, "per_page": 5},
+                )
+                if r.status_code == 200:
+                    for cat in r.json():
+                        if cat.get("name", "").lower() == category_name.lower():
+                            logger.info("[blog] Found WP category '%s' id=%s", category_name, cat["id"])
+                            return cat["id"]
+                cr = await hc.post(
+                    f"{subsite_url}/wp-json/wp/v2/categories",
+                    headers=headers,
+                    json={"name": category_name},
+                )
+                if cr.status_code == 201:
+                    cat_id = cr.json().get("id")
+                    logger.info("[blog] Created WP category '%s' id=%s", category_name, cat_id)
+                    return cat_id
+                logger.warning("[blog] Category '%s' create failed (%s)", category_name, cr.status_code)
+                return None
+        except Exception as exc:
+            logger.warning("[blog] Category setup error: %s", exc)
+            return None
+
+    async def _generate_and_set_favicon(self, subsite_url: str, slug: str, business_name: str = "", industry: str = "") -> None:
+        """Uploads the Zilo logo as the WordPress site favicon (site_icon option)."""
+        try:
+            # Logo lives in backend/static/ — same deployment, always accessible
+            logo_path = os.path.join(os.path.dirname(__file__), "..", "static", "zilo-logo.png")
+            logo_path = os.path.normpath(logo_path)
+            if not os.path.exists(logo_path):
+                logger.warning("[blog] Zilo logo not found at %s — skipping favicon", logo_path)
+                return
+
+            with open(logo_path, "rb") as f:
+                logo_bytes = f.read()
+
+            media_id = None
+            async with httpx.AsyncClient(timeout=15) as hc:
+                mr = await hc.post(
+                    f"{subsite_url}/wp-json/wp/v2/media",
+                    headers={
+                        "Authorization": f"Basic {_get_wp_auth()}",
+                        "Content-Disposition": 'attachment; filename="zilo-favicon.png"',
+                        "Content-Type": "image/png",
+                    },
+                    content=logo_bytes,
+                )
+                if mr.status_code != 201:
+                    logger.warning("[blog] Favicon upload failed (%s): %s", mr.status_code, mr.text[:200])
+                    return
+                media_id = mr.json().get("id")
+
+                r = await hc.post(
+                    f"{subsite_url}/wp-json/wp/v2/settings",
+                    headers=_wp_headers(),
+                    json={"site_icon": media_id},
+                )
+                if r.status_code == 200:
+                    logger.info("[blog] Zilo favicon set via REST for %s (media_id=%s)", slug, media_id)
+                else:
+                    logger.warning("[blog] Favicon REST set failed (%s): %s — trying WP-CLI", r.status_code, r.text[:200])
+
+            # WP-CLI fallback: directly update the site_icon option in the DB
+            # This is more reliable for WordPress Multisite subsites
+            if media_id:
+                try:
+                    cli_result = await _wp_cli(
+                        "option", "update", "site_icon", str(media_id),
+                        url=subsite_url,
+                    )
+                    if cli_result.returncode == 0:
+                        logger.info("[blog] Zilo favicon set via WP-CLI for %s (media_id=%s)", slug, media_id)
+                    else:
+                        logger.warning("[blog] WP-CLI favicon set failed: %s", cli_result.stderr[:200])
+                except Exception as cli_exc:
+                    logger.warning("[blog] WP-CLI favicon fallback failed (non-fatal): %s", cli_exc)
+
+        except Exception as exc:
+            logger.warning("[blog] Favicon upload failed (non-fatal): %s", exc)
 
     async def create_order(
         self,

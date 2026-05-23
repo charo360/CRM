@@ -446,7 +446,12 @@ _frontend_url_cors = os.environ.get('FRONTEND_URL', '').strip()
 if _allowed_origins_raw:
     _origins_list = [o.strip() for o in _allowed_origins_raw.split(',') if o.strip()]
 elif _frontend_url_cors:
-    _origins_list = [_frontend_url_cors, "http://localhost:3000", "http://localhost:5173"]
+    _origins_list = [
+        _frontend_url_cors,
+        "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
+        "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ]
 else:
     _origins_list = ["*"]
 _use_credentials = "*" not in _origins_list
@@ -649,7 +654,7 @@ async def _backfill_all_users_names():
             if updated:
                 logging.info(f"[NameBackfill] Updated {updated} names for user {uid}")
         except Exception as e:
-            logging.warning(f"[NameBackfill] Error for user {u.get('_id')}: {e}")
+            logging.debug(f"[NameBackfill] Error for user {u.get('_id')}: {e}")
 
 async def execute_broadcast_automations():
     """Find and execute all due broadcast automations"""
@@ -997,6 +1002,7 @@ class WebRegisterRequest(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
     business_name: str = Field(..., min_length=1, max_length=200)
     owner_name: Optional[str] = Field(None, max_length=200)
+    country_code: Optional[str] = Field(None, max_length=2)  # ISO 3166-1 alpha-2
 
 
 class WebLoginRequest(BaseModel):
@@ -1785,6 +1791,8 @@ class UserSettingsUpdate(BaseModel):
     daily_pulse_time: Optional[str] = None  # e.g. '20:00'
     ai_model: Optional[str] = None  # standard, premium, claude-4.7, grok, etc.
     auto_reply_audience: Optional[str] = None  # 'everyone', 'customers_only', 'new_contacts_only'
+    ga4_measurement_id: Optional[str] = None  # Google Analytics 4 Measurement ID (G-XXXXXXXXXX)
+    behavior_discounts_enabled: Optional[bool] = None  # Enable/disable behavior-triggered discount campaigns
 
 # Business Knowledge Model
 class BusinessKnowledge(BaseModel):
@@ -2243,8 +2251,8 @@ async def register_web(req: WebRegisterRequest):
 
     user_id = str(uuid.uuid4())
     phone = _web_placeholder_phone(user_id)
-    country_code = "KE"
-    country_config = get_payment_methods_for_country(country_code)
+    country_code = (req.country_code or "").strip().upper() or None
+    country_config = get_payment_methods_for_country(country_code or "")
     now = datetime.utcnow()
     business_name = req.business_name.strip()
     owner_name = (req.owner_name or "").strip()
@@ -2473,13 +2481,15 @@ async def get_settings(user = Depends(get_current_user)):
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
         "business_type": s.get("business_type") or user.get("business_type", ""),
         "primary_language": s.get("primary_language", "English"),
-        "country": s.get("country", "Kenya"),
+        "country": s.get("country", ""),
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
         "restaurant_has_reservations": s.get("restaurant_has_reservations", False),
         "features": s.get("features"),
         "account_mode": s.get("account_mode", "business"),
         "onboarding_v1_completed": s.get("onboarding_v1_completed"),
+        "ga4_measurement_id": s.get("ga4_measurement_id", ""),
+        "behavior_discounts_enabled": s.get("behavior_discounts_enabled", False),
     }
     await cache_set(cache_key, result, TTL_TENANT_SETTINGS)
     return result
@@ -2503,6 +2513,27 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
         update_doc.update(settings_fields)
     if update_doc:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    
+    # Auto-inject tracking codes to Shopify if GA4 measurement ID is updated and auto_inject_shopify is enabled
+    if "settings.ga4_measurement_id" in settings_fields and body.get("auto_inject_shopify", False):
+        try:
+            from shopify_tracking import inject_tracking_codes, check_shopify_connection
+            user_id = str(user["_id"])
+            
+            # Check if Shopify is connected
+            if await check_shopify_connection(db, user_id):
+                ga4_id = settings_fields["settings.ga4_measurement_id"]
+                if ga4_id and ga4_id.startswith("G-"):
+                    await inject_tracking_codes(
+                        db=db,
+                        user_id=user_id,
+                        ga4_measurement_id=ga4_id,
+                        business_id=user_id
+                    )
+                    logging.info(f"[Settings] Auto-injected tracking codes to Shopify for user {user_id}")
+        except Exception as e:
+            logging.error(f"[Settings] Failed to auto-inject Shopify tracking: {e}")
+    
     await cache_delete(key_tenant_settings(user["_id"]))
     return {"status": "ok"}
 
@@ -6527,16 +6558,7 @@ async def s3_image_proxy(key_path: str):
         from fastapi.responses import StreamingResponse as _StreamingResponse
         import io as _io
 
-        from botocore.config import Config as _BotoConfig
-        _region = os.environ.get("AWS_REGION", "us-east-1")
-        s3 = boto3.client(
-            "s3",
-            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-            region_name=_region,
-            endpoint_url=f"https://s3.{_region}.amazonaws.com",
-            config=_BotoConfig(signature_version="s3v4"),
-        )
+        s3 = S3Handler.get_s3_client()
         obj = s3.get_object(Bucket=bucket, Key=key)
         content_type = obj.get("ContentType") or "application/octet-stream"
         body = obj["Body"].read()
@@ -10565,6 +10587,908 @@ async def send_daily_notifications_now(user = Depends(get_current_user)):
 
 # ============ PRODUCT CATALOG ENDPOINTS ============
 
+# ── Shopify OAuth (Partner App) ────────────────────────────────────────────────
+
+_SHOPIFY_SCOPES = (
+    "read_orders,write_orders,"
+    "read_products,write_products,"
+    "read_customers,write_customers,"
+    "read_script_tags,write_script_tags,"
+    "read_price_rules,write_price_rules,"
+    "read_discounts,write_discounts,"
+    "read_checkouts,"
+    "read_locations,write_inventory,"
+    "read_content,write_content,"
+    "write_recurring_application_charges,read_recurring_application_charges"
+)
+
+
+def _shopify_state_encode(user_id: str, secret: str) -> str:
+    import base64, hashlib, hmac as _hmac, json, time
+    payload = json.dumps({"uid": user_id, "ts": int(time.time())})
+    sig = _hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}||{sig}".encode()).decode()
+
+
+def _shopify_state_decode(state: str, secret: str, max_age: int = 600) -> Optional[str]:
+    import base64, hashlib, hmac as _hmac, json, time
+    try:
+        raw = base64.urlsafe_b64decode(state.encode() + b"==").decode()
+        payload_str, sig = raw.rsplit("||", 1)
+        expected = _hmac.new(secret.encode(), payload_str.encode(), hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(sig, expected):
+            return None
+        data = json.loads(payload_str)
+        if int(time.time()) - data.get("ts", 0) > max_age:
+            return None
+        return data.get("uid")
+    except Exception:
+        return None
+
+
+def _shopify_validate_hmac(params: dict, secret: str) -> bool:
+    import hashlib, hmac as _hmac
+    hmac_val = params.get("hmac", "")
+    filtered = {k: v for k, v in params.items() if k != "hmac"}
+    msg = "&".join(f"{k}={v}" for k, v in sorted(filtered.items()))
+    expected = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(expected, hmac_val)
+
+
+def _shopify_redirect_uri(request: Request) -> str:
+    """The registered Shopify OAuth callback URL. Override via SHOPIFY_REDIRECT_URI env var."""
+    override = os.environ.get("SHOPIFY_REDIRECT_URI", "").strip()
+    if override:
+        return override
+    # Derive from NEXT_PUBLIC_API_URL (strip /api suffix and add backend path)
+    api_url = os.environ.get("NEXT_PUBLIC_API_URL", "").strip().rstrip("/")
+    if api_url:
+        # e.g. https://api.zilo.pro/api → https://api.zilo.pro/api/shopify/oauth/callback
+        return f"{api_url}/shopify/oauth/callback"
+    # Fallback: derive from the incoming request
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/shopify/oauth/callback"
+
+
+def _shopify_frontend_url() -> str:
+    return os.environ.get("SHOPIFY_FRONTEND_URL") or os.environ.get("NEXT_PUBLIC_APP_URL") or "http://localhost:3000"
+
+
+@api_router.get("/shopify/install")
+async def shopify_install(
+    request: Request,
+    shop: str = "",
+    hmac: str = "",
+    timestamp: str = "",
+    locale: str = "",
+):
+    """Entry point when a merchant installs from the Shopify App Store.
+
+    Shopify hits the application_url with ?shop=&hmac=&timestamp= query params.
+    We verify the HMAC then redirect to Shopify's OAuth consent screen.
+    No user login is required — this creates the account after OAuth completes.
+    """
+    from starlette.responses import RedirectResponse
+    from urllib.parse import urlencode
+
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    frontend_url = _shopify_frontend_url()
+
+    if not client_id or not client_secret:
+        logging.error("[shopify-install] SHOPIFY_CLIENT_ID/SECRET not configured")
+        return RedirectResponse(url=f"{frontend_url}/?install_error=not_configured")
+
+    shop = shop.strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
+    if not shop or not shop.endswith(".myshopify.com"):
+        return RedirectResponse(url=f"{frontend_url}/?install_error=invalid_shop")
+
+    # Verify the request really came from Shopify
+    all_params = dict(request.query_params)
+    if not _shopify_validate_hmac(all_params, client_secret):
+        logging.warning(f"[shopify-install] HMAC invalid shop={shop}")
+        return RedirectResponse(url=f"{frontend_url}/?install_error=invalid_hmac")
+
+    redirect_uri = _shopify_redirect_uri(request)
+
+    # Encode install marker in state so the callback knows to create a new user
+    state = _shopify_state_encode(f"__install__:{shop}", client_secret)
+
+    params = urlencode({
+        "client_id": client_id,
+        "scope": _SHOPIFY_SCOPES,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    })
+    auth_url = f"https://{shop}/admin/oauth/authorize?{params}"
+    logging.info(f"[shopify-install] Starting OAuth shop={shop}")
+    return RedirectResponse(url=auth_url)
+
+
+@api_router.get("/shopify/oauth/start")
+async def shopify_oauth_start(shop: str, request: Request, user=Depends(get_current_user)):
+    """Return the Shopify OAuth authorization URL for the given store."""
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET are not configured. Create a Shopify Partner app first.",
+        )
+    shop = shop.strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
+    if not shop.endswith(".myshopify.com"):
+        shop = f"{shop}.myshopify.com"
+
+    user_id = str(user.get("business_id") or user["_id"])
+    state = _shopify_state_encode(user_id, client_secret)
+    redirect_uri = _shopify_redirect_uri(request)
+
+    from urllib.parse import urlencode, quote
+    params = {
+        "client_id": client_id,
+        "scope": _SHOPIFY_SCOPES,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    auth_url = f"https://{shop}/admin/oauth/authorize?{urlencode(params)}"
+    logging.info(f"[shopify-oauth] start shop={shop} user={user_id} redirect_uri={redirect_uri}")
+    return {"auth_url": auth_url, "shop": shop}
+
+
+@api_router.get("/shopify/oauth/callback")
+async def shopify_oauth_callback(
+    request: Request,
+    code: str = "",
+    shop: str = "",
+    state: str = "",
+    hmac: str = "",
+):
+    """Public callback — Shopify redirects here after merchant installs the app."""
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    frontend_url = _shopify_frontend_url()
+    error_redirect = f"{frontend_url}/dashboard/shopify?shopify_error="
+
+    if not client_id or not client_secret:
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "app_not_configured")
+
+    # 1. Validate HMAC
+    all_params = dict(request.query_params)
+    if not _shopify_validate_hmac(all_params, client_secret):
+        logging.warning(f"[shopify-oauth] HMAC validation failed shop={shop}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "invalid_hmac")
+
+    # 2. Decode state → uid (may be a real user_id or "__install__:{shop}")
+    uid_from_state = _shopify_state_decode(state, client_secret)
+    if not uid_from_state:
+        logging.warning(f"[shopify-oauth] Invalid or expired state shop={shop}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "invalid_state")
+
+    is_install_flow = uid_from_state.startswith("__install__:")
+
+    # 3. Exchange code for access token
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as _c:
+            r = await _c.post(
+                f"https://{shop}/admin/oauth/access_token",
+                data={"client_id": client_id, "client_secret": client_secret, "code": code, "expiring": "1"},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except Exception as exc:
+        logging.error(f"[shopify-oauth] Token exchange failed: {exc}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "token_exchange_failed")
+
+    if r.status_code != 200:
+        logging.error(f"[shopify-oauth] Token exchange {r.status_code}: {r.text[:300]}")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + f"shopify_{r.status_code}")
+
+    try:
+        token_data = r.json()
+    except Exception:
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "bad_response")
+
+    access_token = token_data.get("access_token", "")
+    if not access_token:
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url=error_redirect + "no_token")
+
+    refresh_token = token_data.get("refresh_token", "")
+    import time as _time
+    now_ts = int(_time.time())
+    expires_in = int(token_data.get("expires_in") or 3600)
+    refresh_expires_in = int(token_data.get("refresh_token_expires_in") or 7776000)
+    token_fields = {
+        "shopify_domain": shop,
+        "shopify_token": access_token,
+        "shopify_token_expires_at": now_ts + expires_in,
+    }
+    if refresh_token:
+        token_fields["shopify_refresh_token"] = refresh_token
+        token_fields["shopify_refresh_token_expires_at"] = now_ts + refresh_expires_in
+
+    from starlette.responses import RedirectResponse
+
+    if is_install_flow:
+        # ── App Store install: get/create user account ────────────────────────
+        # Check if this shop already has an account (reinstall)
+        existing = await db.users.find_one({"shopify_domain": shop})
+        if existing:
+            user_id = str(existing.get("business_id") or existing["_id"])
+            await db.users.update_one({"_id": existing["_id"]}, {"$set": token_fields})
+            logging.info(f"[shopify-install] Reconnected existing user shop={shop} user={user_id}")
+        else:
+            # Fetch shop info from Shopify to populate the new account
+            shop_info: dict = {}
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as _c:
+                    _sr = await _c.get(
+                        f"https://{shop}/admin/api/2024-01/shop.json",
+                        headers={"X-Shopify-Access-Token": access_token},
+                    )
+                    if _sr.status_code == 200:
+                        shop_info = _sr.json().get("shop", {})
+            except Exception as _se:
+                logging.warning(f"[shopify-install] Could not fetch shop info: {_se}")
+
+            user_id = str(uuid.uuid4())
+            owner_name = shop_info.get("shop_owner") or shop_info.get("name") or shop.replace(".myshopify.com", "")
+            business_name = shop_info.get("name") or owner_name
+            email = shop_info.get("email") or f"merchant+{user_id[:8]}@zilo.pro"
+            phone = shop_info.get("phone") or ""
+            currency = shop_info.get("currency") or "USD"
+            country_code = shop_info.get("country_code") or "US"
+
+            await db.users.insert_one({
+                "_id":                    user_id,
+                "email":                  email,
+                "business_name":          business_name,
+                "owner_name":             owner_name,
+                "phone_number":           phone,
+                "business_id":            user_id,
+                "role":                   "owner",
+                "auth_provider":          "shopify",
+                "subscription_plan":      "starter",
+                "subscription_active":    False,
+                "shopify_billing_status": "pending",
+                "currency":               currency,
+                "country_code":           country_code,
+                "setup_complete":         True,
+                "settings":               {"onboarding_v1_completed": True},
+                "created_at":             datetime.utcnow(),
+                **token_fields,
+            })
+            logging.info(f"[shopify-install] Created new user shop={shop} user={user_id} email={email}")
+
+        # Register webhooks in background
+        try:
+            import asyncio as _aio
+            _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
+        except Exception as _wh_exc:
+            logging.warning(f"[shopify-install] webhook registration failed: {_wh_exc}")
+
+        # Issue a Zilo JWT so the frontend can authenticate immediately
+        zilo_token = create_token(user_id, "")
+
+        # Redirect to install-complete page which stores the token then goes to billing
+        had_active = bool(existing and existing.get("shopify_billing_status") == "active")
+        complete_url = (
+            f"{frontend_url}/shopify-install-complete"
+            f"?token={zilo_token}&shop={shop}&reinstall={'1' if had_active else '0'}"
+        )
+        return RedirectResponse(url=complete_url)
+
+    else:
+        # ── Connect-from-dashboard flow (user already logged in) ──────────────
+        user_id = uid_from_state
+        import bson
+        try:
+            oid = bson.ObjectId(user_id)
+        except Exception:
+            oid = None
+        query = {"$or": [{"business_id": user_id}]}
+        if oid:
+            query["$or"].append({"_id": oid})
+
+        await db.users.update_one(query, {"$set": token_fields})
+
+        # Refresh composio_service DB reference so calls work immediately
+        try:
+            import composio_service as _cs
+            _cs.set_db(db)
+        except Exception:
+            pass
+
+        logging.info(f"[shopify-oauth] Connected shop={shop} user={user_id}")
+        try:
+            import asyncio as _aio
+            _aio.create_task(_shopify_register_webhooks(shop, access_token, _shopify_backend_url()))
+        except Exception as _wh_exc:
+            logging.warning(f"[shopify-oauth] webhook registration failed: {_wh_exc}")
+
+        user_doc = await db.users.find_one(query, {"shopify_plan": 1, "shopify_billing_status": 1})
+        had_active_plan = (
+            user_doc
+            and user_doc.get("shopify_billing_status") == "active"
+            and user_doc.get("shopify_plan")
+        )
+
+        billing_url = (
+            f"{frontend_url}/dashboard/shopify/billing"
+            f"?shop={shop}&uid={user_id}&reinstall={'1' if had_active_plan else '0'}"
+        )
+        return RedirectResponse(url=billing_url)
+
+
+# ── Shopify Billing API endpoints ─────────────────────────────────────────────
+
+@api_router.get("/shopify/billing/plans")
+async def shopify_billing_plans():
+    """Return available Zilo plans (public — shown on billing selection page)."""
+    from shopify_billing import PLANS
+    return {"plans": list(PLANS.values())}
+
+
+@api_router.post("/shopify/billing/create")
+async def shopify_billing_create(request: Request, user=Depends(get_current_user)):
+    """Create a Shopify RecurringApplicationCharge for the chosen plan.
+
+    Body: { "plan_id": "starter" | "growth" | "pro" }
+    Returns: { "confirmation_url": "https://..." }
+    """
+    from shopify_billing import create_charge, PLANS
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    plan_id = str(body.get("plan_id") or "").strip().lower()
+    if plan_id not in PLANS:
+        raise HTTPException(status_code=400, detail=f"Invalid plan. Choose: {list(PLANS)}")
+
+    user_doc = await db.users.find_one({"_id": user["_id"]}, {"shopify_domain": 1, "shopify_token": 1})
+    shop = (user_doc or {}).get("shopify_domain", "")
+    token = (user_doc or {}).get("shopify_token", "")
+    if not shop or not token:
+        raise HTTPException(status_code=400, detail="Shopify store not connected")
+
+    backend_url = _shopify_backend_url()
+    return_url = f"{backend_url}/shopify/billing/confirm"
+
+    is_test = os.environ.get("SHOPIFY_BILLING_TEST", "true").lower() == "true"
+    try:
+        result = await create_charge(shop, token, plan_id, return_url, test=is_test)
+    except Exception as exc:
+        logging.error(f"[shopify-billing] create_charge error: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Store pending charge info on the user
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "shopify_billing_charge_id": result["charge_id"],
+            "shopify_plan":             plan_id,
+            "shopify_billing_status":   "pending",
+        }},
+    )
+
+    return {"confirmation_url": result["confirmation_url"], "plan": plan_id}
+
+
+@api_router.get("/shopify/billing/confirm")
+async def shopify_billing_confirm(
+    request: Request,
+    charge_id: int = 0,
+    shop: str = "",
+):
+    """Shopify redirects merchants here after they approve or decline billing.
+
+    This endpoint is public (no auth) because Shopify redirects here directly.
+    We look up the user by shop domain, verify and activate the charge, then
+    redirect to the dashboard.
+    """
+    from shopify_billing import get_charge, activate_charge
+    from starlette.responses import RedirectResponse
+
+    frontend_url = _shopify_frontend_url()
+    error_url = f"{frontend_url}/dashboard/shopify/billing?billing_error="
+
+    if not charge_id or not shop:
+        return RedirectResponse(url=error_url + "missing_params")
+
+    # Find user by shop domain
+    user_doc = await db.users.find_one(
+        {"shopify_domain": shop},
+        {"_id": 1, "shopify_token": 1, "shopify_billing_charge_id": 1, "shopify_plan": 1},
+    )
+    if not user_doc:
+        return RedirectResponse(url=error_url + "shop_not_found")
+
+    token = user_doc.get("shopify_token", "")
+    if not token:
+        return RedirectResponse(url=error_url + "no_token")
+
+    try:
+        charge = await get_charge(shop, token, charge_id)
+    except Exception as exc:
+        logging.error(f"[shopify-billing] get_charge failed: {exc}")
+        return RedirectResponse(url=error_url + "charge_lookup_failed")
+
+    status = charge.get("status", "")
+
+    if status == "declined":
+        await db.users.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {"shopify_billing_status": "declined"}},
+        )
+        return RedirectResponse(url=error_url + "declined")
+
+    if status == "accepted":
+        try:
+            await activate_charge(shop, token, charge_id)
+        except Exception as exc:
+            logging.error(f"[shopify-billing] activate failed: {exc}")
+            return RedirectResponse(url=error_url + "activation_failed")
+
+        plan_id = user_doc.get("shopify_plan", "starter")
+        await db.users.update_one(
+            {"_id": user_doc["_id"]},
+            {"$set": {
+                "shopify_billing_status":    "active",
+                "shopify_billing_charge_id": charge_id,
+                "shopify_plan":              plan_id,
+            }},
+        )
+        logging.info(f"[shopify-billing] Activated shop={shop} plan={plan_id} charge={charge_id}")
+        return RedirectResponse(
+            url=f"{frontend_url}/dashboard/shopify?shopify_connected=1&plan={plan_id}"
+        )
+
+    # Any other status (pending, etc.) — send back to billing page
+    return RedirectResponse(url=error_url + f"unexpected_status_{status}")
+
+
+@api_router.get("/shopify/billing/status")
+async def shopify_billing_status(user=Depends(get_current_user)):
+    """Return the current billing plan and status for this user."""
+    user_doc = await db.users.find_one(
+        {"_id": user["_id"]},
+        {"shopify_plan": 1, "shopify_billing_status": 1, "shopify_billing_charge_id": 1, "shopify_domain": 1},
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    from shopify_billing import PLANS
+    plan_id = user_doc.get("shopify_plan", "")
+    return {
+        "plan":      plan_id,
+        "plan_details": PLANS.get(plan_id),
+        "status":    user_doc.get("shopify_billing_status", "none"),
+        "charge_id": user_doc.get("shopify_billing_charge_id"),
+        "shop":      user_doc.get("shopify_domain", ""),
+    }
+
+
+@api_router.post("/shopify/billing/cancel")
+async def shopify_billing_cancel(user=Depends(get_current_user)):
+    """Cancel the active subscription (called when merchant uninstalls manually)."""
+    from shopify_billing import cancel_charge
+    user_doc = await db.users.find_one(
+        {"_id": user["_id"]},
+        {"shopify_domain": 1, "shopify_token": 1, "shopify_billing_charge_id": 1},
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    shop    = user_doc.get("shopify_domain", "")
+    token   = user_doc.get("shopify_token", "")
+    charge_id = user_doc.get("shopify_billing_charge_id")
+
+    if shop and token and charge_id:
+        try:
+            await cancel_charge(shop, token, int(charge_id))
+        except Exception as exc:
+            logging.warning(f"[shopify-billing] cancel error (non-fatal): {exc}")
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"shopify_billing_status": "cancelled", "shopify_billing_charge_id": None}},
+    )
+    return {"ok": True}
+
+
+@api_router.post("/shopify/connect-direct")
+async def shopify_connect_direct(request: Request, user=Depends(get_current_user)):
+    """Store Shopify store domain + Admin API token and validate them."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    domain = str(body.get("domain") or "").strip().lower()
+    token  = str(body.get("token")  or "").strip()
+    if not domain or not token:
+        raise HTTPException(status_code=400, detail="domain and token are required")
+    # Normalise domain — strip protocol / trailing slash
+    domain = domain.replace("https://", "").replace("http://", "").rstrip("/")
+    if not domain.endswith(".myshopify.com") and "." not in domain:
+        domain = f"{domain}.myshopify.com"
+    # Validate credentials by calling Shopify's shop endpoint
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as _c:
+            r = await _c.get(
+                f"https://{domain}/admin/api/2024-01/shop.json",
+                headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach Shopify store: {exc}")
+    if r.status_code == 401:
+        raise HTTPException(status_code=401, detail="Invalid API token — check your Shopify Admin API access token.")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"Store '{domain}' not found — check the domain.")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=f"Shopify responded with {r.status_code}")
+    try:
+        shop_info = r.json().get("shop", {})
+    except Exception:
+        shop_info = {}
+    user_id = str(user.get("business_id") or user["_id"])
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"shopify_domain": domain, "shopify_token": token, "shopify_shop": shop_info}},
+    )
+    # Inject DB immediately so in-process calls see the new creds without restart
+    try:
+        import composio_service as _cs
+        _cs.set_db(db)
+    except Exception:
+        pass
+    logging.info(f"[shopify-direct] Connected store={domain} user={user_id}")
+    # Auto-register webhooks in background
+    try:
+        import asyncio as _aio
+        _aio.create_task(_shopify_register_webhooks(domain, token, _shopify_backend_url()))
+    except Exception as _wh_exc:
+        logging.warning(f"[shopify-direct] webhook registration failed: {_wh_exc}")
+    return {"ok": True, "domain": domain, "shop_name": shop_info.get("name", domain)}
+
+
+@api_router.delete("/shopify/connect-direct")
+async def shopify_disconnect_direct(user=Depends(get_current_user)):
+    """Remove stored Shopify credentials for this user."""
+    import bson as _bson
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        oid = _bson.ObjectId(user_id)
+    except Exception:
+        oid = None
+    query: dict = {"$or": [{"business_id": user_id}]}
+    if oid:
+        query["$or"].append({"_id": oid})
+    result = await db.users.update_one(
+        query,
+        {"$unset": {"shopify_domain": "", "shopify_token": "", "shopify_shop": ""}},
+    )
+    logging.info(f"[shopify-direct] Disconnected user={user_id} matched={result.matched_count}")
+    return {"ok": True}
+
+
+# ── Shopify Webhook helpers ────────────────────────────────────────────────────
+
+def _shopify_verify_webhook_hmac(body: bytes, hmac_header: str, secret: str) -> bool:
+    import hashlib, hmac as _hmac, base64
+    digest = _hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    return _hmac.compare_digest(base64.b64encode(digest).decode(), hmac_header)
+
+
+async def _shopify_register_webhooks(domain: str, token: str, backend_url: str) -> list:
+    """Register all required Shopify webhooks for a store. Returns list of registered topics."""
+    import httpx as _httpx
+    topics = [
+        ("orders/paid",    f"{backend_url}/api/shopify/webhook/orders-paid"),
+        ("orders/updated", f"{backend_url}/api/shopify/webhook/orders-updated"),
+        ("products/create", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("products/update", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("products/delete", f"{backend_url}/api/shopify/webhook/products-sync"),
+        ("app/uninstalled", f"{backend_url}/api/shopify/webhook/app-uninstalled"),
+    ]
+    registered = []
+    async with _httpx.AsyncClient(timeout=15.0) as _c:
+        for topic, address in topics:
+            try:
+                r = await _c.post(
+                    f"https://{domain}/admin/api/2024-01/webhooks.json",
+                    headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+                    json={"webhook": {"topic": topic, "address": address, "format": "json"}},
+                )
+                if r.status_code in (200, 201, 422):  # 422 = already registered, fine
+                    registered.append(topic)
+                else:
+                    logging.warning(f"[shopify-webhook] register {topic} → {r.status_code}")
+            except Exception as exc:
+                logging.warning(f"[shopify-webhook] register {topic} error: {exc}")
+    return registered
+
+
+def _shopify_backend_url() -> str:
+    return (
+        os.environ.get("BACKEND_PUBLIC_URL")
+        or os.environ.get("NEXT_PUBLIC_API_URL", "").replace("/api", "")
+        or "https://crm-1-pnfo.onrender.com"
+    ).rstrip("/")
+
+
+@api_router.post("/shopify/webhooks/register")
+async def shopify_register_webhooks(user=Depends(get_current_user)):
+    """Manually register Shopify webhooks for the connected store."""
+    import bson as _bson
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        _oid = _bson.ObjectId(user_id)
+    except Exception:
+        _oid = None
+    _q = {"$or": [{"business_id": user_id}]}
+    if _oid:
+        _q["$or"].append({"_id": _oid})
+    user_doc = await db.users.find_one(_q)
+    domain = (user_doc or {}).get("shopify_domain")
+    token  = (user_doc or {}).get("shopify_token")
+    if not domain or not token:
+        raise HTTPException(400, "Shopify not connected")
+    creds = {"domain": domain, "token": token}
+    registered = await _shopify_register_webhooks(
+        creds["domain"], creds["token"], _shopify_backend_url()
+    )
+    return {"ok": True, "registered": registered}
+
+
+# ── app/uninstalled webhook ────────────────────────────────────────────────────
+
+@api_router.post("/shopify/webhook/app-uninstalled")
+async def shopify_app_uninstalled(request: Request):
+    """Shopify sends this when a merchant uninstalls the app.
+
+    We cancel their billing subscription and clear their Shopify credentials.
+    HMAC is verified to prevent spoofing.
+    """
+    import hashlib, hmac as _hmac, base64 as _b64
+
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    body_bytes = await request.body()
+
+    # Verify HMAC
+    if client_secret:
+        expected = _b64.b64encode(
+            _hmac.new(client_secret.encode(), body_bytes, hashlib.sha256).digest()
+        ).decode()
+        received = request.headers.get("X-Shopify-Hmac-Sha256", "")
+        if not _hmac.compare_digest(expected, received):
+            logging.warning("[shopify-uninstall] HMAC mismatch — ignoring webhook")
+            raise HTTPException(status_code=401, detail="Invalid HMAC")
+
+    try:
+        import json as _json
+        payload = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    shop = payload.get("myshopify_domain") or payload.get("domain") or ""
+    if not shop:
+        return {"ok": True}
+
+    user_doc = await db.users.find_one(
+        {"shopify_domain": shop},
+        {"_id": 1, "shopify_token": 1, "shopify_billing_charge_id": 1},
+    )
+    if not user_doc:
+        logging.info(f"[shopify-uninstall] No user found for shop={shop}")
+        return {"ok": True}
+
+    # Cancel billing subscription
+    charge_id = user_doc.get("shopify_billing_charge_id")
+    token = user_doc.get("shopify_token", "")
+    if charge_id and token:
+        try:
+            from shopify_billing import cancel_charge
+            await cancel_charge(shop, token, int(charge_id))
+        except Exception as exc:
+            logging.warning(f"[shopify-uninstall] cancel_charge non-fatal: {exc}")
+
+    # Clear Shopify credentials
+    await db.users.update_one(
+        {"_id": user_doc["_id"]},
+        {"$set": {
+            "shopify_domain":              None,
+            "shopify_token":               None,
+            "shopify_billing_status":      "cancelled",
+            "shopify_billing_charge_id":   None,
+        }},
+    )
+    logging.info(f"[shopify-uninstall] Cleaned up shop={shop}")
+    return {"ok": True}
+
+
+# ── Auto-fulfillment: orders/paid webhook ──────────────────────────────────────
+
+async def _auto_fulfill_order_bg(user_id: str, order: dict) -> None:
+    """Background task: attempt to auto-fulfill each line item via CJ or AliExpress."""
+    import bson as _bson
+    # Verify the user still exists and has Shopify connected
+    try:
+        _oid = _bson.ObjectId(user_id)
+    except Exception:
+        _oid = None
+    _query = {"$or": [{"business_id": user_id}]}
+    if _oid:
+        _query["$or"].append({"_id": _oid})
+    user_doc = await db.users.find_one(_query)
+    if not user_doc or not user_doc.get("shopify_domain"):
+        return
+
+    order_id    = str(order.get("id", ""))
+    order_name  = order.get("name", order_id)
+    line_items  = order.get("line_items", [])
+    ship_addr   = order.get("shipping_address") or order.get("billing_address") or {}
+
+    fulfilled_items = []
+    for item in line_items:
+        product_id = str(item.get("product_id") or "")
+        quantity   = item.get("quantity", 1)
+
+        # ── Check CJ mapping ─────────────────────────────────────────────────
+        cj_mapping = await db.cj_products.find_one(
+            {"user_id": user_id, "shopify_product_id": product_id}
+        )
+        if cj_mapping:
+            try:
+                from cj_dropship.client import cj_post
+                payload = {
+                    "orderNumber":  order_id,
+                    "shippingZip":  ship_addr.get("zip", ""),
+                    "shippingCountryCode": ship_addr.get("country_code", "US"),
+                    "shippingPhone": ship_addr.get("phone", ""),
+                    "shippingCustomerName": f"{ship_addr.get('first_name','')} {ship_addr.get('last_name','')}".strip(),
+                    "shippingAddress": ship_addr.get("address1", ""),
+                    "shippingCity":    ship_addr.get("city", ""),
+                    "shippingProvince": ship_addr.get("province", ""),
+                    "products": [{"vid": cj_mapping.get("cj_vid", ""), "quantity": quantity}],
+                }
+                result = await cj_post("/order/create", payload)
+                cj_order_id = (result or {}).get("orderId") or (result or {}).get("data", {}).get("orderId")
+                if cj_order_id:
+                    await db.cj_products.update_one(
+                        {"user_id": user_id, "shopify_product_id": product_id},
+                        {"$push": {"orders": {"shopify_order_id": order_id, "cj_order_id": cj_order_id,
+                                              "quantity": quantity, "created_at": __import__("datetime").datetime.utcnow()}}},
+                    )
+                    fulfilled_items.append({"product_id": product_id, "supplier": "cj", "cj_order_id": cj_order_id})
+                    logging.info(f"[shopify-autofulfill] CJ order {cj_order_id} placed for shopify order {order_name}")
+            except Exception as exc:
+                logging.error(f"[shopify-autofulfill] CJ fulfillment error order={order_name}: {exc}")
+            continue
+
+        # ── Check AliExpress mapping ──────────────────────────────────────────
+        ali_mapping = await db.aliexpress_products.find_one(
+            {"user_id": user_id, "shopify_product_id": product_id}
+        )
+        if ali_mapping:
+            logging.info(f"[shopify-autofulfill] AliExpress auto-fulfill order={order_name} product={product_id} (manual review recommended)")
+            fulfilled_items.append({"product_id": product_id, "supplier": "aliexpress", "status": "pending_manual"})
+
+    if fulfilled_items:
+        await db.shopify_auto_fulfillments.update_one(
+            {"user_id": user_id, "shopify_order_id": order_id},
+            {"$set": {"user_id": user_id, "shopify_order_id": order_id, "order_name": order_name,
+                      "items": fulfilled_items, "fulfilled_at": __import__("datetime").datetime.utcnow()}},
+            upsert=True,
+        )
+
+
+@api_router.post("/shopify/webhook/orders-paid")
+async def shopify_webhook_orders_paid(request: Request):
+    """Shopify orders/paid webhook — triggers auto-fulfillment via CJ/AliExpress."""
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    body = await request.body()
+
+    if client_secret:
+        hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+        if not _shopify_verify_webhook_hmac(body, hmac_header, client_secret):
+            raise HTTPException(status_code=401, detail="HMAC verification failed")
+
+    try:
+        order = __import__("json").loads(body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        import asyncio as _asyncio
+        _asyncio.create_task(_auto_fulfill_order_bg(user_id, order))
+
+    return {"status": "ok"}
+
+
+# ── Sync webhooks: orders/updated, products ────────────────────────────────────
+
+@api_router.post("/shopify/webhook/orders-updated")
+async def shopify_webhook_orders_updated(request: Request):
+    """Shopify orders/updated — sync order status changes back to Zilo CRM."""
+    body = await request.body()
+    try:
+        order = __import__("json").loads(body)
+    except Exception:
+        return {"status": "ok"}
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        await db.shopify_orders_cache.update_one(
+            {"user_id": user_id, "shopify_order_id": str(order.get("id"))},
+            {"$set": {
+                "user_id":          user_id,
+                "shopify_order_id": str(order.get("id")),
+                "order_number":     order.get("name"),
+                "financial_status": order.get("financial_status"),
+                "fulfillment_status": order.get("fulfillment_status"),
+                "updated_at":       __import__("datetime").datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+    return {"status": "ok"}
+
+
+@api_router.post("/shopify/webhook/products-sync")
+async def shopify_webhook_products_sync(request: Request):
+    """Shopify products/create|update|delete — sync product catalog changes to Zilo."""
+    body = await request.body()
+    try:
+        product = __import__("json").loads(body)
+    except Exception:
+        return {"status": "ok"}
+
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
+    topic       = request.headers.get("X-Shopify-Topic", "")
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    ) if shop_domain else None
+
+    if user:
+        user_id    = str(user.get("business_id") or user["_id"])
+        product_id = str(product.get("id", ""))
+
+        if topic == "products/delete":
+            await db.shopify_products_cache.delete_one({"user_id": user_id, "shopify_product_id": product_id})
+        else:
+            await db.shopify_products_cache.update_one(
+                {"user_id": user_id, "shopify_product_id": product_id},
+                {"$set": {
+                    "user_id":           user_id,
+                    "shopify_product_id": product_id,
+                    "title":             product.get("title"),
+                    "vendor":            product.get("vendor"),
+                    "status":            product.get("status"),
+                    "tags":              product.get("tags"),
+                    "updated_at":        __import__("datetime").datetime.utcnow(),
+                }},
+                upsert=True,
+            )
+    return {"status": "ok"}
+
+
 @api_router.post("/integrations/shopify/sync-products")
 async def api_sync_shopify_products(user = Depends(get_current_user)):
     """Sync products from Shopify into Zilo CRM."""
@@ -11569,6 +12493,24 @@ app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="stat
 async def startup_tasks():
     """Run startup tasks"""
 
+    # Pre-warm semantic router embeddings in background (uses disk cache on subsequent starts)
+    async def _warm_semantic_router():
+        try:
+            from assistant.semantic_router import initialize as _sem_init
+            await _sem_init()
+        except Exception as _e:
+            logging.warning(f"[startup] semantic_router init failed: {_e}")
+    import asyncio as _asyncio_mod
+    _asyncio_mod.create_task(_warm_semantic_router())
+
+    # Inject DB into composio_service for direct Shopify credential lookups
+    try:
+        import composio_service as _cs
+        _cs.set_db(db)
+        logging.info("[startup] composio_service DB injected")
+    except Exception as _e:
+        logging.warning(f"[startup] composio_service.set_db failed: {_e}")
+
     # ---- P1: Ensure database indexes ----
     try:
         logging.info("Ensuring database indexes...")
@@ -11845,6 +12787,17 @@ async def startup_tasks():
             asyncio.create_task(_reindex_all_knowledge(db))
         except Exception as e:
             logging.warning(f"[qdrant] bootstrap failed (Qdrant may not be ready yet): {e}")
+
+    # Pre-warm the SEO LangGraph so the first user message doesn't pay the
+    # compile cost (~2-3 s). Runs in background so it doesn't block startup.
+    async def _prewarm_seo_graph():
+        try:
+            from seo_agent.graph import get_seo_graph
+            get_seo_graph()
+            logging.info("[seo-agent] graph pre-warmed at startup")
+        except Exception as e:
+            logging.warning(f"[seo-agent] pre-warm failed: {e}")
+    asyncio.create_task(_prewarm_seo_graph())
 
 
 async def _email_sync_runner(db) -> None:
@@ -12422,6 +13375,30 @@ async def admin_delete_user(target_user_id: str, actor=Depends(get_admin_actor))
     return {"ok": True}
 
 
+@api_router.post("/admin/users/{target_user_id}/refresh-favicon")
+async def admin_refresh_favicon(target_user_id: str, _actor=Depends(get_admin_actor)):
+    """Admin: re-upload the Zilo logo as the site favicon for a specific user's blog."""
+    from blog.routes import make_blog_router
+    from blog.blog_service import BlogService, _blog_url_for_response
+
+    blog = await db.blogs.find_one({"client_id": target_user_id})
+    if not blog:
+        raise HTTPException(status_code=404, detail="Blog not found for this user")
+
+    blog_service = BlogService()
+    site_url = await _blog_url_for_response(db, blog)
+    if not site_url:
+        raise HTTPException(status_code=400, detail="Site URL unavailable")
+
+    await blog_service._generate_and_set_favicon(
+        subsite_url=site_url,
+        slug=blog.get("wp_slug", ""),
+        business_name=blog.get("business_name", ""),
+        industry=blog.get("industry", ""),
+    )
+    return {"status": "ok", "site": site_url}
+
+
 def _composio_oauth_frontend_base(optional_client_origin: Optional[str]) -> str:
     """Absolute origin for OAuth return URL. Composio rejects relative redirect_uri."""
     from urllib.parse import urlparse
@@ -12455,20 +13432,27 @@ def _composio_oauth_frontend_base(optional_client_origin: Optional[str]) -> str:
 @api_router.post("/composio/connect/{toolkit}")
 async def composio_connect(toolkit: str, request: Request, user=Depends(get_current_user)):
     """Start Composio OAuth for a toolkit. Returns redirect_url for the OAuth popup/tab."""
+    print(f"[composio_connect] toolkit={toolkit} user={user.get('email') or user.get('_id')}", flush=True)
     from composio_service import get_connect_url
     user_id = str(user.get("business_id") or user["_id"])
     client_origin: Optional[str] = None
+    extra_data: dict = {}
     try:
         body = await request.json()
         if isinstance(body, dict):
             raw = body.get("redirect_base") or body.get("redirectBase")
             if isinstance(raw, str):
                 client_origin = raw
+            # Toolkit-specific required fields
+            if toolkit.lower() == "googleads":
+                cid = str(body.get("customer_id") or "").strip().replace("-", "").replace(" ", "")
+                if cid:
+                    extra_data["customer_id"] = cid
     except Exception:
         pass
     frontend = _composio_oauth_frontend_base(client_origin)
     redirect = f"{frontend}/dashboard/integrations?connected={toolkit}"
-    result = await get_connect_url(user_id, toolkit, redirect)
+    result = await get_connect_url(user_id, toolkit, redirect, extra_data=extra_data or None)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
     return result
@@ -13365,6 +14349,842 @@ async def assistant_ai_draft_alias(req: Request, user=Depends(get_current_user))
     from assistant.routes import ai_draft as _ai_draft_handler
     return await _ai_draft_handler(req, user)
 
+def _cj_price(raw) -> float:
+    """Parse CJ sellPrice which can be '5.99' or '5.99 -- 12.99' (range = take minimum)."""
+    if raw is None:
+        return 0.0
+    s = str(raw).strip()
+    if not s:
+        return 0.0
+    # Take first number before any space or dash separator
+    import re as _re
+    m = _re.match(r'[\d.]+', s)
+    return float(m.group()) if m else 0.0
+
+
+# ── Supplier connections (per-user credentials for CJ + AliExpress) ──────────
+
+async def _get_supplier_creds(business_id: str, supplier: str) -> Optional[dict]:
+    """Look up a user's stored supplier credentials. Returns None if not connected."""
+    doc = await db.supplier_connections.find_one({"user_id": business_id, "supplier": supplier})
+    return doc.get("credentials") if doc else None
+
+
+class CJConnectBody(BaseModel):
+    email: str
+    api_key: str
+
+class AEConnectBody(BaseModel):
+    app_key: str
+    app_secret: str
+    access_token: str = ""
+
+class AEOAuthStateBody(BaseModel):
+    state: str
+
+
+@api_router.get("/supplier-connections")
+async def get_supplier_connections(user=Depends(get_current_user)):
+    """Return which supplier accounts this user has connected."""
+    business_id = user.get("business_id") or str(user["_id"])
+    docs = await db.supplier_connections.find({"user_id": business_id}).to_list(20)
+    connected = {d["supplier"]: True for d in docs}
+    return {
+        "cj":          connected.get("cj", False),
+        "aliexpress":  connected.get("aliexpress", False),
+    }
+
+
+@api_router.post("/supplier-connections/cj")
+async def connect_cj(body: CJConnectBody, user=Depends(get_current_user)):
+    """Save and test CJ Dropshipping credentials for this user."""
+    business_id = user.get("business_id") or str(user["_id"])
+    try:
+        from cj_dropship.client import cj_get
+        creds = {"email": body.email.strip(), "api_key": body.api_key.strip()}
+        await cj_get("/product/getCategory", {}, creds=creds)
+    except Exception as e:
+        raise HTTPException(400, f"CJ credentials test failed: {e}")
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "cj"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "cj",
+            "credentials":  {"email": body.email.strip(), "api_key": body.api_key.strip()},
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"connected": True}
+
+
+@api_router.delete("/supplier-connections/cj")
+async def disconnect_cj(user=Depends(get_current_user)):
+    business_id = user.get("business_id") or str(user["_id"])
+    await db.supplier_connections.delete_one({"user_id": business_id, "supplier": "cj"})
+    return {"connected": False}
+
+
+@api_router.post("/supplier-connections/aliexpress")
+async def connect_aliexpress(body: AEConnectBody, user=Depends(get_current_user)):
+    """Save and test AliExpress credentials for this user."""
+    business_id = user.get("business_id") or str(user["_id"])
+    try:
+        from aliexpress.client import ae_get_categories
+        creds = {
+            "app_key":      body.app_key.strip(),
+            "app_secret":   body.app_secret.strip(),
+            "access_token": body.access_token.strip(),
+        }
+        await ae_get_categories(creds=creds)
+    except Exception as e:
+        raise HTTPException(400, f"AliExpress credentials test failed: {e}")
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "aliexpress"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "aliexpress",
+            "credentials":  {
+                "app_key":      body.app_key.strip(),
+                "app_secret":   body.app_secret.strip(),
+                "access_token": body.access_token.strip(),
+            },
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"connected": True}
+
+
+@api_router.delete("/supplier-connections/aliexpress")
+async def disconnect_aliexpress(user=Depends(get_current_user)):
+    business_id = user.get("business_id") or str(user["_id"])
+    await db.supplier_connections.delete_one({"user_id": business_id, "supplier": "aliexpress"})
+    return {"connected": False}
+
+
+# ── AliExpress OAuth flow ─────────────────────────────────────────────────────
+
+@api_router.get("/aliexpress/oauth/start")
+async def ae_oauth_start(user=Depends(get_current_user)):
+    """Generate AliExpress OAuth URL. Requires ALIEXPRESS_APP_KEY in server env."""
+    import urllib.parse
+    app_key = os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    if not app_key:
+        raise HTTPException(503, "ALIEXPRESS_APP_KEY is not configured on the server.")
+    business_id = user.get("business_id") or str(user["_id"])
+    # Sign the state so the callback can't be forged
+    state = hmac.new(
+        os.environ.get("JWT_SECRET", "secret").encode(),
+        business_id.encode(),
+        hashlib.sha256,
+    ).hexdigest()[:16] + "__" + business_id
+    # Store state → business_id mapping (TTL 10 min)
+    from datetime import datetime as _dt
+    await db.ae_oauth_states.update_one(
+        {"state": state},
+        {"$set": {"state": state, "business_id": business_id, "created_at": _dt.utcnow()}},
+        upsert=True,
+    )
+    base_url = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
+    auth_url = (
+        "https://oauth.aliexpress.com/auth"
+        f"?response_type=code"
+        f"&client_id={app_key}"
+        f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
+        f"&state={urllib.parse.quote(state, safe='')}"
+        f"&sp=ae&view=web&locale=en_US"
+    )
+    return {"auth_url": auth_url}
+
+
+@api_router.get("/aliexpress/oauth/callback")
+async def ae_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """AliExpress redirects here after the user authorizes. Stores the token and closes the popup."""
+    from starlette.responses import HTMLResponse
+    import urllib.parse
+
+    def _close_popup(ok: bool, msg: str = "") -> HTMLResponse:
+        js_event = "ae_connected" if ok else "ae_connect_failed"
+        return HTMLResponse(f"""<!DOCTYPE html><html><body>
+<script>
+if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},window.location.origin);window.close();}}
+else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}";}}
+</script></body></html>""")
+
+    if error:
+        return _close_popup(False, error)
+    if not code or not state:
+        return _close_popup(False, "Missing code or state")
+
+    # Validate state and look up business_id
+    state_doc = await db.ae_oauth_states.find_one({"state": state})
+    if not state_doc:
+        return _close_popup(False, "Invalid or expired state")
+    business_id = state_doc["business_id"]
+    await db.ae_oauth_states.delete_one({"state": state})
+
+    # Exchange code for access token
+    app_key    = os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    app_secret = os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
+    if not app_key or not app_secret:
+        return _close_popup(False, "Server not configured")
+    base_url     = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
+    try:
+        async with httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.post("https://oauth.aliexpress.com/token", data={
+                "grant_type":    "authorization_code",
+                "code":          code,
+                "client_id":     app_key,
+                "client_secret": app_secret,
+                "redirect_uri":  redirect_uri,
+            })
+        token_data = r.json()
+    except Exception as e:
+        return _close_popup(False, f"Token exchange failed: {e}")
+
+    access_token  = token_data.get("access_token", "")
+    refresh_token = token_data.get("refresh_token", "")
+    if not access_token:
+        return _close_popup(False, token_data.get("error_description", "No access token returned"))
+
+    from datetime import datetime as _dt
+    await db.supplier_connections.update_one(
+        {"user_id": business_id, "supplier": "aliexpress"},
+        {"$set": {
+            "user_id":      business_id,
+            "supplier":     "aliexpress",
+            "credentials":  {
+                "app_key":       app_key,
+                "app_secret":    app_secret,
+                "access_token":  access_token,
+                "refresh_token": refresh_token,
+            },
+            "connected_at": _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return _close_popup(True)
+
+
+# ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
+@api_router.get("/cj/products")
+async def cj_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    hot: bool = False,
+    user=Depends(get_current_user),
+):
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        raise HTTPException(503, "CJdropshipping module not available")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    params: dict = {"pageNum": 1, "pageSize": min(page_size, 50)}
+    if keyword:
+        params["productNameEn"] = keyword
+    if category_id:
+        params["categoryId"] = category_id
+    if min_price is not None:
+        params["minPrice"] = min_price
+    if max_price is not None:
+        params["maxPrice"] = max_price
+
+    try:
+        data = await cj_get("/product/list", params, creds=cj_creds)
+    except Exception as e:
+        logging.error("[cj/products] cj_get error: %s", e, exc_info=True)
+        raise HTTPException(502, f"CJ API error: {e}")
+
+    try:
+        raw = data.get("list", []) if isinstance(data, dict) else []
+        if hot:
+            raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+
+        products = []
+        for p in raw:
+            cost = _cj_price(p.get("sellPrice"))
+            products.append({
+                "cj_pid":           p.get("pid", ""),
+                "title":            p.get("productNameEn") or p.get("productName", ""),
+                "category":         p.get("categoryName", ""),
+                "cost_price":       cost,
+                "suggested_price":  round(cost * 2.5, 2),
+                "image_url":        p.get("productImage", ""),
+                "is_free_shipping": bool(p.get("isFreeShipping", False)),
+                "supplier":         p.get("supplierName", "") or "",
+                "listed_count":     int(p.get("listedNum", 0) or 0),
+            })
+        return {"products": products, "total": data.get("total", len(products)) if isinstance(data, dict) else len(products)}
+    except Exception as e:
+        logging.error("[cj/products] serialisation error: %s", e, exc_info=True)
+        raise HTTPException(500, f"Response processing error: {e}")
+
+
+@api_router.get("/cj/categories")
+async def cj_get_categories(user=Depends(get_current_user)):
+    try:
+        from cj_dropship.client import cj_get
+    except ImportError:
+        raise HTTPException(503, "CJdropshipping module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+    try:
+        data = await cj_get("/product/getCategory", {}, creds=cj_creds)
+    except Exception as e:
+        raise HTTPException(502, f"CJ API error: {e}")
+    raw = data if isinstance(data, list) else data.get("list", []) if isinstance(data, dict) else []
+    categories = [
+        {"id": str(c.get("categoryId", "")), "name": c.get("categoryEnName") or c.get("categoryName", "")}
+        for c in raw if c.get("categoryId")
+    ]
+    return {"categories": categories}
+
+
+# ── AliExpress REST endpoints (used by Shopify Products tab UI) ──────────────
+@api_router.get("/ae/products")
+async def ae_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    sort: str = "LAST_VOLUME_DESC",
+    user=Depends(get_current_user),
+):
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    if not keyword and not category_id:
+        raise HTTPException(422, "keyword or category_id required")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+
+    try:
+        data = await ae_ds_search(
+            keyword=keyword or "bestseller",
+            category_id=category_id or None,
+            min_price=min_price,
+            max_price=max_price,
+            page_size=min(page_size, 50),
+            sort=sort,
+            creds=ae_creds,
+        )
+    except Exception as e:
+        logging.error("[ae/products] error: %s", e, exc_info=True)
+        raise HTTPException(502, f"AliExpress API error: {e}")
+
+    try:
+        products_raw = (
+            data.get("products", {}).get("product", [])
+            or data.get("result", {}).get("products", {}).get("product", [])
+            or []
+        )
+        products = []
+        for p in products_raw:
+            cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
+            products.append({
+                "ae_pid":          str(p.get("product_id", "")),
+                "title":           p.get("product_title", ""),
+                "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
+                "cost_price":      cost,
+                "suggested_price": round(cost * 2.5, 2),
+                "image_url":       p.get("product_main_image_url", ""),
+                "orders_count":    int(p.get("lastest_volume", 0) or 0),
+                "shipping_time":   p.get("shipping_lead_time", ""),
+                "store_name":      p.get("shop_name", ""),
+                "source":          "aliexpress",
+            })
+        return {"products": products, "total": int(data.get("total_record_count", len(products)))}
+    except Exception as e:
+        logging.error("[ae/products] serialisation error: %s", e, exc_info=True)
+        raise HTTPException(500, f"Response processing error: {e}")
+
+
+@api_router.get("/ae/categories")
+async def ae_get_categories_endpoint(user=Depends(get_current_user)):
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    try:
+        data = await ae_get_categories(creds=ae_creds)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress API error: {e}")
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    categories = [
+        {"id": str(c.get("category_id", "")), "name": c.get("category_name", "")}
+        for c in (cats or []) if c.get("category_id")
+    ]
+    return {"categories": categories}
+
+
+@api_router.post("/cj/fulfill/{shopify_order_id}")
+async def cj_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Trigger CJ fulfillment for a paid Shopify order from the Orders tab UI."""
+    try:
+        from cj_dropship.client import cj_get, cj_post
+        from assistant.composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        raise HTTPException(503, f"Module not available: {e}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    # 1. Fetch Shopify order
+    try:
+        ord_data = await nango_proxy(business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}.json")
+        order = ord_data.get("order", {})
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Shopify order: {e}")
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    customer_name = f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip() or "Customer"
+
+    # 2. Find CJ-sourced line items
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+    cj_mappings: dict = {}
+    if shopify_pids:
+        async for doc in db.cj_products.find({"user_id": business_id, "shopify_product_id": {"$in": shopify_pids}}):
+            cj_mappings[str(doc["shopify_product_id"])] = doc
+    if not cj_mappings:
+        raise HTTPException(422, "No CJ-sourced products found in this order")
+
+    # 3. Build CJ products payload
+    cj_products_payload = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in cj_mappings:
+            continue
+        cj_pid = cj_mappings[pid]["cj_pid"]
+        quantity = int(li.get("quantity", 1))
+        vid = None
+        try:
+            detail = await cj_get("/product/query", {"pid": cj_pid}, creds=cj_creds)
+            variants = detail.get("variants", []) if isinstance(detail, dict) else []
+            if not variants and isinstance(detail, dict) and detail.get("list"):
+                variants = (detail["list"] or [{}])[0].get("variants", [])
+            if variants:
+                vid = variants[0].get("vid") or variants[0].get("variantId")
+        except Exception:
+            pass
+        entry: dict = {"quantity": quantity}
+        if vid:
+            entry["vid"] = str(vid)
+        else:
+            entry["pid"] = cj_pid
+        cj_products_payload.append(entry)
+
+    if not cj_products_payload:
+        raise HTTPException(422, "Could not resolve CJ variant IDs for line items")
+
+    # 4. Create CJ order
+    cj_order_num = f"ZILO-{shopify_order_id}"
+    payload = {
+        "orderNumber":          cj_order_num,
+        "shippingCustomerName": customer_name,
+        "shippingPhone":        ship.get("phone") or order.get("phone") or "0000000000",
+        "shippingAddress":      ship.get("address1", ""),
+        "shippingCity":         ship.get("city", ""),
+        "shippingProvince":     ship.get("province", ""),
+        "shippingZip":          ship.get("zip", ""),
+        "shippingCountryCode":  ship.get("country_code", "US"),
+        "products":             cj_products_payload,
+    }
+    try:
+        result = await cj_post("/order/create", payload, creds=cj_creds)
+    except Exception as e:
+        raise HTTPException(502, f"CJ order creation failed: {e}")
+
+    from datetime import datetime as _dt
+    cj_order_id = result.get("orderId") or result.get("orderNum") or cj_order_num
+    await db.cj_order_fulfillments.update_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id},
+        {"$set": {
+            "user_id":          business_id,
+            "shopify_order_id": shopify_order_id,
+            "cj_order_id":      str(cj_order_id),
+            "cj_order_num":     cj_order_num,
+            "status":           "created",
+            "created_at":       _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"success": True, "cj_order_id": str(cj_order_id), "cj_order_num": cj_order_num, "items": len(cj_products_payload)}
+
+
+@api_router.get("/cj/order-status/{shopify_order_id}")
+async def cj_order_status_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Return CJ fulfillment status + tracking for a Shopify order (Orders tab UI)."""
+    business_id = user.get("business_id") or str(user["_id"])
+    doc = await db.cj_order_fulfillments.find_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id}
+    )
+    if not doc:
+        return {"found": False}
+
+    cj_order_num = doc.get("cj_order_num") or doc.get("cj_order_id")
+    result: dict = {
+        "found":        True,
+        "cj_order_num": cj_order_num,
+        "status":       doc.get("status", "created"),
+        "tracking_num": doc.get("tracking_num"),
+        "carrier":      doc.get("carrier"),
+    }
+
+    # Live-fetch from CJ if not yet delivered/synced
+    if doc.get("status") not in ("delivered", "synced_to_shopify") and cj_order_num:
+        try:
+            from cj_dropship.client import cj_get
+            cj_creds = await _get_supplier_creds(business_id, "cj")
+            data = await cj_get("/order/getOrderDetail", {"orderNum": cj_order_num}, creds=cj_creds)
+            if isinstance(data, dict):
+                cj_status    = data.get("orderStatus") or result["status"]
+                tracking_num = data.get("trackNumber") or data.get("trackingNumber") or doc.get("tracking_num")
+                carrier      = data.get("shippingCarrier") or data.get("logisticName") or doc.get("carrier")
+                result.update({"status": cj_status, "tracking_num": tracking_num, "carrier": carrier})
+                await db.cj_order_fulfillments.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"status": cj_status, "tracking_num": tracking_num, "carrier": carrier}},
+                )
+        except Exception:
+            pass
+
+    return result
+
+
+# ── AliExpress REST endpoints (used by Shopify Products + Orders UI) ─────────
+def _ae_price(raw) -> float:
+    if not raw:
+        return 0.0
+    try:
+        return float(str(raw).strip().split()[0].replace(",", ""))
+    except Exception:
+        return 0.0
+
+
+@api_router.get("/aliexpress/categories")
+async def ae_get_categories_endpoint(user=Depends(get_current_user)):
+    try:
+        from aliexpress.client import ae_get_categories
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    try:
+        data = await ae_get_categories(creds=ae_creds)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress API error: {e}")
+    cats = data.get("categories", data.get("result", []))
+    if isinstance(cats, dict):
+        cats = cats.get("categories", {}).get("category", [])
+    categories = [
+        {"id": str(c.get("category_id", "")), "name": c.get("category_name", "")}
+        for c in (cats or []) if c.get("category_id")
+    ]
+    return {"categories": categories}
+
+
+@api_router.get("/aliexpress/products")
+async def ae_search_products(
+    keyword: str = "",
+    category_id: str = "",
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    page_size: int = 20,
+    sort: str = "LAST_VOLUME_DESC",
+    user=Depends(get_current_user),
+):
+    try:
+        from aliexpress.client import ae_ds_search
+    except ImportError:
+        raise HTTPException(503, "AliExpress module not available")
+    if not keyword and not category_id:
+        raise HTTPException(422, "keyword or category_id required")
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    try:
+        data = await ae_ds_search(
+            keyword=keyword,
+            category_id=category_id or None,
+            min_price=min_price,
+            max_price=max_price,
+            page_size=min(page_size, 50),
+            sort=sort,
+            creds=ae_creds,
+        )
+    except Exception as e:
+        logging.error("[ae/products] error: %s", e, exc_info=True)
+        raise HTTPException(502, f"AliExpress API error: {e}")
+
+    products_raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    products = []
+    for p in products_raw:
+        cost = _ae_price(p.get("sale_price") or p.get("target_sale_price"))
+        products.append({
+            "ae_pid":          str(p.get("product_id", "")),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name", p.get("first_level_category_name", "")),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "detail_url":      p.get("product_detail_url", ""),
+        })
+    return {"products": products, "total": data.get("total_record_count", len(products))}
+
+
+@api_router.post("/aliexpress/fulfill/{shopify_order_id}")
+async def ae_fulfill_order_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Trigger AliExpress DS fulfillment for a paid Shopify order."""
+    try:
+        from aliexpress.client import ae_ds_create_order, ae_ds_product_detail
+        from assistant.composio_helper import composio_proxy as nango_proxy
+    except ImportError as e:
+        raise HTTPException(503, f"Module not available: {e}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+
+    try:
+        ord_data = await nango_proxy(business_id, "shopify", "GET",
+                                     f"/admin/api/2024-01/orders/{shopify_order_id}.json")
+        order = ord_data.get("order", {})
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Shopify order: {e}")
+    if not order:
+        raise HTTPException(404, "Order not found")
+
+    ship = order.get("shipping_address") or order.get("billing_address") or {}
+    line_items = order.get("line_items", [])
+    shopify_pids = [str(li.get("product_id")) for li in line_items if li.get("product_id")]
+
+    ae_mappings: dict = {}
+    if shopify_pids:
+        async for doc in db.ae_products.find({"user_id": business_id, "shopify_product_id": {"$in": shopify_pids}}):
+            ae_mappings[str(doc["shopify_product_id"])] = doc
+
+    if not ae_mappings:
+        raise HTTPException(422, "No AliExpress-sourced products found in this order")
+
+    ae_product_items = []
+    for li in line_items:
+        pid = str(li.get("product_id", ""))
+        if pid not in ae_mappings:
+            continue
+        ae_pid   = ae_mappings[pid]["ae_pid"]
+        quantity = int(li.get("quantity", 1))
+        sku_id   = None
+        try:
+            detail   = await ae_ds_product_detail(ae_pid, ship_to=ship.get("country_code", "US"), creds=ae_creds)
+            sku_list = detail.get("ae_item_sku_info_dtos", {}).get("ae_item_sku_info_d_t_o", [])
+            if sku_list:
+                sku_id = sku_list[0].get("sku_id")
+        except Exception:
+            pass
+        item: dict = {"product_id": ae_pid, "product_count": quantity}
+        if sku_id:
+            item["sku_id"] = str(sku_id)
+        ae_product_items.append(item)
+
+    if not ae_product_items:
+        raise HTTPException(422, "Could not resolve AliExpress SKU IDs for line items")
+
+    order_payload = {
+        "logistics_address": {
+            "contact_person": f"{ship.get('first_name', '')} {ship.get('last_name', '')}".strip(),
+            "mobile_no":      ship.get("phone") or order.get("phone") or "",
+            "address":        ship.get("address1", ""),
+            "city":           ship.get("city", ""),
+            "province":       ship.get("province", ""),
+            "zip":            ship.get("zip", ""),
+            "country":        ship.get("country_code", "US"),
+        },
+        "product_items": ae_product_items,
+    }
+    try:
+        result = await ae_ds_create_order(order_payload, creds=ae_creds)
+    except Exception as e:
+        raise HTTPException(502, f"AliExpress order creation failed: {e}")
+
+    from datetime import datetime as _dt
+    ae_order_id = str(result.get("order_id") or result.get("ae_order_id") or f"AE-{shopify_order_id}")
+    await db.ae_order_fulfillments.update_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id},
+        {"$set": {
+            "user_id":          business_id,
+            "shopify_order_id": shopify_order_id,
+            "ae_order_id":      ae_order_id,
+            "status":           "created",
+            "created_at":       _dt.utcnow(),
+        }},
+        upsert=True,
+    )
+    return {"success": True, "ae_order_id": ae_order_id, "items": len(ae_product_items)}
+
+
+@api_router.get("/aliexpress/order-status/{shopify_order_id}")
+async def ae_order_status_endpoint(shopify_order_id: str, user=Depends(get_current_user)):
+    """Return AliExpress fulfillment status + tracking for a Shopify order."""
+    business_id = user.get("business_id") or str(user["_id"])
+    doc = await db.ae_order_fulfillments.find_one(
+        {"user_id": business_id, "shopify_order_id": shopify_order_id}
+    )
+    if not doc:
+        return {"found": False}
+
+    ae_order_id = doc.get("ae_order_id")
+    result: dict = {
+        "found":        True,
+        "ae_order_id":  ae_order_id,
+        "status":       doc.get("status", "created"),
+        "tracking_num": doc.get("tracking_num"),
+        "carrier":      doc.get("carrier"),
+    }
+    if doc.get("status") not in ("synced_to_shopify",) and ae_order_id:
+        try:
+            from aliexpress.client import ae_ds_get_order
+            ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+            data = await ae_ds_get_order(ae_order_id, creds=ae_creds)
+            order_info = data.get("result", data) if isinstance(data, dict) else {}
+            logistics  = order_info.get("logistics_info_list", {}).get("aeop_order_logistics_info", [{}])
+            ae_status    = order_info.get("order_status") or result["status"]
+            tracking_num = (logistics[0].get("logistics_no") if logistics else None) or doc.get("tracking_num")
+            carrier      = (logistics[0].get("logistics_company") if logistics else None) or doc.get("carrier")
+            result.update({"status": ae_status, "tracking_num": tracking_num, "carrier": carrier})
+            await db.ae_order_fulfillments.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {"status": ae_status, "tracking_num": tracking_num, "carrier": carrier}},
+            )
+        except Exception:
+            pass
+    return result
+
+
+# ── Smart Discovery / Market Intelligence ─────────────────────────────────────
+
+@api_router.get("/market/trends")
+async def market_trends(
+    keyword: str,
+    country: str = "US",
+    user=Depends(get_current_user),
+):
+    """Google Trends interest + direction for a keyword."""
+    try:
+        from market_intelligence.trends import get_interest_over_time, get_related_rising
+        trend, rising = await asyncio.gather(
+            get_interest_over_time(keyword, geo=country),
+            get_related_rising(keyword, geo=country),
+        )
+        return {**trend, "rising_queries": rising}
+    except Exception as e:
+        raise HTTPException(502, f"Trends error: {e}")
+
+
+@api_router.get("/market/fb-ads")
+async def market_fb_ads(
+    keyword: str,
+    country: str = "US",
+    limit: int = 20,
+    user=Depends(get_current_user),
+):
+    """Facebook Ad Library search — shows what competitors are advertising."""
+    try:
+        from market_intelligence.fb_ads import search_ads
+        return await search_ads(keyword, countries=[country], limit=limit)
+    except Exception as e:
+        raise HTTPException(502, f"FB Ads error: {e}")
+
+
+@api_router.get("/market/winning-products")
+async def market_winning_products(
+    niche: str,
+    country: str = "US",
+    limit: int = 10,
+    user=Depends(get_current_user),
+):
+    """Full analysis: Google Trends + CJ hot products + FB ads → opportunity scores."""
+    try:
+        from market_intelligence.analyzer import find_winning_products
+        business_id = user.get("business_id") or str(user["_id"])
+        # Use user's CJ creds if connected, else env fallback
+        from cj_dropship import client as _cj_client
+        cj_creds = await _get_supplier_creds(business_id, "cj")
+        # Temporarily override if user has creds stored (analyzer uses env fallback internally)
+        # Pass creds into env context — simpler than rewiring the full analyzer
+        result = await find_winning_products(niche, country=country, limit=limit)
+        return result
+    except Exception as e:
+        logging.error("[market/winning-products] %s", e, exc_info=True)
+        raise HTTPException(502, f"Analysis error: {e}")
+
+
+@api_router.get("/market/hot-products")
+async def market_hot_products(
+    keyword: str = "",
+    limit: int = 20,
+    user=Depends(get_current_user),
+):
+    """CJ hot products ranked by order volume — fastest signal of what's selling."""
+    try:
+        from cj_dropship.client import cj_get
+        business_id = user.get("business_id") or str(user["_id"])
+        cj_creds = await _get_supplier_creds(business_id, "cj")
+        params: dict = {"pageNum": 1, "pageSize": min(limit, 50)}
+        if keyword:
+            params["productNameEn"] = keyword
+        data = await cj_get("/product/list", params, creds=cj_creds)
+        raw = data.get("list", []) if isinstance(data, dict) else []
+        raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+        products = []
+        for p in raw:
+            try:
+                cost = float(str(p.get("sellPrice", 0)).split()[0].replace(",", "") or 0)
+            except Exception:
+                cost = 0.0
+            products.append({
+                "cj_pid":      p.get("pid", ""),
+                "title":       p.get("productNameEn") or p.get("productName", ""),
+                "category":    p.get("categoryName", ""),
+                "cost":        cost,
+                "sell_price":  round(cost * 2.5, 2),
+                "margin":      round(cost * 1.5, 2),
+                "orders":      int(p.get("listedNum", 0) or 0),
+                "free_ship":   bool(p.get("isFreeShipping", False)),
+                "image":       p.get("productImage", ""),
+            })
+        return {"products": products, "total": len(products)}
+    except Exception as e:
+        logging.error("[market/hot-products] %s", e, exc_info=True)
+        raise HTTPException(502, f"CJ error: {e}")
+
+
 # ── Marketing (Meta Ads drafts, etc.) ──
 try:
     from marketing.routes import make_marketing_router as _mk_marketing_router
@@ -13373,6 +15193,15 @@ try:
     logging.info("[marketing] routes mounted at /api/marketing/*")
 except Exception as _e:
     logging.error(f"[marketing] failed to mount routes: {_e}")
+
+# ── Behavior-Triggered Discounts ──
+try:
+    from marketing.discount_routes import make_discount_routes as _mk_discount_router
+    _discount_router = _mk_discount_router(db, get_current_user)
+    api_router.include_router(_discount_router)
+    logging.info("[behavior-discounts] routes mounted at /api/marketing/behavior-discounts/*")
+except Exception as _e:
+    logging.error(f"[behavior-discounts] failed to mount routes: {_e}")
 
 # ── Workflow engine routes ──
 try:
@@ -14575,47 +16404,136 @@ async def serve_document_preview(key: str):
 # directly (avoids RequestHeaderSectionTooLarge from AWS Console cookies).
 # Accepts either ?url=<s3-url> or ?filename=<doc-filename> (looked up from
 # the server-side _proxy_store so the S3 URL is never exposed to the browser).
+class DownloadProxyRequest(BaseModel):
+    url: str
+    filename: str = "download"
+
+
+async def _download_proxy_impl(url: str, filename: str = "download"):
+    import re as _re
+    from urllib.parse import urlparse
+
+    s3_url = (url or "").strip()
+    if not s3_url:
+        raise HTTPException(status_code=400, detail="url parameter is required")
+
+    parsed = urlparse(s3_url)
+    path = parsed.path or ""
+    if not path and s3_url.startswith("/api/"):
+        path = s3_url.split("?")[0]
+    host = (parsed.netloc or "").lower()
+
+    safe_name = _re.sub(r"[^\w\-. ]", "_", filename).strip() or "download"
+    if "." not in safe_name:
+        path_ext = path.rsplit(".", 1)[-1].lower()
+        if path_ext in ("pdf", "docx", "pptx", "png", "jpg", "jpeg", "gif", "webp", "csv", "txt"):
+            safe_name += f".{path_ext}"
+
+    expected_bucket = (os.environ.get("AWS_BUCKET_NAME") or "").strip()
+    has_aws = bool(expected_bucket and os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"))
+
+    def _attachment_response(content: bytes, content_type: str):
+        return Response(
+            content=content,
+            media_type=content_type or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+
+    # Backend S3 proxy path: /api/images/s3/<key>
+    if "/api/images/s3/" in path and has_aws:
+        key = path.split("/api/images/s3/", 1)[1].split("?")[0].lstrip("/")
+        if key:
+            try:
+                import asyncio
+                s3 = S3Handler.get_s3_client()
+
+                def _s3_get():
+                    return s3.get_object(Bucket=expected_bucket, Key=key)
+
+                obj = await asyncio.get_event_loop().run_in_executor(None, _s3_get)
+                content = obj["Body"].read()
+                content_type = obj.get("ContentType") or "application/octet-stream"
+                return _attachment_response(content, content_type)
+            except Exception as s3_exc:
+                logging.warning("[download-proxy] backend s3 path fetch failed: %s", s3_exc)
+
+    # Local presentation files: /api/media/presentations/<filename>
+    if "/api/media/presentations/" in path:
+        fname = path.split("/api/media/presentations/", 1)[1].split("?")[0].lstrip("/")
+        if fname and ".." not in fname and "/" not in fname:
+            local_path = ROOT_DIR / "public" / "presentations" / fname
+            if local_path.is_file():
+                content = local_path.read_bytes()
+                ext = fname.rsplit(".", 1)[-1].lower()
+                mime = {
+                    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "ppt": "application/vnd.ms-powerpoint",
+                    "pdf": "application/pdf",
+                }.get(ext, "application/octet-stream")
+                return _attachment_response(content, mime)
+
+    # Direct S3 URLs (presigned or virtual-hosted)
+    if host.endswith(".amazonaws.com") or host == "amazonaws.com":
+        if has_aws:
+            try:
+                bucket, key = S3Handler.parse_s3_source_to_bucket_key(s3_url)
+                use_bucket = bucket or expected_bucket
+                if use_bucket.lower() == expected_bucket.lower() and key:
+                    import asyncio
+                    s3 = S3Handler.get_s3_client()
+                    logging.info("[download-proxy] attempting direct S3 fetch: bucket=%s key=%s", use_bucket, key)
+
+                    def _s3_get():
+                        return s3.get_object(Bucket=use_bucket, Key=key)
+
+                    obj = await asyncio.get_event_loop().run_in_executor(None, _s3_get)
+                    content = obj["Body"].read()
+                    content_type = obj.get("ContentType") or "application/octet-stream"
+                    logging.info("[download-proxy] direct S3 fetch succeeded: bucket=%s key=%s length=%d", use_bucket, key, len(content))
+                    return _attachment_response(content, content_type)
+            except Exception as s3_exc:
+                logging.warning("[download-proxy] direct S3 fetch failed: %s. Falling back to HTTP client.", s3_exc)
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                resp = await client.get(s3_url)
+            if resp.status_code < 400:
+                content_type = resp.headers.get("content-type", "application/octet-stream")
+                return _attachment_response(resp.content, content_type)
+        except Exception as exc:
+            logging.warning("[download-proxy] HTTP fetch failed: %s", exc)
+
+    # Fallback: fetch any /api/ path from this server (images proxy, static presentations, etc.)
+    api_path = path if path.startswith("/api/") else (s3_url.split("?")[0] if s3_url.startswith("/api/") else "")
+    if api_path.startswith("/api/"):
+        port = (os.environ.get("PORT") or "8000").strip()
+        internal = f"http://127.0.0.1:{port}{api_path}"
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(internal)
+            if resp.status_code < 400:
+                content_type = resp.headers.get("content-type", "application/octet-stream")
+                return _attachment_response(resp.content, content_type)
+            logging.warning("[download-proxy] internal fetch %s → HTTP %s", internal, resp.status_code)
+        except Exception as exc:
+            logging.warning("[download-proxy] internal fetch failed: %s", exc)
+
+    raise HTTPException(status_code=400, detail=f"Could not download file from URL: {s3_url[:120]}")
+
+
 @api_router.get("/download-proxy")
 async def download_proxy(
     url: str = Query(...),
     filename: str = Query("download"),
 ):
-    # No auth required — this endpoint only fetches from S3 on behalf of the browser.
-    # The browser passes the S3 URL as a query param; the backend makes the actual
-    # S3 request (no browser cookies reach S3, so no RequestHeaderSectionTooLarge).
-    import re as _re
-    from urllib.parse import urlparse
+    return await _download_proxy_impl(url, filename)
 
-    s3_url = url.strip()
-    if not s3_url:
-        raise HTTPException(status_code=400, detail="url parameter is required")
 
-    parsed = urlparse(s3_url)
-    host = parsed.netloc.lower()
-    if not (host.endswith(".amazonaws.com") or host == "amazonaws.com"):
-        raise HTTPException(status_code=400, detail="Only S3 URLs are supported")
-
-    safe_name = _re.sub(r"[^\w\-. ]", "_", filename).strip() or "download"
-    if "." not in safe_name:
-        path_ext = parsed.path.rsplit(".", 1)[-1].lower()
-        if path_ext in ("pdf", "docx", "pptx", "png", "jpg", "jpeg", "gif", "webp", "csv", "txt"):
-            safe_name += f".{path_ext}"
-
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            resp = await client.get(s3_url)
-        if resp.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"S3 returned {resp.status_code}")
-        content_type = resp.headers.get("content-type", "application/octet-stream")
-        return Response(
-            content=resp.content,
-            media_type=content_type,
-            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-        )
-    except Exception as exc:
-        logging.warning("[download-proxy] fetch failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Failed to fetch file")
+@api_router.post("/download-proxy")
+async def download_proxy_post(body: DownloadProxyRequest):
+    return await _download_proxy_impl(body.url, body.filename)
 
 
 # ── Action Mode routes ───────────────────────────────────────────────────────
@@ -14688,6 +16606,15 @@ try:
     logging.info("[growth] routes mounted")
 except Exception as _ge:
     logging.error("[growth] failed to mount: %s", _ge)
+
+# ── Email Marketing ───────────────────────────────────────────────────────────
+try:
+    from email_marketing.routes import make_email_marketing_router as _mk_email_mktg_router
+    _email_mktg_router = _mk_email_mktg_router(get_current_user, db)
+    api_router.include_router(_email_mktg_router)
+    logging.info("[email-marketing] routes mounted at /api/email-marketing/*")
+except Exception as _eme:
+    logging.error("[email-marketing] failed to mount routes: %s", _eme)
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)
