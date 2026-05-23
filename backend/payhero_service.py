@@ -7,11 +7,10 @@ Handles:
   - Webhook processing (auto-confirm payments, match to orders)
 
 PayHero API base: https://backend.payhero.co.ke/api/v2/
-Auth: Basic (base64 username:password)
+Auth: Basic token from PayHero Dashboard → API Keys
 """
 from __future__ import annotations
 
-import base64
 import logging
 import re
 from datetime import datetime
@@ -19,16 +18,9 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from payhero_auth import PAYHERO_BASE, authorization_from_user_doc
+
 logger = logging.getLogger(__name__)
-
-PAYHERO_BASE = "https://backend.payhero.co.ke/api/v2"
-
-
-# ── Auth ───────────────────────────────────────────────────────────────────────
-
-def _auth_header(username: str, password: str) -> str:
-    encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
-    return f"Basic {encoded}"
 
 
 # ── Phone normalisation ────────────────────────────────────────────────────────
@@ -49,24 +41,81 @@ def _phones_match(a: str, b: str) -> bool:
 
 # ── API calls ─────────────────────────────────────────────────────────────────
 
-async def list_channels(username: str, password: str) -> List[Dict]:
-    """Return the list of payment channels for this PayHero account."""
+async def list_channels_for_user(user_doc: dict) -> List[Dict]:
+    """Return payment channels using stored PayHero credentials."""
+    auth = authorization_from_user_doc(user_doc)
+    if not auth:
+        raise ValueError("PayHero not connected")
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(
-            f"{PAYHERO_BASE}/channels",
-            headers={"Authorization": _auth_header(username, password)},
-        )
-        r.raise_for_status()
-        data = r.json()
-        # PayHero returns {"results": [...]} or just [...]
-        if isinstance(data, dict):
-            return data.get("results", data.get("channels", []))
-        return data if isinstance(data, list) else []
+        last_err = None
+        for path in ("/payment_channels", "/channels"):
+            r = await client.get(
+                f"{PAYHERO_BASE}{path}",
+                headers={"Authorization": auth, "Content-Type": "application/json"},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, dict):
+                    raw = (
+                        data.get("results")
+                        or data.get("channels")
+                        or data.get("payment_channels")
+                        or data.get("data")
+                    )
+                    return raw if isinstance(raw, list) else []
+                return data if isinstance(data, list) else []
+            last_err = r
+        if last_err is not None:
+            last_err.raise_for_status()
+        return []
+
+
+async def list_channels(username: str, password: str) -> List[Dict]:
+    """Legacy: username/password or token in username field."""
+    doc: Dict[str, Any] = {"payhero_username": username, "payhero_password": password}
+    if password:
+        return await list_channels_for_user(doc)
+    doc["payhero_api_token"] = username
+    return await list_channels_for_user(doc)
+
+
+async def stk_push_for_user(
+    user_doc: dict,
+    channel_id: int,
+    phone: str,
+    amount: float,
+    external_reference: str,
+    callback_url: str,
+    customer_name: str = "",
+) -> Dict:
+    auth = authorization_from_user_doc(user_doc)
+    if not auth:
+        raise ValueError("PayHero not connected")
+    return await _stk_push_request(
+        auth, channel_id, phone, amount, external_reference, callback_url, customer_name
+    )
 
 
 async def stk_push(
     username: str,
     password: str,
+    channel_id: int,
+    phone: str,
+    amount: float,
+    external_reference: str,
+    callback_url: str,
+    customer_name: str = "",
+) -> Dict:
+    doc: Dict[str, Any] = {"payhero_username": username, "payhero_password": password}
+    if not password:
+        doc["payhero_api_token"] = username
+    return await stk_push_for_user(
+        doc, channel_id, phone, amount, external_reference, callback_url, customer_name
+    )
+
+
+async def _stk_push_request(
+    auth_header: str,
     channel_id: int,
     phone: str,
     amount: float,
@@ -94,7 +143,7 @@ async def stk_push(
             f"{PAYHERO_BASE}/payments",
             json=payload,
             headers={
-                "Authorization": _auth_header(username, password),
+                "Authorization": auth_header,
                 "Content-Type": "application/json",
             },
         )
@@ -160,14 +209,15 @@ def parse_webhook(payload: Dict) -> Dict:
     }
 
 
-async def process_payment(db, parsed: Dict) -> Dict:
+async def process_payment(db, parsed: Dict, *, raw_payload: Optional[Dict] = None) -> Dict:
     """
     After a successful PayHero webhook:
-      1. Find the business that owns this channel
-      2. Find the customer by phone
-      3. Find the best matching order
-      4. Mark order as paid
-      5. Return context for receipt/notifications
+      1. Idempotent ledger (PayHero fee estimate)
+      2. Find the business that owns this channel
+      3. Find the customer by phone
+      4. Find the best matching order
+      5. Mark order as paid
+      6. Return context for receipt/notifications
 
     Returns a result dict the webhook handler uses to send receipt + notify.
     """
@@ -178,6 +228,7 @@ async def process_payment(db, parsed: Dict) -> Dict:
     amount = parsed["amount"]
     external_ref = parsed["external_ref"]
     channel_id = parsed["channel_id"]
+    provider_ref = parsed.get("provider_ref") or ""
 
     # 1. Find business by channel_id stored on connect
     user = None
@@ -192,6 +243,27 @@ async def process_payment(db, parsed: Dict) -> Dict:
         return {"handled": False, "reason": "No matching business for channel"}
 
     user_id = user["_id"]
+
+    from payhero_billing import INTENTS, record_mpesa_payment_success
+
+    intent = None
+    if external_ref:
+        intent = await db[INTENTS].find_one(
+            {"user_id": str(user_id), "external_reference": external_ref},
+            sort=[("created_at", -1)],
+        )
+
+    ledger = await record_mpesa_payment_success(
+        db,
+        user_id=str(user_id),
+        gross_kes=amount,
+        provider_ref=provider_ref,
+        order_id=str(intent["order_id"]) if intent and intent.get("order_id") else None,
+        intent_id=intent["_id"] if intent else None,
+        external_reference=external_ref,
+        phone=phone,
+        raw_payload=raw_payload,
+    )
 
     # 2. Find customer by phone (try multiple formats)
     bare = _normalise_phone(phone)
@@ -243,6 +315,8 @@ async def process_payment(db, parsed: Dict) -> Dict:
         "order_number": order_number,
         "provider_ref": parsed["provider_ref"],
         "external_ref": external_ref,
+        "payhero_fee_kes": ledger.get("fee_kes"),
+        "ledger_inserted": ledger.get("inserted"),
     }
 
 
