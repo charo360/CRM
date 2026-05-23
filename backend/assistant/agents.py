@@ -287,7 +287,7 @@ DESIGN_TOOLS: FrozenSet[str] = frozenset({
     "generate_social_post", "generate_ad_creative", "generate_carousel_cover", "refine_design",
     "generate_creative_image", "generate_design_background",
     "create_business_document",
-    "plan_visual_presentation", "create_visual_presentation", "regenerate_slide", "get_analytics_summary",
+    "plan_visual_presentation", "create_visual_presentation", "generate_deck", "regenerate_slide", "get_analytics_summary",
     "create_video", "get_video_status", "list_videos",
     "create_kling_video", "get_kling_video_status",
 }) | _WEB_TOOLS
@@ -297,7 +297,7 @@ DOCUMENT_TOOLS: FrozenSet[str] = frozenset({
     "get_top_customers", "get_analytics_summary", "get_revenue_trends",
     "get_sales_pipeline", "list_orders", "list_followups", "list_team",
     "generate_document", "create_business_document",
-    "plan_visual_presentation", "create_visual_presentation", "regenerate_slide",
+    "plan_visual_presentation", "create_visual_presentation", "generate_deck", "regenerate_slide",
     "get_document_style", "save_document_style",
     "switch_to_agent",
 }) | _WEB_TOOLS
@@ -2486,7 +2486,7 @@ THESE OPTIONS DO NOT EXIST. There is exactly ONE way to build a presentation.
 1. Ask the purpose (Rule 1 below) and slide count.
 2. Call `plan_visual_presentation` — this generates the full slide plan.
 3. Show the plan, let the user approve or edit.
-4. Call `create_visual_presentation` — done.
+4. Once approved, call `generate_deck` with the original brief and any adjustments — NOT `create_visual_presentation`.
 
 No design choices. No routes. No pricing. No confirmation about cost. Ever.
 
@@ -2541,8 +2541,8 @@ After showing ALL slides, ask:
 - Keep each slide focused: one headline + 3–5 bullets max. Presentations are visual — no paragraphs.
 - If the owner asks to edit a slide → make the change, show ONLY the updated slide, ask "Anything else to change?" before proceeding.
 - Keep iterating on individual slides until the owner says "looks good" or picks option E.
-- Only call `plan_visual_presentation` then `create_visual_presentation` after explicit approval (option E or equivalent confirmation).
-- When calling `create_visual_presentation`, pass the full approved slides array so the design matches exactly what was approved.
+- Only call `plan_visual_presentation` then `generate_deck` after explicit approval (option E or equivalent confirmation).
+- When calling `generate_deck`, pass the original brief plus any edits the user requested during the review. Do NOT call `create_visual_presentation`.
 
 ---
 
@@ -2682,7 +2682,7 @@ Ask only how many slides:
 
 1. Call `plan_visual_presentation` with the topic, slide count, and business context.
 2. Show the full slide-by-slide plan to the owner for review and edits.
-3. Once approved → call `create_visual_presentation`. The AI designs the complete deck including layout, typography, and visuals.
+3. Once approved → call `generate_deck` with the original brief and any adjustments. The AI generates a complete, fully designed deck. Do NOT call `create_visual_presentation`.
 
 That's it. No routes. No options. No pricing.
 
@@ -2711,7 +2711,7 @@ When `create_business_document` returns:
 - The tool shows a **"Designing document…"** spinner in the UI automatically while it runs
 - On success, the tool returns a `pdf_url` — include the download link in your reply as: `📄 **[Download — Title](url)**`
 - Also tell the user: "Your document has been styled with your brand colors and signature" if a style profile was found, or "I've exported the document as a PDF" if no profile was set
-- For pitch decks and slide presentations, use `plan_visual_presentation` then `create_visual_presentation` instead
+- For pitch decks and slide presentations, use `plan_visual_presentation` then `generate_deck` instead
 
 **Never** say "Would you like me to export this?" — just export it. The user asked for a document, deliver one.
 
@@ -3270,7 +3270,7 @@ GENERAL_SYSTEM_PROMPT = """You are **Zilo**, the central AI assistant for this C
 - NEVER mention credits, pricing, top-ups, or costs in relation to presentations.
 - NEVER ask "which route", "which path", "AI picks / Browse templates / Premium AI design".
 - NEVER warn about costs before generating a presentation.
-- When the user asks for a presentation: route to the Document Writer immediately, or if handling it yourself call `plan_visual_presentation` then `create_visual_presentation`. That's it.
+- When the user asks for a presentation: route to the Document Writer immediately, or if handling it yourself call `plan_visual_presentation` (show plan, get approval) then `generate_deck`. That's it.
 
 **Universal chip rule:** Whenever you present a list of options or ask a question with choices, always include `✏️ Something else — I'll describe it` as the last option so the user can always describe something not on the list.
 

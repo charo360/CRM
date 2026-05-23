@@ -110,6 +110,13 @@ def _is_text_document_intent(msg_lower: str) -> bool:
         "business document", "formal document", "write a", "draft a",
         "create a document", "brochure", "presentation", "powerpoint", "pptx",
         "slide deck",
+        # Presentation follow-up phrases — keep these in document, never route to creative
+        "the slide", "the slides", "the deck", "my slides", "my deck",
+        "make the slide", "make them look", "make it look",
+        "slide design", "deck design", "slide layout", "deck layout",
+        "slide style", "deck style", "visually appealing", "look appealing",
+        "make it appealing", "make them appealing", "look good for",
+        "slides look", "deck look", "slide look",
     )
     return any(m in msg_lower for m in markers)
 
