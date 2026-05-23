@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { authApi } from "@/lib/api";
 import { setToken, setUser } from "@/lib/auth";
 import { ZiloLogo } from "@/components/ZiloLogo";
-import { Zap, Loader2, Phone, Copy, CheckCircle2, RefreshCw, Mail, Lock, Building2, User } from "lucide-react";
+import { Zap, Loader2, Phone, Copy, CheckCircle2, RefreshCw, Mail, Lock, Building2, User, Eye, EyeOff } from "lucide-react";
 
 type Step = "phone" | "pairing" | "waiting";
 type AuthMode = "email" | "whatsapp";
@@ -35,6 +35,7 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [ownerName, setOwnerName] = useState("");
 
@@ -49,7 +50,11 @@ export default function LoginPage() {
     if (jwt && res.user) {
       setToken(jwt);
       setUser(normalizeUser(res.user));
-      router.push(res.must_change_password ? "/change-password" : "/dashboard");
+      const next =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("next") || "/dashboard"
+          : "/dashboard";
+      router.push(res.must_change_password ? "/change-password" : next);
       return true;
     }
     return false;
@@ -255,7 +260,7 @@ export default function LoginPage() {
                     <div className="relative">
                       <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                       <input
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         autoComplete="current-password"
                         value={password}
                         onChange={(e) => {
@@ -263,8 +268,16 @@ export default function LoginPage() {
                           setError("");
                         }}
                         required
-                        className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                        className="w-full pl-9 pr-10 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
                     </div>
                   </div>
                   {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
@@ -301,18 +314,28 @@ export default function LoginPage() {
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1">Password (min 8 characters)</label>
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      value={password}
-                      onChange={(e) => {
-                        setPassword(e.target.value);
-                        setError("");
-                      }}
-                      required
-                      minLength={8}
-                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        autoComplete="new-password"
+                        value={password}
+                        onChange={(e) => {
+                          setPassword(e.target.value);
+                          setError("");
+                        }}
+                        required
+                        minLength={8}
+                        className="w-full px-3 pr-10 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1 flex items-center gap-1">

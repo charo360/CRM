@@ -865,6 +865,62 @@ export const collaborationApi = {
     }>("/business/collaboration/inbound-routing/preview", body),
 };
 
+
+
+export type Entitlements = {
+  owner_id: string;
+  effective_plan: string;
+  subscription_plan?: string | null;
+  subscription_active: boolean;
+  paid_active: boolean;
+  trial_active: boolean;
+  trial_available: boolean;
+  trial_ends_at?: string | null;
+  dashboard_access: boolean;
+  subscription_current_period_end?: string | null;
+  subscription_cancel_at_period_end?: boolean;
+  trial_credits?: number;
+  usage: {
+    outbound_messages_month: number;
+    outbound_messages_cap: number;
+    outbound_messages_remaining: number;
+    trial_credits?: number;
+  };
+  features: Record<string, boolean>;
+};
+
+export type SubscriptionPlan = {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  amount_display: string;
+  interval: string;
+  features: string[];
+};
+
+export const subscriptionApi = {
+  publicPlans: (currency = "USD") =>
+    api.get<SubscriptionPlan[]>(`/subscription/plans/public?currency=${encodeURIComponent(currency)}`),
+  plans: () => api.get<SubscriptionPlan[]>("/subscription/plans"),
+  entitlements: () => api.get<Entitlements>("/subscription/entitlements"),
+  status: () => api.get<Entitlements & { extra_credits?: number; subscription_date?: string }>("/subscription/status"),
+  startTrial: () => api.post<Entitlements & { status: string; trial_days: number }>("/subscription/start-trial", {}),
+  checkout: (plan_id: string) =>
+    api.post<{ url: string; session_id: string }>("/subscription/checkout", { plan_id }),
+  portal: () => api.post<{ url: string }>("/subscription/portal", {}),
+  invoices: () =>
+    api.get<{ invoices: Array<{
+      id: string;
+      number?: string;
+      status?: string;
+      amount_due?: number;
+      currency?: string;
+      hosted_invoice_url?: string;
+      invoice_pdf?: string;
+    }> }>("/subscription/invoices"),
+};
+
 export const authApi = {
   whatsappStart: (phoneNumber: string) =>
     api.post<{ session_token?: string; pairing_code?: string; access_token?: string; token?: string; user?: Record<string, unknown> }>(
@@ -996,17 +1052,55 @@ export const telegramApi = {
 export interface PaystackConnection {
   connected: boolean;
   business_name?: string;
+  default_currency?: string;
+}
+
+export interface PaystackUsageSummary {
+  payments: {
+    count: number;
+    by_currency: Record<string, { count: number; volume_major: number }>;
+  };
 }
 
 export const paystackApi = {
   connection: () => api.get<PaystackConnection>("/paystack/connection"),
-  connect: (secret_key: string) =>
-    api.post<{ status: string; connected: boolean; business_name: string }>(
-      "/paystack/connect",
-      { secret_key }
-    ),
+  connect: (payload: { secret_key: string; currency?: string }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      business_name: string;
+      default_currency?: string;
+    }>("/paystack/connect", payload),
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/paystack/connect"),
+  usageSummary: () => api.get<PaystackUsageSummary>("/paystack/usage/summary"),
+  usageLedger: (limit = 50) =>
+    api.get<{ entries: Record<string, unknown>[] }>(
+      `/paystack/usage/ledger?limit=${limit}`
+    ),
+  initializeTransaction: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    callback_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      authorization_url: string;
+      reference: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/paystack/transaction/initialize", params),
+  verifyTransaction: (reference: string) =>
+    api.get<{ status: string; data: Record<string, unknown> }>(
+      `/paystack/transaction/verify/${encodeURIComponent(reference)}`
+    ),
 };
 
 export interface PayheroConnection {
@@ -1024,13 +1118,64 @@ export interface PayheroChannel {
   short_code?: string;
 }
 
+export interface PayheroFeeQuote {
+  gross_kes: number;
+  payhero_fee_kes: number;
+  merchant_receives_kes: number;
+  tier_min_kes: number;
+  tier_max_kes: number;
+  rate_card_version: string;
+}
+
+export interface PayheroUsageSummary {
+  rate_card_version: string;
+  currency: string;
+  mpesa_payments: {
+    count: number;
+    gross_collected_kes: number;
+    estimated_payhero_fees_kes: number;
+  };
+  sms: { messages: number; fees_kes: number };
+  whatsapp: { messages: number; fees_kes: number };
+  total_estimated_fees_kes: number;
+}
+
 export const payheroApi = {
+  rates: () =>
+    api.get<{
+      version: string;
+      currency: string;
+      mpesa_tiers: { min_kes: number; max_kes: number; fee_kes: number }[];
+      sms_per_message_kes: number;
+      whatsapp_per_message_kes: number;
+    }>("/payhero/rates"),
+  feeQuote: (amount: number) =>
+    api.get<PayheroFeeQuote>(`/payhero/fees/quote?amount=${encodeURIComponent(String(amount))}`),
+  usageSummary: () => api.get<PayheroUsageSummary>("/payhero/usage/summary"),
+  usageLedger: (limit = 50) =>
+    api.get<{ entries: Record<string, unknown>[] }>(`/payhero/usage/ledger?limit=${limit}`),
   connection: () => api.get<PayheroConnection>("/payhero/connection"),
-  connect: (username: string, password: string) =>
-    api.post<{ status: string; connected: boolean; username: string }>(
-      "/payhero/connect",
-      { username, password }
-    ),
+  connect: async (payload: {
+    api_token?: string;
+    username?: string;
+    password?: string;
+    label?: string;
+  }) => {
+    const token = getToken();
+    const res = await fetch("/api/payhero/connect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return JSON.parse(rawText) as { status: string; connected: boolean; username: string };
+  },
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/payhero/connect"),
   channels: () =>
@@ -1042,11 +1187,19 @@ export const payheroApi = {
       "/payhero/channel",
       { channel_id }
     ),
-  stkPush: (phone: string, amount: number, external_reference?: string, customer_name?: string) =>
-    api.post<{ status: string; payhero_response: unknown }>(
-      "/payhero/stk-push",
-      { phone, amount, external_reference, customer_name }
-    ),
+  stkPush: (params: {
+    phone: string;
+    amount: number;
+    external_reference?: string;
+    customer_name?: string;
+    order_id?: string;
+  }) =>
+    api.post<{
+      status: string;
+      intent_id?: string;
+      fee_quote?: { payhero_fee_kes: number; merchant_receives_kes: number };
+      payhero_response: unknown;
+    }>("/payhero/stk-push", params),
 };
 
 // ── Assistant ────────────────────────────────────────────────────────────────
@@ -1516,10 +1669,26 @@ export const whatsappApi = {
     api.post<{ pairing_code?: string; status: string; message?: string }>("/whatsapp/connect", { phone_number: phoneNumber }),
   disconnect: () => api.post<{ status: string }>("/whatsapp/disconnect", {}),
   sync: () => api.post<{ status: string }>("/whatsapp/sync", {}),
-  /** Start a QR-code based connection. Returns base64 QR image. */
-  qrStart: () => api.post<{ status: string; qr_base64: string }>("/whatsapp/qr-start", {}),
+  /** Start a QR-code based connection. Uses long-timeout App Route (not /proxy rewrite). */
+  qrStart: async () => {
+    const token = getToken();
+    const res = await fetch("/api/whatsapp/qr-start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: "{}",
+    });
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return (rawText ? JSON.parse(rawText) : {}) as { status: string; qr_base64: string };
+  },
   /** Fetch a refreshed QR code for the pending instance. */
-  qrFetch: () => api.get<{ qr_base64: string }>("/whatsapp/qr"),
+  qrFetch: () =>
+    api.get<{ qr_base64: string; connection_state?: string }>("/whatsapp/qr"),
 };
 
 export const onboardingApi = {

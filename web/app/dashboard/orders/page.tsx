@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { ordersApi, customersApi, Order, Customer } from "@/lib/api";
+import { ordersApi, customersApi, payheroApi, paystackApi, Order, Customer } from "@/lib/api";
 import { formatCurrency, timeAgo } from "@/lib/utils";
-import { Search, RefreshCw, ChevronDown, Plus, X, Loader2, ArrowRightLeft, Trash2, Pencil, Download } from "lucide-react";
+import { estimateMpesaFeeKes } from "@/lib/billing/payheroRates";
+import { Search, RefreshCw, ChevronDown, Plus, X, Loader2, ArrowRightLeft, Trash2, Pencil, Download, Smartphone, CreditCard } from "lucide-react";
 
 const PAYMENT_METHODS = ["M-Pesa", "Cash", "Bank Transfer", "Airtel Money", "Card", "PayPal", "Other"];
 
@@ -60,6 +61,14 @@ export default function OrdersPage() {
   const [convertModal, setConvertModal] = useState<Order | null>(null);
   const [convertMethod, setConvertMethod] = useState("Cash");
 
+  const [payheroReady, setPayheroReady] = useState(false);
+  const [paystackReady, setPaystackReady] = useState(false);
+  const [stkOrder, setStkOrder] = useState<Order | null>(null);
+  const [stkBusy, setStkBusy] = useState(false);
+  const [paystackOrder, setPaystackOrder] = useState<Order | null>(null);
+  const [paystackEmail, setPaystackEmail] = useState("");
+  const [paystackBusy, setPaystackBusy] = useState(false);
+
   const load = useCallback(async (showSkeleton = true) => {
     if (showSkeleton) setLoading(true);
     try {
@@ -75,6 +84,21 @@ export default function OrdersPage() {
   }, []);
 
   useEffect(() => { load(true); }, [load]);
+
+  useEffect(() => {
+    payheroApi.connection().then((c) => setPayheroReady(Boolean(c.connected && c.channel_id))).catch(() => setPayheroReady(false));
+    paystackApi.connection().then((c) => setPaystackReady(Boolean(c.connected))).catch(() => setPaystackReady(false));
+  }, []);
+
+  function openPaystackCheckout(order: Order) {
+    const match = customers.find(
+      (c) => c.phone_number && order.customer_phone && c.phone_number.replace(/\D/g, "") === order.customer_phone.replace(/\D/g, "")
+    );
+    const digits = (order.customer_phone || "").replace(/\D/g, "");
+    const fallback = digits ? `pay+${digits}@customers.crm` : "";
+    setPaystackEmail(match?.email?.trim() || fallback);
+    setPaystackOrder(order);
+  }
 
   function openCreate() {
     setEditingOrder(null);
@@ -164,6 +188,52 @@ export default function OrdersPage() {
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to convert");
     } finally { setConvertingId(null); }
+  }
+
+  async function sendMpesaStk() {
+    if (!stkOrder?.customer_phone) return;
+    setStkBusy(true);
+    try {
+      const ref = stkOrder.order_number || stkOrder.id.slice(-8);
+      await payheroApi.stkPush({
+        phone: stkOrder.customer_phone,
+        amount: stkOrder.total_amount,
+        external_reference: ref,
+        customer_name: stkOrder.customer_name,
+        order_id: stkOrder.id,
+      });
+      alert("M-Pesa prompt sent to customer phone.");
+      setStkOrder(null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "STK push failed");
+    } finally {
+      setStkBusy(false);
+    }
+  }
+
+  async function sendPaystackCheckout() {
+    if (!paystackOrder || !paystackEmail.trim()) return;
+    setPaystackBusy(true);
+    try {
+      const ref = paystackOrder.order_number || paystackOrder.id.slice(-8);
+      const { authorization_url } = await paystackApi.initializeTransaction({
+        email: paystackEmail.trim(),
+        amount: paystackOrder.total_amount,
+        external_reference: ref,
+        order_number: ref,
+        customer_name: paystackOrder.customer_name,
+        order_id: paystackOrder.id,
+      });
+      if (authorization_url) {
+        window.open(authorization_url, "_blank", "noopener,noreferrer");
+      }
+      alert("Paystack checkout opened — share the tab with your customer or copy the link.");
+      setPaystackOrder(null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Paystack checkout failed");
+    } finally {
+      setPaystackBusy(false);
+    }
   }
 
   function exportCSV() {
@@ -321,6 +391,24 @@ export default function OrdersPage() {
                             ) : (
                               <span className="text-xs text-slate-400 whitespace-nowrap">Done ✓</span>
                             )}
+                            {order.payment_status?.toLowerCase() !== "paid" && payheroReady && order.customer_phone && (
+                              <button
+                                onClick={() => setStkOrder(order)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:bg-emerald-100 hover:text-emerald-700 transition-colors"
+                                title="Request M-Pesa (PayHero STK)"
+                              >
+                                <Smartphone size={13} />
+                              </button>
+                            )}
+                            {order.payment_status?.toLowerCase() !== "paid" && paystackReady && (
+                              <button
+                                onClick={() => openPaystackCheckout(order)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:bg-sky-100 hover:text-[#00C3F7] transition-colors"
+                                title="Paystack checkout link"
+                              >
+                                <CreditCard size={13} />
+                              </button>
+                            )}
                             {order.payment_status?.toLowerCase() !== "paid" && (
                               <button onClick={() => { setConvertModal(order); setConvertMethod("Cash"); }}
                                 disabled={convertingId === order.id}
@@ -453,6 +541,86 @@ export default function OrdersPage() {
                 {editingOrder ? "Save Changes" : "Create Order"}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {paystackOrder && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => !paystackBusy && setPaystackOrder(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="p-5 border-b border-slate-100">
+              <h2 className="text-base font-semibold">Paystack checkout</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                #{paystackOrder.order_number || paystackOrder.id.slice(-6)} · {paystackOrder.customer_name} ·{" "}
+                {formatCurrency(paystackOrder.total_amount)}
+              </p>
+            </div>
+            <div className="p-5 space-y-3 text-sm text-slate-700">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Customer email (Paystack)</label>
+                <input
+                  type="email"
+                  value={paystackEmail}
+                  onChange={(e) => setPaystackEmail(e.target.value)}
+                  placeholder="customer@example.com"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#00C3F7]"
+                />
+              </div>
+              <p className="text-xs text-slate-500">
+                Opens Paystack&apos;s hosted page in a new tab. When payment succeeds, the order is marked paid via webhook.
+              </p>
+            </div>
+            <div className="p-5 border-t border-slate-100 flex justify-end gap-3">
+              <button type="button" disabled={paystackBusy} onClick={() => setPaystackOrder(null)} className="px-4 py-2 text-sm text-slate-600">
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={paystackBusy || !paystackEmail.trim()}
+                onClick={() => void sendPaystackCheckout()}
+                className="px-4 py-2 bg-[#00C3F7] text-white rounded-lg text-sm font-medium hover:bg-[#00a8d6] flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {paystackBusy ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
+                Open checkout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {stkOrder && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => !stkBusy && setStkOrder(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <div className="p-5 border-b border-slate-100">
+              <h2 className="text-base font-semibold">M-Pesa STK push</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                #{stkOrder.order_number || stkOrder.id.slice(-6)} · {stkOrder.customer_name} ·{" "}
+                {stkOrder.customer_phone}
+              </p>
+            </div>
+            <div className="p-5 space-y-2 text-sm text-slate-700">
+              <p>
+                Amount: <strong>{formatCurrency(stkOrder.total_amount)}</strong>
+              </p>
+              <p className="text-xs text-slate-500">
+                Customer receives the full amount on your paybill. Estimated PayHero fee:{" "}
+                <strong>KES {estimateMpesaFeeKes(stkOrder.total_amount)}</strong> (billed on your PayHero account).
+              </p>
+            </div>
+            <div className="p-5 border-t border-slate-100 flex justify-end gap-3">
+              <button type="button" disabled={stkBusy} onClick={() => setStkOrder(null)} className="px-4 py-2 text-sm text-slate-600">
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={stkBusy}
+                onClick={() => void sendMpesaStk()}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {stkBusy ? <Loader2 size={14} className="animate-spin" /> : <Smartphone size={14} />}
+                Send prompt
+              </button>
+            </div>
           </div>
         </div>
       )}

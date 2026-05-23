@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "cross-env TURBOPACK=0 next dev",
+    "dev": "next dev --webpack -p 3000",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -29,6 +29,7 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
+    "sweetalert2": "^11.26.24",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {

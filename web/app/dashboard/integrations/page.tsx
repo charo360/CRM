@@ -7,7 +7,9 @@ import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
 import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel } from "@/lib/api";
+import { PayHeroUsagePanel } from "@/components/billing/PayHeroUsagePanel";
 import { getToken } from "@/lib/auth";
+import { confirmDialog } from "@/lib/confirmDialog";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
 import { zernioApi } from "@/lib/api";
@@ -298,13 +300,19 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
     const k = key.trim();
     if (!k) return;
     setBusy(true); setErr(null);
-    try { await paystackApi.connect(k); setKey(""); onChanged(); }
+    try { await paystackApi.connect({ secret_key: k }); setKey(""); onChanged(); }
     catch (e) { setErr(e instanceof Error ? e.message : "Could not connect"); }
     finally { setBusy(false); }
   }
 
   async function handleDisconnect() {
-    if (!confirm("Disconnect Paystack?")) return;
+    const ok = await confirmDialog({
+      title: "Disconnect Paystack?",
+      text: "Payments across Africa (NGN, KES, GHS and more) will no longer run through your Paystack account in this CRM. Checkout links and payment webhooks will stop until you connect again.",
+      confirmText: "Yes, disconnect",
+      cancelText: "Keep connected",
+    });
+    if (!ok) return;
     setBusy(true); setErr(null);
     try { await paystackApi.disconnect(); onChanged(); }
     catch (e) { setErr(e instanceof Error ? e.message : "Could not disconnect"); }
@@ -351,8 +359,7 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
 // ── PayHero (Basic Auth + Channel selector) ───────────────────────────────────
 
 function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnection; onChanged: () => void }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [apiToken, setApiToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -376,15 +383,28 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
   }, [connection?.connected]);
 
   async function handleConnect() {
-    if (!username.trim() || !password.trim()) return;
-    setBusy(true); setErr(null);
-    try { await payheroApi.connect(username.trim(), password.trim()); setUsername(""); setPassword(""); onChanged(); }
-    catch (e) { setErr(e instanceof Error ? e.message : "Could not connect"); }
-    finally { setBusy(false); }
+    if (!apiToken.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await payheroApi.connect({ api_token: apiToken.trim() });
+      setApiToken("");
+      await onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not connect");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleDisconnect() {
-    if (!confirm("Disconnect PayHero?")) return;
+    const ok = await confirmDialog({
+      title: "Disconnect PayHero?",
+      text: "M-Pesa STK push and automatic payment confirmation will stop for this workspace. Your API credentials and selected payment channel will be removed from the CRM.",
+      confirmText: "Yes, disconnect",
+      cancelText: "Keep connected",
+    });
+    if (!ok) return;
     setBusy(true); setErr(null);
     try { await payheroApi.disconnect(); onChanged(); }
     catch (e) { setErr(e instanceof Error ? e.message : "Could not disconnect"); }
@@ -454,6 +474,8 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
           )}
         </div>
 
+        <PayHeroUsagePanel connected />
+
         <button type="button" onClick={handleDisconnect} disabled={busy}
           className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
           {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
@@ -466,21 +488,27 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
   return (
     <div className="space-y-1.5">
       <p className="text-[10px] leading-snug text-slate-500">
-        API credentials from your{" "}
+        In{" "}
         <a href="https://app.payhero.co.ke/" target="_blank" rel="noreferrer"
           className="font-medium text-[#1DB954] hover:underline">
           PayHero Dashboard
         </a>
-        {" "}→ API Keys
+        {" "}→ <strong>API Keys</strong> → Create key → copy the <strong>Basic Authorization token</strong> (not your login password).
       </p>
-      <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
-        placeholder="API Username" autoComplete="off"
-        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]" />
-      <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-        placeholder="API Password" autoComplete="off"
-        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]" />
-      <button type="button" onClick={handleConnect} disabled={busy || !username.trim() || !password.trim()}
-        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#1DB954] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50">
+      <input
+        type="password"
+        value={apiToken}
+        onChange={(e) => setApiToken(e.target.value)}
+        placeholder="Paste Basic Auth token"
+        autoComplete="off"
+        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#1DB954]"
+      />
+      <button
+        type="button"
+        onClick={() => void handleConnect()}
+        disabled={busy || !apiToken.trim()}
+        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#1DB954] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50"
+      >
         {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
       </button>
       {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
@@ -661,8 +689,13 @@ function IntegrationsPageInner() {
     paystackApi.connection().then(setPsConn).catch(() => {});
   }, []);
 
-  const refreshPh = useCallback(() => {
-    payheroApi.connection().then(setPhConn).catch(() => {});
+  const refreshPh = useCallback(async () => {
+    try {
+      const c = await payheroApi.connection();
+      setPhConn(c);
+    } catch {
+      setPhConn({ connected: false });
+    }
   }, []);
 
   const refreshNango = useCallback(async () => {
