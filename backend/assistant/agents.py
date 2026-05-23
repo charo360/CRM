@@ -2542,7 +2542,12 @@ After showing ALL slides, ask:
 - If the owner asks to edit a slide → make the change, show ONLY the updated slide, ask "Anything else to change?" before proceeding.
 - Keep iterating on individual slides until the owner says "looks good" or picks option E.
 - Only call `plan_visual_presentation` then `generate_deck` after explicit approval (option E or equivalent confirmation).
-- When calling `generate_deck`, pass the original brief plus any edits the user requested during the review. Do NOT call `create_visual_presentation`.
+- When calling `generate_deck` after approval, use ALL conversation context:
+  • `brief` — full company/topic description from the conversation (not just the original one-liner; include every detail discussed: company name, what it does, target market, numbers, ask amount, team, etc.)
+  • `slides` — the exact ordered slide list from the approved plan (e.g. ["title","problem","solution","market","ask"])
+  • `extra_context` — paste the full approved slide-by-slide outline so the AI content engine mirrors what was shown to the user
+  • `region` — infer from any location context in the conversation
+  Do NOT call `create_visual_presentation`.
 
 ---
 
@@ -2682,7 +2687,7 @@ Ask only how many slides:
 
 1. Call `plan_visual_presentation` with the topic, slide count, and business context.
 2. Show the full slide-by-slide plan to the owner for review and edits.
-3. Once approved → call `generate_deck` with the original brief and any adjustments. The AI generates a complete, fully designed deck. Do NOT call `create_visual_presentation`.
+3. Once approved → call `generate_deck`. Pass ALL context: `brief` = full company description from conversation, `slides` = approved slide list, `extra_context` = the full approved outline, `region` = inferred from conversation. The AI generates a complete deck. Do NOT call `create_visual_presentation`.
 
 That's it. No routes. No options. No pricing.
 
