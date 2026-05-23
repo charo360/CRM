@@ -982,29 +982,241 @@ _SLIDE_IMAGE_QUALITY_SUFFIX = (
 )
 
 _DESIGNED_SLIDE_QUALITY_SUFFIX = (
-    " — Render this as a complete, flat presentation slide image, widescreen 16:9 ratio. "
-    "Style: premium Canva/Google Slides quality — clean sans-serif fonts (Inter, Montserrat, or Helvetica Neue), "
-    "bold title at top, bullet points below with generous line spacing. "
-    "Every single word must be PERFECTLY SPELLED exactly as given — render each letter precisely, no hallucinated words. "
-    "Ample whitespace, refined color palette, tasteful brand accents (subtle, not loud). "
-    "No laptop frames, no device mockups, no browser windows, no screen chrome, no UI borders — just the flat slide. "
-    "DO NOT add decorative AI-template elements: no random blobs, no memphis shapes, no neon/glow, no gradient mesh, "
-    "no dense pattern overlays, no fake icon packs, no stickers, no emojis, no 3D renders. "
-    "DO NOT invent extra text. Use ONLY the provided TITLE/BODY strings. "
-    "The design must look like it came from a human designer at a professional design agency (bespoke), not a template tool."
+    " — Render as ONE flat 16:9 presentation slide image. "
+    "Premium human-designed quality (Keynote / Apple / Google Slides Pro level). "
+    "Every word PERFECTLY SPELLED exactly as given — no extra text, no placeholder words. "
+    "ALL text fully inside safe margins (10% from sides, 12% from top, 15% from bottom) — zero clipping at edges. "
+    "If text won't fit, shrink font size; never cut off or truncate letters. "
+    "Flat slide only — no laptop frames, device mockups, browser chrome, or UI borders. "
+    "NO decorative AI junk: blobs, neon, gradient mesh, memphis shapes, glowing networks, fake icons, emoji, 3D renders."
 )
 
 _SLIDE_STYLE_MAP = {
     "title":   "Sweeping cinematic landscape — mountain range, modern city skyline, or vast ocean at golden hour. "
                "Epic scale, dramatic natural lighting, deep depth of field, open negative space. "
                "NO dollar signs, NO currency symbols, NO icons, NO floating symbols, NO charts, NO UI elements, NO data visualizations.",
-    "content": "Clean architectural interior or calm natural scene — marble surface, glass office, forest path. "
-               "Soft natural light, muted tones, breathable — nothing busy or artificial.",
-    "data":    "Dark polished surface — black marble, dark wood desk, or night city reflection. "
-               "Minimal, authoritative, premium feel. No geometric shapes, no patterns.",
+    "content": "Clean architectural interior or calm natural scene — bright glass office, sunlit workspace, forest path. "
+               "Soft natural light, light muted tones, breathable — nothing busy or artificial.",
+    "data":    "Bright modern office or clean architectural interior — same light family as other slides. "
+               "Soft natural light, muted tones, minimal and professional. No dark backgrounds.",
     "closing": "Wide open panoramic — sunrise over city, coastline at dusk, or aerial landscape. "
-               "Warm amber and deep blue natural tones, inspiring and aspirational.",
+               "Warm amber and soft blue natural tones, inspiring and aspirational.",
 }
+
+_PRESENTATION_MASTER_RULES = """
+PRESENTATION DESIGN LAWS — break any and the slide is rejected:
+
+HUMAN-DESIGNED FEEL (not AI template):
+• Looks like a senior designer built it in Keynote or Google Slides — bespoke, confident, restrained.
+• NO: glowing lines, network graphs, holograms, neon, particle effects, memphis blobs, gradient mesh,
+  fake 3D icons, emoji, watermarks, device mockups, UI chrome, stock-photo clichés with text overlay chaos.
+
+DECK CONSISTENCY (same look on every slide):
+• ONE background family for the entire deck — never mix white slides with black or dark slides.
+• ONE font family throughout (Inter or Helvetica Neue). Same title size rhythm, same bullet style.
+• Same brand accent color placement: thin accent bar under title OR left edge stripe — pick ONE and repeat.
+• Same text panel treatment on every slide (left 55% light panel with dark type).
+
+SAFE ZONE — text must NEVER clip or cut off:
+• Keep ALL text inside safe margins: 10% from left, 10% from right, 12% from top, 15% from bottom.
+• If content is long, reduce font size — never truncate, never crop letters at edges.
+• Maximum 3 bullet lines. Wrap long lines — every character fully visible.
+
+TYPOGRAPHY:
+• Max 2 weights (bold title + regular body). WCAG AA contrast minimum.
+• Render every provided word EXACTLY — perfect spelling, no hallucinated extra text.
+
+COMPOSITION (professional presentation rhythm):
+• Title slide: large title top-left, subtitle below, logo optional bottom-left small.
+• Content slides: bold headline top, 2-3 bullets below, left-aligned in text panel.
+• Data slides: 1-3 large stat numbers in brand accent color, labels beneath — same light background as other slides.
+• Closing: CTA headline + contact lines, mirrors title slide styling.
+• 40%+ negative space. Photography only as subtle support — never competes with text.
+
+COLOUR (60-30-10):
+• 60% light neutral canvas. 30% brand accent for highlights. 10% dark charcoal for type.
+"""
+
+
+def _normalize_brand_hex(brand_color: str) -> str:
+    c = (brand_color or "").strip()
+    if c and not c.startswith("#"):
+        c = f"#{c}"
+    if len(c) == 7 and all(ch in "0123456789abcdefABCDEF#" for ch in c):
+        return c
+    return "#4CD137"
+
+
+def _build_deck_visual_system(brand_color: str, business_name: str, slide_count: int) -> Dict[str, str]:
+    accent = _normalize_brand_hex(brand_color)
+    bg_tone = (
+        "warm off-white canvas (#FAFAF8) with soft natural photography confined to the RIGHT 40% "
+        "at low contrast, OR a full-bleed photo at 12–18% opacity with a solid light text panel on the left 58%"
+    )
+    font = "Inter or Helvetica Neue"
+    deck_brief = (
+        f"UNIFIED DECK SYSTEM for '{business_name}' ({slide_count} slides total):\n"
+        f"- Background: {bg_tone}. NEVER use a dark or black background on any slide — keep the entire deck in the SAME light family.\n"
+        f"- Typography: {font} only, same hierarchy on every slide. Dark charcoal (#1A1A1A) titles, medium gray (#333333) bullets.\n"
+        f"- Accent: brand color {accent} — thin bar under headlines, stat numbers, bullet markers.\n"
+        f"- Text panel: left 55–58% of slide is a clean light area so text never overlaps busy imagery.\n"
+        f"- Accent element: repeating thin horizontal brand-color rule under slide titles on every slide."
+    )
+    return {
+        "accent_hex": accent,
+        "bg_tone": bg_tone,
+        "font_family": font,
+        "deck_brief": deck_brief,
+    }
+
+
+def _detect_visual_slide_role(sd: Dict[str, Any], slide_index: int, total: int) -> str:
+    layout = (sd.get("layout") or "").lower().strip()
+    title_lower = (sd.get("title") or "").lower()
+
+    if sd.get("is_title") or slide_index == 0 or layout == "title":
+        return "title"
+    if layout in ("closing", "ending"):
+        return "closing"
+    if slide_index == total - 1 and any(
+        kw in title_lower
+        for kw in ("thank", "next step", "contact", "cta", "call to action", "conclusion", "let's connect", "lets connect")
+    ):
+        return "closing"
+    if layout == "stat_callout" or any(
+        kw in title_lower
+        for kw in ("data", "metric", "result", "number", "stat", "revenue", "growth", "kpi", "tam", "sam", "traction")
+    ):
+        return "data"
+    return "content"
+
+
+def _layout_instructions(role: str, layout: str) -> str:
+    layout = (layout or "content").lower()
+    if role == "title":
+        return (
+            "SLIDE TYPE: COVER. Large bold title top-left, subtitle/tagline directly below (smaller weight). "
+            "Optional small logo bottom-left. Minimal text — maximum impact."
+        )
+    if role == "closing":
+        return (
+            "SLIDE TYPE: CLOSING/CTA. Bold closing headline, 1-2 short contact/action lines below. "
+            "Mirror the cover slide styling (same panel, same fonts, same accent bar). Open, confident, breathable."
+        )
+    if role == "data" or layout == "stat_callout":
+        return (
+            "SLIDE TYPE: DATA/METRICS. Same LIGHT background as all other slides — NOT dark. "
+            "Headline at top. Display 1-3 key numbers LARGE in brand accent color with short labels beneath. "
+            "Numbers must be fully readable and inside safe margins. Professional investor-deck stat layout."
+        )
+    if layout == "icon_grid":
+        return (
+            "SLIDE TYPE: ICON GRID. Title top. 3 items in a horizontal row — simple clean icons or numbers "
+            "with short labels beneath each. Same light panel."
+        )
+    if layout == "two_column":
+        return (
+            "SLIDE TYPE: TWO COLUMN. Title top. Split content below into left/right columns with equal spacing. "
+            "Clean dividers, no clutter."
+        )
+    if layout == "flow":
+        return (
+            "SLIDE TYPE: PROCESS FLOW. Title top. 3 steps left-to-right with arrows or numbers — minimal, clear progression."
+        )
+    if layout == "timeline":
+        return (
+            "SLIDE TYPE: TIMELINE. Title top. Horizontal timeline with 2-3 milestones, labels below each node."
+        )
+    if layout == "comparison_table":
+        return (
+            "SLIDE TYPE: COMPARISON. Title top. Simple 2-3 row comparison table — clean rows, high contrast, no heavy borders."
+        )
+    return (
+        "SLIDE TYPE: CONTENT. Bold headline at top of text panel. 2-3 bullet points below with generous line spacing. "
+        "Left-aligned. Professional keynote-style layout — one idea per slide."
+    )
+
+
+def _sanitize_background_hint(raw: str) -> str:
+    hint = (raw or "").strip()
+    if not hint:
+        return "subtle real-world photography (office, architecture, or nature) at low opacity on the right side only"
+    for dark_phrase in (
+        "black marble", "dark polished", "dark wood", "night city", "pitch black",
+        "dark background", "dark surface", "dark desk", "dark executive",
+    ):
+        hint = hint.replace(dark_phrase, "soft natural scene")
+    return hint
+
+
+def _build_ai_designed_slide_prompt(
+    *,
+    sd: Dict[str, Any],
+    slide_index: int,
+    slide_total: int,
+    deck_system: Dict[str, str],
+    business_name: str,
+    topic: str,
+    user_edited: bool = False,
+) -> str:
+    from assistant.presentation_plan import derive_slide_tagline, _synthesize_body
+
+    role = _detect_visual_slide_role(sd, slide_index, slide_total)
+    layout = (sd.get("layout") or "content").lower()
+    title = (sd.get("title") or "").strip()
+    body_lines = [str(b).strip() for b in (sd.get("body") or []) if str(b).strip()]
+    if len(body_lines) < 2 and role != "title":
+        body_lines = _synthesize_body(sd)
+    body_lines = body_lines[:3]
+    bullets_str = "\n".join(f"• {b}" for b in body_lines) if body_lines else ""
+    bg_hint = _sanitize_background_hint(sd.get("image_prompt") or sd.get("image_concept") or "")
+
+    exact_copy = (
+        "CRITICAL: Render ONLY the exact TITLE and BODY text provided below — every letter perfectly spelled. "
+        "Do NOT add, remove, or reword any text."
+    )
+    if user_edited:
+        exact_copy += " The user manually edited this copy — treat it as final and sacred."
+
+    parts = [
+        f"Design a complete widescreen 16:9 presentation slide (Slide {slide_index + 1} of {slide_total}) for '{business_name}'.",
+        deck_system["deck_brief"],
+        _PRESENTATION_MASTER_RULES.strip(),
+        _layout_instructions(role, layout),
+        exact_copy,
+        f"BACKGROUND (supporting only — must stay in the deck's light family): {bg_hint}",
+        f'TITLE TEXT (render exactly): "{title}"',
+    ]
+
+    if role == "title":
+        subtitle = derive_slide_tagline(
+            tagline=(sd.get("tagline") or "").strip(),
+            business_name=business_name,
+            title=title,
+            topic=topic,
+        )
+        if subtitle:
+            parts.append(f'SUBTITLE TEXT (render exactly): "{subtitle}"')
+        founder = (sd.get("founder") or "").strip()
+        if founder:
+            parts.append(f'Optional small line (render exactly if space): "{founder}"')
+    elif role == "closing":
+        if bullets_str:
+            parts.append(f"BODY TEXT (render exactly, each line separate):\n{bullets_str}")
+        cta = (sd.get("cta") or "").strip()
+        contact = (sd.get("contact") or "").strip()
+        if cta:
+            parts.append(f'CTA (render exactly): "{cta}"')
+        if contact:
+            parts.append(f'CONTACT (render exactly): "{contact}"')
+    elif bullets_str:
+        parts.append(f"BODY TEXT (render exactly, each bullet on its own line, max 3):\n{bullets_str}")
+
+    parts.append(
+        "FINAL CHECK: All text inside safe margins. Same fonts, colors, and background family as every other slide. "
+        "Looks human-designed at a top agency — not an AI template."
+    )
+    return "\n\n".join(parts)
 
 
 async def _gen_slide_image(
@@ -1147,6 +1359,7 @@ async def create_visual_presentation_async(
     logo_url: Optional[str] = None,
     quality: str = "fast",
     ai_designed: bool = True,
+    user_edited: bool = False,
 ) -> Dict[str, Any]:
     """
     Build a PPTX where every slide has a **Gemini-generated full-bleed background image**
@@ -1163,94 +1376,43 @@ async def create_visual_presentation_async(
 
     # Step 1 — generate all slide images in parallel (concurrency capped at 4)
     sem = asyncio.Semaphore(4)
+    slide_total = len(slides_plan)
+    deck_system = _build_deck_visual_system(brand_color, business_name, slide_total)
 
-    async def _bounded_gen(sd: Dict[str, Any]) -> Optional[str]:
+    async def _bounded_gen(idx_sd: tuple) -> Optional[str]:
+        slide_index, sd = idx_sd
         async with sem:
-            # Determine slide role for style hint/prompt building
-            if sd.get("is_title"):
-                role = "title"
-            elif any(kw in (sd.get("title") or "").lower() for kw in ("thank", "next step", "contact", "cta", "call to action", "conclusion")):
-                role = "closing"
-            elif any(kw in (sd.get("title") or "").lower() for kw in ("data", "metric", "result", "number", "stat", "revenue", "growth", "kpi")):
-                role = "data"
-            else:
-                role = "content"
-
+            role = _detect_visual_slide_role(sd, slide_index, slide_total)
             raw = (sd.get("image_prompt") or sd.get("image_concept") or "").strip()
             if ai_designed:
-                title = (sd.get("title") or "").strip()
-                body_lines = sd.get("body") or []
-                bullets_text = ""
-                if body_lines:
-                    bullets_text = "Bullets: " + ", ".join(f"'{b}'" for b in body_lines)
-
-                bullets_str = "\n".join(f"• {b}" for b in body_lines) if body_lines else ""
-
-                # Keep logo usage minimal to avoid distortion artifacts.
                 use_logo = logo_url if role in ("title", "closing") else None
-
-                if role == "title":
-                    prompt = (
-                        f"Design a complete widescreen 16:9 presentation COVER slide for '{business_name}'.\n"
-                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
-                        f"SUBTITLE TEXT (render exactly): \"{business_name}\"\n"
-                        f"Background: {raw or 'dramatic cinematic cityscape or landscape at golden hour — real photography only, no effects'}.\n"
-                        f"Layout: left-aligned grid. Large bold title. Subtitle below. "
-                        f"Keep 15–20% clear margin around text; do not crowd edges.\n"
-                        f"Typography: ONE font family only; 2 weights max (bold + regular). "
-                        f"STRICTLY NO: glowing lines, network connections, light trails, digital overlays, tech grid effects, "
-                        f"particle effects, neon glow, animated shine, geometric decorations, watermarks, device mockups, "
-                        f"UI chrome, floating icons, charts, emoji, dollar signs."
-                    )
-                elif role == "closing":
-                    prompt = (
-                        f"Design a complete widescreen 16:9 presentation CLOSING slide.\n"
-                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
-                        f"BODY TEXT (render exactly):\n{bullets_str}\n"
-                        f"Background: {raw or 'wide panoramic sunrise or calm coastline at dusk — real photography only, no effects'}.\n"
-                        f"Layout: left-aligned. Bold title, body text below with generous line spacing. "
-                        f"Open, breathable, high contrast.\n"
-                        f"Typography: ONE font family only; 2 weights max. "
-                        f"STRICTLY NO: glowing lines, network connections, light trails, digital overlays, tech grid effects, "
-                        f"particle effects, neon glow, geometric decorations, watermarks, device mockups, UI chrome."
-                    )
-                elif role == "data":
-                    prompt = (
-                        f"Design a complete widescreen 16:9 presentation DATA/METRICS slide.\n"
-                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
-                        f"BODY TEXT (render exactly):\n{bullets_str}\n"
-                        f"Background: {raw or 'dark polished surface — black marble or dark wood. Real photography only, no effects, no patterns'}.\n"
-                        f"Layout: bold title at top, stats/bullets below with clear hierarchy and generous spacing. "
-                        f"Minimal, authoritative, numbers easy to read.\n"
-                        f"Typography: ONE font family only; 2 weights max. "
-                        f"STRICTLY NO: glowing lines, network connections, light trails, digital overlays, tech grid effects, "
-                        f"particle effects, neon glow, geometric decorations, watermarks, device mockups, UI chrome."
-                    )
-                else:  # content
-                    prompt = (
-                        f"Design a complete widescreen 16:9 presentation CONTENT slide.\n"
-                        f"TITLE TEXT (render exactly, perfectly spelled): \"{title}\"\n"
-                        f"BODY TEXT (render exactly, each bullet on its own line):\n{bullets_str}\n"
-                        f"Background: {raw or 'clean architectural interior or calm natural scene — real photography only, no effects'}.\n"
-                        f"Layout: left-aligned. Bold title at top, bullet points below with generous line spacing. "
-                        f"Ample whitespace, high contrast text, never cluttered. Max 3 bullet points.\n"
-                        f"Typography: ONE font family only; 2 weights max. "
-                        f"STRICTLY NO: glowing lines, network connections, light trails, digital overlays, tech grid effects, "
-                        f"particle effects, neon glow, animated shine, geometric decorations, watermarks, device mockups, UI chrome."
-                    )
-                return await _gen_slide_image(prompt, brand_color=brand_color, logo_url=use_logo, quality=quality, slide_role=role, ai_designed=True)
-            else:
-                if not raw:
-                    raw = (
-                        f"Cinematic real-world background for a professional business presentation slide "
-                        f"titled '{sd.get('title', topic)}'. "
-                        f"Natural photography — architecture, landscape, or calm environment. "
-                        f"No geometric shapes, no waves, no abstract patterns, minimal and sophisticated."
-                    )
-                return await _gen_slide_image(raw, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role, ai_designed=False)
+                prompt = _build_ai_designed_slide_prompt(
+                    sd=sd,
+                    slide_index=slide_index,
+                    slide_total=slide_total,
+                    deck_system=deck_system,
+                    business_name=business_name,
+                    topic=topic,
+                    user_edited=user_edited,
+                )
+                return await _gen_slide_image(
+                    prompt, brand_color=brand_color, logo_url=use_logo,
+                    quality=quality, slide_role=role, ai_designed=True,
+                )
+            if not raw:
+                raw = (
+                    f"Cinematic real-world background for a professional business presentation slide "
+                    f"titled '{sd.get('title', topic)}'. "
+                    f"Natural photography — architecture, landscape, or calm environment. "
+                    f"No geometric shapes, no waves, no abstract patterns, minimal and sophisticated."
+                )
+            return await _gen_slide_image(
+                raw, brand_color=brand_color, logo_url=None,
+                quality=quality, slide_role=role, ai_designed=False,
+            )
 
     image_urls: List[Optional[str]] = await asyncio.gather(
-        *[_bounded_gen(sd) for sd in slides_plan]
+        *[_bounded_gen((i, sd)) for i, sd in enumerate(slides_plan)]
     )
 
     # Step 2 — download image bytes for all slides in parallel
@@ -1343,6 +1505,8 @@ async def regenerate_single_slide_async(
         return {"error": f"slide_index {slide_index} is out of range (deck has {len(slides_plan)} slides)."}
 
     sd = slides_plan[slide_index]
+    slide_total = len(slides_plan)
+    deck_system = _build_deck_visual_system(brand_color, topic or "My Business", slide_total)
 
     # Build a refined prompt: original image_prompt + user instruction
     original_prompt = (sd.get("image_prompt") or sd.get("image_concept") or "").strip()
@@ -1354,60 +1518,37 @@ async def regenerate_single_slide_async(
     else:
         refined_prompt = original_prompt or f"Abstract professional background for: {sd.get('title', 'slide')}"
 
-    # Determine slide role
-    if sd.get("is_title") or slide_index == 0:
-        role = "title"
-    elif any(kw in (sd.get("title") or "").lower() for kw in ("thank", "next step", "contact", "cta", "conclusion")):
-        role = "closing"
-    elif any(kw in (sd.get("title") or "").lower() for kw in ("data", "metric", "result", "stat", "revenue", "growth", "kpi")):
-        role = "data"
-    else:
-        role = "content"
+    role = _detect_visual_slide_role(sd, slide_index, slide_total)
+    sd_for_prompt = {**sd, "image_prompt": refined_prompt, "image_concept": refined_prompt}
 
     if ai_designed:
-        title = (sd.get("title") or "").strip()
-        body_lines = sd.get("body") or []
-        bullets_text = ""
-        if body_lines:
-            bullets_text = "Bullets: " + ", ".join(f"'{b}'" for b in body_lines)
-
-        if role == "title":
-            prompt = (
-                f"A complete, professionally designed presentation COVER slide. "
-                f"Title: '{title}'. Subtitle/business: '{topic}'. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Elegant corporate layout, bold title, readable high-contrast typography, brand accents."
-            )
-        elif role == "closing":
-            prompt = (
-                f"A complete, professionally designed presentation CLOSING/CTA slide. "
-                f"Title: '{title}'. Details: '{', '.join(body_lines)}'. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Strong CTA layout, clean typography, readable content, brand elements."
-            )
-        elif role == "data":
-            prompt = (
-                f"A complete, professionally designed presentation DATA/METRIC slide. "
-                f"Title: '{title}'. Data: '{', '.join(body_lines)}'. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Premium slide highlighting key stats or figures, clean fonts, balanced negative space."
-            )
-        else: # content
-            prompt = (
-                f"A complete, professionally designed presentation CONTENT slide. "
-                f"Title: '{title}'. {bullets_text}. "
-                f"Style/Background/Changes: {refined_prompt}. "
-                f"Widescreen layout with bold title at top, clean readable bullet points, brand accents."
-            )
-        new_url = await _gen_slide_image(prompt, brand_color=brand_color, logo_url=logo_url, quality=quality, slide_role=role, ai_designed=True)
+        prompt = _build_ai_designed_slide_prompt(
+            sd=sd_for_prompt,
+            slide_index=slide_index,
+            slide_total=slide_total,
+            deck_system=deck_system,
+            business_name=topic or "My Business",
+            topic=topic,
+        )
+        new_url = await _gen_slide_image(
+            prompt, brand_color=brand_color, logo_url=logo_url,
+            quality=quality, slide_role=role, ai_designed=True,
+        )
     else:
-        new_url = await _gen_slide_image(refined_prompt, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role, ai_designed=False)
+        new_url = await _gen_slide_image(
+            refined_prompt, brand_color=brand_color, logo_url=None,
+            quality=quality, slide_role=role, ai_designed=False,
+        )
 
     if not new_url:
         return {"error": "Image generation failed for this slide. Please try again."}
 
     # Build updated image_urls list with the new URL swapped in
-    updated_urls: List[Optional[str]] = [u if u else None for u in image_urls]
+    from image_handler import S3Handler
+    resolved_urls: List[str] = [
+        S3Handler.resolve_accessible_url(u) if u else "" for u in image_urls
+    ]
+    updated_urls: List[Optional[str]] = [u if u else None for u in resolved_urls]
     updated_urls[slide_index] = new_url
 
     # Download all image bytes in parallel

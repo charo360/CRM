@@ -260,6 +260,8 @@ async def run_v2_turn_stream(
     flow_state, prev_agent = await _load_flow_state_and_agent(db, conversation_id)
     logger.info("[v2_orc] loaded flow_state keys=%s, prev_agent=%s", list(flow_state.keys()), prev_agent)
 
+    user = {**user, "_active_conversation_id": conversation_id}
+
     # ── 1.5. Router-First Fast Path (LLM-based) ─────────────────────────────
     # Run the fast-path LLM router (deepseek-v4-flash) to see if we can route
     # directly to a specialist without running the heavy master orchestrator.
@@ -334,7 +336,7 @@ async def run_v2_turn_stream(
         # Persist messages & suggestions
         messages_to_append = [
             {"role": "user", "content": user_message},
-            {"role": "assistant", "content": final_reply, "agent": active_agent}
+            {"role": "assistant", "content": final_reply, "agent": active_agent, "steps": all_steps},
         ]
 
         if db is not None and conversation_id:
@@ -569,6 +571,7 @@ async def run_v2_turn_stream(
         "role": "assistant",
         "content": final_reply,
         "agent": active_agent,
+        "steps": all_steps,
     })
 
     if db is not None and conversation_id:

@@ -36,6 +36,7 @@ def _tid(user: dict) -> str:
 
 
 def _ser(doc: dict) -> dict:
+    from image_handler import S3Handler
     out = dict(doc)
     oid = out.pop("_id", None)
     out["id"] = str(oid) if oid is not None else ""
@@ -51,6 +52,10 @@ def _ser(doc: dict) -> dict:
     out.setdefault("thumbnail_url", out.get("thumbnail_url") or "")
     out.setdefault("use_for", out.get("use_for") or [])
     out.setdefault("field_schema", out.get("field_schema") or {})
+    for url_field in ("file_url", "thumbnail_url"):
+        raw = (out.get(url_field) or "").strip()
+        if raw:
+            out[url_field] = S3Handler.resolve_accessible_url(raw)
     return out
 
 

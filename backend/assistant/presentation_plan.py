@@ -153,16 +153,17 @@ USER_ONLY_KEYS = frozenset({
     "target_audience",
 })
 
-# Default photographic backgrounds when the model omits image_prompt
+# Default photographic backgrounds when the model omits image_prompt.
+# All scenes stay in the SAME light family — never dark/black (keeps the deck visually consistent).
 _LAYOUT_SCENES: Dict[str, str] = {
-    "title": "wide modern city skyline at golden hour, clean and aspirational, real photography",
-    "stat_callout": "dark polished marble desk surface, minimal executive mood, real photography",
+    "title": "wide modern city skyline at golden hour, clean and aspirational, real photography, light tones",
+    "stat_callout": "bright modern office with floor-to-ceiling windows, natural light, minimal and professional, real photography",
     "two_column": "bright modern office with floor-to-ceiling windows, natural light, real photography",
     "icon_grid": "clean white architectural interior, soft daylight, uncluttered, real photography",
-    "flow": "overhead view of a organised workspace with notebook and coffee, calm tone, real photography",
-    "comparison_table": "minimal conference room with blurred background, professional, real photography",
-    "timeline": "aerial view of a growing city at dusk, forward momentum mood, real photography",
-    "closing": "calm ocean horizon at sunset, open and confident mood, real photography",
+    "flow": "overhead view of a organised workspace with notebook and coffee, calm bright tone, real photography",
+    "comparison_table": "minimal conference room with soft blurred background, professional, bright, real photography",
+    "timeline": "aerial view of a growing city at golden hour, forward momentum mood, light tones, real photography",
+    "closing": "calm ocean horizon at sunset, open and confident mood, warm light tones, real photography",
     "content": "sunlit co-working space with plants, warm and professional, real photography",
 }
 
@@ -1285,6 +1286,73 @@ def _synthesize_body(sd: Dict[str, Any]) -> List[str]:
     return out[:3]
 
 
+def _is_redundant_tagline(tag: str, biz: str, title: str = "") -> bool:
+    """True when tagline is empty or just repeats the company/title name."""
+    t = _clean(tag).lower().strip("·.-—–| ")
+    if not t:
+        return True
+    biz_l = _clean(biz).lower()
+    title_l = _clean(title).lower()
+    if biz_l and t == biz_l:
+        return True
+    if title_l and t == title_l:
+        return True
+    # Strip leading punctuation the model sometimes adds (e.g. ". Zilo")
+    bare = t.lstrip("·.-—–| ").strip()
+    if biz_l and bare == biz_l:
+        return True
+    if biz_l and len(bare) <= len(biz_l) + 2 and biz_l in bare:
+        return True
+    return False
+
+
+def derive_slide_tagline(
+    *,
+    tagline: str = "",
+    business_name: str = "",
+    title: str = "",
+    topic: str = "",
+    audience: str = "",
+    deck_purpose: str = "",
+    owner: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return a one-line pitch for title/closing slides — never the company name alone."""
+    owner = owner or {}
+    biz = _clean(business_name) or _clean(title)
+
+    candidates: List[str] = []
+    if tagline:
+        candidates.append(_clean(tagline))
+    candidates.extend([
+        _clean(owner.get("tagline")),
+        _clean(owner.get("business_tagline")),
+        _clean(owner.get("business_description_hint")),
+        _clean(owner.get("products_services_hint")),
+    ])
+
+    t = _clean(topic)
+    if biz and t.lower().startswith(biz.lower()):
+        rest = t[len(biz):].lstrip(" :—-–|·")
+        if rest:
+            candidates.insert(0, rest[:100])
+    elif t and not _is_redundant_tagline(t, biz, title):
+        candidates.append(t[:100])
+
+    purpose = (deck_purpose or "").lower()
+    aud = (audience or "").lower()
+    bt = _clean(owner.get("business_type"))
+    if purpose == "investor_pitch" or "investor" in aud:
+        if bt:
+            candidates.append(f"{bt} — built for scalable growth"[:100])
+        elif hint := _clean(owner.get("business_description_hint")):
+            candidates.append(hint[:100])
+
+    for c in candidates:
+        if c and not _is_redundant_tagline(c, biz, title):
+            return c[:100]
+    return ""
+
+
 def _default_image_prompt(sd: Dict[str, Any], topic: str, idx: int) -> str:
     layout = (sd.get("layout") or ("title" if idx == 0 else "content")).lower()
     base = _LAYOUT_SCENES.get(layout, _LAYOUT_SCENES["content"])
@@ -1333,16 +1401,20 @@ def enrich_slide_plan(
         if layout == "title":
             if not _clean(sd.get("title")) and biz:
                 sd["title"] = biz
-            # Fill tagline only if it's not already the company name
             _biz_lower = (biz or "").strip().lower()
+            _slide_title = _clean(sd.get("title"))
             _existing_tag = _clean(sd.get("tagline") or "")
-            if _existing_tag and _existing_tag.lower() == _biz_lower:
-                sd["tagline"] = ""  # AI set it to company name — clear it
+            if _is_redundant_tagline(_existing_tag, biz, _slide_title):
+                sd["tagline"] = ""
             if not _clean(sd.get("tagline")):
-                if tagline and tagline.strip().lower() != _biz_lower:
-                    sd["tagline"] = tagline
-                elif topic and topic.strip().lower() != _biz_lower:
-                    sd["tagline"] = topic[:100]
+                sd["tagline"] = derive_slide_tagline(
+                    business_name=biz,
+                    title=_slide_title,
+                    topic=topic,
+                    audience=audience,
+                    deck_purpose=deck_purpose,
+                    owner=owner,
+                )
             if not _clean(sd.get("website")) and website:
                 sd["website"] = website
             if not _clean(sd.get("founder")) and owner_name:
@@ -1362,12 +1434,30 @@ def enrich_slide_plan(
                     sd["cta"] = "Start learning."
                 else:
                     sd["cta"] = "Let's connect."
-            if not _clean(sd.get("tagline")) and tagline and tagline.strip().lower() != _biz_lower:
-                sd["tagline"] = tagline
+            _closing_title = _clean(sd.get("title"))
+            if _is_redundant_tagline(_clean(sd.get("tagline") or ""), biz, _closing_title):
+                sd["tagline"] = ""
+            if not _clean(sd.get("tagline")):
+                sd["tagline"] = derive_slide_tagline(
+                    tagline=tagline,
+                    business_name=biz,
+                    title=_closing_title,
+                    topic=topic,
+                    audience=audience,
+                    deck_purpose=deck_purpose,
+                    owner=owner,
+                )
             if not _clean(sd.get("title")) and biz:
                 sd["title"] = biz
 
-        sd["body"] = existing_body[:3] if (existing_body := [_clean(b) for b in (sd.get("body") or []) if _clean(b)]) else _synthesize_body(sd)
+        _raw_body = [_clean(b) for b in (sd.get("body") or []) if _clean(b)]
+        if layout == "title":
+            # Cover slides use tagline, not bullets — never repeat the company name as a bullet.
+            _biz_lower = (biz or "").strip().lower()
+            _raw_body = [b for b in _raw_body if b.lower().strip("·.- ") != _biz_lower]
+            sd["body"] = _raw_body[:3]
+        else:
+            sd["body"] = _raw_body[:3] if _raw_body else _synthesize_body(sd)
 
         prompt = _clean(sd.get("image_prompt") or sd.get("image_concept"))
         if not prompt:
@@ -1454,14 +1544,21 @@ def finalize_slides_for_generation(
     out: List[Dict[str, Any]] = []
     for i, sd in enumerate(normalized):
         prompt = _default_image_prompt(sd, topic, i)
-        out.append({
+        # Preserve all rendering-relevant fields so edits (tagline, cta, contact, etc.) survive
+        slide_out: Dict[str, Any] = {
             "title": sd["title"],
             "layout": sd["layout"],
             "body": sd.get("body") or [],
             "is_title": sd["is_title"],
             "image_prompt": prompt,
             "image_concept": prompt,
-        })
+        }
+        for extra_key in ("tagline", "founder", "website", "cta", "contact",
+                          "subtitle", "stats", "items", "steps", "milestones",
+                          "left_items", "right_items", "columns", "features"):
+            if sd.get(extra_key):
+                slide_out[extra_key] = sd[extra_key]
+        out.append(slide_out)
     return out
 
 
@@ -1513,3 +1610,15 @@ def build_generation_reply(result: Dict[str, Any], slide_count: int) -> str:
             f"📄 **[Download presentation]({result['url']})**"
         )
     return "Presentation generation did not complete. Please try again."
+
+
+def build_regenerate_slide_reply(result: Dict[str, Any], slide_index: int) -> str:
+    if result.get("error"):
+        return f"Sorry — slide update failed: {result['error']}"
+    if result.get("success") and result.get("url"):
+        title = result.get("regenerated_slide_title") or f"Slide {slide_index + 1}"
+        return (
+            f"Updated **{title}** — the other slides are unchanged.\n\n"
+            f"📄 **[Download presentation]({result['url']})**"
+        )
+    return "Slide regeneration did not complete. Please try again."

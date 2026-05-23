@@ -1268,6 +1268,123 @@ export const assistantApi = {
     })();
     return stream;
   },
+  generatePresentationStream: (body: {
+    topic: string;
+    slides: Record<string, unknown>[];
+    conversation_id?: string | null;
+    message_index?: number;
+    edited?: boolean;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/presentation/generate/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  regeneratePresentationSlideStream: (body: {
+    conversation_id: string;
+    message_index: number;
+    slide_index: number;
+    instruction: string;
+    slides: Record<string, unknown>[];
+    image_urls: string[];
+    topic?: string;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/presentation/regenerate-slide/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  updatePresentationPlan: (body: {
+    conversation_id: string;
+    message_index: number;
+    topic: string;
+    slides: Record<string, unknown>[];
+  }) =>
+    api.post<{
+      success: boolean;
+      slides: Record<string, unknown>[];
+      topic: string;
+      user_edited: boolean;
+      saved_at: string;
+    }>("/assistant/presentation/plan/update", body),
   listDocuments: (conversationId: string) =>
     api.get<{ documents: AssistantDocument[] }>(
       `/assistant/conversations/${conversationId}/documents`

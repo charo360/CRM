@@ -6227,10 +6227,13 @@ async def regenerate_slide(ctx: ToolContext, args: Dict[str, Any]):
         "success": True,
         "url": result["url"],
         "slide_count": result["slide_count"],
+        "images_generated": result.get("images_generated", 0),
+        "topic": result.get("topic", topic),
         "regenerated_slide_index": slide_index,
         "deck_type": "photo",
         "slides": result.get("slides", slides_plan),
         "image_urls": result.get("image_urls", image_urls),
+        "ai_designed": True,
     }
 
 
@@ -7085,47 +7088,32 @@ def _detect_fabricated_facts(
     },
 )
 async def _presign_s3_url(url: str) -> str:
-    """Return a publicly accessible URL for a private S3 object.
+    """Return a publicly accessible URL for a private S3 object (stable proxy when possible).
 
-    Strategy (in order):
-    1. If BACKEND_PUBLIC_URL is set, return a proxy URL through our own server
-       (/api/images/s3/<key>) — most reliable, avoids S3 direct-access issues.
-    2. Otherwise generate an S3 presigned URL (GET, 1-hour TTL).
-    3. On any error, return the original URL unchanged (safe degradation).
+    Converts any S3 URL — including expired presigned links — to /api/images/s3 proxy.
     """
-    if not url or "amazonaws.com" not in url:
-        return url
-    # Already presigned — skip
-    if "X-Amz-Signature" in url or "x-amz-signature" in url:
+    if not url:
         return url
     try:
-        import os as _os
         from image_handler import S3Handler
-
+        resolved = S3Handler.resolve_accessible_url(url)
+        if resolved != url:
+            return resolved
+        if "amazonaws.com" not in url:
+            return url
         bucket, key = S3Handler.parse_s3_source_to_bucket_key(url)
+        if not key:
+            return url
         if not bucket:
+            import os as _os
             bucket = (_os.environ.get("AWS_BUCKET_NAME") or "").strip()
-
-        # Prefer backend proxy — external services can call our own endpoint
-        backend_url = (
-            _os.environ.get("BACKEND_PUBLIC_URL")
-            or _os.environ.get("PUBLIC_BASE_URL")
-            or ""
-        ).rstrip("/")
-        if backend_url and key:
-            proxy = f"{backend_url}/api/images/s3/{key}"
-            logger.debug("[_make_accessible_url] Using proxy URL for %s → %s", key[:60], proxy[:80])
-            return proxy
-
-        # Fallback: presign directly against S3
         import asyncio as _asyncio
-        presigned = await _asyncio.get_event_loop().run_in_executor(
+        return await _asyncio.get_event_loop().run_in_executor(
             None,
             lambda: S3Handler.generate_presigned_get_url(bucket, key, expires_in=3600),
         )
-        return presigned
     except Exception as _e:
-        logger.warning("[_make_accessible_url] Could not build accessible URL for %s: %s", url[:80], _e)
+        logger.warning("[_presign_s3_url] Could not build accessible URL for %s: %s", url[:80], _e)
         return url
 
 

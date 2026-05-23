@@ -41,11 +41,23 @@ import {
   Mail,
   Save,
   BookTemplate,
+  ChevronUp,
+  ChevronDown,
+  Trash2,
+  Plus,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { TemplateGallery } from "@/components/TemplateGallery";
 import { getBusinessId, getUser } from "@/lib/auth";
 import { downloadAsset } from "@/lib/utils";
+import {
+  clonePlanSlides,
+  isPlanSuperseded,
+  normalizeSlidesForGeneration,
+  planAwaitingApproval,
+  slidesPlanDirty,
+  type PlanSlide,
+} from "@/lib/presentationLoop";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -663,6 +675,286 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     }
   }
 
+  async function generatePresentationFromPlan(
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+    edited: boolean,
+  ) {
+    if (sending || sendingRef.current) return;
+    sendingRef.current = true;
+    setError(null);
+    setSending(true);
+    stopRequestedRef.current = false;
+    setStreamingText("");
+    setStreamingTools(["create_visual_presentation"]);
+    setStreamingAgentId("document");
+
+    const userLabel = edited
+      ? "✓ Approved edited slide plan — generate the presentation now."
+      : "✓ Approved slide plan — generate the presentation now.";
+
+    setMessages((prev) => [...prev, { role: "user", content: userLabel }]);
+
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    const payload = normalizeSlidesForGeneration(slides);
+
+    try {
+      const stream = assistantApi.generatePresentationStream({
+        topic,
+        slides: payload,
+        conversation_id: convId,
+        message_index: messageIndex,
+        edited,
+        signal: abortController.signal,
+      });
+      const reader = stream.getReader();
+      streamReaderRef.current = reader;
+
+      let fullReply = "";
+      let donePayload: AssistantChatResponse | null = null;
+
+      while (true) {
+        if (stopRequestedRef.current) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (stopRequestedRef.current) break;
+        try {
+          const event = JSON.parse(value) as {
+            type: string;
+            text?: string;
+            tool?: string;
+            agent?: string;
+            reply?: string;
+            steps?: AssistantStep[];
+            conversation_id?: string;
+            message?: string;
+            active_agent?: string;
+            active_agent_label?: string;
+          };
+
+          if (event.type === "thinking") {
+            if (event.agent) setStreamingAgentId(event.agent);
+          } else if (event.type === "tool_start") {
+            setStreamingTools((prev) => [...prev, event.tool ?? ""]);
+          } else if (event.type === "token") {
+            fullReply += event.text ?? "";
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
+          } else if (event.type === "done") {
+            donePayload = {
+              conversation_id: event.conversation_id ?? convId ?? "",
+              reply: event.reply ?? fullReply,
+              steps: event.steps ?? [],
+              model: null,
+              needs_confirmation: null,
+              active_agent: event.active_agent ?? "document",
+              active_agent_label: event.active_agent_label ?? "Document Writer",
+            };
+          } else if (event.type === "error") {
+            throw new Error(event.message ?? "Stream error");
+          }
+        } catch {
+          /* skip non-JSON */
+        }
+      }
+
+      if (!stopRequestedRef.current && donePayload) {
+        if (!convId) {
+          selfCreatedConvIdRef.current = donePayload.conversation_id;
+          setConvId(donePayload.conversation_id);
+          onConversationChange?.(donePayload.conversation_id);
+        }
+        if (donePayload.active_agent) setActiveAgent(donePayload.active_agent);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: donePayload!.reply,
+            steps: donePayload!.steps,
+            agent: donePayload!.active_agent,
+          },
+        ]);
+      } else if (!stopRequestedRef.current && fullReply) {
+        setMessages((prev) => [...prev, { role: "assistant", content: fullReply, agent: "document" }]);
+      }
+    } catch (e) {
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to generate presentation");
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          return last?.role === "user" && last.content === userLabel ? prev.slice(0, -1) : prev;
+        });
+      }
+    } finally {
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
+    }
+  }
+
+  async function regeneratePresentationSlide(
+    messageIndex: number,
+    slideIndex: number,
+    instruction: string,
+    slides: Record<string, unknown>[],
+    imageUrls: string[],
+    topic: string,
+  ) {
+    if (sending || sendingRef.current || !convId) return;
+    sendingRef.current = true;
+    setError(null);
+    setSending(true);
+    stopRequestedRef.current = false;
+    setStreamingText("");
+    setStreamingTools(["regenerate_slide"]);
+    setStreamingAgentId("document");
+
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const stream = assistantApi.regeneratePresentationSlideStream({
+        conversation_id: convId,
+        message_index: messageIndex,
+        slide_index: slideIndex,
+        instruction,
+        slides,
+        image_urls: imageUrls,
+        topic,
+        signal: abortController.signal,
+      });
+      const reader = stream.getReader();
+      streamReaderRef.current = reader;
+
+      let fullReply = "";
+      let donePayload: {
+        reply?: string;
+        steps?: AssistantStep[];
+        message_index?: number;
+      } | null = null;
+
+      while (true) {
+        if (stopRequestedRef.current) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (stopRequestedRef.current) break;
+        try {
+          const event = JSON.parse(value) as {
+            type: string;
+            text?: string;
+            reply?: string;
+            steps?: AssistantStep[];
+            message_index?: number;
+            message?: string;
+          };
+
+          if (event.type === "token") {
+            fullReply += event.text ?? "";
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
+          } else if (event.type === "done") {
+            donePayload = event;
+          } else if (event.type === "error") {
+            throw new Error(event.message ?? "Stream error");
+          }
+        } catch {
+          /* skip non-JSON */
+        }
+      }
+
+      if (!stopRequestedRef.current && donePayload?.steps?.length) {
+        const idx = donePayload.message_index ?? messageIndex;
+        setMessages((prev) =>
+          prev.map((m, i) =>
+            i === idx
+              ? {
+                  ...m,
+                  content: donePayload!.reply ?? m.content,
+                  steps: donePayload!.steps,
+                  agent: m.agent ?? "document",
+                }
+              : m,
+          ),
+        );
+        toast.success(`Slide ${slideIndex + 1} updated`);
+      } else if (!stopRequestedRef.current && donePayload?.reply) {
+        toast.success(donePayload.reply.replace(/\*\*/g, "").split("\n")[0]);
+      }
+    } catch (e) {
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to regenerate slide");
+        toast.error(e instanceof Error ? e.message : "Failed to regenerate slide");
+      }
+    } finally {
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
+    }
+  }
+
+  async function savePresentationPlan(
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+  ): Promise<boolean> {
+    if (!convId) {
+      toast.error("Conversation not ready — wait a moment and try again.");
+      return false;
+    }
+    try {
+      const payload = normalizeSlidesForGeneration(slides);
+      const res = await assistantApi.updatePresentationPlan({
+        conversation_id: convId,
+        message_index: messageIndex,
+        topic,
+        slides: payload,
+      });
+      setMessages((prev) => {
+        const msg = prev[messageIndex];
+        if (!msg?.steps) return prev;
+        const newSteps = msg.steps.map((s) => {
+          if (s.tool !== "plan_visual_presentation") return s;
+          const result = s.result as Record<string, unknown> | undefined;
+          if (!result?.plan_ready) return s;
+          return {
+            ...s,
+            result: {
+              ...result,
+              slides: res.slides,
+              topic: res.topic ?? topic,
+              user_edited: true,
+              saved_at: res.saved_at,
+            },
+          };
+        });
+        const next = [...prev];
+        next[messageIndex] = { ...msg, steps: newSteps };
+        return next;
+      });
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not save plan");
+      return false;
+    }
+  }
+
   // Merge integration-specific extras into the personalized prompts (keep max 8)
   const mergedPrompts = (() => {
     const extras: string[] = [];
@@ -892,7 +1184,17 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                     )}
                     <MessageBubble
                       msg={m}
+                      messageIndex={i}
+                      allMessages={messages}
+                      presentationBusy={sending}
                       onSuggestionSend={(text) => void send(text)}
+                      onGeneratePresentation={(messageIndex, topic, slides, edited) =>
+                        void generatePresentationFromPlan(messageIndex, topic, slides, edited)
+                      }
+                      onSavePresentationPlan={savePresentationPlan}
+                      onRegeneratePresentationSlide={(messageIndex, slideIndex, instruction, slides, imageUrls, topic) =>
+                        void regeneratePresentationSlide(messageIndex, slideIndex, instruction, slides, imageUrls, topic)
+                      }
                       onUserResend={
                         m.role === "user"
                           ? (editedText) => {
@@ -1777,11 +2079,39 @@ function EmailChatPreviewModal({
 
 function MessageBubble({
   msg,
+  messageIndex,
+  allMessages,
+  presentationBusy,
   onSuggestionSend,
+  onGeneratePresentation,
+  onSavePresentationPlan,
+  onRegeneratePresentationSlide,
   onUserResend,
 }: {
   msg: AssistantMessage;
+  messageIndex: number;
+  allMessages: AssistantMessage[];
+  presentationBusy?: boolean;
   onSuggestionSend?: (text: string) => void;
+  onGeneratePresentation?: (
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+    edited: boolean,
+  ) => void;
+  onSavePresentationPlan?: (
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+  ) => Promise<boolean>;
+  onRegeneratePresentationSlide?: (
+    messageIndex: number,
+    slideIndex: number,
+    instruction: string,
+    slides: Record<string, unknown>[],
+    imageUrls: string[],
+    topic: string,
+  ) => void;
   onUserResend?: (text: string) => void;
 }) {
   const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
@@ -1809,9 +2139,10 @@ function MessageBubble({
   const inlineOptions = useMemo(() => {
     if (msg.role !== "assistant") return null;
     if (inlineForm) return null;
+    if (planAwaitingApproval(allMessages, messageIndex)) return null;
     if (msg.suggestions && msg.suggestions.length > 0) return null;
     return extractInlineOptionList(msg.content ?? "");
-  }, [msg.role, msg.content, msg.suggestions, inlineForm]);
+  }, [msg.role, msg.content, msg.suggestions, inlineForm, allMessages, messageIndex]);
 
   async function handleExport(format: "pdf" | "docx") {
     if (!msg.content || exporting) return;
@@ -2052,8 +2383,20 @@ function MessageBubble({
               )}
             </div>
             <VideoPreview steps={msg.steps} />
-            <PresentationPlanPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
-            <PresentationPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
+            <PresentationPlanPreview
+              steps={msg.steps}
+              messageIndex={messageIndex}
+              superseded={isPlanSuperseded(allMessages, messageIndex)}
+              busy={presentationBusy}
+              onGeneratePresentation={onGeneratePresentation}
+              onSavePlan={onSavePresentationPlan}
+            />
+            <PresentationPreview
+              steps={msg.steps}
+              messageIndex={messageIndex}
+              presentationBusy={presentationBusy}
+              onRegenerateSlide={onRegeneratePresentationSlide}
+            />
             <DesignPreview steps={msg.steps} />
             <DocumentPreview steps={msg.steps} />
             <TemplateGalleryPreview steps={msg.steps} onSelect={(id, name) => onSuggestionSend?.(`Use template "${name}" — ID: ${id}`)} />
@@ -2720,7 +3063,26 @@ function PresentationPlanningCard() {
   );
 }
 
-function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: AssistantStep[]; onSuggestionSend?: (t: string) => void }) {
+function PresentationPlanPreview({
+  steps,
+  messageIndex,
+  superseded,
+  busy,
+  onGeneratePresentation,
+  onSavePlan,
+}: {
+  steps?: AssistantStep[];
+  messageIndex: number;
+  superseded?: boolean;
+  busy?: boolean;
+  onGeneratePresentation?: (
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+    edited: boolean,
+  ) => void;
+  onSavePlan?: (messageIndex: number, topic: string, slides: PlanSlide[]) => Promise<boolean>;
+}) {
   const step = useMemo(
     () =>
       [...(steps ?? [])].reverse().find(
@@ -2732,17 +3094,122 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
     [steps],
   );
 
-  if (!step) return null;
+  const result = step?.result as Record<string, unknown> | undefined;
+  const topic = (result?.topic as string) ?? "Presentation";
+  const styleNote = (result?.style_note as string | undefined) ?? "";
+  const audience = (result?.audience as string | undefined) ?? "";
 
-  const result = step.result as Record<string, unknown>;
-  const topic = (result.topic as string) ?? "Presentation";
-  const slides = (result.slides as Array<Record<string, unknown>>) ?? [];
-  const styleNote = (result.style_note as string | undefined) ?? "";
-  const audience = (result.audience as string | undefined) ?? "";
+  const [editing, setEditing] = useState(false);
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [committedSlides, setCommittedSlides] = useState<PlanSlide[]>([]);
+  const [draftSlides, setDraftSlides] = useState<PlanSlide[]>([]);
+  const [planSaved, setPlanSaved] = useState(false);
+
+  useEffect(() => {
+    if (!step || editing) return;
+    const nextSlides =
+      ((step.result as Record<string, unknown>)?.slides as PlanSlide[] | undefined) ?? [];
+    const cloned = clonePlanSlides(nextSlides);
+    setCommittedSlides(cloned);
+    setDraftSlides(clonePlanSlides(cloned));
+    setPlanSaved(Boolean(result?.user_edited));
+  }, [step, result?.user_edited, result?.saved_at, editing]);
+
+  if (!step || superseded) return null;
+
+  const slides = editing ? draftSlides : committedSlides;
+  const editDirty = slidesPlanDirty(committedSlides, draftSlides);
+
+  function startEditing() {
+    setDraftSlides(clonePlanSlides(committedSlides));
+    setEditing(true);
+  }
+
+  function cancelEditing() {
+    setDraftSlides(clonePlanSlides(committedSlides));
+    setEditing(false);
+  }
+
+  async function updatePlan() {
+    if (!onSavePlan || savingPlan) return;
+    const normalized = normalizeSlidesForGeneration(draftSlides);
+    const next = clonePlanSlides(normalized);
+    setSavingPlan(true);
+    const ok = await onSavePlan(messageIndex, topic, next);
+    setSavingPlan(false);
+    if (!ok) return;
+    setCommittedSlides(next);
+    setDraftSlides(clonePlanSlides(next));
+    setPlanSaved(true);
+    setEditing(false);
+    toast.success("Plan saved");
+  }
+
+  function updateSlide(index: number, patch: Partial<PlanSlide>) {
+    setDraftSlides((prev) => prev.map((s, i) => (i === index ? { ...s, ...patch } : s)));
+  }
+
+  function moveSlide(index: number, direction: -1 | 1) {
+    setDraftSlides((prev) => {
+      const next = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next.map((s, i) => ({ ...s, is_title: i === 0 }));
+    });
+  }
+
+  function removeSlide(index: number) {
+    setDraftSlides((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((_, i) => i !== index);
+      if (next[0]) next[0] = { ...next[0], is_title: true };
+      return next;
+    });
+  }
+
+  function addSlide() {
+    setDraftSlides((prev) => [
+      ...prev,
+      {
+        title: `Slide ${prev.length + 1}`,
+        layout: "content",
+        body: [""],
+        image_prompt: "",
+      },
+    ]);
+  }
+
+  async function approvePlan() {
+    if (!onGeneratePresentation || busy || savingPlan) return;
+
+    let slidesToGenerate = normalizeSlidesForGeneration(committedSlides);
+    let wasEdited = planSaved;
+
+    if (editing || editDirty) {
+      if (!onSavePlan) return;
+      const normalized = normalizeSlidesForGeneration(draftSlides);
+      const next = clonePlanSlides(normalized);
+      setSavingPlan(true);
+      const ok = await onSavePlan(messageIndex, topic, next);
+      setSavingPlan(false);
+      if (!ok) {
+        toast.error("Save your edits with Update plan before generating.");
+        return;
+      }
+      setCommittedSlides(next);
+      setDraftSlides(clonePlanSlides(next));
+      setPlanSaved(true);
+      setEditing(false);
+      slidesToGenerate = normalizeSlidesForGeneration(next);
+      wasEdited = true;
+    }
+
+    onGeneratePresentation(messageIndex, topic, slidesToGenerate, wasEdited);
+  }
 
   return (
     <div className="mt-3 overflow-hidden rounded-xl border border-brand/30 shadow-sm">
-      {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-brand/20 bg-brand/5 px-3 py-2.5">
         <div className="flex items-center gap-2">
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand" aria-hidden>
@@ -2751,20 +3218,95 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
           <span className="text-[12px] font-semibold text-slate-800">{topic}</span>
           {audience && <span className="text-[10px] text-slate-500">· for {audience}</span>}
         </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand-dark">
-            {slides.length} slides · awaiting approval
-          </span>
-        </div>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+          busy
+            ? "bg-brand/15 text-brand-dark"
+            : editing
+              ? "bg-amber-100 text-amber-800"
+              : "bg-brand/15 text-brand-dark"
+        }`}>
+          {busy
+            ? `${slides.length} slides · generating…`
+            : editing
+              ? `${slides.length} slides · editing`
+              : planSaved
+                ? `${slides.length} slides · saved`
+                : `${slides.length} slides · review & approve`}
+        </span>
       </div>
 
-      {/* Slide list */}
       <div className="divide-y divide-slate-100 bg-white">
         {slides.map((s, i) => {
           const title = (s.title as string) ?? `Slide ${i + 1}`;
           const body = (s.body as string[] | undefined) ?? [];
-          const imageConcept = (s.image_concept as string | undefined) ?? "";
-          const isTitle = Boolean(s.is_title);
+          const tagline = (s.tagline as string | undefined) ?? "";
+          const layout = (s.layout as string | undefined) ?? "";
+          const imageConcept =
+            (s.image_prompt as string | undefined) ||
+            (s.image_concept as string | undefined) ||
+            "";
+          const isTitle = Boolean(s.is_title) || layout === "title" || i === 0;
+          const isClosing = layout === "closing";
+
+          if (editing) {
+            return (
+              <div key={i} className="px-3 py-3">
+                <div className="flex items-start gap-2">
+                  <span className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold ${isTitle ? "bg-brand text-white" : "bg-slate-100 text-slate-500"}`}>
+                    {isTitle ? "★" : i + 1}
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <input
+                      type="text"
+                      value={title}
+                      onChange={(e) => updateSlide(i, { title: e.target.value })}
+                      placeholder="Slide title"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-slate-800 focus:border-brand/50 focus:outline-none"
+                    />
+                    {(isTitle || isClosing) && (
+                      <input
+                        type="text"
+                        value={tagline}
+                        onChange={(e) => updateSlide(i, { tagline: e.target.value })}
+                        placeholder="Tagline (one-line pitch)"
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-700 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none"
+                      />
+                    )}
+                    {!isTitle && (
+                      <textarea
+                        value={body.join("\n")}
+                        onChange={(e) => updateSlide(i, { body: e.target.value.split("\n") })}
+                        rows={Math.max(2, Math.min(body.length || 2, 5))}
+                        placeholder="One bullet per line"
+                        className="w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-700 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none"
+                      />
+                    )}
+                    <input
+                      type="text"
+                      value={imageConcept}
+                      onChange={(e) =>
+                        updateSlide(i, { image_prompt: e.target.value, image_concept: e.target.value })
+                      }
+                      placeholder="Background scene (optional)"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[10.5px] text-slate-600 placeholder:text-slate-400 focus:border-brand/50 focus:outline-none"
+                    />
+                    <div className="flex items-center gap-1">
+                      <button type="button" disabled={i === 0} onClick={() => moveSlide(i, -1)} className="rounded border border-slate-200 p-1 text-slate-500 hover:bg-slate-50 disabled:opacity-30" title="Move up">
+                        <ChevronUp size={12} />
+                      </button>
+                      <button type="button" disabled={i === slides.length - 1} onClick={() => moveSlide(i, 1)} className="rounded border border-slate-200 p-1 text-slate-500 hover:bg-slate-50 disabled:opacity-30" title="Move down">
+                        <ChevronDown size={12} />
+                      </button>
+                      <button type="button" disabled={slides.length <= 1} onClick={() => removeSlide(i)} className="ml-auto rounded border border-red-200 p-1 text-red-500 hover:bg-red-50 disabled:opacity-30" title="Remove slide">
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div key={i} className="px-3 py-2.5">
               <div className="flex items-start gap-2">
@@ -2773,7 +3315,10 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-[12.5px] font-semibold text-slate-800">{title}</p>
-                  {body.length > 0 && (
+                  {tagline && (isTitle || isClosing) && (
+                    <p className="mt-0.5 text-[11px] font-medium italic text-brand-dark/90">{tagline}</p>
+                  )}
+                  {!isTitle && body.length > 0 && (
                     <ul className="mt-0.5 space-y-0.5">
                       {body.slice(0, 4).map((b, bi) => (
                         <li key={bi} className="text-[11px] text-slate-500">· {b}</li>
@@ -2793,31 +3338,90 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
         })}
       </div>
 
-      {/* Visual style note */}
-      {styleNote && (
+      {editing && (
+        <div className="border-t border-slate-100 bg-white px-3 py-2">
+          <button
+            type="button"
+            onClick={addSlide}
+            className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:border-brand/40 hover:text-brand-dark"
+          >
+            <Plus size={12} />
+            Add slide
+          </button>
+        </div>
+      )}
+
+      {planSaved && !editing && !busy && (
+        <div className="border-t border-emerald-100 bg-emerald-50 px-3 py-2 text-[10.5px] text-emerald-800">
+          <span className="font-semibold">Plan saved</span>
+          {" — "}Your edits are stored in this conversation. Approve &amp; generate when ready.
+        </div>
+      )}
+
+      {styleNote && !editing && (
         <div className="border-t border-slate-100 bg-slate-50 px-3 py-2 text-[10.5px] text-slate-500">
           <span className="font-medium text-slate-600">Visual style:</span> {styleNote}
         </div>
       )}
 
-      {/* Action buttons */}
-      {onSuggestionSend && (
-        <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2.5">
-          <span className="text-[10.5px] text-slate-500">Happy with this plan?</span>
-          <button
-            type="button"
-            onClick={() => onSuggestionSend("Looks great, go ahead and generate all the slides")}
-            className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-brand-dark transition"
-          >
-            ✓ Approve &amp; Generate
-          </button>
-          <button
-            type="button"
-            onClick={() => onSuggestionSend("I'd like to make some changes to the slide plan")}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800 transition"
-          >
-            Edit plan
-          </button>
+      {onGeneratePresentation && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2.5">
+          {editing ? (
+            <>
+              <span className="text-[10.5px] text-slate-500">Edit slides below, then save.</span>
+              <button
+                type="button"
+                disabled={busy || savingPlan || !editDirty}
+                onClick={() => void updatePlan()}
+                className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-brand-dark transition disabled:opacity-50"
+              >
+                <span className="inline-flex items-center gap-1">
+                  {savingPlan ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+                  {savingPlan ? "Saving…" : "Update plan"}
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={cancelEditing}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800 transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="text-[10.5px] text-slate-500">
+                {busy ? "Building your AI-designed deck…" : planSaved ? "Your edits are saved — generate when ready." : "Happy with this plan?"}
+              </span>
+              <button
+                type="button"
+                disabled={busy || savingPlan}
+                onClick={() => void approvePlan()}
+                className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-brand-dark transition disabled:opacity-50"
+              >
+                {busy ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Loader2 size={11} className="animate-spin" />
+                    Generating…
+                  </span>
+                ) : (
+                  <>✓ Approve &amp; Generate</>
+                )}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={startEditing}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800 transition disabled:opacity-50"
+              >
+                <span className="inline-flex items-center gap-1">
+                  <PencilLine size={11} />
+                  Edit plan
+                </span>
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -2886,7 +3490,24 @@ function PresentationRenderingCard() {
   );
 }
 
-function PresentationPreview({ steps, onSuggestionSend }: { steps?: AssistantStep[]; onSuggestionSend?: (t: string) => void }) {
+function PresentationPreview({
+  steps,
+  messageIndex,
+  presentationBusy,
+  onRegenerateSlide,
+}: {
+  steps?: AssistantStep[];
+  messageIndex: number;
+  presentationBusy?: boolean;
+  onRegenerateSlide?: (
+    messageIndex: number,
+    slideIndex: number,
+    instruction: string,
+    slides: Record<string, unknown>[],
+    imageUrls: string[],
+    topic: string,
+  ) => void;
+}) {
   // Always pick the LATEST successful presentation result (create or regenerate)
   const step = useMemo(
     () =>
@@ -2914,18 +3535,17 @@ function PresentationPreview({ steps, onSuggestionSend }: { steps?: AssistantSte
 
   function handleRegenerate(index: number) {
     const instruction = (inputs[index] || "").trim();
-    if (!instruction || !onSuggestionSend) return;
+    if (!instruction || !onRegenerateSlide) return;
     setRegenerating(index);
-    const slideTitle = (slides[index]?.title as string | undefined) ?? `slide ${index + 1}`;
-    // Build a natural message the AI will parse to call regenerate_slide
-    const slidesJson = JSON.stringify(slides);
-    const urlsJson = JSON.stringify(imageUrls);
-    onSuggestionSend(
-      `Regenerate slide ${index + 1} ("${slideTitle}") with this instruction: ${instruction}. ` +
-      `Use slides=${slidesJson} and image_urls=${urlsJson} and topic="${topic}".`
-    );
+    onRegenerateSlide(messageIndex, index, instruction, slides, imageUrls, topic);
     setInputs(prev => ({ ...prev, [index]: "" }));
   }
+
+  useEffect(() => {
+    if (!presentationBusy && regenerating !== null) {
+      setRegenerating(null);
+    }
+  }, [presentationBusy, regenerating]);
 
   return (
     <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
@@ -2979,12 +3599,12 @@ function PresentationPreview({ steps, onSuggestionSend }: { steps?: AssistantSte
                         onChange={e => setInputs(prev => ({ ...prev, [i]: e.target.value }))}
                         onKeyDown={e => { if (e.key === "Enter" && !isRegenerating) handleRegenerate(i); }}
                         placeholder={`Change slide ${i + 1} background…`}
-                        disabled={isRegenerating || !onSuggestionSend}
+                        disabled={isRegenerating || !onRegenerateSlide || presentationBusy}
                         className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-800 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none disabled:opacity-50"
                       />
                       <button
                         type="button"
-                        disabled={!(inputs[i] || "").trim() || isRegenerating || !onSuggestionSend}
+                        disabled={!(inputs[i] || "").trim() || isRegenerating || !onRegenerateSlide || presentationBusy}
                         onClick={() => handleRegenerate(i)}
                         className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 text-[11px] font-semibold text-brand-dark transition hover:bg-brand/20 disabled:opacity-40"
                       >

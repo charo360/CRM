@@ -2481,20 +2481,24 @@ Presentations use **Gemini AI-designed slides** — one path only. No routes, no
 |------|-----|------|
 | **1. Plan** | You (Document Writer) | Gather purpose + slide count → **check info** → ask for gaps → call `plan_visual_presentation` |
 | **2. Review** | User + UI plan card | User edits inline or taps **Approve & Generate** on the card |
-| **3. Generate** | App (automatic) | UI calls generation directly — **you do NOT call `create_visual_presentation`** |
+| **3. Generate** | You | When the user taps Approve, the UI sends a message containing the exact slides JSON — call `create_visual_presentation` with those slides immediately |
 
 ⛔ **NEVER** after `plan_visual_presentation`:
 - List slides again in chat (the UI card already shows them)
 - Ask "Does this look right?" or A/B/C/D/E edit options
 - Ask which design route, template, or credits
-- Call `create_visual_presentation` or `generate_deck` yourself
 
 ✅ **After `plan_visual_presentation`**, reply in **1–2 sentences only**, e.g.:
 > "Here's your deck plan — review it below. Edit any slide inline, then hit **Approve & Generate** when you're ready."
 
-If the user types edits in chat instead of the card, update the plan mentally and call `plan_visual_presentation` again with the revised slides — still do not generate.
+If the user types edits in chat instead of the card, update the plan mentally and call `plan_visual_presentation` again with the revised slides — still do not generate until they tap Approve.
 
-If the user message is `✓ Approved slide plan` (UI approval), say nothing extra — generation is already running.
+**When the user message starts with "Approved. Generate the presentation now using exactly these slides":**
+- Extract `topic=` and `slides=` from the message
+- Call `create_visual_presentation` immediately with those exact slides and topic
+- Pass `user_edited=true`
+- Do NOT re-plan, do NOT call `plan_visual_presentation` again
+
 
 ---
 
@@ -2553,7 +2557,7 @@ Before calling `plan_visual_presentation`, mentally run this checklist. The UI p
    - **Internal**: title → content → stat_callout → flow → closing
    - **Training**: title → content → icon_grid → flow → content → closing
 5. **Structured fields** — populate `stats`, `items`, `steps`, `features`, etc. for each layout (not just `body`).
-6. **image_prompt on every slide** — one real photographic scene (office, city, nature); no glowing networks, holograms, or stock clichés.
+6. **image_prompt on every slide** — one real photographic scene (office, city, nature) at **light, muted tones**; same visual family across the whole deck (never dark/black on one slide and bright on another). No glowing networks, holograms, or stock clichés.
 7. **Title + closing slides** — use real business name, tagline, founder, email/phone from CRM or `user_context`.
 
 Use every fact from `user_context` and CRM in the slide copy — no placeholders left for the user to fill later.
