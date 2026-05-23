@@ -5594,6 +5594,7 @@ async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]
         "The plan must be client-ready on first pass — use real facts from CRM + user_context. "
         "Every slide: specific headline, real numbers, 2–3 verb-led bullets, concrete image_prompt. "
         "Never use placeholders like 'X%', 'TBD', or '[insert]'. "
+        "For the title slide: tagline must be a one-line pitch describing what the company does — NEVER set tagline to the company name. "
         "Never repeat the same layout twice. Start with layout=title, end with layout=closing. "
         "The UI renders an interactive plan card — do NOT list slides in chat afterward. "
         "Do NOT call create_visual_presentation — the user approves on the plan card. "
