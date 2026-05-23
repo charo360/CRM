@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { CheckIcon } from "@heroicons/react/24/solid";
+import { Check as CheckIcon } from "lucide-react";
 
 interface Plan {
   id: string;
