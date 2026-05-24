@@ -1,0 +1,273 @@
+"use client";
+
+/**
+ * MeetingOverlay — floating card that auto-appears 2 min before a calendar meeting.
+ * Recording: getDisplayMedia (tab audio) + getUserMedia (mic) mixed via AudioContext.
+ * Transcription: Deepgram Nova-2 streaming — real-time words with speaker labels.
+ * After stop: speaker tagging UI appears immediately (no post-processing wait).
+ */
+
+import { useEffect, useRef, useState } from "react";
+import { smartNotesApi } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { useMeetingRecorder } from "@/hooks/useMeetingRecorder";
+
+interface Meeting {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  meet_url: string;
+  attendees: string[];
+  description: string;
+}
+
+const POLL_MS     = 60_000;
+const SHOW_BEFORE = 2 * 60 * 1000;
+
+export default function MeetingOverlay() {
+  const router = useRouter();
+  const rec = useMeetingRecorder();
+
+  const [meeting,   setMeeting]   = useState<Meeting | null>(null);
+  const [isUpcoming,setIsUpcoming]= useState(false);
+  const [countdown, setCountdown] = useState("");
+  const [expanded,  setExpanded]  = useState(false);
+
+  const activeMeetingRef = useRef<Meeting | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll live transcript
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [rec.liveTranscript]);
+
+  // Calendar polling — stop when actively recording
+  const checkUpcoming = async () => {
+    if (rec.recordState !== "idle") return;
+    try {
+      const res = await smartNotesApi.upcoming();
+      if (!res.connected) return;
+      const now = Date.now();
+      for (const raw of res.meetings) {
+        const m = raw as unknown as Meeting;
+        if (!m.meet_url) continue;
+        const startMs = new Date(m.start).getTime();
+        const endMs   = new Date(m.end).getTime();
+        if (now > endMs) continue;
+        if (startMs - now <= SHOW_BEFORE && now < endMs) {
+          if (activeMeetingRef.current?.id !== m.id) {
+            activeMeetingRef.current = m;
+            setMeeting(m);
+            setIsUpcoming(true);
+          }
+          return;
+        }
+      }
+    } catch { /* silent */ }
+  };
+
+  useEffect(() => {
+    checkUpcoming();
+    const iv = setInterval(checkUpcoming, POLL_MS);
+    return () => clearInterval(iv);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rec.recordState]);
+
+  // Countdown to meeting start
+  useEffect(() => {
+    if (!isUpcoming || !meeting) return;
+    const update = () => {
+      const diff = new Date(meeting.start).getTime() - Date.now();
+      if (diff <= 0) { setCountdown("Starting now"); return; }
+      setCountdown(`${Math.floor(diff / 60_000)}:${String(Math.floor((diff % 60_000) / 1000)).padStart(2, "0")}`);
+    };
+    update();
+    const iv = setInterval(update, 1_000);
+    return () => clearInterval(iv);
+  }, [isUpcoming, meeting]);
+
+  const handleJoinRecord = async () => {
+    if (!meeting) return;
+    if (meeting.meet_url) window.open(meeting.meet_url, "_blank");
+    setIsUpcoming(false);
+    setExpanded(true);
+    await rec.startRecording({
+      id: meeting.id, title: meeting.title,
+      start: meeting.start, end: meeting.end,
+      meet_url: meeting.meet_url, attendees: meeting.attendees,
+    });
+  };
+
+  const dismiss = () => {
+    rec.reset();
+    setMeeting(null); setIsUpcoming(false);
+    activeMeetingRef.current = null;
+    setCountdown(""); setExpanded(false);
+  };
+
+  const isVisible = isUpcoming || rec.recordState !== "idle";
+  if (!isVisible || !meeting) return null;
+
+  const { recordState, elapsed, liveTranscript, interimText, statusMsg, segments, speakerTags, setSpeakerTags, error } = rec;
+  const isRecording = recordState === "recording";
+  const speakerList = Object.keys(speakerTags);
+  const attendeeOptions = ["You", ...meeting.attendees.map(e => e.split("@")[0])];
+
+  return (
+    <div className={`fixed bottom-6 right-6 z-[9999] rounded-2xl shadow-2xl border border-gray-200 bg-white overflow-hidden transition-all duration-200 ${
+      (expanded && isRecording) || recordState === "tagging" ? "w-96" : "w-80"
+    }`}>
+      {/* Header */}
+      <div className={`px-4 py-3 flex items-center justify-between ${isRecording ? "bg-red-600" : "bg-brand-dark"}`}>
+        <div className="flex items-center gap-2">
+          {isRecording && <span className="w-2 h-2 rounded-full bg-white animate-pulse" />}
+          <span className="text-white text-sm font-semibold">
+            {isUpcoming              ? "Upcoming meeting" :
+             isRecording             ? `Recording · ${elapsed}` :
+             recordState === "tagging"    ? `Tag speakers (${speakerList.length} found)` :
+             recordState === "processing" ? "Generating notes…" :
+             recordState === "done"       ? "Notes ready" :
+             recordState === "error"      ? "Error" : "Meeting"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {isRecording && (
+            <button
+              onClick={() => setExpanded(v => !v)}
+              className="text-white/70 hover:text-white text-xs border border-white/30 rounded px-1.5 py-0.5"
+            >
+              {expanded ? "−" : "live"}
+            </button>
+          )}
+          <button onClick={dismiss} className="text-white/80 hover:text-white text-lg leading-none">×</button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="px-4 py-3 space-y-3">
+        <p className="text-sm font-medium text-gray-900 truncate">{meeting.title}</p>
+
+        {/* Live transcript — real-time Deepgram words */}
+        {isRecording && expanded && (
+          <div className="bg-gray-50 rounded-lg p-2.5 h-40 overflow-y-auto">
+            {liveTranscript || interimText ? (
+              <>
+                <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap">{liveTranscript}</p>
+                {interimText && <p className="text-xs text-gray-400 italic">{interimText}</p>}
+                <div ref={transcriptEndRef} />
+              </>
+            ) : (
+              <p className="text-xs text-gray-400 italic">
+                {statusMsg || "Listening… words appear as you speak."}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Upcoming — show countdown + Join & Record button */}
+        {isUpcoming && (
+          <>
+            <p className="text-xs text-gray-500">Starts in <span className="font-semibold text-brand-dark">{countdown}</span></p>
+            {meeting.attendees.length > 0 && (
+              <p className="text-xs text-gray-400 truncate">
+                With: {meeting.attendees.slice(0, 3).join(", ")}
+                {meeting.attendees.length > 3 && ` +${meeting.attendees.length - 3}`}
+              </p>
+            )}
+            <button
+              onClick={handleJoinRecord}
+              className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors"
+            >
+              Join &amp; Record
+            </button>
+            <p className="text-[10px] text-gray-400 text-center">Opens meeting · captures mic + tab audio</p>
+          </>
+        )}
+
+        {/* Recording — stop button */}
+        {isRecording && (
+          <button
+            onClick={rec.stopRecording}
+            className="w-full py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors"
+          >
+            Stop &amp; Tag Speakers
+          </button>
+        )}
+
+        {/* Speaker tagging — immediate after stop (no AssemblyAI wait) */}
+        {recordState === "tagging" && (
+          <div className="space-y-2">
+            <p className="text-xs text-gray-400">Assign names to each voice — then generate your notes.</p>
+            {speakerList.map(spk => {
+              const preview = segments.find(s => s.speaker === spk)?.text ?? "";
+              return (
+                <div key={spk} className="space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-6 h-6 rounded-full bg-brand-dark flex items-center justify-center text-[10px] font-bold text-white shrink-0">
+                      {spk}
+                    </div>
+                    <p className="text-[10px] text-gray-400 italic truncate flex-1">&ldquo;{preview}&rdquo;</p>
+                  </div>
+                  <input
+                    type="text"
+                    list={`spk-${spk}-list`}
+                    value={speakerTags[spk] ?? ""}
+                    onChange={e => setSpeakerTags(prev => ({ ...prev, [spk]: e.target.value }))}
+                    placeholder="Enter name"
+                    className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                  />
+                  <datalist id={`spk-${spk}-list`}>
+                    {attendeeOptions.map(opt => <option key={opt} value={opt} />)}
+                  </datalist>
+                </div>
+              );
+            })}
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={rec.generateWithSpeakers}
+                className="flex-1 py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors"
+              >
+                Generate with Speakers
+              </button>
+              <button
+                onClick={rec.generateWithPlainTranscript}
+                className="px-3 py-2 rounded-lg border border-gray-200 text-gray-500 text-xs hover:bg-gray-50 transition-colors"
+              >
+                Skip
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Processing */}
+        {recordState === "processing" && (
+          <div className="flex items-center justify-center gap-2 py-2">
+            <div className="w-4 h-4 border-2 border-brand-dark border-t-transparent rounded-full animate-spin" />
+            <p className="text-xs text-gray-500">Building structured notes…</p>
+          </div>
+        )}
+
+        {/* Done */}
+        {recordState === "done" && (
+          <>
+            <p className="text-xs text-green-700">Notes saved.</p>
+            {rec.savedNote && (
+              <button
+                onClick={() => { router.push("/dashboard/smart-notes"); dismiss(); }}
+                className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors"
+              >
+                View Notes
+              </button>
+            )}
+          </>
+        )}
+
+        {/* Error */}
+        {recordState === "error" && (
+          <p className="text-xs text-red-600">{error || "Something went wrong."}</p>
+        )}
+      </div>
+    </div>
+  );
+}

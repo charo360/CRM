@@ -12,16 +12,16 @@ class CentralizedKnowledgeBase:
     def __init__(self):
         # Hardcoded business rules for now, can be moved to DB settings later
         self.business_rules = {
-            "opening_hours": "Mon-Fri: 8am - 6pm, Sat: 9am - 4pm, Sun: Closed",
-            "delivery_policy": "Delivery within Nairobi is 200 KES. Countrywide delivery available via Fargo/G4S.",
-            "payment_methods": "M-Pesa (Till Number 123456), Bank Transfer, Cash on Delivery (within CBD only).",
-            "return_policy": "Returns accepted within 3 days if item is unused and in original packaging."
+            "opening_hours": "Mon-Fri: 9am - 6pm, Sat: 10am - 4pm, Sun: Closed",
+            "delivery_policy": "Local delivery available. Nationwide shipping via standard courier.",
+            "payment_methods": "Credit/Debit Card, Bank Transfer, Cash on Delivery.",
+            "return_policy": "Returns accepted within 7 days if item is unused and in original packaging."
         }
-        
+
         # Common FAQs
         self.faqs = {
-            "location": "We are located at CBD, Moi Avenue, Bazaar Plaza, 3rd Floor.",
-            "contacts": "Call or WhatsApp us on 0712345678."
+            "location": "Please contact us for our address details.",
+            "contacts": "Reach us via phone or WhatsApp for the fastest response."
         }
 
     async def get_context(self, db, query=None) -> Dict[str, Any]:

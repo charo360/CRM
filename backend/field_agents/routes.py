@@ -52,11 +52,18 @@ class CheckIn(BaseModel):
     location_note: str = ""
     notes: str = ""
 
+class CommissionSettings(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    commission_type: str = "none"   # none | percentage | per_lead
+    commission_rate: float = 0.0
+
 class CheckOut(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     outcome: str = ""
     notes: str = ""
     status: str = "completed"   # completed | missed
+    amount_collected: Optional[float] = None   # for collect_payment tasks
+    payment_method: str = "cash"               # cash | card | bank_transfer | mobile_money | other
 
 # ── Router factory ─────────────────────────────────────────────────────────────
 
@@ -94,10 +101,33 @@ def make_field_agents_router(db, user_dep):
         rows = await db.field_agent_tasks.aggregate(pipeline).to_list(200)
         counts = {r["_id"]: r for r in rows}
 
+        # Per-agent collection totals from finance_entries
+        fin_pipeline = [
+            {"$match": {"user_id": tid, "source": "field_agent", "type": "income"}},
+            {"$group": {
+                "_id": "$agent_id",
+                "total_collected":  {"$sum": "$amount"},
+                "collection_count": {"$sum": 1},
+            }},
+        ]
+        fin_rows = await db.finance_entries.aggregate(fin_pipeline).to_list(200)
+        collections = {r["_id"]: r for r in fin_rows}
+
         result = []
         for m in members:
-            agent_id = str(m["_id"])
-            c = counts.get(agent_id, {"total": 0, "pending": 0, "completed": 0, "overdue": 0})
+            agent_id       = str(m["_id"])
+            c              = counts.get(agent_id, {"total": 0, "pending": 0, "completed": 0, "overdue": 0})
+            fc             = collections.get(agent_id, {"total_collected": 0.0, "collection_count": 0})
+            total_collected = round(fc["total_collected"], 2)
+            comm_type  = m.get("commission_type", "none")
+            comm_rate  = float(m.get("commission_rate", 0) or 0)
+            leads_done = c["completed"]
+            if comm_type == "percentage":
+                commission_earned = round(total_collected * comm_rate / 100, 2)
+            elif comm_type == "per_lead":
+                commission_earned = round(leads_done * comm_rate, 2)
+            else:
+                commission_earned = 0.0
             result.append({
                 "id": agent_id,
                 "name": m.get("name", ""),
@@ -109,6 +139,11 @@ def make_field_agents_router(db, user_dep):
                 "tasks_pending": c["pending"],
                 "tasks_completed": c["completed"],
                 "tasks_overdue": c["overdue"],
+                "total_collected":  total_collected,
+                "collection_count": fc["collection_count"],
+                "commission_type":  comm_type,
+                "commission_rate":  comm_rate,
+                "commission_earned": commission_earned,
             })
         return result
 
@@ -126,6 +161,21 @@ def make_field_agents_router(db, user_dep):
             {"user_id": tid, "agent_id": agent_id},
             sort=[("checked_in_at", -1)]
         ).to_list(50)
+        fin_rows = await db.finance_entries.aggregate([
+            {"$match": {"user_id": tid, "agent_id": agent_id, "source": "field_agent", "type": "income"}},
+            {"$group": {"_id": None, "total_collected": {"$sum": "$amount"}, "collection_count": {"$sum": 1}}},
+        ]).to_list(1)
+        fc = fin_rows[0] if fin_rows else {"total_collected": 0.0, "collection_count": 0}
+        total_collected = round(fc["total_collected"], 2)
+        comm_type = m.get("commission_type", "none")
+        comm_rate = float(m.get("commission_rate", 0) or 0)
+        completed_count = sum(1 for t in tasks if t.get("status") == "completed")
+        if comm_type == "percentage":
+            commission_earned = round(total_collected * comm_rate / 100, 2)
+        elif comm_type == "per_lead":
+            commission_earned = round(completed_count * comm_rate, 2)
+        else:
+            commission_earned = 0.0
         return {
             "id": agent_id,
             "name": m.get("name", ""),
@@ -133,9 +183,29 @@ def make_field_agents_router(db, user_dep):
             "phone_number": m.get("phone_number", ""),
             "role": m.get("role", "employee"),
             "status": m.get("status", "active"),
+            "commission_type": comm_type,
+            "commission_rate": comm_rate,
+            "commission_earned": commission_earned,
+            "total_collected": total_collected,
+            "collection_count": fc["collection_count"],
             "tasks": [_ser(t) for t in tasks],
             "checkins": [_ser(c) for c in checkins],
         }
+
+    @router.put("/agents/{agent_id}/commission")
+    async def set_commission(agent_id: str, payload: CommissionSettings, user=user_dep):
+        tid = _tid(user)
+        m = await db.team_members.find_one({"_id": agent_id, "business_id": tid})
+        if not m: raise HTTPException(404, "Agent not found")
+        if payload.commission_type not in ("none", "percentage", "per_lead"):
+            raise HTTPException(400, "commission_type must be none | percentage | per_lead")
+        await db.team_members.update_one(
+            {"_id": agent_id},
+            {"$set": {"commission_type": payload.commission_type,
+                      "commission_rate": round(payload.commission_rate, 4),
+                      "updated_at": datetime.utcnow()}}
+        )
+        return {"commission_type": payload.commission_type, "commission_rate": payload.commission_rate}
 
     # ── Tasks ────────────────────────────────────────────────────────────────
 
@@ -193,7 +263,7 @@ def make_field_agents_router(db, user_dep):
         }
         await db.field_agent_tasks.insert_one(doc)
         await _log_activity(db, tid, payload.assigned_to, agent.get("name",""), doc["_id"],
-                            "task_assigned", f"Task assigned: {payload.title}")
+                            "task_assigned", payload.title, payload.task_type)
         return _ser(doc)
 
     @router.put("/tasks/{task_id}")
@@ -207,7 +277,7 @@ def make_field_agents_router(db, user_dep):
         await db.field_agent_tasks.update_one({"_id": task_id}, {"$set": upd})
         if payload.status:
             await _log_activity(db, tid, doc["assigned_to"], doc.get("agent_name",""), task_id,
-                                f"status_{payload.status}", f"Task marked {payload.status}: {doc['title']}")
+                                f"status_{payload.status}", doc["title"], doc.get("task_type", "other"))
         updated = await db.field_agent_tasks.find_one({"_id": task_id})
         return _ser(updated)
 
@@ -247,7 +317,7 @@ def make_field_agents_router(db, user_dep):
         await db.field_agent_checkins.insert_one(doc)
         await db.field_agent_tasks.update_one({"_id": task_id}, {"$set": {"status": "in_progress", "updated_at": now}})
         await _log_activity(db, tid, task["assigned_to"], task.get("agent_name",""), task_id,
-                            "checked_in", f"Checked in: {task['title']}")
+                            "checked_in", task["title"], task.get("task_type", "other"))
         return _ser(doc)
 
     @router.put("/tasks/{task_id}/checkout")
@@ -270,9 +340,62 @@ def make_field_agents_router(db, user_dep):
             {"$set": {"status": final_status, "outcome": payload.outcome, "updated_at": now}}
         )
         await _log_activity(db, tid, task["assigned_to"], task.get("agent_name",""), task_id,
-                            "checked_out", f"Checked out ({duration} min): {task['title']}")
+                            "checked_out", task["title"], task.get("task_type", "other"), duration)
+
+        # ── Record payment if this was a collect_payment task ────────────────
+        payment_entry_id = None
+        if (task.get("task_type") == "collect_payment"
+                and payload.amount_collected and payload.amount_collected > 0
+                and final_status == "completed"):
+            customer_id   = task.get("customer_id") or ""
+            customer_name = task.get("customer_name") or ""
+            amount        = round(payload.amount_collected, 2)
+            payment_entry_id = str(uuid.uuid4())
+            today_iso = date.today().isoformat()
+            await db.finance_entries.insert_one({
+                "_id": payment_entry_id,
+                "user_id": tid,
+                "type": "income",
+                "category": "Sales",
+                "amount": amount,
+                "currency": "USD",
+                "description": f"Field collection — {customer_name}",
+                "reference": f"field-task:{task_id}",
+                "payment_method": payload.payment_method,
+                "customer_id": customer_id,
+                "agent_id": task["assigned_to"],
+                "agent_name": task.get("agent_name", ""),
+                "date": today_iso,
+                "source": "field_agent",
+                "reconciliation_status": "unreconciled",
+                "created_at": now,
+                "updated_at": now,
+            })
+            if customer_id:
+                await db.customers.update_one(
+                    {"_id": customer_id, "user_id": tid},
+                    {"$inc": {"purchase_count": 1, "total_spent": amount},
+                     "$set":  {"last_contacted": now}},
+                )
+                # Auto-mark oldest matching open invoice as paid
+                open_invoice = await db.invoices.find_one(
+                    {"user_id": tid, "customer_id": customer_id,
+                     "status": {"$in": ["sent", "viewed", "overdue", "partial"]},
+                     "total": {"$lte": amount * 1.01, "$gte": amount * 0.99}},
+                    sort=[("created_at", 1)]
+                )
+                if open_invoice:
+                    await db.invoices.update_one(
+                        {"_id": open_invoice["_id"]},
+                        {"$set": {"status": "paid", "updated_at": now}}
+                    )
+
         updated = await db.field_agent_checkins.find_one({"_id": checkin_doc["_id"]})
-        return _ser(updated)
+        result = _ser(updated)
+        if payment_entry_id:
+            result["payment_recorded"] = True
+            result["amount_collected"] = payload.amount_collected
+        return result
 
     # ── Activity feed ────────────────────────────────────────────────────────
 
@@ -312,10 +435,59 @@ def make_field_agents_router(db, user_dep):
             },
         }
 
+    # ── Collections (field-agent payments for reconciliation) ────────────────
+
+    @router.get("/collections")
+    async def list_collections(
+        agent_id: Optional[str] = None,
+        reconciliation_status: Optional[str] = None,  # unreconciled | reconciled
+        user=user_dep,
+    ):
+        tid = _tid(user)
+        q: Dict[str, Any] = {"user_id": tid, "source": "field_agent", "type": "income"}
+        if agent_id: q["agent_id"] = agent_id
+        if reconciliation_status: q["reconciliation_status"] = reconciliation_status
+        docs = await db.finance_entries.find(q, sort=[("date", -1), ("created_at", -1)]).to_list(500)
+        # Totals
+        total_all          = sum(d["amount"] for d in docs)
+        total_unreconciled = sum(d["amount"] for d in docs if d.get("reconciliation_status") != "reconciled")
+        total_reconciled   = sum(d["amount"] for d in docs if d.get("reconciliation_status") == "reconciled")
+        return {
+            "entries": [_ser(d) for d in docs],
+            "totals": {
+                "all":          round(total_all, 2),
+                "unreconciled": round(total_unreconciled, 2),
+                "reconciled":   round(total_reconciled, 2),
+                "count":        len(docs),
+            },
+        }
+
+    @router.put("/collections/{entry_id}/reconcile")
+    async def reconcile_collection(entry_id: str, user=user_dep):
+        tid = _tid(user)
+        doc = await db.finance_entries.find_one({"_id": entry_id, "user_id": tid, "source": "field_agent"})
+        if not doc: raise HTTPException(404, "Collection entry not found")
+        await db.finance_entries.update_one(
+            {"_id": entry_id},
+            {"$set": {"reconciliation_status": "reconciled", "updated_at": datetime.utcnow()}}
+        )
+        updated = await db.finance_entries.find_one({"_id": entry_id})
+        return _ser(updated)
+
+    @router.post("/collections/reconcile-all")
+    async def reconcile_all_collections(user=user_dep):
+        tid = _tid(user)
+        result = await db.finance_entries.update_many(
+            {"user_id": tid, "source": "field_agent", "reconciliation_status": "unreconciled"},
+            {"$set": {"reconciliation_status": "reconciled", "updated_at": datetime.utcnow()}}
+        )
+        return {"reconciled": result.modified_count}
+
     return router
 
 
-async def _log_activity(db, user_id, agent_id, agent_name, task_id, activity_type, description):
+async def _log_activity(db, user_id, agent_id, agent_name, task_id, activity_type,
+                        task_title: str = "", task_type: str = "other", duration_mins: Optional[int] = None):
     try:
         await db.field_agent_activity.insert_one({
             "_id": str(uuid.uuid4()),
@@ -324,7 +496,9 @@ async def _log_activity(db, user_id, agent_id, agent_name, task_id, activity_typ
             "agent_name": agent_name,
             "task_id": task_id,
             "type": activity_type,
-            "description": description,
+            "task_title": task_title,
+            "task_type": task_type,
+            "duration_mins": duration_mins,
             "created_at": datetime.utcnow(),
         })
     except Exception as e:

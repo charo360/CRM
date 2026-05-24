@@ -1079,16 +1079,19 @@ class ActivityLog(BaseModel):
 # Customer Models
 class CustomerCreate(BaseModel):
     name: str
-    phone_number: str
+    phone_number: str = ""
+    email: Optional[str] = None
     notes: Optional[str] = None
     tags: List[str] = []
     is_personal: bool = False
 
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
+    email: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
     auto_reply: Optional[bool] = None
+    sms_opt_in: Optional[bool] = None
     is_personal: Optional[bool] = None
     stage: Optional[str] = None
 
@@ -1096,12 +1099,15 @@ class CustomerResponse(BaseModel):
     id: str
     user_id: str
     name: str
-    phone_number: str
+    phone_number: str = ""
+    email: Optional[str] = None
     notes: Optional[str] = None
     tags: List[str] = []
     auto_reply: Optional[bool] = None
+    sms_opt_in: Optional[bool] = None
     is_personal: bool = False
     stage: str = "lead"
+    source: Optional[str] = None
     purchase_count: int = 0
     total_spent: float = 0.0
     last_message: Optional[str] = None
@@ -1111,6 +1117,8 @@ class CustomerResponse(BaseModel):
     created_at: datetime
     assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
+    email_thread_ids: List[str] = []
+    email_classification: Optional[dict] = None
 
 # Follow-up Models
 class FollowUpCreate(BaseModel):
@@ -3320,6 +3328,335 @@ async def remove_supplier_tag(customer_id: str, user = Depends(get_current_user)
     )
     return {"status": "success"}
 
+# ============ INVESTOR ENDPOINTS ============
+
+INVESTOR_TYPES = [
+    "Angel", "VC", "Private Equity", "Family Office",
+    "Crowdfunding", "Angel Syndicate", "Corporate", "Other"
+]
+
+INVESTOR_PIPELINE_STAGES = [
+    "Prospect", "Intro", "Pitch", "Due Diligence", "Term Sheet", "Closed", "Passed"
+]
+
+@api_router.get("/investors/types")
+async def get_investor_types():
+    return INVESTOR_TYPES
+
+@api_router.get("/investors/stages")
+async def get_investor_stages():
+    return INVESTOR_PIPELINE_STAGES
+
+@api_router.get("/investors")
+async def get_investors(user = Depends(get_current_user)):
+    """Get all contacts tagged as investors"""
+    business_id = user.get("business_id", user["_id"])
+    investors = await db.customers.find({
+        "user_id": business_id,
+        "tags": "Investor"
+    }).to_list(100)
+
+    for inv in investors:
+        inv["id"] = inv["_id"]
+        inv["investor_type"] = inv.get("investor_type", "Other")
+        inv["investment_stage"] = inv.get("investment_stage", "Prospect")
+        inv["ticket_size"] = inv.get("ticket_size", "")
+        inv["investor_notes"] = inv.get("investor_notes", "")
+
+    return serialize_doc(investors)
+
+@api_router.post("/investors/{customer_id}/tag")
+async def tag_investor(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$addToSet": {"tags": "Investor"}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.put("/investors/{customer_id}")
+async def update_investor_details(customer_id: str, body: dict = Body(...), user = Depends(get_current_user)):
+    update_fields = {}
+    for key in ("investor_type", "investment_stage", "ticket_size", "investor_notes"):
+        if key in body:
+            update_fields[key] = body[key]
+
+    business_id = user.get("business_id", user["_id"])
+    if update_fields:
+        result = await db.customers.update_one(
+            {"_id": customer_id, "user_id": business_id},
+            {"$set": update_fields}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.delete("/investors/{customer_id}")
+async def remove_investor_tag(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$pull": {"tags": "Investor"}, "$unset": {
+            "investor_type": "", "investment_stage": "",
+            "ticket_size": "", "investor_notes": ""
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+# ============ INVESTOR / PARTNER DOCUMENTS ============
+
+CONTACT_DOC_MAX_BYTES = 20 * 1024 * 1024
+CONTACT_DOC_ALLOWED_EXT = {".pdf", ".doc", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
+CONTACT_DOC_MIME = {
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+async def _assert_tagged_contact(customer_id: str, business_id: str, tag: str):
+    customer = await db.customers.find_one({
+        "_id": customer_id,
+        "user_id": business_id,
+        "tags": tag,
+    })
+    if not customer:
+        raise HTTPException(status_code=404, detail="Contact not found or not tagged")
+    return customer
+
+async def _upload_contact_document_file(file: UploadFile) -> tuple[str, str, str, int]:
+    import base64
+    from image_handler import S3Handler
+
+    raw_name = (file.filename or "document").strip() or "document"
+    ext = ("." + raw_name.rsplit(".", 1)[-1].lower()) if "." in raw_name else ""
+    if ext not in CONTACT_DOC_ALLOWED_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Use PDF, Word, text, or image files.",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(content) > CONTACT_DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 20 MB)")
+
+    mime = (file.content_type or CONTACT_DOC_MIME.get(ext) or "application/octet-stream").split(";")[0]
+    b64 = base64.b64encode(content).decode("ascii")
+    safe_name = _re.sub(r"[^\w.\-]+", "_", raw_name)[:120]
+    file_url = None
+    try:
+        file_url = await S3Handler.upload_file(b64, safe_name, content_type=mime, folder="contact-docs")
+    except Exception as exc:
+        logging.warning("S3 contact document upload failed, using local storage: %s", exc)
+
+    if not file_url:
+        import aiofiles
+        from pathlib import Path
+        upload_dir = Path(__file__).parent / "uploads" / "contact-docs"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        unique_name = f"{uuid.uuid4()}-{safe_name}"
+        file_path = upload_dir / unique_name
+        async with aiofiles.open(file_path, "wb") as out:
+            await out.write(content)
+        server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+        file_url = f"{server_url}/uploads/contact-docs/{unique_name}" if server_url else f"/uploads/contact-docs/{unique_name}"
+
+    return safe_name, file_url, mime, len(content)
+
+def _serialize_contact_document(doc: dict) -> dict:
+    return {
+        "id": doc["_id"],
+        "customer_id": doc.get("customer_id"),
+        "context": doc.get("context"),
+        "title": doc.get("title") or doc.get("filename", ""),
+        "doc_type": doc.get("doc_type", "other"),
+        "filename": doc.get("filename", ""),
+        "file_url": doc.get("file_url", ""),
+        "mime_type": doc.get("mime_type", ""),
+        "size": doc.get("size", 0),
+        "uploaded_at": doc.get("uploaded_at"),
+    }
+
+async def _list_contact_documents(customer_id: str, business_id: str, context: str):
+    await _assert_tagged_contact(customer_id, business_id, "Investor" if context == "investor" else "Partner")
+    docs = await db.contact_documents.find({
+        "user_id": business_id,
+        "customer_id": customer_id,
+        "context": context,
+    }).sort("uploaded_at", -1).to_list(100)
+    return serialize_doc([_serialize_contact_document(d) for d in docs])
+
+async def _upload_contact_document(
+    customer_id: str,
+    business_id: str,
+    context: str,
+    file: UploadFile,
+    title: str,
+    doc_type: str,
+):
+    await _assert_tagged_contact(customer_id, business_id, "Investor" if context == "investor" else "Partner")
+    filename, file_url, mime, size = await _upload_contact_document_file(file)
+    doc_id = str(uuid.uuid4())
+    doc = {
+        "_id": doc_id,
+        "user_id": business_id,
+        "customer_id": customer_id,
+        "context": context,
+        "title": sanitize_string(title or filename.rsplit(".", 1)[0], 200) or filename,
+        "doc_type": sanitize_string(doc_type or "other", 50) or "other",
+        "filename": filename,
+        "file_url": file_url,
+        "mime_type": mime,
+        "size": size,
+        "uploaded_at": datetime.utcnow(),
+    }
+    await db.contact_documents.insert_one(doc)
+    return _serialize_contact_document(doc)
+
+async def _delete_contact_document(customer_id: str, business_id: str, context: str, doc_id: str):
+    await _assert_tagged_contact(customer_id, business_id, "Investor" if context == "investor" else "Partner")
+    result = await db.contact_documents.delete_one({
+        "_id": doc_id,
+        "user_id": business_id,
+        "customer_id": customer_id,
+        "context": context,
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "success"}
+
+@api_router.get("/investors/{customer_id}/documents")
+async def list_investor_documents(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _list_contact_documents(customer_id, business_id, "investor")
+
+@api_router.post("/investors/{customer_id}/documents")
+async def upload_investor_document(
+    customer_id: str,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    doc_type: str = Form("other"),
+    user = Depends(get_current_user),
+):
+    business_id = user.get("business_id", user["_id"])
+    return await _upload_contact_document(customer_id, business_id, "investor", file, title, doc_type)
+
+@api_router.delete("/investors/{customer_id}/documents/{doc_id}")
+async def delete_investor_document(customer_id: str, doc_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _delete_contact_document(customer_id, business_id, "investor", doc_id)
+
+@api_router.get("/partners/{customer_id}/documents")
+async def list_partner_documents(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _list_contact_documents(customer_id, business_id, "partner")
+
+@api_router.post("/partners/{customer_id}/documents")
+async def upload_partner_document(
+    customer_id: str,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    doc_type: str = Form("other"),
+    user = Depends(get_current_user),
+):
+    business_id = user.get("business_id", user["_id"])
+    return await _upload_contact_document(customer_id, business_id, "partner", file, title, doc_type)
+
+@api_router.delete("/partners/{customer_id}/documents/{doc_id}")
+async def delete_partner_document(customer_id: str, doc_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _delete_contact_document(customer_id, business_id, "partner", doc_id)
+
+# ============ PARTNER ENDPOINTS ============
+
+PARTNER_TYPES = [
+    "Strategic", "Channel", "Technology", "Reseller",
+    "Affiliate", "Distribution", "Marketing", "Other"
+]
+
+@api_router.get("/partners/types")
+async def get_partner_types():
+    return PARTNER_TYPES
+
+@api_router.get("/partners")
+async def get_partners(user = Depends(get_current_user)):
+    """Get all contacts tagged as partners"""
+    business_id = user.get("business_id", user["_id"])
+    partners = await db.customers.find({
+        "user_id": business_id,
+        "tags": "Partner"
+    }).to_list(100)
+
+    for p in partners:
+        p["id"] = p["_id"]
+        p["partner_type"] = p.get("partner_type", "Other")
+        p["partnership_terms"] = p.get("partnership_terms", "")
+        p["revenue_share"] = p.get("revenue_share", "")
+        p["focus_areas"] = p.get("focus_areas", [])
+        p["rating"] = p.get("rating", 0)
+
+    return serialize_doc(partners)
+
+@api_router.post("/partners/{customer_id}/tag")
+async def tag_partner(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$addToSet": {"tags": "Partner"}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.put("/partners/{customer_id}")
+async def update_partner_details(customer_id: str, body: dict = Body(...), user = Depends(get_current_user)):
+    update_fields = {}
+    if "partner_type" in body:
+        update_fields["partner_type"] = body["partner_type"]
+    if "partnership_terms" in body:
+        update_fields["partnership_terms"] = body["partnership_terms"]
+    if "revenue_share" in body:
+        update_fields["revenue_share"] = body["revenue_share"]
+    if "focus_areas" in body:
+        update_fields["focus_areas"] = body["focus_areas"]
+    if "rating" in body:
+        update_fields["rating"] = int(body["rating"])
+
+    business_id = user.get("business_id", user["_id"])
+    if update_fields:
+        result = await db.customers.update_one(
+            {"_id": customer_id, "user_id": business_id},
+            {"$set": update_fields}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.delete("/partners/{customer_id}")
+async def remove_partner_tag(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$pull": {"tags": "Partner"}, "$unset": {
+            "partner_type": "", "partnership_terms": "",
+            "revenue_share": "", "focus_areas": "", "rating": ""
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
 # ============ CONTACT CLASSIFICATION ============
 
 @api_router.post("/contacts/classify")
@@ -3429,8 +3766,9 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
 
     if not clean_name:
         raise HTTPException(status_code=400, detail="Customer name is required")
-    if not clean_phone or len(clean_phone) < 6:
-        raise HTTPException(status_code=400, detail="Valid phone number is required")
+    clean_email = (customer.email or "").strip().lower() or None
+    if (not clean_phone or len(clean_phone) < 6) and not clean_email:
+        raise HTTPException(status_code=400, detail="A valid phone number or email is required")
 
     customer_id = str(uuid.uuid4())
     business_id = user.get("business_id", user["_id"])
@@ -3438,7 +3776,8 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "_id": customer_id,
         "user_id": business_id,
         "name": clean_name,
-        "phone_number": clean_phone,
+        "phone_number": clean_phone or "",
+        "email": clean_email,
         "notes": clean_notes,
         "tags": clean_tags if clean_tags else ["New"],
         "purchase_count": 0,
@@ -3783,9 +4122,11 @@ async def get_customers(
                     user_id=str(uid),
                     name=(c.get("name") or "Unknown").strip() or "Unknown",
                     phone_number=c.get("phone_number") or c.get("phone", "") or "",
+                    email=c.get("email"),
                     notes=c.get("notes"),
                     tags=_tags_list(c.get("tags")),
                     stage=c.get("stage", "lead"),
+                    source=c.get("source"),
                     purchase_count=_safe_int(c.get("purchase_count"), 0),
                     total_spent=_safe_float(c.get("total_spent"), 0.0),
                     last_message=c.get("last_message"),
@@ -3797,6 +4138,8 @@ async def get_customers(
                     assigned_to_name=member_map.get(assignment_map.get(c["_id"]))
                     if assignment_map.get(c["_id"])
                     else None,
+                    email_thread_ids=c.get("email_thread_ids", []),
+                    email_classification=c.get("email_classification"),
                 )
             )
         except Exception as e:
@@ -3925,6 +4268,7 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         profile_picture=customer.get("profile_picture"),
         # None means "inherit global auto-reply settings"
         auto_reply=customer.get("auto_reply"),
+        sms_opt_in=customer.get("sms_opt_in"),
         is_personal=customer.get("is_personal", False),
         created_at=customer["created_at"]
     )
@@ -3960,6 +4304,11 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["tags"] = [sanitize_string(t, 50) for t in update.tags if t.strip()][:20]
     if update.auto_reply is not None:
         update_data["auto_reply"] = update.auto_reply
+    if update.sms_opt_in is not None:
+        update_data["sms_opt_in"] = update.sms_opt_in
+        if not update.sms_opt_in:
+            update_data["sms_opt_out_at"] = datetime.utcnow()
+        
     if update.is_personal is not None:
         update_data["is_personal"] = update.is_personal
     if update.stage is not None:
@@ -3968,7 +4317,10 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
             update_data["stage"] = update.stage
         
     if update_data:
-        await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
+        op: Dict[str, Any] = {"$set": update_data}
+        if update.sms_opt_in is True:
+            op["$unset"] = {"sms_opt_out_at": ""}
+        await db.customers.update_one({"_id": customer_id}, op)
     
     updated = await db.customers.find_one({"_id": customer_id})
     
@@ -3981,6 +4333,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         tags=updated.get("tags", []),
         # None means "inherit global auto-reply settings"
         auto_reply=updated.get("auto_reply"),
+        sms_opt_in=updated.get("sms_opt_in"),
         is_personal=updated.get("is_personal", False),
         stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
@@ -13843,6 +14196,207 @@ async def email_db_save_sent(request: Request, user=Depends(get_current_user)):
     return {"ok": True}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# EMAIL CLASSIFICATION — AI-powered sorting of email contacts
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_router.post("/email-db/classify")
+async def email_db_classify(user=Depends(get_current_user)):
+    """
+    Trigger email contact classification for this user.
+    Analyzes unclassified email senders and sorts them into
+    investors, customers, or partners.
+    """
+    from email_classifier import get_email_classifier
+    user_id = str(user.get("business_id") or user["_id"])
+    classifier = get_email_classifier(db)
+    result = await classifier.classify_new_emails(user_id)
+    return result
+
+
+@api_router.post("/email-db/reclassify")
+async def email_db_reclassify(user=Depends(get_current_user)):
+    """Force reclassify ALL email contacts (resets and re-runs)."""
+    from email_classifier import get_email_classifier
+    user_id = str(user.get("business_id") or user["_id"])
+    classifier = get_email_classifier(db)
+    result = await classifier.reclassify_all(user_id)
+    return result
+
+
+@api_router.get("/email-db/classifications")
+async def email_db_classifications(
+    status: str = "pending",
+    limit: int = 50,
+    user=Depends(get_current_user),
+):
+    """List pending email contact classifications for owner review."""
+    user_id = str(user.get("business_id") or user["_id"])
+    flt: dict = {"user_id": user_id}
+    if status != "all":
+        flt["status"] = status
+    docs = await db.pending_email_classifications.find(flt).sort(
+        "updated_at", -1
+    ).limit(min(limit, 100)).to_list(min(limit, 100))
+
+    results = []
+    for d in docs:
+        results.append({
+            "id": str(d.get("_id", "")),
+            "customer_id": d.get("customer_id", ""),
+            "contact_name": d.get("contact_name", ""),
+            "email": d.get("email", ""),
+            "suggested_type": d.get("suggested_type", ""),
+            "subtype": d.get("subtype"),
+            "confidence": d.get("confidence", 0),
+            "reason": d.get("reason", ""),
+            "email_thread_ids": d.get("email_thread_ids", []),
+            "status": d.get("status", "pending"),
+            "updated_at": str(d.get("updated_at", "")),
+        })
+    return {"classifications": results, "total": len(results)}
+
+
+@api_router.post("/email-db/classifications/{classification_id}/approve")
+async def email_db_approve_classification(
+    classification_id: str,
+    request: Request,
+    user=Depends(get_current_user),
+):
+    """
+    Approve or override a pending email classification.
+    Body: { "action": "approve" | "reject" | "override", "override_type": "investor" | "customer" | "partner" }
+    """
+    from bson import ObjectId
+    user_id = str(user.get("business_id") or user["_id"])
+    body = await request.json()
+    action = body.get("action", "approve")
+
+    # Find the pending classification
+    try:
+        flt = {"_id": ObjectId(classification_id), "user_id": user_id}
+    except Exception:
+        flt = {"_id": classification_id, "user_id": user_id}
+    pending = await db.pending_email_classifications.find_one(flt)
+    if not pending:
+        raise HTTPException(status_code=404, detail="Classification not found")
+
+    customer_id = pending.get("customer_id")
+
+    if action == "reject":
+        # Remove classification, untag contact
+        await db.pending_email_classifications.update_one(
+            {"_id": pending["_id"]},
+            {"$set": {"status": "rejected"}},
+        )
+        # Remove auto-applied tags
+        suggested = pending.get("suggested_type", "")
+        tag_map = {"investor": "Investor", "customer": "Customer", "partner": "Partner", "supplier": "Supplier"}
+        tag = tag_map.get(suggested)
+        if tag and customer_id:
+            await db.customers.update_one(
+                {"_id": customer_id, "user_id": user_id},
+                {"$pull": {"tags": tag}},
+            )
+        return {"ok": True, "action": "rejected"}
+
+    if action == "override":
+        # Change to a different type
+        new_type = body.get("override_type", "customer")
+        tag_map = {"investor": "Investor", "customer": "Customer", "partner": "Partner", "supplier": "Supplier"}
+        old_tag = tag_map.get(pending.get("suggested_type", ""))
+        new_tag = tag_map.get(new_type, "Customer")
+
+        update_ops: dict = {"$addToSet": {"tags": new_tag}}
+        if old_tag and old_tag != new_tag:
+            update_ops["$pull"] = {"tags": old_tag}
+
+        # Set type-specific fields
+        set_fields: dict = {"classification_confirmed": True}
+        if new_type == "investor":
+            set_fields["investor_type"] = body.get("subtype", "Other")
+            set_fields["investment_stage"] = "Prospect"
+        elif new_type == "partner":
+            set_fields["partner_type"] = body.get("subtype", "Other")
+        elif new_type == "supplier":
+            set_fields["supplier_category"] = body.get("subtype", "Other")
+        update_ops["$set"] = set_fields
+
+        if customer_id:
+            # Can't $pull and $addToSet same field in one op — do two updates
+            if "$pull" in update_ops:
+                await db.customers.update_one(
+                    {"_id": customer_id, "user_id": user_id},
+                    {"$pull": {"tags": old_tag}},
+                )
+            await db.customers.update_one(
+                {"_id": customer_id, "user_id": user_id},
+                {"$addToSet": {"tags": new_tag}, "$set": set_fields},
+            )
+
+        await db.pending_email_classifications.update_one(
+            {"_id": pending["_id"]},
+            {"$set": {"status": "overridden", "final_type": new_type}},
+        )
+        return {"ok": True, "action": "overridden", "new_type": new_type}
+
+    # Default: approve
+    if customer_id:
+        await db.customers.update_one(
+            {"_id": customer_id, "user_id": user_id},
+            {"$set": {"classification_confirmed": True}},
+        )
+    await db.pending_email_classifications.update_one(
+        {"_id": pending["_id"]},
+        {"$set": {"status": "approved"}},
+    )
+    return {"ok": True, "action": "approved"}
+
+
+@api_router.get("/email-db/contact/{customer_id}/threads")
+async def email_db_contact_threads(customer_id: str, user=Depends(get_current_user)):
+    """Get all email threads linked to a specific contact."""
+    from email_sync import get_threads_from_db
+    user_id = str(user.get("business_id") or user["_id"])
+
+    # Get the contact to find linked thread IDs
+    contact = await db.customers.find_one({"_id": customer_id, "user_id": user_id})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    thread_ids = contact.get("email_thread_ids", [])
+    if not thread_ids:
+        # Fall back: search by email address
+        email = contact.get("email", "")
+        if email:
+            threads = await db.email_threads.find({
+                "user_id": user_id,
+                "participants": {"$regex": email, "$options": "i"},
+            }).sort("last_message_at", -1).limit(50).to_list(50)
+        else:
+            threads = []
+    else:
+        threads = await db.email_threads.find({
+            "_id": {"$in": thread_ids},
+            "user_id": user_id,
+        }).sort("last_message_at", -1).to_list(50)
+
+    from email_sync import _fmt_thread
+    return {"threads": [_fmt_thread(t) for t in threads], "contact_id": customer_id}
+
+
+@api_router.post("/email-db/thread/{thread_id}/classify")
+async def email_db_classify_thread(thread_id: str, user=Depends(get_current_user)):
+    """Classify a single email thread's sender."""
+    from email_classifier import get_email_classifier
+    user_id = str(user.get("business_id") or user["_id"])
+    classifier = get_email_classifier(db)
+    result = await classifier.classify_thread(user_id, thread_id)
+    if not result:
+        return {"classification": None, "message": "Could not classify this thread"}
+    return {"classification": result}
+
+
 def _operator_provision_secret() -> str:
     """Single secret for operator-only provisioning (Bird, Telegram bot, etc.)."""
     return (os.environ.get("OPERATOR_PROVISION_SECRET") or os.environ.get("BIRD_PROVISION_SECRET") or "").strip()
@@ -15255,6 +15809,13 @@ try:
     logging.info("[field-agents] routes mounted")
 except Exception as _e:
     logging.error(f"[field-agents] failed to mount routes: {_e}")
+
+try:
+    from smart_notes.routes import make_smart_notes_router as _mk_sn_router
+    api_router.include_router(_mk_sn_router(db, Depends(get_current_user)))
+    logging.info("[smart-notes] routes mounted")
+except Exception as _e:
+    logging.error(f"[smart-notes] failed to mount routes: {_e}")
 
 try:
     from quotes.routes import make_quotes_router as _mk_quo_router
@@ -16678,6 +17239,21 @@ try:
     logging.info("[email-marketing] routes mounted at /api/email-marketing/*")
 except Exception as _eme:
     logging.error("[email-marketing] failed to mount routes: %s", _eme)
+
+# ── SMS Marketing (Sent.dm) ───────────────────────────────────────────────────
+try:
+    from sms_marketing.routes import make_sms_marketing_router as _mk_sms_router
+    from sms_marketing.routes import make_sms_webhook_router as _mk_sms_wh_router
+    from sms_marketing.routes import make_sms_operator_router as _mk_sms_op_router
+    _sms_router = _mk_sms_router(get_current_user, db)
+    _sms_wh_router = _mk_sms_wh_router(db)
+    _sms_op_router = _mk_sms_op_router(db, _require_operator_secret)
+    api_router.include_router(_sms_router)
+    api_router.include_router(_sms_wh_router)
+    api_router.include_router(_sms_op_router)
+    logging.info("[sms-marketing] routes mounted at /api/sms-marketing/*")
+except Exception as _sme:
+    logging.error("[sms-marketing] failed to mount routes: %s", _sme)
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)

@@ -13,6 +13,8 @@ type Agent = {
   id: string; name: string; email: string; phone_number: string;
   role: string; status: string;
   tasks_total: number; tasks_pending: number; tasks_completed: number; tasks_overdue: number;
+  total_collected: number; collection_count: number;
+  commission_type: "none"|"percentage"|"per_lead"; commission_rate: number; commission_earned: number;
 };
 type Task = {
   id: string; assigned_to: string; agent_name: string; title: string;
@@ -21,13 +23,23 @@ type Task = {
   outcome: string; created_at: string; location: string;
 };
 type ActivityItem = {
-  id: string; agent_name: string; description: string; type: string; created_at: string;
+  id: string; agent_name: string; description: string; type: string;
+  task_title: string; task_type: string; duration_mins: number | null; created_at: string;
 };
 type Summary = {
   total_agents: number; active_today: number;
   tasks: { total: number; pending: number; in_progress: number; completed: number; overdue: number };
 };
-type Customer = { id: string; name: string; phone_number: string };
+type Customer = { id: string; name: string; phone_number: string }
+type CollectionEntry = {
+  id: string; agent_id: string; agent_name: string; customer_name: string;
+  amount: number; currency: string; payment_method: string;
+  date: string; reconciliation_status: string; reference: string;
+};
+type CollectionData = {
+  entries: CollectionEntry[];
+  totals: { all: number; unreconciled: number; reconciled: number; count: number };
+};;
 
 // ── constants ─────────────────────────────────────────────────────────────────
 const TASK_TYPES = ["visit","call","demo","collect_payment","delivery","survey","other"];
@@ -64,6 +76,24 @@ function isOverdue(task: Task) {
   return task.due_date && !["completed","cancelled","missed"].includes(task.status) &&
     new Date(task.due_date) < new Date();
 }
+const TASK_TYPE_LABELS: Record<string, string> = {
+  visit: "Visit", call: "Call", demo: "Demo",
+  collect_payment: "Collect payment", delivery: "Delivery",
+  survey: "Survey", other: "Task",
+};
+const ACTIVITY_ACTION_LABELS: Record<string, string> = {
+  task_assigned: "Assigned", checked_in: "Checked in", checked_out: "Checked out",
+  status_completed: "Completed", status_missed: "Missed",
+  status_in_progress: "Started", status_cancelled: "Cancelled",
+};
+function activityLabel(a: ActivityItem): string {
+  return TASK_TYPE_LABELS[a.task_type] || a.task_title || a.description || a.type;
+}
+function activitySubLabel(a: ActivityItem): string {
+  const action = ACTIVITY_ACTION_LABELS[a.type] || a.type.replace(/_/g, " ");
+  const dur = a.duration_mins != null ? ` · ${a.duration_mins}m` : "";
+  return `${action}${dur} · ${a.agent_name}`;
+}
 
 // ── empty form ────────────────────────────────────────────────────────────────
 function emptyTask(): Partial<Task> & { customCustomer: string } {
@@ -72,7 +102,10 @@ function emptyTask(): Partial<Task> & { customCustomer: string } {
 }
 
 // ── Agent card ────────────────────────────────────────────────────────────────
-function AgentCard({ agent, onSelect, selected }: { agent: Agent; onSelect: () => void; selected: boolean }) {
+function AgentCard({ agent, onSelect, selected, onSetCommission }: {
+  agent: Agent; onSelect: () => void; selected: boolean;
+  onSetCommission: (a: Agent) => void;
+}) {
   const completion = agent.tasks_total > 0
     ? Math.round((agent.tasks_completed / agent.tasks_total) * 100) : 0;
   return (
@@ -92,9 +125,16 @@ function AgentCard({ agent, onSelect, selected }: { agent: Agent; onSelect: () =
             <p className="text-xs text-slate-400 capitalize">{agent.role}</p>
           </div>
         </div>
-        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-          agent.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"
-        }`}>{agent.status}</span>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+            agent.status === "active" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"
+          }`}>{agent.status}</span>
+          <button onClick={e => { e.stopPropagation(); onSetCommission(agent); }}
+            title="Commission settings"
+            className="p-1 rounded text-slate-300 hover:text-slate-600 hover:bg-slate-100">
+            <Target size={13} />
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-2 text-center mb-3">
@@ -109,6 +149,22 @@ function AgentCard({ agent, onSelect, selected }: { agent: Agent; onSelect: () =
           </div>
         ))}
       </div>
+
+      {/* Collection + commission row */}
+      {(agent.total_collected > 0 || agent.commission_type !== "none") && (
+        <div className="flex items-center justify-between rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2 mb-3">
+          <div>
+            <p className="text-[10px] text-slate-500">Collected</p>
+            <p className="text-sm font-semibold text-emerald-700">${agent.total_collected.toLocaleString()}</p>
+          </div>
+          {agent.commission_type !== "none" && (
+            <div className="text-right">
+              <p className="text-[10px] text-slate-500">Commission</p>
+              <p className="text-sm font-semibold text-brand-dark">${agent.commission_earned.toLocaleString()}</p>
+            </div>
+          )}
+        </div>
+      )}
 
       <div>
         <div className="flex justify-between text-xs text-slate-500 mb-1">
@@ -192,7 +248,7 @@ function TaskRow({ task, onEdit, onDelete, onCheckIn, onCheckOut }: {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function FieldAgentsPage() {
-  const [tab, setTab] = useState<"overview"|"tasks"|"agents"|"activity">("overview");
+  const [tab, setTab] = useState<"overview"|"tasks"|"agents"|"activity"|"collections">("overview");
   const [agents,   setAgents]   = useState<Agent[]>([]);
   const [tasks,    setTasks]    = useState<Task[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
@@ -203,32 +259,46 @@ export default function FieldAgentsPage() {
   const [statusFilter,  setStatusFilter]  = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
 
+  // Collections / reconciliation
+  const [collections,     setCollections]     = useState<CollectionData | null>(null);
+  const [collFilter,      setCollFilter]      = useState<string>("");       // "" | "unreconciled" | "reconciled"
+  const [collAgentFilter, setCollAgentFilter] = useState<string>("");
+  const [reconciling,     setReconciling]     = useState<string | null>(null);
+  const [reconcilingAll,  setReconcilingAll]  = useState(false);
+
   // Task modal
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [editingTask,   setEditingTask]   = useState<Task | null>(null);
   const [taskForm,      setTaskForm]      = useState(emptyTask());
   const [saving, setSaving] = useState(false);
 
+  // Commission modal
+  const [commModal, setCommModal] = useState<Agent | null>(null);
+  const [commForm,  setCommForm]  = useState({ commission_type: "none", commission_rate: "" });
+  const [commSaving, setCommSaving] = useState(false);
+
   // Check-in / check-out modal
   const [checkModal, setCheckModal] = useState<{ task: Task; mode: "in"|"out" } | null>(null);
-  const [checkForm,  setCheckForm]  = useState({ location_note: "", notes: "", outcome: "", status: "completed" });
+  const [checkForm,  setCheckForm]  = useState({ location_note: "", notes: "", outcome: "", status: "completed", amount_collected: "", payment_method: "cash" });
   const [checkSaving, setCheckSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [ag, tk, act, sum, cust] = await Promise.all([
+      const [ag, tk, act, sum, cust, coll] = await Promise.all([
         fieldAgentsApi.listAgents(),
         fieldAgentsApi.listTasks(),
         fieldAgentsApi.listActivity({ limit: 40 }),
         fieldAgentsApi.summary(),
         customersApi.list(),
+        fieldAgentsApi.listCollections(),
       ]);
       setAgents(ag as Agent[]);
       setTasks(tk as Task[]);
       setActivity(act as ActivityItem[]);
       setSummary(sum as Summary);
       setCustomers((cust as Customer[]).slice(0, 200));
+      setCollections(coll as CollectionData);
     } finally { setLoading(false); }
   }, []);
 
@@ -274,8 +344,8 @@ export default function FieldAgentsPage() {
   }
 
   // ── Check-in / out helpers ──────────────────────────────────────────────
-  function openCheckIn(t: Task)  { setCheckModal({ task: t, mode: "in"  }); setCheckForm({ location_note: "", notes: "", outcome: "", status: "completed" }); }
-  function openCheckOut(t: Task) { setCheckModal({ task: t, mode: "out" }); setCheckForm({ location_note: "", notes: "", outcome: "", status: "completed" }); }
+  function openCheckIn(t: Task)  { setCheckModal({ task: t, mode: "in"  }); setCheckForm({ location_note: "", notes: "", outcome: "", status: "completed", amount_collected: "", payment_method: "cash" }); }
+  function openCheckOut(t: Task) { setCheckModal({ task: t, mode: "out" }); setCheckForm({ location_note: "", notes: "", outcome: "", status: "completed", amount_collected: "", payment_method: "cash" }); }
   async function submitCheck() {
     if (!checkModal) return;
     setCheckSaving(true);
@@ -283,10 +353,41 @@ export default function FieldAgentsPage() {
       if (checkModal.mode === "in")
         await fieldAgentsApi.checkIn(checkModal.task.id,  { location_note: checkForm.location_note, notes: checkForm.notes });
       else
-        await fieldAgentsApi.checkOut(checkModal.task.id, { outcome: checkForm.outcome, notes: checkForm.notes, status: checkForm.status });
+        await fieldAgentsApi.checkOut(checkModal.task.id, {
+          outcome: checkForm.outcome,
+          notes: checkForm.notes,
+          status: checkForm.status,
+          ...(checkModal.task.task_type === "collect_payment" && checkForm.amount_collected
+            ? { amount_collected: parseFloat(checkForm.amount_collected), payment_method: checkForm.payment_method }
+            : {}),
+        });
       setCheckModal(null);
       await load();
     } finally { setCheckSaving(false); }
+  }
+
+  async function saveCommission() {
+    if (!commModal) return;
+    setCommSaving(true);
+    try {
+      await fieldAgentsApi.setCommission(commModal.id, {
+        commission_type: commForm.commission_type,
+        commission_rate: parseFloat(commForm.commission_rate) || 0,
+      });
+      setCommModal(null);
+      await load();
+    } finally { setCommSaving(false); }
+  }
+
+  async function reconcileOne(entryId: string) {
+    setReconciling(entryId);
+    try { await fieldAgentsApi.reconcileEntry(entryId); await load(); }
+    finally { setReconciling(null); }
+  }
+  async function reconcileAllEntries() {
+    setReconcilingAll(true);
+    try { await fieldAgentsApi.reconcileAll(); await load(); }
+    finally { setReconcilingAll(false); }
   }
 
   // ── Filtered tasks ──────────────────────────────────────────────────────
@@ -318,7 +419,7 @@ export default function FieldAgentsPage() {
 
       {/* Tabs */}
       <div className="flex border-b border-slate-200 gap-1">
-        {(["overview","tasks","agents","activity"] as const).map(t => (
+        {(["overview","tasks","agents","activity","collections"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px capitalize transition-colors ${
               tab === t ? "border-brand-dark text-brand-dark" : "border-transparent text-slate-500 hover:text-slate-700"
@@ -365,7 +466,8 @@ export default function FieldAgentsPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     {agents.map(a => (
                       <AgentCard key={a.id} agent={a} selected={selectedAgent === a.id}
-                        onSelect={() => { setSelectedAgent(a.id === selectedAgent ? "" : a.id); setTab("tasks"); }} />
+                        onSelect={() => { setSelectedAgent(a.id === selectedAgent ? "" : a.id); setTab("tasks"); }}
+                        onSetCommission={a => { setCommModal(a); setCommForm({ commission_type: a.commission_type || "none", commission_rate: a.commission_rate ? String(a.commission_rate) : "" }); }} />
                     ))}
                   </div>
                 )}
@@ -397,7 +499,10 @@ export default function FieldAgentsPage() {
                           <div className="w-7 h-7 rounded-full bg-brand/10 flex items-center justify-center text-xs font-bold text-brand-dark shrink-0">
                             {a.agent_name?.[0]?.toUpperCase() || "?"}
                           </div>
-                          <p className="text-sm text-slate-700">{a.description}</p>
+                          <div>
+                            <p className="text-sm font-medium text-slate-800">{activityLabel(a)}</p>
+                            <p className="text-xs text-slate-400">{activitySubLabel(a)}</p>
+                          </div>
                         </div>
                         <span className="text-xs text-slate-400 shrink-0 ml-3">{timeAgo(a.created_at)}</span>
                       </div>
@@ -493,6 +598,91 @@ export default function FieldAgentsPage() {
             </div>
           )}
 
+          {/* ── Collections tab ── */}
+          {tab === "collections" && (
+            <div className="space-y-4">
+              {/* KPI row */}
+              {collections && (
+                <div className="grid grid-cols-3 gap-4">
+                  {[
+                    { label: "Total collected", val: collections.totals.all,          color: "text-slate-800" },
+                    { label: "Unreconciled",     val: collections.totals.unreconciled, color: "text-amber-600" },
+                    { label: "Reconciled",       val: collections.totals.reconciled,   color: "text-green-600" },
+                  ].map(({ label, val, color }) => (
+                    <div key={label} className="bg-white rounded-xl border border-slate-200 p-4">
+                      <p className="text-xs text-slate-500 mb-1">{label}</p>
+                      <p className={`text-xl font-bold ${color}`}>${val.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Filters + Reconcile All */}
+              <div className="flex flex-wrap gap-2 items-center justify-between">
+                <div className="flex gap-2 flex-wrap">
+                  <select value={collFilter} onChange={e => setCollFilter(e.target.value)}
+                    className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm">
+                    <option value="">All statuses</option>
+                    <option value="unreconciled">Unreconciled</option>
+                    <option value="reconciled">Reconciled</option>
+                  </select>
+                  <select value={collAgentFilter} onChange={e => setCollAgentFilter(e.target.value)}
+                    className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm">
+                    <option value="">All agents</option>
+                    {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </div>
+                {collections && collections.totals.unreconciled > 0 && (
+                  <button onClick={reconcileAllEntries} disabled={reconcilingAll}
+                    className="flex items-center gap-1.5 px-4 py-1.5 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50">
+                    {reconcilingAll ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
+                    Reconcile all
+                  </button>
+                )}
+              </div>
+
+              {/* Table */}
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                {!collections || collections.entries.length === 0 ? (
+                  <div className="p-12 text-center text-slate-400">
+                    <Target size={36} className="mx-auto mb-3 opacity-30" />
+                    <p className="text-sm">No collections recorded yet.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-[1fr_1fr_auto_auto_auto_auto] gap-x-4 px-5 py-2.5 bg-slate-50 border-b border-slate-100 text-xs font-medium text-slate-500">
+                      <span>Agent</span><span>Customer</span><span>Amount</span><span>Method</span><span>Date</span><span>Status</span>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {collections.entries
+                        .filter(e => (!collFilter || e.reconciliation_status === collFilter) && (!collAgentFilter || e.agent_id === collAgentFilter))
+                        .map(e => (
+                          <div key={e.id} className="grid grid-cols-[1fr_1fr_auto_auto_auto_auto] gap-x-4 px-5 py-3 items-center text-sm">
+                            <span className="font-medium text-slate-800 truncate">{e.agent_name || "—"}</span>
+                            <span className="text-slate-600 truncate">{e.customer_name || "—"}</span>
+                            <span className="font-semibold text-slate-800">${e.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                            <span className="text-slate-500 capitalize text-xs">{e.payment_method?.replace(/_/g, " ") || "—"}</span>
+                            <span className="text-slate-400 text-xs">{e.date}</span>
+                            <div className="flex items-center gap-2">
+                              {e.reconciliation_status === "reconciled" ? (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">Reconciled</span>
+                              ) : (
+                                <button onClick={() => reconcileOne(e.id)} disabled={reconciling === e.id}
+                                  className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium hover:bg-amber-200 disabled:opacity-50 flex items-center gap-1">
+                                  {reconciling === e.id ? <RefreshCw size={9} className="animate-spin" /> : null}
+                                  Reconcile
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* ── Activity tab ── */}
           {tab === "activity" && (
             <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
@@ -508,8 +698,8 @@ export default function FieldAgentsPage() {
                       {a.agent_name?.[0]?.toUpperCase() || "?"}
                     </div>
                     <div>
-                      <p className="text-sm text-slate-700">{a.description}</p>
-                      <p className="text-xs text-slate-400">{a.agent_name}</p>
+                      <p className="text-sm font-medium text-slate-800">{activityLabel(a)}</p>
+                      <p className="text-xs text-slate-400">{activitySubLabel(a)}</p>
                     </div>
                   </div>
                   <span className="text-xs text-slate-400 shrink-0 ml-4">{timeAgo(a.created_at)}</span>
@@ -663,8 +853,36 @@ export default function FieldAgentsPage() {
               )}
               {checkModal.mode === "out" && (
                 <>
+                  {checkModal.task.task_type === "collect_payment" && (
+                    <div className="rounded-xl bg-green-50 border border-green-200 p-3 space-y-3">
+                      <p className="text-xs font-semibold text-green-800">Payment Collection</p>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Amount collected</label>
+                        <input type="number" min="0" step="0.01"
+                          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                          placeholder="0.00"
+                          value={checkForm.amount_collected}
+                          onChange={e => setCheckForm(f => ({ ...f, amount_collected: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Payment method</label>
+                        <select className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                          value={checkForm.payment_method}
+                          onChange={e => setCheckForm(f => ({ ...f, payment_method: e.target.value }))}>
+                          <option value="cash">Cash</option>
+                          <option value="card">Card</option>
+                          <option value="bank_transfer">Bank transfer</option>
+                          <option value="mobile_money">Mobile money</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </div>
+                      {checkForm.amount_collected && (
+                        <p className="text-xs text-green-700">This will be recorded in Finance and the customer&apos;s sales history.</p>
+                      )}
+                    </div>
+                  )}
                   <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">Outcome</label>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Outcome <span className="text-slate-400">(optional)</span></label>
                     <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
                       placeholder="e.g. Payment collected, Follow-up needed"
                       value={checkForm.outcome}
@@ -695,6 +913,57 @@ export default function FieldAgentsPage() {
                 className="px-4 py-2 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50 flex items-center gap-1.5">
                 {checkSaving ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
                 {checkSaving ? "Saving…" : checkModal.mode === "in" ? "Check In" : "Check Out"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Commission Settings Modal ── */}
+      {commModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setCommModal(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <Target size={16} className="text-brand-dark" /> Commission — {commModal.name}
+              </h2>
+              <button onClick={() => setCommModal(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Commission type</label>
+                <select className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  value={commForm.commission_type}
+                  onChange={e => setCommForm(f => ({ ...f, commission_type: e.target.value }))}>
+                  <option value="none">No commission</option>
+                  <option value="percentage">% of amount collected</option>
+                  <option value="per_lead">Fixed per completed task</option>
+                </select>
+              </div>
+              {commForm.commission_type !== "none" && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    {commForm.commission_type === "percentage" ? "Rate (%)" : "Amount per task ($)"}
+                  </label>
+                  <input type="number" min="0" step="0.01"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                    placeholder={commForm.commission_type === "percentage" ? "e.g. 5" : "e.g. 10"}
+                    value={commForm.commission_rate}
+                    onChange={e => setCommForm(f => ({ ...f, commission_rate: e.target.value }))} />
+                  {commModal.total_collected > 0 && commForm.commission_type === "percentage" && commForm.commission_rate && (
+                    <p className="text-xs text-slate-400 mt-1">
+                      Based on ${commModal.total_collected.toLocaleString()} collected → commission would be ${(commModal.total_collected * parseFloat(commForm.commission_rate) / 100).toFixed(2)}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="p-5 border-t border-slate-100 flex justify-end gap-3">
+              <button onClick={() => setCommModal(null)} className="px-4 py-2 text-sm text-slate-600">Cancel</button>
+              <button onClick={saveCommission} disabled={commSaving}
+                className="px-4 py-2 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50 flex items-center gap-1.5">
+                {commSaving ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
+                {commSaving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>

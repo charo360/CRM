@@ -61,10 +61,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const maxAttempts = 5;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const isFormData = options.body instanceof FormData;
     const res = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers || {}),
       },
@@ -104,6 +105,7 @@ export const api = {
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  postForm: <T>(path: string, form: FormData) => request<T>(path, { method: "POST", body: form }),
 };
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -2051,6 +2053,55 @@ export const fieldAgentsApi = {
     if (params?.limit)    q.set("limit", String(params.limit));
     return api.get<Record<string, unknown>[]>(`/field-agents/activity${q.toString() ? `?${q}` : ""}`);
   },
+  setCommission: (agentId: string, body: { commission_type: string; commission_rate: number }) =>
+    api.put<Record<string, unknown>>(`/field-agents/agents/${agentId}/commission`, body),
+  listCollections: (params?: { agent_id?: string; reconciliation_status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id)              q.set("agent_id", params.agent_id);
+    if (params?.reconciliation_status) q.set("reconciliation_status", params.reconciliation_status);
+    return api.get<Record<string, unknown>>(`/field-agents/collections${q.toString() ? `?${q}` : ""}`);
+  },
+  reconcileEntry: (entryId: string) =>
+    api.put<Record<string, unknown>>(`/field-agents/collections/${entryId}/reconcile`, {}),
+  reconcileAll: () =>
+    api.post<{ reconciled: number }>("/field-agents/collections/reconcile-all", {}),
+};
+
+// ── Smart Notes ───────────────────────────────────────────────────────────────
+
+export interface DiarizeUtterance {
+  speaker: string;   // "A" | "B" | ... from AssemblyAI, then overwritten with real name
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface DiarizeResult {
+  status: "queued" | "processing" | "completed" | "error";
+  speakers?: string[];
+  utterances?: DiarizeUtterance[];
+  text?: string;
+  error?: string;
+}
+
+export const smartNotesApi = {
+  upcoming: () => api.get<{ meetings: Record<string, unknown>[]; connected: boolean }>("/smart-notes/upcoming"),
+  transcribe: (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "recording.webm");
+    return api.postForm<{ transcript: string }>("/smart-notes/transcribe", form);
+  },
+  startDiarize: (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "recording.webm");
+    return api.postForm<{ job_id: string }>("/smart-notes/diarize", form);
+  },
+  pollDiarize: (jobId: string) => api.get<DiarizeResult>(`/smart-notes/diarize/${jobId}`),
+  generate: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes/generate", body),
+  list: () => api.get<{ notes: Record<string, unknown>[] }>("/smart-notes"),
+  save: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes", body),
+  get: (id: string) => api.get<Record<string, unknown>>(`/smart-notes/${id}`),
+  delete: (id: string) => api.delete<{ ok: boolean }>(`/smart-notes/${id}`),
 };
 
 // ── Loyalty ───────────────────────────────────────────────────────────────────

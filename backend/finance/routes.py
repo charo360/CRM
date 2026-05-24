@@ -30,7 +30,8 @@ class FinanceEntry(BaseModel):
     description: str = ""
     date: Optional[str] = None  # ISO date string, defaults to today
     reference: str = ""
-    currency: str = "KES"
+    currency: str = "USD"
+    customer_id: Optional[str] = None
 
 class FinanceEntryUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -48,7 +49,7 @@ class Budget(BaseModel):
     period: str = "monthly"   # monthly | yearly
     year: Optional[int] = None
     month: Optional[int] = None
-    currency: str = "KES"
+    currency: str = "USD"
     notes: str = ""
 
 class BudgetUpdate(BaseModel):
@@ -86,6 +87,29 @@ def make_finance_router(db, user_dep):
         tid = _tid(user)
         now = datetime.utcnow()
         entry_date = payload.date or date.today().isoformat()
+
+        # Duplicate detection: check for unreconciled field-agent entry same day, customer, amount ±5%
+        potential_duplicate = None
+        customer_id = getattr(payload, "customer_id", None) or ""
+        if customer_id and payload.type == "income":
+            amount = round(payload.amount, 2)
+            existing = await db.finance_entries.find_one({
+                "user_id": tid,
+                "source": "field_agent",
+                "reconciliation_status": "unreconciled",
+                "customer_id": customer_id,
+                "date": entry_date,
+                "amount": {"$gte": amount * 0.95, "$lte": amount * 1.05},
+            })
+            if existing:
+                potential_duplicate = {
+                    "id": str(existing["_id"]),
+                    "amount": existing["amount"],
+                    "agent_name": existing.get("agent_name", ""),
+                    "payment_method": existing.get("payment_method", ""),
+                    "date": existing.get("date", ""),
+                }
+
         doc = {
             "_id": str(uuid.uuid4()),
             "user_id": tid,
@@ -99,7 +123,23 @@ def make_finance_router(db, user_dep):
             "created_at": now, "updated_at": now,
         }
         await db.finance_entries.insert_one(doc)
-        return _ser(doc)
+        result = _ser(doc)
+        if potential_duplicate:
+            result["potential_duplicate"] = potential_duplicate
+        return result
+
+    @router.put("/entries/{entry_id}/reconcile")
+    async def reconcile_entry(entry_id: str, user=user_dep):
+        """Mark a field-agent entry as reconciled (confirmed payment received)."""
+        tid = _tid(user)
+        doc = await db.finance_entries.find_one({"_id": entry_id, "user_id": tid})
+        if not doc: raise HTTPException(404, "Entry not found")
+        await db.finance_entries.update_one(
+            {"_id": entry_id},
+            {"$set": {"reconciliation_status": "reconciled", "updated_at": datetime.utcnow()}}
+        )
+        updated = await db.finance_entries.find_one({"_id": entry_id})
+        return _ser(updated)
 
     @router.get("/entries/{entry_id}")
     async def get_entry(entry_id: str, user=user_dep):

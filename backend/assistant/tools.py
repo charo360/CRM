@@ -12255,6 +12255,56 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="get_sidebar_feature_recommendations",
+    description=(
+        "Check if the user's goal needs an optional sidebar tool that is not enabled yet. "
+        "Call when they want to do something that lives in a CRM module (SMS, broadcast, "
+        "field agents, invoices, SEO, etc.) OR when they ask which features to turn on. "
+        "Returns disabled tools only, with exact steps: Features page → search → toggle on. "
+        "Do NOT call for general questions unrelated to a specific module."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "user_intent": {
+                "type": "string",
+                "description": "What the user is trying to do, in plain language (e.g. 'send SMS promos').",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["intent", "profile"],
+                "description": (
+                    "intent = their current task needs a specific tool; "
+                    "profile = they asked what to enable for their business type."
+                ),
+            },
+        },
+        "required": ["user_intent", "mode"],
+    },
+    destructive=False,
+)
+async def get_sidebar_feature_recommendations(ctx: ToolContext, args: Dict[str, Any]):
+    from .sidebar_features import build_feature_guidance
+
+    user = await ctx.db.users.find_one({"_id": ctx.business_id}, {"settings": 1})
+    settings = (user or {}).get("settings") or {}
+    features = settings.get("features") or {}
+    business_type = settings.get("business_type") or "general"
+    user_intent = (args.get("user_intent") or "").strip()
+    mode = (args.get("mode") or "intent").strip().lower()
+    if mode not in ("intent", "profile"):
+        mode = "intent"
+
+    return build_feature_guidance(
+        business_type=business_type,
+        features=features,
+        user_intent=user_intent,
+        mode=mode,
+        limit=3,
+    )
+
+
+@tool(
     name="get_kling_video_status",
     description=(
         "Poll the status of a Kling AI video generation task. "

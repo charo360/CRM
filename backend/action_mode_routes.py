@@ -26,72 +26,29 @@ async def queue_social_match(
     group_name: str,
     platform: str,
     url: str,
+    post_id: str = "",
+    comment_id: str = "",
+    account_id: str = "",
+    conversation_id: str = "",
 ) -> bool:
     """
-    Keyword-match `text` against the user's social settings and, if matched,
-    draft a reply and insert it into action_mode_queue.
-
-    Returns True if a queue item was created, False otherwise.
-    Called from the Evolution API webhook for WhatsApp group messages
-    and can be reused for any real-time message pipeline.
+    Detect buy-intent in social/group messages and alert the business owner.
     """
-    try:
-        social_cfg = await db.action_mode_social.find_one({"user_id": user_id})
-        if not social_cfg:
-            return False
-
-        keywords = social_cfg.get("keywords") or []
-        if not keywords:
-            return False
-
-        lower = text.lower()
-        matched = [kw for kw in keywords if kw and kw.lower().strip() in lower]
-        if not matched:
-            return False
-
-        biz = await db.users.find_one({"_id": user_id}) or {}
-        biz_name     = biz.get("business_name", "")
-        biz_type     = biz.get("business_type", "")
-        location     = social_cfg.get("location") or ""
-        mode         = social_cfg.get("mode", "review")
-        status       = "approved" if mode == "auto" else "pending"
-
-        draft = _draft_contextual_comment(biz_name, biz_type, text, matched[0], location)
-
-        await db.action_mode_queue.insert_one({
-            "_id":          str(uuid.uuid4()),
-            "user_id":      user_id,
-            "agent":        "social_extension",
-            "action_type":  "post_comment",
-            "title":        f"{platform.title()}: {text[:70]}",
-            "draft_content": draft,
-            "metadata": {
-                "url":        url,
-                "platform":   platform,
-                "snippet":    text[:300],
-                "keyword":    matched[0],
-                "author":     author,
-                "group_name": group_name,
-            },
-            "status":       status,
-            "posted":       False,
-            "created_at":   datetime.utcnow(),
-        })
-
-        await db.action_mode_feed.insert_one({
-            "_id":        str(uuid.uuid4()),
-            "user_id":    user_id,
-            "agent":      "social_extension",
-            "title":      f"🎯 Match in {group_name}",
-            "detail":     f"{author}: {text[:120]}",
-            "kind":       "opportunity",
-            "created_at": datetime.utcnow(),
-        })
-        return True
-
-    except Exception as e:
-        logger.error("[queue_social_match] user=%s error=%s", user_id, e)
-        return False
+    from deal_alerts import queue_deal_alert
+    return await queue_deal_alert(
+        db,
+        user_id,
+        text=text,
+        author=author,
+        platform=platform,
+        url=url,
+        source="social_monitor",
+        group_name=group_name,
+        post_id=post_id,
+        comment_id=comment_id,
+        account_id=account_id,
+        conversation_id=conversation_id,
+    )
 
 
 class ActionModeSettings(BaseModel):
@@ -121,7 +78,9 @@ class SocialEngagementSettings(BaseModel):
     location: Optional[str] = ""
     daily_limit: Optional[int] = 10
     auto_run: Optional[bool] = True
-    mode: Optional[str] = "review"
+    mode: Optional[str] = "review"  # review | auto | notify
+    deal_mode: Optional[str] = None   # review | auto_reply | notify_only
+    notify_push: Optional[bool] = True
     google_review_link: Optional[str] = None
 
 
@@ -147,6 +106,16 @@ class ReviewRequestBody(BaseModel):
     phone: Optional[str] = None
     customer_name: Optional[str] = None
     review_link: Optional[str] = None
+
+
+class ScoutBody(BaseModel):
+    title: Optional[str] = None
+    goal: Optional[str] = None
+    search_queries: Optional[List[str]] = None
+    location: Optional[str] = None
+    frequency: Optional[str] = "12h"
+    scout_type: Optional[str] = "custom"
+    is_active: Optional[bool] = True
 
 
 def make_action_mode_router(db, user_dep):
@@ -179,6 +148,10 @@ def make_action_mode_router(db, user_dep):
             }},
             upsert=True,
         )
+        if body.enabled:
+            from scout_service import ensure_default_scouts, get_biz_context
+            ctx = await get_biz_context(db, uid)
+            await ensure_default_scouts(db, uid, ctx)
         return {"status": "saved"}
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -401,6 +374,13 @@ def make_action_mode_router(db, user_dep):
         doc.setdefault("location", "")
         doc.setdefault("daily_limit", 10)
         doc.setdefault("auto_run", True)
+        doc.setdefault("deal_mode", doc.get("mode", "review"))
+        doc.setdefault("notify_push", True)
+        try:
+            from apidirect_collector import get_user_fb_usage
+            doc["fb_usage"] = await get_user_fb_usage(db, uid)
+        except Exception:
+            doc["fb_usage"] = None
         return doc
 
     @router.put("/social/settings")
@@ -609,10 +589,19 @@ def make_action_mode_router(db, user_dep):
     @router.post("/run-social")
     async def run_social(bg: BackgroundTasks, user=Depends(user_dep)):
         uid = _uid(user)
-        social_cfg = await db.action_mode_social.find_one({"user_id": uid})
-        if not social_cfg or not social_cfg.get("keywords"):
-            raise HTTPException(400, "Add at least one keyword in Social Engagement settings first")
+        social_cfg = await db.action_mode_social.find_one({"user_id": uid}) or {}
         biz = await db.users.find_one({"_id": uid}) or {}
+        has_keywords = bool(social_cfg.get("keywords"))
+        has_fb_groups = any(
+            "facebook.com/group" in (g or "").lower()
+            for g in (social_cfg.get("groups") or [])
+        )
+        has_biz_type = bool(biz.get("business_type") or biz.get("industry"))
+        if not has_keywords and not (has_fb_groups and has_biz_type):
+            raise HTTPException(
+                400,
+                "Add keywords in Social Engagement settings, or save Facebook group URLs with a business type on your profile",
+            )
         settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
         biz_context = {
             "business_name": biz.get("business_name", ""),
@@ -622,6 +611,26 @@ def make_action_mode_router(db, user_dep):
         }
         bg.add_task(_run_social_engagement, db, uid, social_cfg, biz_context)
         return {"status": "started"}
+
+    @router.post("/social/fb-scan")
+    async def run_fb_group_scan(user=Depends(user_dep)):
+        """Run API Direct Facebook group search now (public groups only)."""
+        from apidirect_collector import is_configured, scan_user_facebook_groups
+        if not is_configured():
+            raise HTTPException(503, "Facebook group search is not configured on the server")
+        uid = _uid(user)
+        social_cfg = await db.action_mode_social.find_one({"user_id": uid}) or {}
+        biz = await db.users.find_one({"_id": uid}) or {}
+        result = await scan_user_facebook_groups(db, uid, social_cfg, biz)
+        if result.get("skipped") == "no_facebook_groups":
+            raise HTTPException(400, "Add at least one Facebook group URL in Social Engagement settings")
+        return result
+
+    @router.get("/social/fb-usage")
+    async def get_fb_group_usage(user=Depends(user_dep)):
+        from apidirect_collector import get_user_fb_usage
+        uid = _uid(user)
+        return await get_user_fb_usage(db, uid)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Fusion Engine — cluster weak signals into high-confidence opportunities
@@ -832,6 +841,77 @@ def make_action_mode_router(db, user_dep):
         }
         bg.add_task(_run_custom_agent, db, uid, agent_doc, biz_context)
         return {"status": "started", "agent": agent_id}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Zilo Scouts — scheduled keyword monitors (Open Scouts pattern)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.get("/scouts")
+    async def list_scouts_route(user=Depends(user_dep)):
+        from scout_service import ensure_default_scouts, get_biz_context, list_scouts
+        uid = _uid(user)
+        settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
+        if settings.get("enabled"):
+            ctx = await get_biz_context(db, uid)
+            await ensure_default_scouts(db, uid, ctx)
+        scouts = await list_scouts(db, uid)
+        return {"scouts": scouts}
+
+    @router.get("/scouts/pulse")
+    async def scouts_pulse_route(user=Depends(user_dep)):
+        from scout_service import get_pulse
+        uid = _uid(user)
+        items = await get_pulse(db, uid, limit=5)
+        return {"pulse": items}
+
+    @router.post("/scouts/setup")
+    async def scouts_setup_route(user=Depends(user_dep)):
+        """Reset and auto-generate scouts from business profile."""
+        from scout_service import ensure_default_scouts, get_biz_context
+        uid = _uid(user)
+        await db.zilo_scouts.delete_many({"user_id": uid})
+        ctx = await get_biz_context(db, uid)
+        scouts = await ensure_default_scouts(db, uid, ctx, force=True)
+        return {"scouts": scouts, "created": len(scouts)}
+
+    @router.post("/scouts")
+    async def create_scout_route(body: ScoutBody, user=Depends(user_dep)):
+        from scout_service import create_scout
+        uid = _uid(user)
+        doc = await create_scout(db, uid, body.dict(exclude_none=True))
+        return doc
+
+    @router.put("/scouts/{scout_id}")
+    async def update_scout_route(scout_id: str, body: ScoutBody, user=Depends(user_dep)):
+        from scout_service import update_scout
+        uid = _uid(user)
+        updated = await update_scout(db, uid, scout_id, body.dict(exclude_none=True))
+        if not updated:
+            raise HTTPException(404, "Scout not found")
+        return updated
+
+    @router.delete("/scouts/{scout_id}")
+    async def delete_scout_route(scout_id: str, user=Depends(user_dep)):
+        from scout_service import delete_scout
+        uid = _uid(user)
+        if not await delete_scout(db, uid, scout_id):
+            raise HTTPException(404, "Scout not found")
+        return {"status": "deleted"}
+
+    @router.post("/scouts/{scout_id}/run")
+    async def run_scout_route(scout_id: str, bg: BackgroundTasks, user=Depends(user_dep)):
+        from scout_service import execute_scout, get_biz_context
+        uid = _uid(user)
+        scout = await db.zilo_scouts.find_one({"_id": scout_id, "user_id": uid})
+        if not scout:
+            raise HTTPException(404, "Scout not found")
+
+        async def _run():
+            ctx = await get_biz_context(db, uid)
+            await execute_scout(db, scout, ctx)
+
+        bg.add_task(_run)
+        return {"status": "started", "scout_id": scout_id}
 
     return router
 
@@ -1357,17 +1437,18 @@ async def _run_admin_autopilot(db, uid: str, ctx: Dict[str, Any]):
             if existing:
                 continue
             amount = inv.get("amount", 0)
+            currency = inv.get("currency", "USD")
             name = cust.get("name", "there")
             days_overdue = (now - inv["created_at"]).days if inv.get("created_at") else 7
             draft = (
                 f"Hi {name.split()[0]}! 👋 Hope you're doing well.\n\n"
                 f"Just a friendly reminder about invoice #{inv.get('invoice_number', str(inv['_id'])[-6:])} "
-                f"for KES {amount:,.0f} which has been outstanding for {days_overdue} days.\n\n"
+                f"for {currency} {amount:,.2f} which has been outstanding for {days_overdue} days.\n\n"
                 f"Please let us know if you have any questions or need alternative payment arrangements.\n\n"
                 f"Thank you! — {biz_name}"
             )
             await _add_to_queue(db, uid, "admin_autopilot", "send_whatsapp",
-                                f"Invoice reminder: {name} — KES {amount:,.0f}",
+                                f"Invoice reminder: {name} — {currency} {amount:,.2f}",
                                 draft,
                                 {
                                     "phone": cust.get("phone"),
@@ -1461,10 +1542,27 @@ async def _execute_approved_action(db, uid: str, item: Dict[str, Any], content: 
                                 kind="action")
 
         elif action_type in ("post_comment", "join_group"):
-            await _log_activity(db, uid, item.get("agent", ""),
-                                f"✅ Approved: {item.get('title', '')}",
-                                f"Open the link and take action: {meta.get('url', '')}",
-                                kind="action")
+            post_id = meta.get("post_id", "")
+            comment_id = meta.get("comment_id", "")
+            account_id = meta.get("account_id", "")
+            replied = False
+            if action_type == "post_comment" and post_id and comment_id and account_id and content:
+                from deal_alerts import reply_zernio_comment
+                replied = await reply_zernio_comment(post_id, account_id, comment_id, content)
+                await db.action_mode_queue.update_one(
+                    {"_id": item.get("_id")},
+                    {"$set": {"posted": replied, "posted_at": datetime.utcnow()}},
+                )
+            if replied:
+                await _log_activity(db, uid, item.get("agent", ""),
+                                    f"💬 Reply sent on {meta.get('platform', 'social')}",
+                                    f"Replied to {meta.get('author', 'customer')}: {content[:120]}",
+                                    kind="action")
+            else:
+                await _log_activity(db, uid, item.get("agent", ""),
+                                    f"✅ Approved: {item.get('title', '')}",
+                                    meta.get("url") or f"Open link: {meta.get('url', '')}",
+                                    kind="action")
 
     except Exception as e:
         logger.error("[action-mode] execute error: %s", e)
@@ -1551,7 +1649,9 @@ async def _scan_zernio_for_keywords(
 
                     lower   = text.lower()
                     matched = [kw for kw in keywords if kw and kw.lower().strip() in lower]
-                    if not matched:
+                    from deal_alerts import detect_buy_intent
+                    biz_type = (await db.users.find_one({"_id": uid}) or {}).get("business_type", "")
+                    if not matched and not detect_buy_intent(text, keywords, biz_type):
                         await seen_col.insert_one({"uid": uid, "ref": conv_id, "ts": datetime.utcnow()})
                         continue
 
@@ -1569,6 +1669,7 @@ async def _scan_zernio_for_keywords(
                         group_name = f"{platform.title()} DM",
                         platform   = platform,
                         url        = f"https://web.whatsapp.com/",
+                        conversation_id = conv_id,
                     )
                     await seen_col.insert_one({"uid": uid, "ref": conv_id, "ts": datetime.utcnow()})
                     found += 1
@@ -1608,10 +1709,17 @@ async def _scan_zernio_for_keywords(
 
                         await seen_col.insert_one({"uid": uid, "ref": f"c_{comment_id}", "ts": datetime.utcnow()})
 
-                        if not matched:
+                        from deal_alerts import detect_buy_intent
+                        biz_type = (await db.users.find_one({"_id": uid}) or {}).get("business_type", "")
+                        if not matched and not detect_buy_intent(text, keywords, biz_type):
                             continue
 
                         author = comment.get("from", {}).get("name") or comment.get("authorName") or "Commenter"
+                        post_id_z = str(post.get("_id") or post.get("id") or post.get("postId") or "")
+                        account_id_z = str(
+                            comment.get("accountId") or comment.get("account_id")
+                            or post.get("accountId") or post.get("account_id") or ""
+                        )
                         await queue_social_match(
                             db, uid,
                             text       = text,
@@ -1619,6 +1727,9 @@ async def _scan_zernio_for_keywords(
                             group_name = f"{platform.title()} Post Comment",
                             platform   = platform,
                             url        = post_url,
+                            post_id    = post_id_z,
+                            comment_id = comment_id,
+                            account_id = account_id_z,
                         )
                         found += 1
         except Exception as e:
@@ -1736,6 +1847,26 @@ async def _run_social_engagement(db, uid: str, cfg: Dict[str, Any], biz: Dict[st
     # ── Zernio inbox + comments scan (official WhatsApp Business & social DMs) ──
     zernio_found = await _scan_zernio_for_keywords(db, uid, keywords, cfg)
     found += zernio_found
+
+    # ── API Direct — Facebook group keyword search (public groups only) ──
+    fb_groups = [g for g in (cfg.get("groups") or []) if g and "facebook.com/group" in g.lower()]
+    if fb_groups:
+        try:
+            from apidirect_collector import is_configured, scan_user_facebook_groups
+            if is_configured():
+                fb_result = await scan_user_facebook_groups(db, uid, cfg, biz, daily_limit=daily_limit)
+                fb_alerts = int(fb_result.get("alerts") or 0)
+                found += fb_alerts
+                if fb_result.get("api_pages"):
+                    await _log_activity(
+                        db, uid, "social_engagement",
+                        f"📘 Facebook groups scanned — {fb_alerts} deal alert(s)",
+                        f"API Direct: {fb_result.get('api_pages')} page(s) · "
+                        f"{fb_result.get('groups_scanned', 0)} group(s)",
+                        kind="opportunity" if fb_alerts else "action",
+                    )
+        except Exception as e:
+            logger.warning("[social_engagement] apidirect fb scan error: %s", e)
 
     await _log_activity(db, uid, "social_engagement",
                         f"✅ Social agent done — {found} posts queued for review",

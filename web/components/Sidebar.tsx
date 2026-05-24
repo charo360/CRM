@@ -53,6 +53,10 @@ import {
   Activity,
   Radar,
   Crosshair,
+  Smartphone,
+  NotebookPen,
+  Landmark,
+  Handshake,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -64,7 +68,6 @@ function coreNavItems(overviewLabel: string) {
   return [
     { href: "/dashboard", label: overviewLabel, icon: LayoutDashboard, exact: true as const },
     { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
-    { href: "/dashboard/field-agents", label: "Field Agents", icon: Globe },
     { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
@@ -77,6 +80,8 @@ const MAIN_NAV = [
   { href: "/dashboard/customers", label: "Customers", icon: Users },
   { href: "/dashboard/contacts", label: "Contacts", icon: UserCheck },
   { href: "/dashboard/suppliers", label: "Suppliers", icon: Truck },
+  { href: "/dashboard/investors", label: "Investors", icon: Landmark },
+  { href: "/dashboard/partners", label: "Partners", icon: Handshake },
   { href: "/dashboard/followups", label: "Follow-ups", icon: Bell },
 ] as const;
 
@@ -123,6 +128,7 @@ export default function Sidebar() {
   const salesAndGrowthNav = [
     { href: "/dashboard/action-mode", label: "AI Scout", icon: Crosshair },
     { href: "/dashboard/broadcast", label: "Broadcast", icon: Megaphone },
+    { href: "/dashboard/sms-marketing", label: "SMS Marketing", icon: Smartphone },
     { href: "/dashboard/social-scheduler", label: "Social scheduler", icon: CalendarClock },
     { href: "/dashboard/meta-ads", label: "Meta Ads", icon: Target },
     { href: "/dashboard/google-ads", label: "Google Ads", icon: LineChart },
@@ -135,6 +141,8 @@ export default function Sidebar() {
 
   const businessNavFiltered = [
     ...businessNav,
+    { href: "/dashboard/field-agents", label: "Field Agents", icon: Globe },
+    { href: "/dashboard/smart-notes", label: "Smart Notes", icon: NotebookPen },
     { href: "/dashboard/inventory", label: "Inventory", icon: Package },
     { href: "/dashboard/loyalty", label: "Loyalty", icon: Star },
     { href: "/dashboard/nps", label: "Feedback / NPS", icon: MessageCircle },

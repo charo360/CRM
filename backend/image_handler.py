@@ -377,7 +377,7 @@ class S3Handler:
             raise
 
     @staticmethod
-    async def upload_file(base64_data: str, filename: str, content_type: str = "image/jpeg") -> str:
+    async def upload_file(base64_data: str, filename: str, content_type: str = "image/jpeg", folder: str = "products") -> str:
         """
         Upload base64 image to S3 bucket
         Returns: Public URL
@@ -407,7 +407,7 @@ class S3Handler:
             loop = asyncio.get_event_loop()
             
             # Unique filename
-            key = f"products/{uuid.uuid4()}-{filename}"
+            key = f"{folder.rstrip('/')}/{uuid.uuid4()}-{filename}"
             
             def _upload():
                 s3 = S3Handler.get_s3_client()
