@@ -381,6 +381,11 @@ def make_action_mode_router(db, user_dep):
             doc["fb_usage"] = await get_user_fb_usage(db, uid)
         except Exception:
             doc["fb_usage"] = None
+        try:
+            from scrapecreators import get_user_usage as sc_usage
+            doc["sc_usage"] = await sc_usage(db, uid)
+        except Exception:
+            doc["sc_usage"] = None
         return doc
 
     @router.put("/social/settings")
@@ -614,23 +619,31 @@ def make_action_mode_router(db, user_dep):
 
     @router.post("/social/fb-scan")
     async def run_fb_group_scan(user=Depends(user_dep)):
-        """Run API Direct Facebook group search now (public groups only)."""
-        from apidirect_collector import is_configured, scan_user_facebook_groups
-        if not is_configured():
+        """Scan Facebook groups + Marketplace via ScrapeCreators."""
+        from scrapecreators import is_configured as sc_configured
+        from scrapecreators import scan_user_facebook_groups as sc_scan
+        from scrapecreators import scan_marketplace
+        if not sc_configured():
             raise HTTPException(503, "Facebook group search is not configured on the server")
         uid = _uid(user)
         social_cfg = await db.action_mode_social.find_one({"user_id": uid}) or {}
         biz = await db.users.find_one({"_id": uid}) or {}
-        result = await scan_user_facebook_groups(db, uid, social_cfg, biz)
-        if result.get("skipped") == "no_facebook_groups":
+        groups_result = await sc_scan(db, uid, social_cfg, biz)
+        market_result = await scan_marketplace(db, uid, social_cfg, biz)
+        if groups_result.get("skipped") == "no_facebook_groups" and market_result.get("skipped"):
             raise HTTPException(400, "Add at least one Facebook group URL in Social Engagement settings")
-        return result
+        return {
+            "groups": groups_result,
+            "marketplace": market_result,
+            "total_alerts": int(groups_result.get("alerts", 0)) + int(market_result.get("alerts", 0)),
+            "total_credits": int(groups_result.get("credits", 0)) + int(market_result.get("credits", 0)),
+        }
 
     @router.get("/social/fb-usage")
     async def get_fb_group_usage(user=Depends(user_dep)):
-        from apidirect_collector import get_user_fb_usage
+        from scrapecreators import get_user_usage as sc_usage
         uid = _uid(user)
-        return await get_user_fb_usage(db, uid)
+        return await sc_usage(db, uid)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Fusion Engine — cluster weak signals into high-confidence opportunities
@@ -1848,25 +1861,37 @@ async def _run_social_engagement(db, uid: str, cfg: Dict[str, Any], biz: Dict[st
     zernio_found = await _scan_zernio_for_keywords(db, uid, keywords, cfg)
     found += zernio_found
 
-    # ── API Direct — Facebook group keyword search (public groups only) ──
+    # ── ScrapeCreators — Facebook group posts + comments + Marketplace ──
     fb_groups = [g for g in (cfg.get("groups") or []) if g and "facebook.com/group" in g.lower()]
-    if fb_groups:
-        try:
-            from apidirect_collector import is_configured, scan_user_facebook_groups
-            if is_configured():
-                fb_result = await scan_user_facebook_groups(db, uid, cfg, biz, daily_limit=daily_limit)
+    try:
+        from scrapecreators import is_configured as sc_configured
+        from scrapecreators import scan_user_facebook_groups as sc_scan_groups
+        from scrapecreators import scan_marketplace
+        if sc_configured():
+            if fb_groups:
+                fb_result = await sc_scan_groups(db, uid, cfg, biz)
                 fb_alerts = int(fb_result.get("alerts") or 0)
                 found += fb_alerts
-                if fb_result.get("api_pages"):
-                    await _log_activity(
-                        db, uid, "social_engagement",
-                        f"📘 Facebook groups scanned — {fb_alerts} deal alert(s)",
-                        f"API Direct: {fb_result.get('api_pages')} page(s) · "
-                        f"{fb_result.get('groups_scanned', 0)} group(s)",
-                        kind="opportunity" if fb_alerts else "action",
-                    )
-        except Exception as e:
-            logger.warning("[social_engagement] apidirect fb scan error: %s", e)
+                await _log_activity(
+                    db, uid, "social_engagement",
+                    f"📘 Facebook groups scanned — {fb_alerts} lead(s) found",
+                    f"ScrapeCreators: {fb_result.get('credits', 0)} credit(s) · "
+                    f"{fb_result.get('groups_scanned', 0)} group(s) · posts + comments analysed",
+                    kind="opportunity" if fb_alerts else "action",
+                )
+            # Always scan Marketplace if keywords/business type set
+            mp_result = await scan_marketplace(db, uid, cfg, biz)
+            mp_alerts = int(mp_result.get("alerts") or 0)
+            found += mp_alerts
+            if mp_alerts:
+                await _log_activity(
+                    db, uid, "social_engagement",
+                    f"🛒 Facebook Marketplace — {mp_alerts} listing(s) found",
+                    f"ScrapeCreators: {mp_result.get('credits', 0)} credit(s) used",
+                    kind="opportunity",
+                )
+    except Exception as e:
+        logger.warning("[social_engagement] scrapecreators fb scan error: %s", e)
 
     await _log_activity(db, uid, "social_engagement",
                         f"✅ Social agent done — {found} posts queued for review",
