@@ -29,6 +29,7 @@ export default function SmartNotesPage() {
   const [selected,      setSelected]      = useState<NoteDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [deleting,      setDeleting]      = useState<string | null>(null);
+  const [keytermsInput, setKeytermsInput] = useState(""); // e.g. "Zilo, Samuel, Mweni"
 
   const rec = useMeetingRecorder();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -111,13 +112,25 @@ export default function SmartNotesPage() {
           {/* Recording controls */}
           <div className="mt-3">
             {recordState === "idle" && (
-              <button
-                onClick={() => rec.startRecording()}
-                className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
-              >
-                <span className="w-2 h-2 rounded-full bg-white" />
-                Record Now
-              </button>
+              <>
+                <input
+                  type="text"
+                  value={keytermsInput}
+                  onChange={e => setKeytermsInput(e.target.value)}
+                  placeholder="Company, names to recognise… (e.g. Zilo, Samuel)"
+                  className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 mb-2"
+                />
+                <button
+                  onClick={() => {
+                    const keyterms = keytermsInput.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+                    rec.startRecording({ title: `Recording ${new Date().toLocaleDateString()}`, keyterms });
+                  }}
+                  className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+                >
+                  <span className="w-2 h-2 rounded-full bg-white" />
+                  Record Now
+                </button>
+              </>
             )}
             {recordState === "recording" && (
               <button

@@ -28,6 +28,7 @@ export interface MeetingInfo {
   end?: string;
   meet_url?: string;
   attendees?: string[];
+  keyterms?: string[]; // custom words/names to bias Deepgram toward
 }
 
 export type RecordState = "idle" | "recording" | "tagging" | "processing" | "done" | "error";
@@ -69,7 +70,8 @@ export function useMeetingRecorder() {
   const startTimeRef    = useRef<number>(0);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const segmentsRef     = useRef<SpeakerSegment[]>([]);
-  const transcriptRef   = useRef<string>("");
+  const transcriptRef   = useRef<string>("");   // confirmed final text only
+  const interimAccRef   = useRef<string>("");   // running accumulation of all interim words
   const meetingRef      = useRef<MeetingInfo | null>(null);
 
   // ── Cleanup ────────────────────────────────────────────────────────────────
@@ -94,6 +96,15 @@ export function useMeetingRecorder() {
   ): Promise<Record<string, unknown> | null> => {
     const m = meetingRef.current;
     const title = m?.title || `Recording ${new Date().toLocaleDateString()}`;
+
+    // Nothing to send — recording was too short or silent
+    const hasContent = (utterances?.length ?? 0) > 0 || transcript.trim().length > 0;
+    if (!hasContent) {
+      setError("No speech detected — try recording for longer or speak closer to the mic.");
+      setRecordState("error");
+      return null;
+    }
+
     setRecordState("processing");
     try {
       const notes = await smartNotesApi.generate({
@@ -153,7 +164,9 @@ export function useMeetingRecorder() {
       setSpeakerTags(tags);
       setRecordState("tagging");
     } else {
-      doGenerate(transcriptRef.current);
+      // Use confirmed transcript, falling back to accumulated interim text
+      const text = transcriptRef.current.trim() || interimAccRef.current.trim();
+      doGenerate(text);
     }
   }, [cleanupMedia, doGenerate]);
 
@@ -176,7 +189,12 @@ export function useMeetingRecorder() {
     // Show interim (not-yet-final) text immediately as a preview
     if (!msg.is_final) {
       const interim = alt?.transcript ?? "";
-      if (interim.trim()) setInterimText(interim);
+      if (interim.trim()) {
+        setInterimText(interim);
+        // Keep a running accumulation as fallback in case recording is stopped
+        // before any is_final result comes through
+        interimAccRef.current = (interimAccRef.current + " " + interim).trim();
+      }
       return;
     }
 
@@ -224,8 +242,8 @@ export function useMeetingRecorder() {
 
   const startRecording = useCallback(async (meeting?: MeetingInfo) => {
     if (meeting) meetingRef.current = meeting;
-    setError(""); setLiveTranscript(""); setSegments([]); setSavedNote(null);
-    segmentsRef.current = []; transcriptRef.current = "";
+    setError(""); setLiveTranscript(""); setInterimText(""); setSegments([]); setSavedNote(null); setStatusMsg("");
+    segmentsRef.current = []; transcriptRef.current = ""; interimAccRef.current = "";
 
     try {
       // Capture system audio (tab) + mic
@@ -261,7 +279,14 @@ export function useMeetingRecorder() {
       // Open WebSocket to backend Deepgram proxy
       const wsBase = API_BASE.replace(/^http/, "ws");
       const token = getToken() ?? "";
-      const ws = new WebSocket(`${wsBase}/smart-notes/stream?token=${encodeURIComponent(token)}`);
+      const keyterms = meetingRef.current?.keyterms ?? [];
+      const keytermsParams = keyterms
+        .filter(t => t.trim())
+        .map(t => `&keyterms=${encodeURIComponent(t.trim())}`)
+        .join("");
+      const ws = new WebSocket(
+        `${wsBase}/smart-notes/stream?token=${encodeURIComponent(token)}${keytermsParams}`
+      );
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
@@ -313,7 +338,7 @@ export function useMeetingRecorder() {
     setRecordState("idle"); setElapsed("0:00"); setLiveTranscript("");
     setInterimText(""); setStatusMsg("");
     setSegments([]); setSpeakerTags({}); setError(""); setSavedNote(null);
-    segmentsRef.current = []; transcriptRef.current = "";
+    segmentsRef.current = []; transcriptRef.current = ""; interimAccRef.current = "";
     meetingRef.current = null;
   }, [cleanupMedia]);
 

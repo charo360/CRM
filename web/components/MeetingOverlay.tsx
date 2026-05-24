@@ -29,10 +29,11 @@ export default function MeetingOverlay() {
   const router = useRouter();
   const rec = useMeetingRecorder();
 
-  const [meeting,   setMeeting]   = useState<Meeting | null>(null);
-  const [isUpcoming,setIsUpcoming]= useState(false);
-  const [countdown, setCountdown] = useState("");
-  const [expanded,  setExpanded]  = useState(false);
+  const [meeting,      setMeeting]      = useState<Meeting | null>(null);
+  const [isUpcoming,   setIsUpcoming]   = useState(false);
+  const [countdown,    setCountdown]    = useState("");
+  const [expanded,     setExpanded]     = useState(false);
+  const [keytermsInput,setKeytermsInput]= useState("");
 
   const activeMeetingRef = useRef<Meeting | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -60,6 +61,9 @@ export default function MeetingOverlay() {
             activeMeetingRef.current = m;
             setMeeting(m);
             setIsUpcoming(true);
+            // Pre-fill keyterms with attendee first names
+            const names = m.attendees.map(e => e.split("@")[0]).filter(Boolean);
+            if (names.length) setKeytermsInput(names.join(", "));
           }
           return;
         }
@@ -92,10 +96,12 @@ export default function MeetingOverlay() {
     if (meeting.meet_url) window.open(meeting.meet_url, "_blank");
     setIsUpcoming(false);
     setExpanded(true);
+    const keyterms = keytermsInput.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
     await rec.startRecording({
       id: meeting.id, title: meeting.title,
       start: meeting.start, end: meeting.end,
       meet_url: meeting.meet_url, attendees: meeting.attendees,
+      keyterms,
     });
   };
 
@@ -175,6 +181,16 @@ export default function MeetingOverlay() {
                 {meeting.attendees.length > 3 && ` +${meeting.attendees.length - 3}`}
               </p>
             )}
+            <div>
+              <p className="text-[10px] text-gray-400 mb-1">Names / terms to recognise:</p>
+              <input
+                type="text"
+                value={keytermsInput}
+                onChange={e => setKeytermsInput(e.target.value)}
+                placeholder="e.g. Zilo, Samuel, Mweni"
+                className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+              />
+            </div>
             <button
               onClick={handleJoinRecord}
               className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors"

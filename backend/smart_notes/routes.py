@@ -289,13 +289,19 @@ Respond ONLY with valid JSON. No markdown fences."""
     # ── Deepgram Nova-2 real-time streaming proxy ──────────────────────────────
 
     @router.websocket("/stream")
-    async def stream_audio(websocket: WebSocket, token: str = Query("")):
+    async def stream_audio(
+        websocket: WebSocket,
+        token: str = Query(""),
+        keyterms: List[str] = Query(default=[]),
+    ):
         """
         WebSocket proxy: frontend 16 kHz mono PCM → Deepgram Nova-2 → JSON results back.
         Auth: JWT passed as ?token= query param (standard Bearer auth doesn't work on WS).
+        keyterms: custom words/names to bias recognition toward (brand names, people, etc.)
         """
         import jwt as _jwt
         import json as _json
+        from urllib.parse import quote as _quote
 
         secret    = os.environ.get("JWT_SECRET", "")
         algorithm = os.environ.get("JWT_ALGORITHM", "HS256")
@@ -331,6 +337,10 @@ Respond ONLY with valid JSON. No markdown fences."""
             "&sample_rate=16000"
             "&channels=1"
         )
+        # Append custom keyterms (cap at 20 to stay within URL limits)
+        for term in keyterms[:20]:
+            if term.strip():
+                dg_url += f"&keyterms={_quote(term.strip())}"
 
         try:
             import websockets as _ws
