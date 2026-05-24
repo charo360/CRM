@@ -4156,6 +4156,84 @@ async def get_revenue_trends(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="get_budget_status",
+    description=(
+        "Return the business's expense budget vs actual spend for a given month. "
+        "Use this when the user asks about their budget, how much they've spent vs budget, "
+        "which categories are over budget, or how much budget is left. "
+        "Returns per-category breakdown with % used, remaining amount, and over/near-limit flags."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "year":  {"type": "integer", "description": "Year (defaults to current year)."},
+            "month": {"type": "integer", "minimum": 1, "maximum": 12,
+                      "description": "Month number 1-12 (defaults to current month)."},
+        },
+    },
+)
+async def get_budget_status(ctx: ToolContext, args: Dict[str, Any]):
+    import calendar as _cal
+    from datetime import date as _date
+    today = _date.today()
+    year  = int(args.get("year")  or today.year)
+    month = int(args.get("month") or today.month)
+
+    from_date = f"{year:04d}-{month:02d}-01"
+    last_day  = _cal.monthrange(year, month)[1]
+    to_date   = f"{year:04d}-{month:02d}-{last_day:02d}"
+
+    budget_q = {"user_id": ctx.business_id, "period": "monthly", "year": year, "month": month}
+    budgets  = await ctx.db.budgets.find(budget_q).to_list(200)
+
+    pipeline = [
+        {"$match": {"user_id": ctx.business_id, "type": "expense",
+                    "date": {"$gte": from_date, "$lte": to_date}}},
+        {"$group": {"_id": "$category", "actual": {"$sum": "$amount"}}},
+    ]
+    rows = await ctx.db.finance_entries.aggregate(pipeline).to_list(200)
+    actual_by_cat: Dict[str, float] = {r["_id"]: round(r["actual"], 2) for r in rows}
+
+    items = []
+    for b in budgets:
+        cat     = b["category"]
+        actual  = actual_by_cat.get(cat, 0.0)
+        budgeted = b["amount"]
+        items.append({
+            "category": cat,
+            "budgeted": budgeted,
+            "actual": actual,
+            "remaining": round(budgeted - actual, 2),
+            "pct_used": round((actual / budgeted * 100) if budgeted > 0 else 0, 1),
+            "status": "over" if actual > budgeted else "warning" if actual >= budgeted * 0.75 else "ok",
+        })
+
+    budgeted_cats = {b["category"] for b in budgets}
+    for cat, actual in actual_by_cat.items():
+        if cat not in budgeted_cats:
+            items.append({"category": cat, "budgeted": None, "actual": actual,
+                           "remaining": None, "pct_used": None, "status": "no_budget"})
+
+    items.sort(key=lambda x: (x["status"] not in ("over", "warning"), x["category"]))
+
+    total_budgeted = sum(i["budgeted"] for i in items if i["budgeted"] is not None)
+    total_actual   = sum(i["actual"] for i in items)
+    over_budget    = [i for i in items if i["status"] == "over"]
+    near_limit     = [i for i in items if i["status"] == "warning"]
+
+    return {
+        "month": f"{year}-{month:02d}",
+        "total_budgeted": round(total_budgeted, 2),
+        "total_actual": round(total_actual, 2),
+        "total_remaining": round(total_budgeted - total_actual, 2),
+        "overall_pct_used": round((total_actual / total_budgeted * 100) if total_budgeted > 0 else 0, 1),
+        "over_budget_categories": over_budget,
+        "near_limit_categories": near_limit,
+        "all_categories": items,
+    }
+
+
+@tool(
     name="get_top_customers",
     description=(
         "Return the top customers ranked by total revenue or order count. "

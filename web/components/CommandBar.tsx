@@ -27,6 +27,7 @@ import Link from "next/link";
 // ─── Quick-action suggestions ────────────────────────────────────────────────
 const QUICK_ACTIONS = [
   { icon: "📊", label: "Revenue this week", prompt: "What's my revenue this week?" },
+  { icon: "💰", label: "Budget this month", prompt: "How is my budget looking this month? Which categories are over or near the limit?" },
   { icon: "💬", label: "Unread comments", prompt: "Show me unread social media comments" },
   { icon: "🔁", label: "Overdue follow-ups", prompt: "Show me overdue follow-ups" },
   { icon: "📣", label: "Draft a broadcast", prompt: "Draft a WhatsApp broadcast for my customers" },
@@ -60,6 +61,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_live_social_posts: "Fetching live social posts…",
   get_social_post_analytics: "Pulling post analytics…",
   get_analytics_summary: "Analysing performance data…",
+  get_budget_status: "Checking budget status…",
   list_customers: "Checking customers…",
   list_orders: "Checking orders…",
   list_followups: "Checking follow-ups…",

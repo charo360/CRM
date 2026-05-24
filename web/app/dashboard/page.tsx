@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ordersApi, customersApi, Order, Customer, api } from "@/lib/api";
+import { ordersApi, customersApi, budgetApi, Order, Customer, api } from "@/lib/api";
 import { formatCurrency, timeAgo } from "@/lib/utils";
 import { useBusiness } from "@/contexts/BusinessContext";
 import {
@@ -23,6 +23,8 @@ import {
   Hash,
   Sparkles,
   Plug,
+  AlertTriangle,
+  Wallet,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -35,12 +37,22 @@ export default function DashboardPage() {
   const [pulse, setPulse] = useState<string>("");
   const [pulseLoading, setPulseLoading] = useState(false);
   const [sendingPulse, setSendingPulse] = useState(false);
+  const [budget, setBudget] = useState<{ budgeted: number; actual: number; over: number; near: number } | null>(null);
 
   useEffect(() => {
     Promise.all([ordersApi.list(), customersApi.list()])
       .then(([o, c]) => { setOrders(o); setCustomers(c); })
       .finally(() => setLoading(false));
     loadPulse();
+    budgetApi.vsActual().then((r: Record<string, unknown>) => {
+      const items = (r.items as Array<{ pct_used: number | null; budgeted: number | null; actual: number }>) ?? [];
+      setBudget({
+        budgeted: (r.totals as { budgeted: number })?.budgeted ?? 0,
+        actual: (r.totals as { actual: number })?.actual ?? 0,
+        over: items.filter(i => i.pct_used !== null && i.pct_used >= 100).length,
+        near: items.filter(i => i.pct_used !== null && i.pct_used >= 75 && i.pct_used < 100).length,
+      });
+    }).catch(() => {});
   }, []);
 
   async function loadPulse() {
@@ -132,6 +144,52 @@ export default function DashboardPage() {
           </div>
         ))}
       </div>
+
+      {/* Budget snapshot */}
+      {budget !== null && (budget.budgeted > 0 || budget.actual > 0) && (
+        <Link href="/dashboard/finance" className="block">
+          <div className={`rounded-xl border p-4 flex items-center gap-4 transition-colors hover:border-brand/40 ${
+            budget.over > 0 ? "bg-red-50 border-red-200" :
+            budget.near > 0 ? "bg-amber-50 border-amber-200" :
+            "bg-white border-slate-200"
+          }`}>
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+              budget.over > 0 ? "bg-red-100" : budget.near > 0 ? "bg-amber-100" : "bg-blue-50"
+            }`}>
+              {budget.over > 0
+                ? <AlertTriangle size={18} className="text-red-600" />
+                : <Wallet size={18} className={budget.near > 0 ? "text-amber-600" : "text-blue-600"} />
+              }
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-sm font-semibold text-slate-800">
+                  {budget.over > 0
+                    ? `${budget.over} categor${budget.over > 1 ? "ies" : "y"} over budget this month`
+                    : budget.near > 0
+                    ? `${budget.near} categor${budget.near > 1 ? "ies" : "y"} nearing budget limit`
+                    : "Budget on track this month"}
+                </p>
+                <span className="text-xs text-slate-400 flex items-center gap-1 shrink-0 ml-2">
+                  View <ArrowUpRight size={11} />
+                </span>
+              </div>
+              <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(budget.budgeted > 0 ? Math.round((budget.actual / budget.budgeted) * 100) : 0, 100)}%`,
+                    background: budget.over > 0 ? "#ef4444" : budget.near > 0 ? "#f59e0b" : "#22c55e",
+                  }}
+                />
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                {formatCurrency(budget.actual, "KES")} spent of {formatCurrency(budget.budgeted, "KES")} budgeted
+              </p>
+            </div>
+          </div>
+        </Link>
+      )}
 
       {/* Sales & growth — links pipeline to campaigns (Zilo = sell + reach) */}
       <section className="rounded-2xl border border-[#009B3A]/20 bg-gradient-to-br from-emerald-50/70 via-white to-sky-50/50 p-5 shadow-sm">
