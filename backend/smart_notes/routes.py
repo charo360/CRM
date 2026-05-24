@@ -419,6 +419,14 @@ Respond ONLY with valid JSON. No markdown fences."""
             "updated_at":            now,
         }
         await db.smart_notes.insert_one(doc)
+
+        # Index into knowledge base in the background — don't block the response
+        try:
+            from smart_notes.knowledge import ingest_note as _ingest
+            asyncio.create_task(_ingest(db, doc))
+        except Exception as _kb_err:
+            logger.warning("[smart-notes] knowledge base ingest failed: %s", _kb_err)
+
         return _ser(doc)
 
     @router.get("/{note_id}")

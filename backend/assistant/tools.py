@@ -393,6 +393,70 @@ async def list_followups(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="search_meeting_notes",
+    description=(
+        "Search the meeting knowledge base using natural language. "
+        "Use for: finding past decisions, open action items, what was discussed with a client, "
+        "project status from meetings, who attended a call, follow-ups agreed in a meeting. "
+        "Examples: 'action items from last week', 'what did we decide about pricing', "
+        "'meetings with Acme Corp', 'open tasks from client calls'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for — use natural language"},
+            "limit": {"type": "integer", "default": 6, "minimum": 1, "maximum": 20},
+        },
+        "required": ["query"],
+    },
+)
+async def search_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
+    query = (args.get("query") or "").strip()
+    limit = min(int(args.get("limit") or 6), 20)
+    if not query:
+        return {"error": "query is required"}
+    try:
+        from smart_notes.knowledge import search_knowledge, list_recent_notes_summary
+        results = await search_knowledge(ctx.db, ctx.business_id, query, top_k=limit)
+        if not results:
+            # Fall back to listing recent notes
+            recent = await list_recent_notes_summary(ctx.db, ctx.business_id, limit=5)
+            return {
+                "message": "No close semantic match found. Showing recent notes instead.",
+                "recent_notes": recent,
+            }
+        return {"query": query, "results": results}
+    except Exception as e:
+        logger.warning("[search_meeting_notes] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
+    name="list_meeting_notes",
+    description=(
+        "List recent AI-generated meeting notes. Use when the user asks to see their notes, "
+        "recent meetings, or wants a summary of what meetings happened. "
+        "Returns title, date, attendees, summary and action items for each note."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+        },
+    },
+)
+async def list_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
+    limit = min(int(args.get("limit") or 10), 50)
+    try:
+        from smart_notes.knowledge import list_recent_notes_summary
+        notes = await list_recent_notes_summary(ctx.db, ctx.business_id, limit=limit)
+        return {"count": len(notes), "notes": notes}
+    except Exception as e:
+        logger.warning("[list_meeting_notes] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
     name="get_analytics_summary",
     description="High-level business stats: customer count, sales today, revenue, active orders, bookings today.",
     parameters={"type": "object", "properties": {}},
