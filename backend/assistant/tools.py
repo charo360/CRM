@@ -4156,6 +4156,85 @@ async def get_revenue_trends(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="get_field_agent_status",
+    description=(
+        "Return a summary of field agent tasks and team performance. "
+        "Use this when the user asks about their field team, agent tasks, who is overdue, "
+        "which agent has the most pending work, or what tasks are assigned today."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "agent_name": {"type": "string", "description": "Filter by a specific agent's name (partial match, optional)."},
+            "status":     {"type": "string", "enum": ["pending", "in_progress", "completed", "missed", "overdue"],
+                          "description": "Filter tasks by status. 'overdue' returns open tasks past their due date."},
+        },
+    },
+)
+async def get_field_agent_status(ctx: ToolContext, args: Dict[str, Any]):
+    from datetime import date as _date
+    tid = ctx.business_id
+    today_str = _date.today().isoformat()
+
+    # Agents with task counts via aggregation
+    pipeline = [
+        {"$match": {"user_id": tid}},
+        {"$group": {
+            "_id": "$assigned_to",
+            "agent_name": {"$first": "$agent_name"},
+            "total":     {"$sum": 1},
+            "pending":   {"$sum": {"$cond": [{"$eq": ["$status", "pending"]},   1, 0]}},
+            "in_progress": {"$sum": {"$cond": [{"$eq": ["$status", "in_progress"]}, 1, 0]}},
+            "completed": {"$sum": {"$cond": [{"$eq": ["$status", "completed"]}, 1, 0]}},
+            "overdue":   {"$sum": {"$cond": [{"$and": [
+                {"$in": ["$status", ["pending", "in_progress"]]},
+                {"$gt": ["$due_date", ""]},
+                {"$lt": ["$due_date", today_str]},
+            ]}, 1, 0]}},
+        }},
+    ]
+    agent_rows = await ctx.db.field_agent_tasks.aggregate(pipeline).to_list(200)
+
+    # Filter by agent name if requested
+    name_filter = (args.get("agent_name") or "").lower()
+    if name_filter:
+        agent_rows = [r for r in agent_rows if name_filter in (r.get("agent_name") or "").lower()]
+
+    # Fetch matching tasks if status filter given
+    status_filter = args.get("status")
+    tasks = []
+    if status_filter:
+        q: Dict[str, Any] = {"user_id": tid}
+        if status_filter == "overdue":
+            q["status"] = {"$in": ["pending", "in_progress"]}
+            q["due_date"] = {"$gt": "", "$lt": today_str}
+        else:
+            q["status"] = status_filter
+        if name_filter:
+            q["agent_name"] = {"$regex": name_filter, "$options": "i"}
+        raw = await ctx.db.field_agent_tasks.find(q, sort=[("due_date", 1)]).to_list(50)
+        tasks = [{"title": t["title"], "agent": t.get("agent_name",""), "due": t.get("due_date",""),
+                  "customer": t.get("customer_name",""), "type": t.get("task_type",""),
+                  "status": t["status"]} for t in raw]
+
+    total_agents = await ctx.db.team_members.count_documents({"business_id": tid, "status": {"$ne": "suspended"}})
+    total_overdue = sum(r.get("overdue", 0) for r in agent_rows)
+    total_pending = sum(r.get("pending", 0) for r in agent_rows)
+
+    return {
+        "total_agents": total_agents,
+        "total_pending": total_pending,
+        "total_overdue": total_overdue,
+        "agents": [
+            {"name": r.get("agent_name", r["_id"]), "total": r["total"], "pending": r["pending"],
+             "in_progress": r.get("in_progress", 0), "completed": r["completed"], "overdue": r["overdue"]}
+            for r in sorted(agent_rows, key=lambda x: x.get("overdue", 0), reverse=True)
+        ],
+        "filtered_tasks": tasks,
+    }
+
+
+@tool(
     name="get_budget_status",
     description=(
         "Return the business's expense budget vs actual spend for a given month. "

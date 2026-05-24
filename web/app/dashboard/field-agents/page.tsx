@@ -3,9 +3,9 @@ import { useEffect, useState, useCallback } from "react";
 import { fieldAgentsApi, customersApi } from "@/lib/api";
 import Link from "next/link";
 import {
-  Users, ClipboardList, CheckCircle2, AlertTriangle, Plus, X, Check,
-  RefreshCw, Edit2, Trash2, LogIn, LogOut, Activity, ChevronDown,
-  MapPin, Phone, Mail, Clock, Target,
+  Users, ClipboardList, AlertTriangle, Plus, X, Check,
+  RefreshCw, Edit2, Trash2, LogIn, LogOut, Activity,
+  MapPin, Phone, Target,
 } from "lucide-react";
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ type Task = {
   id: string; assigned_to: string; agent_name: string; title: string;
   task_type: string; customer_id: string; customer_name: string;
   notes: string; due_date: string; priority: string; status: string;
-  outcome: string; created_at: string;
+  outcome: string; created_at: string; location: string;
 };
 type ActivityItem = {
   id: string; agent_name: string; description: string; type: string; created_at: string;
@@ -146,6 +146,11 @@ function TaskRow({ task, onEdit, onDelete, onCheckIn, onCheckOut }: {
             {overdue && <AlertTriangle size={12} className="text-red-500 shrink-0" />}
           </p>
           {task.customer_name && <p className="text-xs text-slate-400 mt-0.5">{task.customer_name}</p>}
+          {(task as Record<string, unknown>).location && (
+            <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
+              <MapPin size={10} />{(task as Record<string, unknown>).location as string}
+            </p>
+          )}
         </div>
       </td>
       <td className="px-4 py-3 text-sm text-slate-600 capitalize">{task.task_type.replace("_"," ")}</td>
@@ -600,11 +605,20 @@ export default function FieldAgentsPage() {
                 )}
               </div>
 
+              {/* Location */}
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Location <span className="text-slate-400">(optional)</span></label>
+                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  placeholder="e.g. Westlands, Nairobi or full address"
+                  value={(taskForm as Record<string, unknown>).location as string || ""}
+                  onChange={e => setTaskForm(f => ({ ...f, location: e.target.value }))} />
+              </div>
+
               {/* Notes */}
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Notes <span className="text-slate-400">(optional)</span></label>
                 <textarea rows={2} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
-                  placeholder="Instructions, address, context…"
+                  placeholder="Instructions, context, what to say…"
                   value={taskForm.notes || ""}
                   onChange={e => setTaskForm(f => ({ ...f, notes: e.target.value }))} />
               </div>

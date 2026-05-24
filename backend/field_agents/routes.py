@@ -72,18 +72,32 @@ def make_field_agents_router(db, user_dep):
             {"business_id": tid, "status": {"$ne": "suspended"}}
         ).to_list(200)
 
+        today_str = date.today().isoformat()
+
+        # Single aggregation to get all task counts per agent in one round-trip
+        pipeline = [
+            {"$match": {"user_id": tid}},
+            {"$group": {
+                "_id": "$assigned_to",
+                "total":     {"$sum": 1},
+                "pending":   {"$sum": {"$cond": [{"$eq": ["$status", "pending"]},   1, 0]}},
+                "completed": {"$sum": {"$cond": [{"$eq": ["$status", "completed"]}, 1, 0]}},
+                "overdue":   {"$sum": {"$cond": [
+                    {"$and": [
+                        {"$in": ["$status", ["pending", "in_progress"]]},
+                        {"$gt": ["$due_date", ""]},          # exclude empty due_date
+                        {"$lt": ["$due_date", today_str]},
+                    ]}, 1, 0
+                ]}},
+            }},
+        ]
+        rows = await db.field_agent_tasks.aggregate(pipeline).to_list(200)
+        counts = {r["_id"]: r for r in rows}
+
         result = []
         for m in members:
             agent_id = str(m["_id"])
-            # Task counts
-            total   = await db.field_agent_tasks.count_documents({"user_id": tid, "assigned_to": agent_id})
-            pending = await db.field_agent_tasks.count_documents({"user_id": tid, "assigned_to": agent_id, "status": "pending"})
-            done    = await db.field_agent_tasks.count_documents({"user_id": tid, "assigned_to": agent_id, "status": "completed"})
-            overdue = await db.field_agent_tasks.count_documents({
-                "user_id": tid, "assigned_to": agent_id,
-                "status": {"$in": ["pending", "in_progress"]},
-                "due_date": {"$lt": date.today().isoformat()},
-            })
+            c = counts.get(agent_id, {"total": 0, "pending": 0, "completed": 0, "overdue": 0})
             result.append({
                 "id": agent_id,
                 "name": m.get("name", ""),
@@ -91,10 +105,10 @@ def make_field_agents_router(db, user_dep):
                 "phone_number": m.get("phone_number", ""),
                 "role": m.get("role", "employee"),
                 "status": m.get("status", "active"),
-                "tasks_total": total,
-                "tasks_pending": pending,
-                "tasks_completed": done,
-                "tasks_overdue": overdue,
+                "tasks_total": c["total"],
+                "tasks_pending": c["pending"],
+                "tasks_completed": c["completed"],
+                "tasks_overdue": c["overdue"],
             })
         return result
 
@@ -282,7 +296,7 @@ def make_field_agents_router(db, user_dep):
         completed      = await db.field_agent_tasks.count_documents({"user_id": tid, "status": "completed"})
         overdue        = await db.field_agent_tasks.count_documents({
             "user_id": tid, "status": {"$in": ["pending", "in_progress"]},
-            "due_date": {"$lt": today_str, "$ne": ""},
+            "due_date": {"$gt": "", "$lt": today_str},
         })
         total_agents   = await db.team_members.count_documents({"business_id": tid, "status": {"$ne": "suspended"}})
         active_today   = await db.field_agent_checkins.count_documents({
