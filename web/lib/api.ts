@@ -1328,10 +1328,12 @@ export const assistantApi = {
     content_md: string;
     body_markdown: string;
   }) =>
-    apiFetch<{ success: boolean; title: string; content_md: string; saved_at: string }>(
-      "/assistant/document/plan/update",
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+    api.post<{
+      success: boolean;
+      title: string;
+      content_md: string;
+      saved_at: string;
+    }>("/assistant/document/plan/update", body),
   generatePresentationStream: (body: {
     topic: string;
     slides: Record<string, unknown>[];
