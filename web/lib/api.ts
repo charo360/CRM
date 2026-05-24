@@ -1268,6 +1268,70 @@ export const assistantApi = {
     })();
     return stream;
   },
+  generateDocumentStream: (body: {
+    title: string;
+    content_md?: string;
+    body_markdown?: string;
+    doc_type?: string;
+    conversation_id?: string | null;
+    message_index?: number;
+    edited?: boolean;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/document/generate/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  saveDocumentPlan: (body: {
+    conversation_id: string;
+    message_index: number;
+    title: string;
+    content_md: string;
+    body_markdown: string;
+  }) =>
+    apiFetch<{ success: boolean; title: string; content_md: string; saved_at: string }>(
+      "/assistant/document/plan/update",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   generatePresentationStream: (body: {
     topic: string;
     slides: Record<string, unknown>[];

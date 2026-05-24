@@ -27,28 +27,26 @@ logger = logging.getLogger(__name__)
 # This parser extracts them and converts to OpenAI-compatible format.
 
 _DSML_BLOCK_RE = re.compile(
-    r"<｜+DSML｜+tool_calls>(.*?)</｜+DSML｜+tool_calls>",
+    r"<[｜|]+DSML[｜|]+\s*tool_calls>(.*?)</[｜|]+DSML[｜|]+\s*tool_calls>",
     re.DOTALL,
 )
 _DSML_INVOKE_RE = re.compile(
-    r'<｜+DSML｜+invoke\s+name=["\']([^"\']+)["\']>(.*?)</｜+DSML｜+invoke>',
+    r'<[｜|]+DSML[｜|]+\s*invoke\s+name=["\']([^"\']+)["\'][^>]*>(.*?)</[｜|]+DSML[｜|]+\s*invoke>',
     re.DOTALL,
 )
 _DSML_PARAM_RE = re.compile(
-    r'<｜+DSML｜+parameter\s+name=["\']([^"\']+)["\'][^>]*>(.*?)</｜+DSML｜+parameter>',
+    r'<[｜|]+DSML[｜|]+\s*parameter\s+name=["\']([^"\']+)["\'][^>]*>(.*?)</[｜|]+DSML[｜|]+\s*parameter>',
     re.DOTALL,
 )
 
 
 def _parse_dsml_tool_calls(content: str) -> tuple[str, list]:
     """Extract DSML tool calls from content. Returns (clean_content, tool_calls)."""
-    match = _DSML_BLOCK_RE.search(content)
-    if not match:
-        return content, []
-
     tool_calls = []
-    block = match.group(1)
-    for invoke in _DSML_INVOKE_RE.finditer(block):
+    block_match = _DSML_BLOCK_RE.search(content)
+    search_text = block_match.group(1) if block_match else content
+
+    for invoke in _DSML_INVOKE_RE.finditer(search_text):
         name = invoke.group(1).strip()
         params_text = invoke.group(2)
         args = {}
@@ -60,14 +58,19 @@ def _parse_dsml_tool_calls(content: str) -> tuple[str, list]:
             "arguments": args,
         })
 
-    # Remove the entire DSML block from content
-    clean = _DSML_BLOCK_RE.sub("", content).strip()
+    clean = _DSML_BLOCK_RE.sub("", content)
+    clean = _DSML_INVOKE_RE.sub("", clean)
+    clean = _strip_dsml(clean)
     return clean, tool_calls
 
 
 def _strip_dsml(text: str) -> str:
     """Strip any DSML markup from a text chunk (for streaming)."""
-    return _DSML_BLOCK_RE.sub("", text).strip()
+    text = _DSML_BLOCK_RE.sub("", text)
+    text = _DSML_INVOKE_RE.sub("", text)
+    # ASCII-pipe variants sometimes leak through
+    text = re.sub(r"<\|+\s*DSML\s*\|+[^>]*>.*?(?:</\|+\s*DSML\s*\|+[^>]*>|$)", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
 
 # ── Model registry ────────────────────────────────────────────────────────────
 # id ↔ provider + upstream model name. id is what the UI passes.
@@ -164,7 +167,7 @@ async def chat_with_tools(
         ("anthropic","claude-haiku-4-5-20251001"),
     ]
     providers_to_try = [cfg] + [
-        {"provider": p, "model": m}
+        {"provider": p, "model": m, "id": m}
         for p, m in _FALLBACK_CHAIN
         if p != provider and os.environ.get({"deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY",
                                               "grok": "GROK_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(p, ""))
@@ -256,22 +259,72 @@ async def _call_openai_compatible(
     # DeepSeek sometimes puts tool calls in DSML format inside content instead
     # of the standard tool_calls field — parse and promote them.
     raw_content = msg.get("content") or ""
-    if not tool_calls and "<｜" in raw_content and "DSML" in raw_content and "tool_calls" in raw_content:
+    if not tool_calls and "DSML" in raw_content and ("tool_calls" in raw_content or "invoke" in raw_content):
         raw_content, dsml_calls = _parse_dsml_tool_calls(raw_content)
         if dsml_calls:
             logger.debug("[models] promoted %d DSML tool call(s) from content", len(dsml_calls))
             tool_calls = dsml_calls
+            msg = {**msg, "content": raw_content}
+
+    raw_content = _strip_dsml(raw_content)
 
     return {
         "content": raw_content,
         "tool_calls": tool_calls,
         "finish_reason": choice.get("finish_reason", "stop"),
-        "model": cfg["id"],
+        "model": cfg.get("id") or cfg.get("model", ""),
         "raw_assistant_message": msg,
     }
 
 
 # ── Anthropic ─────────────────────────────────────────────────────────────────
+def _merge_user_anthropic_content(prev: Any, cur: Any) -> Any:
+    """Merge two user message contents (Anthropic rejects consecutive user turns)."""
+    if isinstance(prev, str) and isinstance(cur, str):
+        return f"{prev}\n\n{cur}".strip()
+    if isinstance(prev, list) and isinstance(cur, str):
+        return prev + [{"type": "text", "text": cur}]
+    if isinstance(prev, str) and isinstance(cur, list):
+        return [{"type": "text", "text": prev}] + cur
+    if isinstance(prev, list) and isinstance(cur, list):
+        return prev + cur
+    return cur or prev
+
+
+def _merge_assistant_anthropic_content(prev: Any, cur: Any) -> Any:
+    if isinstance(prev, list) and isinstance(cur, list):
+        return prev + cur
+    if isinstance(prev, str) and isinstance(cur, str):
+        return prev + "\n\n" + cur
+    if isinstance(prev, str):
+        return [{"type": "text", "text": prev}] + (cur if isinstance(cur, list) else [{"type": "text", "text": cur}])
+    if isinstance(cur, str):
+        return (prev if isinstance(prev, list) else [{"type": "text", "text": prev}]) + [{"type": "text", "text": cur}]
+    return cur or prev
+
+
+def _merge_consecutive_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Anthropic requires alternating roles — merge consecutive user/assistant messages."""
+    if not messages:
+        return messages
+    merged: List[Dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if merged and merged[-1].get("role") == role:
+            prev_content = merged[-1].get("content")
+            cur_content = m.get("content")
+            if role == "user":
+                merged[-1]["content"] = _merge_user_anthropic_content(prev_content, cur_content)
+            elif role == "assistant":
+                merged[-1]["content"] = _merge_assistant_anthropic_content(prev_content, cur_content)
+            continue
+        merged.append(dict(m))
+    # First message must be user (Anthropic API rule).
+    while merged and merged[0].get("role") != "user":
+        merged.pop(0)
+    return merged
+
+
 async def _call_anthropic(
     cfg: Dict[str, str],
     messages: List[Dict[str, Any]],
@@ -340,6 +393,8 @@ async def _call_anthropic(
         a_messages.append({"role": role, "content": m.get("content") or ""})
         i += 1
 
+    a_messages = _merge_consecutive_anthropic_messages(a_messages)
+
     # Attach documents/images natively to the FIRST user message (one-shot).
     # Only done on the fresh turn; subsequent tool-use loops don't re-attach.
     if attachments:
@@ -405,6 +460,8 @@ async def _call_anthropic(
         json=payload,
         timeout=timeout,
     )
+    if r.status_code >= 400:
+        logger.error("[models] anthropic messages %s: %s", r.status_code, r.text[:1000])
     r.raise_for_status()
     data = r.json()
 
@@ -426,7 +483,7 @@ async def _call_anthropic(
         "content": content_text,
         "tool_calls": tool_calls,
         "finish_reason": data.get("stop_reason", "stop"),
-        "model": cfg["id"],
+        "model": cfg.get("id") or cfg.get("model", ""),
         "raw_assistant_message": {
             "role": "assistant",
             "content": content_text,
@@ -601,6 +658,8 @@ async def _stream_anthropic(
         a_messages.append({"role": role, "content": m.get("content") or ""})
         j += 1
 
+    a_messages = _merge_consecutive_anthropic_messages(a_messages)
+
     _LONG_FORM_SIGNALS = (
         "business plan", "proposal", "contract", "press release",
         "pitch deck", "presentation", "executive summary", "investment memo",
@@ -625,6 +684,9 @@ async def _stream_anthropic(
             headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
             json=payload,
         ) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread())[:1000]
+                logger.error("[models] anthropic stream %s: %s", resp.status_code, body)
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):

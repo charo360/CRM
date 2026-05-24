@@ -563,6 +563,19 @@ async def _compress_history(
 
 def _limit_tool_result_size(result: Any) -> Any:
     """Replace oversized tool JSON with a short preview (design payloads, etc.)."""
+    if isinstance(result, dict) and result.get("html_preview"):
+        slim = {k: v for k, v in result.items() if k != "html_preview"}
+        if result.get("preview_key"):
+            result = slim
+        else:
+            try:
+                from assistant.document_generator import store_html_preview
+                key = store_html_preview(str(result["html_preview"]))
+                slim["preview_key"] = key
+                slim["preview_url"] = f"/api/document-preview/{key}"
+                result = slim
+            except Exception:
+                result = dict(result)
     try:
         s = json.dumps(result, default=str)
     except (TypeError, ValueError):

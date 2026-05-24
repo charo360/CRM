@@ -16389,8 +16389,10 @@ async def kds_put_settings(business_id: str, body: dict, user=Depends(get_curren
 @app.get("/api/document-preview/{key}", include_in_schema=False)
 async def serve_document_preview(key: str):
     try:
-        from assistant.document_generator import get_html_preview
+        from assistant.document_generator import get_html_preview, _fix_text_encoding
         html = get_html_preview(key)
+        if html:
+            html = _fix_text_encoding(html)
     except Exception:
         html = None
     if not html:

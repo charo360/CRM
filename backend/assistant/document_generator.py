@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import uuid
 from datetime import datetime
@@ -15,6 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "zilo_docs"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# Backend root (…/backend) — for local /uploads/ logo paths
+ROOT_DIR = Path(__file__).resolve().parent.parent
 
 # ── In-memory HTML preview store ─────────────────────────────────────────────
 # Keyed by a UUID hex so the frontend can embed an <iframe> without S3/auth.
@@ -33,15 +38,175 @@ def get_html_preview(key: str) -> Optional[str]:
     return _html_preview_store.get(key)
 
 
+def _backend_origin() -> str:
+    port = (os.environ.get("PORT") or "8000").strip()
+    base = (
+        os.environ.get("BACKEND_PUBLIC_URL")
+        or os.environ.get("WEBHOOK_BASE_URL")
+        or os.environ.get("API_BASE_URL")
+        or f"http://127.0.0.1:{port}"
+    ).rstrip("/")
+    return base
+
+
+def _embed_image_as_data_uri(url: str) -> str:
+    """Fetch an image and return a data: URI so iframe srcDoc and Playwright PDF can render it."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if url.startswith("data:"):
+        return url
+
+    import base64
+    import logging
+
+    from image_handler import S3Handler
+
+    resolved = S3Handler.resolve_accessible_url(url)
+    if resolved.startswith("/api/"):
+        resolved = f"{_backend_origin()}{resolved}"
+    if resolved.startswith("/uploads/"):
+        local = ROOT_DIR / resolved.lstrip("/").replace("/", os.sep)
+        if local.is_file():
+            import base64
+            ext = local.suffix.lower().lstrip(".")
+            ct = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif"}.get(ext, "image/png")
+            return f"data:{ct};base64,{base64.b64encode(local.read_bytes()).decode()}"
+        resolved = f"{_backend_origin()}{resolved}"
+
+    # Direct S3 fetch when credentials are available (avoids auth on internal routes)
+    if S3Handler.parse_s3_source_to_bucket_key(resolved)[1] or "/api/images/s3/" in resolved:
+        key = ""
+        if "/api/images/s3/" in resolved:
+            key = resolved.split("/api/images/s3/", 1)[1].split("?")[0].lstrip("/")
+        else:
+            _, key = S3Handler.parse_s3_source_to_bucket_key(resolved)
+        bucket = (os.environ.get("AWS_BUCKET_NAME") or "").strip()
+        if bucket and key:
+            try:
+                obj = S3Handler.get_s3_client().get_object(Bucket=bucket, Key=key)
+                body = obj["Body"].read()
+                ct = obj.get("ContentType") or "image/png"
+                if ";" in ct:
+                    ct = ct.split(";")[0].strip()
+                return f"data:{ct};base64,{base64.b64encode(body).decode()}"
+            except Exception as exc:
+                logging.warning("[document_generator] S3 logo fetch failed: %s", exc)
+
+    try:
+        import httpx
+        with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+            resp = client.get(resolved)
+        resp.raise_for_status()
+        ct = (resp.headers.get("content-type") or "image/png").split(";")[0].strip()
+        return f"data:{ct};base64,{base64.b64encode(resp.content).decode()}"
+    except Exception as exc:
+        logging.warning("[document_generator] HTTP logo fetch failed (%s): %s", resolved[:80], exc)
+        return resolved if resolved.startswith("http") else ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared markdown parser  (uses stdlib `markdown`)
 # ─────────────────────────────────────────────────────────────────────────────
+def _fix_text_encoding(text: str) -> str:
+    """Repair UTF-8 mojibake (e.g. â€" → –) from Windows-1252 / Latin-1 mis-decoding."""
+    if not text:
+        return text
+    if "â" in text or "Ã" in text:
+        # UTF-8 bytes were read as Windows-1252 (â + € + smart quote)
+        try:
+            repaired = text.encode("cp1252").decode("utf-8")
+            if repaired and "\ufffd" not in repaired:
+                text = repaired
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+        if "â" in text or "Ã" in text:
+            try:
+                repaired = text.encode("latin-1").decode("utf-8")
+                if repaired and "\ufffd" not in repaired:
+                    text = repaired
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+    for bad, good in (
+        ("â€\u201c", "\u2013"),
+        ("â€\u201d", "\u2014"),
+        ("â€\x93", "\u2013"),
+        ("â€\x94", "\u2014"),
+        ("â€\u2018", "'"),
+        ("â€\u2019", "'"),
+        ("â€\x99", "'"),
+        ("â€\x9c", "\u201c"),
+        ("â€\x9d", "\u201d"),
+        ("â€˜", "'"),
+        ("Â ", " "),
+        ("Â·", "\u00b7"),
+    ):
+        text = text.replace(bad, good)
+    return text
+
+
+def _ensure_blank_line_before_tables(md: str) -> str:
+    """GitHub-style tables need a blank line before the first | row."""
+    lines = md.split("\n")
+    out: List[str] = []
+    for line in lines:
+        s = line.strip()
+        if s.startswith("|") and out:
+            prev = out[-1].strip()
+            if prev and not prev.startswith("|") and not re.match(r"^[-|:|\s]+$", prev):
+                out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
+def _prepare_doc_markdown(md: str) -> str:
+    md = _fix_text_encoding(md)
+    return _ensure_blank_line_before_tables(md)
+
+
+def _repair_html_paragraph_tables(html: str) -> str:
+    """Convert | table | rows stuck inside <p>…</p> into real HTML tables."""
+    import html as html_module
+
+    def _repl(match: re.Match) -> str:
+        inner = match.group(1)
+        plain = re.sub(r"<br\s*/?>", "\n", inner)
+        plain = re.sub(r"<[^>]+>", "", plain)
+        lines = [ln.strip() for ln in plain.splitlines() if ln.strip().startswith("|")]
+        if len(lines) < 2:
+            return match.group(0)
+        rows: List[List[str]] = []
+        for ln in lines:
+            compact = ln.replace(" ", "")
+            if re.match(r"^\|[-:|]+\|$", compact):
+                continue
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            if cells:
+                rows.append(cells)
+        if not rows:
+            return match.group(0)
+        head = rows[0]
+        body = rows[1:]
+        thead = "<thead><tr>" + "".join(
+            f"<th>{html_module.escape(c)}</th>" for c in head
+        ) + "</tr></thead>"
+        tbody = "".join(
+            "<tr>" + "".join(f"<td>{html_module.escape(c)}</td>" for c in row) + "</tr>"
+            for row in body
+        )
+        return f'<div class="table-wrap"><table>{thead}<tbody>{tbody}</tbody></table></div>'
+
+    return re.sub(r"<p>((?:(?!</p>).)*\|(?:(?!</p>).)*)</p>", _repl, html, flags=re.DOTALL)
+
+
 def _md_to_html(md: str) -> str:
     import markdown as _md
-    return _md.markdown(
+    md = _prepare_doc_markdown(md)
+    html = _md.markdown(
         md,
         extensions=["tables", "fenced_code", "nl2br", "sane_lists"],
     )
+    return _repair_html_paragraph_tables(html)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,6 +370,28 @@ def generate_pdf(
 
     story = []
 
+    # Letterhead: logo + business name band (ReportLab fallback path)
+    raw_logo = (style.get("logo_url") or style.get("default_logo_url") or "").strip()
+    if raw_logo or business_name:
+        if raw_logo:
+            embedded = _embed_image_as_data_uri(raw_logo)
+            if embedded.startswith("data:"):
+                import base64
+                import io
+                from reportlab.platypus import Image as RLImage
+
+                m = re.match(r"data:image/[^;]+;base64,(.+)", embedded)
+                if m:
+                    try:
+                        story.append(RLImage(io.BytesIO(base64.b64decode(m.group(1))), width=4.2 * cm, height=1.5 * cm))
+                        story.append(Spacer(1, 6))
+                    except Exception:
+                        pass
+        if business_name:
+            bn_style = _s(name="ZBrand", fontName=BOLD_FONT, fontSize=14, textColor=ACCENT, spaceAfter=2)
+            story.append(Paragraph(business_name, bn_style))
+        story.append(HRFlowable(width="100%", thickness=2, color=ACCENT, spaceAfter=14))
+
     # ── Header text (top-right, from style profile) ──────────────────────────
     header_text = (style.get("header_text") or "").strip()
     if header_text:
@@ -344,6 +531,47 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     overflow-x: hidden;
   }
 
+  /* Classic letterhead (loan letters, formal business docs) */
+  .classic-letterhead { margin-bottom: 32px; }
+  .classic-logo {
+    display: block;
+    height: 52px;
+    max-width: 180px;
+    object-fit: contain;
+    margin: 0 auto 14px;
+  }
+  .classic-brand {
+    font-size: 15pt;
+    font-weight: 700;
+    color: var(--primary);
+    text-align: left;
+  }
+  .classic-rule {
+    border: none;
+    border-top: 3px solid var(--primary);
+    margin: 10px 0 12px;
+  }
+  .classic-meta-row {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .classic-meta-right {
+    text-align: right;
+    font-size: 9pt;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .classic-tagline { color: var(--muted); margin-bottom: 2px; }
+  .classic-title {
+    display: block;
+    text-align: center;
+    font-size: 22pt;
+    font-weight: 700;
+    color: var(--ink);
+    margin: 4px 0 0;
+    line-height: 1.25;
+  }
+
   /* Header bar */
   .doc-header {
     display: flex;
@@ -359,6 +587,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     color: var(--ink);
     line-height: 1.2;
     margin-bottom: 4px;
+  }
+  .doc-header-left h1.doc-title {
+    display: block;
   }
   .doc-header-left .business-name {
     font-size: 10pt;
@@ -377,7 +608,15 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   }
 
   /* Body content */
-  h1 { display: none; } /* title shown in header already */
+  h1 { display: none; } /* hide duplicate markdown h1 */
+  h1.doc-title {
+    display: block;
+    font-size: 22pt;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.2;
+    margin-bottom: 4px;
+  }
 
   h2 {
     font-size: 14pt;
@@ -513,6 +752,25 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <div class="page">
 
+  {% if letterhead %}
+  <div class="classic-letterhead">
+    {% if logo_url %}<img src="{{ logo_url }}" alt="{{ business_name }}" class="classic-logo">{% endif %}
+    <div class="classic-brand">{{ business_name }}</div>
+    <hr class="classic-rule">
+    {% if header_text or header_contact %}
+    <div class="classic-meta-row">
+      <div class="classic-meta-right">
+        {% if header_text %}<div class="classic-tagline">{{ header_text }}</div>{% endif %}
+        {% if header_contact %}<div class="classic-tagline">{{ header_contact }}</div>{% endif %}
+        <div class="classic-date">{{ date_str }}</div>
+      </div>
+    </div>
+    {% endif %}
+    <h1 class="classic-title">{{ title }}</h1>
+    <hr class="classic-rule">
+  </div>
+  {% else %}
+
   {% if hero_image_url %}
   <img src="{{ hero_image_url }}" class="doc-hero" alt="">
   {% endif %}
@@ -529,6 +787,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       <div>{{ date_str }}</div>
     </div>
   </div>
+  {% endif %}
 
   <!-- Document body -->
   <div class="doc-body">
@@ -971,8 +1230,12 @@ def generate_html_document(
     secondary_color = _safe_hex(style.get("secondary_color", ""), "#EEF2FF")
     google_font, font_stack = _font_stack_for_style(style.get("font_style", ""))
 
-    # Logo from brand kit — shown in header, never duplicated in body
-    logo_url: str = style.get("logo_url", "") or style.get("default_logo_url", "") or ""
+    # Logo from brand kit — embed as data URI so preview iframe + PDF render reliably
+    raw_logo: str = style.get("logo_url", "") or style.get("default_logo_url", "") or ""
+    logo_url: str = _embed_image_as_data_uri(raw_logo) if raw_logo else ""
+
+    if hero_image_url and not hero_image_url.startswith("data:"):
+        hero_image_url = _embed_image_as_data_uri(hero_image_url) or hero_image_url
 
     # Convert markdown body (strip leading h1 — title shown in header)
     body_md = re.sub(r"^\s*#[^#][^\n]*\n?", "", markdown_content, count=1).strip()
@@ -998,6 +1261,7 @@ def generate_html_document(
 
     tmpl_str = _TEMPLATE_MAP.get(template, _HTML_TEMPLATE)
     tmpl = Template(tmpl_str)
+    letterhead = bool(style.get("letterhead"))
     return tmpl.render(
         title=title,
         business_name=business_name or "My Business",
@@ -1006,6 +1270,7 @@ def generate_html_document(
         google_font=google_font,
         font_stack=font_stack,
         header_text=style.get("header_text", ""),
+        header_contact=style.get("header_contact", ""),
         footer_text=style.get("footer_text", ""),
         signature_name=style.get("signature_name", ""),
         signature_title=style.get("signature_title", ""),
@@ -1014,43 +1279,225 @@ def generate_html_document(
         body_html=body_html,
         hero_image_url=hero_image_url or "",
         logo_url=logo_url,
+        letterhead=letterhead,
     )
 
 
-def generate_pdf_from_html(
-    html: str,
-    filename: Optional[str] = None,
-) -> str:
-    """Convert HTML string to PDF.
+def _pdf_exc_detail(exc: BaseException) -> str:
+    """Readable one-line error for logs and user-facing messages."""
+    msg = str(exc).strip()
+    if msg:
+        first = msg.splitlines()[0].strip()
+        return first if len(first) <= 240 else first[:237] + "..."
+    return f"{type(exc).__name__} (no message)"
 
-    Primary:  Playwright/Chromium — full CSS support, images, gradients, custom fonts.
-    Fallback: WeasyPrint — used if Playwright is unavailable.
-    """
-    filename = filename or f"zilo_{uuid.uuid4().hex[:8]}.pdf"
-    if not filename.endswith(".pdf"):
-        filename += ".pdf"
-    filepath = TEMP_DIR / filename
 
+def _pydyf_version() -> str:
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        import pydyf
+        return getattr(pydyf, "__version__", "") or ""
+    except ImportError:
+        return ""
+
+
+def _pydyf_is_compatible() -> bool:
+    ver = _pydyf_version()
+    if not ver:
+        return True
+    parts = ver.split(".")
+    try:
+        major, minor = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        return True
+    return (major, minor) < (0, 11)
+
+
+def _resolve_pdf_path(filename: Optional[str]) -> Path:
+    name = filename or f"zilo_{uuid.uuid4().hex[:8]}.pdf"
+    if not name.endswith(".pdf"):
+        name += ".pdf"
+    return TEMP_DIR / name
+
+
+def _playwright_pdf_sync(html: str, filepath: Path) -> None:
+    """Sync Playwright render — safe inside a subprocess or worker thread."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        try:
             page = browser.new_page(viewport={"width": 1200, "height": 900})
-            # `load` waits for stylesheets and web fonts to finish loading
-            page.set_content(html, wait_until="load")
+            try:
+                page.set_content(html, wait_until="domcontentloaded", timeout=60_000)
+            except Exception:
+                page.set_content(html, wait_until="commit", timeout=30_000)
+            page.emulate_media(media="print")
             page.pdf(
                 path=str(filepath),
                 format="A4",
                 print_background=True,
                 margin={"top": "0mm", "right": "0mm", "bottom": "0mm", "left": "0mm"},
             )
+        finally:
             browser.close()
+
+
+def _playwright_pdf_subprocess(html: str, filepath: Path) -> None:
+    """Run Playwright in a fresh Python process (avoids asyncio/event-loop conflicts)."""
+    script = r"""
+import sys
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+html = sys.stdin.read()
+out = Path(sys.argv[1])
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+    try:
+        page = browser.new_page(viewport={"width": 1200, "height": 900})
+        try:
+            page.set_content(html, wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            page.set_content(html, wait_until="commit", timeout=30000)
+        page.emulate_media(media="print")
+        page.pdf(
+            path=str(out),
+            format="A4",
+            print_background=True,
+            margin={"top": "0mm", "right": "0mm", "bottom": "0mm", "left": "0mm"},
+        )
+    finally:
+        browser.close()
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(filepath)],
+        input=html.encode("utf-8"),
+        capture_output=True,
+        timeout=120,
+        cwd=str(ROOT_DIR),
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or b"").decode("utf-8", errors="replace").strip()
+        first = err.splitlines()[0].strip() if err else f"exit code {proc.returncode}"
+        raise RuntimeError(first or "Playwright subprocess failed")
+
+
+def _weasyprint_pdf(html: str, filepath: Path) -> None:
+    if not _pydyf_is_compatible():
+        ver = _pydyf_version()
+        raise RuntimeError(
+            f"Incompatible pydyf {ver} for weasyprint 62.x — run: pip install pydyf==0.10.0"
+        )
+    import weasyprint
+
+    weasyprint.HTML(string=html).write_pdf(str(filepath))
+
+
+async def generate_pdf_from_html_async(
+    html: str,
+    filename: Optional[str] = None,
+) -> str:
+    """Convert HTML to PDF — Playwright (async → subprocess → sync thread), then WeasyPrint."""
+    import asyncio
+    import logging
+
+    filepath = _resolve_pdf_path(filename)
+    playwright_err = ""
+
+    # 1) Playwright async API (fast path inside uvicorn)
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                page = await browser.new_page(viewport={"width": 1200, "height": 900})
+                try:
+                    await page.set_content(html, wait_until="domcontentloaded", timeout=60_000)
+                except Exception:
+                    await page.set_content(html, wait_until="commit", timeout=30_000)
+                await page.emulate_media(media="print")
+                await page.pdf(
+                    path=str(filepath),
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "0mm", "right": "0mm", "bottom": "0mm", "left": "0mm"},
+                )
+            finally:
+                await browser.close()
         return str(filepath)
-    except Exception:
-        # WeasyPrint fallback — works without Chromium installed
-        import weasyprint
-        weasyprint.HTML(string=html).write_pdf(str(filepath))
+    except Exception as exc:
+        playwright_err = _pdf_exc_detail(exc)
+        logging.warning("[document_generator] Playwright async PDF failed: %s", playwright_err)
+
+    # 2) Isolated subprocess — avoids asyncio / Windows event-loop issues
+    try:
+        await asyncio.to_thread(_playwright_pdf_subprocess, html, filepath)
+        logging.info("[document_generator] PDF generated via Playwright subprocess")
         return str(filepath)
+    except Exception as exc:
+        sub_err = _pdf_exc_detail(exc)
+        logging.warning("[document_generator] Playwright subprocess PDF failed: %s", sub_err)
+        if not playwright_err:
+            playwright_err = sub_err
+
+    # 3) Sync Playwright in a dedicated thread (no running asyncio loop)
+    try:
+        await asyncio.to_thread(_playwright_pdf_sync, html, filepath)
+        logging.info("[document_generator] PDF generated via Playwright sync thread")
+        return str(filepath)
+    except Exception as exc:
+        sync_err = _pdf_exc_detail(exc)
+        logging.warning("[document_generator] Playwright sync PDF failed: %s", sync_err)
+        if not playwright_err:
+            playwright_err = sync_err
+
+    # 4) WeasyPrint fallback
+    try:
+        await asyncio.to_thread(_weasyprint_pdf, html, filepath)
+        logging.info("[document_generator] PDF generated via WeasyPrint fallback")
+        return str(filepath)
+    except ImportError:
+        pass
+    except Exception as exc:
+        logging.warning("[document_generator] WeasyPrint PDF failed: %s", exc)
+        weasy_err = _pdf_exc_detail(exc)
+        hint = "pip install pydyf==0.10.0 playwright weasyprint && playwright install chromium"
+        raise RuntimeError(
+            f"PDF generation failed (Playwright: {playwright_err}; WeasyPrint: {weasy_err}). "
+            f"Fix: {hint}"
+        ) from exc
+
+    hint = (
+        "Install PDF dependencies: pip install playwright weasyprint pydyf==0.10.0 "
+        "&& playwright install chromium"
+    )
+    raise RuntimeError(f"PDF generation failed (Playwright: {playwright_err}). {hint}")
+
+
+def generate_pdf_from_html(
+    html: str,
+    filename: Optional[str] = None,
+) -> str:
+    """Sync wrapper — delegates to async Playwright in a fresh event loop."""
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(generate_pdf_from_html_async(html, filename))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            lambda: asyncio.run(generate_pdf_from_html_async(html, filename))
+        ).result(timeout=120)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

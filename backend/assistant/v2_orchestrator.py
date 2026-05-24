@@ -356,7 +356,7 @@ async def run_v2_turn_stream(
                 logger.warning("[v2_orc] [FAST PATH] message persist failed: %s", exc)
 
         _chips_task = asyncio.create_task(
-            _safe_chips(active_agent, user_message, final_reply)
+            _safe_chips(active_agent, user_message, final_reply, all_steps)
         )
         try:
             chips = await asyncio.wait_for(asyncio.shield(_chips_task), timeout=4.0)
@@ -564,7 +564,7 @@ async def run_v2_turn_stream(
 
     # ── 8. Persist messages + generate chips ─────────────────────────────────
     _chips_task = asyncio.create_task(
-        _safe_chips(active_agent, user_message, final_reply)
+        _safe_chips(active_agent, user_message, final_reply, all_steps)
     )
 
     messages_to_append.append({
@@ -609,9 +609,14 @@ async def run_v2_turn_stream(
     }
 
 
-async def _safe_chips(agent_id: str, user_message: str, reply: str) -> List[str]:
+async def _safe_chips(
+    agent_id: str,
+    user_message: str,
+    reply: str,
+    steps: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
     try:
         from .interactive_suggestions import build_reply_suggestions
-        return await build_reply_suggestions(agent_id, user_message, reply)
+        return await build_reply_suggestions(agent_id, user_message, reply, steps=steps)
     except Exception:
         return []

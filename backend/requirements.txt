@@ -132,6 +132,7 @@ reportlab==4.2.5
 markdown==3.8
 playwright==1.49.0
 weasyprint==62.3
+pydyf==0.10.0
 qdrant-client==1.12.1
 duckduckgo-search>=6.0,<7.0
 composio-core==0.7.20

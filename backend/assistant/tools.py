@@ -527,54 +527,45 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="get_owner_info",
     description=(
-        "Return the business owner's name, phone, business name, currency, country, "
-        "business_type (industry), short hints from business knowledge, and the brand kit "
+        "Return the full business owner profile: identity, contact, currency, country, "
+        "website, tagline, plus nested `settings` (all dashboard settings), "
+        "`business_knowledge` (products, pricing, hours, location, FAQs, etc.), "
+        "`document_style` (tone, signature, header/footer), `payment_methods`, and brand kit "
         "(`default_logo_url`, `brand_primary_color`, `brand_font`). "
-        "Use for Meta/Google ads, proposals, and any time industry-aware advice is needed. "
-        "For design work, **always call this first** so you can pass the brand logo URL and "
-        "primary colour into Gemini design tools (brand_color, logo_url) and `generate_design_background.logo_url`."
+        "Use before drafting documents, ads, or proposals — never re-ask for data already here."
     ),
     parameters={"type": "object", "properties": {}},
     destructive=False,
 )
 async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
+    from .owner_profile import build_owner_profile
+
     user = await ctx.db.users.find_one({"_id": ctx.business_id})
     if not user:
         return {"error": "Owner record not found"}
-    settings = user.get("settings", {}) or {}
-    bk = user.get("business_knowledge") or {}
 
-    # Brand assets — best-effort lookups so failures here don't break the tool.
     default_logo_url = ""
     brand_primary_color = ""
     brand_font = ""
+    document_style: Dict[str, Any] = {}
     try:
-        from saved_designs import get_primary_logo_url, get_brand_settings
+        from saved_designs import get_document_style, get_primary_logo_url, get_brand_settings
 
         default_logo_url = (await get_primary_logo_url(ctx.db, ctx.business_id)) or ""
-        brand = await get_brand_settings(ctx.db, ctx.business_id)
-        brand_primary_color = (brand or {}).get("brand_primary_color", "") or ""
-        brand_font = (brand or {}).get("brand_font", "") or ""
+        brand = await get_brand_settings(ctx.db, ctx.business_id) or {}
+        brand_primary_color = (brand.get("brand_primary_color") or "") if brand else ""
+        brand_font = (brand.get("brand_font") or "") if brand else ""
+        document_style = await get_document_style(ctx.db, ctx.business_id) or {}
     except Exception:
-        logger.exception("[get_owner_info] brand asset lookup skipped")
+        logger.exception("[get_owner_info] brand/document style lookup skipped")
 
-    return {
-        "owner_name":    user.get("owner_name") or user.get("name", ""),
-        "business_name": user.get("business_name", ""),
-        "phone_number":  user.get("phone_number") or settings.get("phone_number", ""),
-        "email":         user.get("email", ""),
-        "country":       settings.get("country", ""),
-        "currency":      settings.get("currency", ""),
-        "whatsapp_number": (user.get("whatsapp") or {}).get("number", ""),
-        "business_type":   (settings.get("business_type") or "").strip(),
-        "business_description_hint": (bk.get("business_description") or "")[:400],
-        "products_services_hint":    (bk.get("products_services") or "")[:400],
-        # Brand kit — pass these straight into Gemini design tools
-        # (brand_color, logo_url) and generate_design_background.logo_url.
-        "default_logo_url":    default_logo_url,
-        "brand_primary_color": brand_primary_color,
-        "brand_font":          brand_font,
-    }
+    return build_owner_profile(
+        user,
+        default_logo_url=default_logo_url,
+        brand_primary_color=brand_primary_color,
+        brand_font=brand_font,
+        document_style=document_style,
+    )
 
 
 @tool(
@@ -4558,13 +4549,12 @@ async def delete_automation(ctx: ToolContext, args: Dict[str, Any]):
     name="generate_document",
     description=(
         "Convert markdown content into a downloadable PDF or DOCX file and return a download link. "
-        "Call this after writing a full document (proposal, report, invoice, contract) so the user can download it immediately. "
-        "Pass the complete markdown as `content`. Set `format` to 'pdf' or 'docx'. "
-        "Set `filename` to a short descriptive name without extension (e.g. 'business-proposal'). "
-        "Use `template` to control the visual design: "
-        "'professional' (default) — branded header bar with accent colour, clean sans-serif; "
-        "'minimal' — ultra-clean white layout, uppercase section headings, no coloured bars; "
-        "'executive' — dark navy header, Playfair Display serif headings, dark table headers — ideal for proposals and contracts."
+        "Call after check_document_requirements returns ready=true and you have drafted the full document. "
+        "Pass doc_type so logo, template, and hero image follow document-type rules automatically. "
+        "Set `format` to 'pdf' or 'docx'. Set `filename` to a short descriptive name without extension. "
+        "Templates: professional (default business), minimal (invoices/contracts/memos), executive (proposals/plans). "
+        "Logo: included automatically for client-facing docs when a logo exists in Design library; omitted for internal memos/minutes. "
+        "Hero image: auto-generated for proposals/business plans; never for invoices, contracts, or loan letters."
     ),
     parameters={
         "type": "object",
@@ -4576,7 +4566,15 @@ async def delete_automation(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "enum": ["professional", "minimal", "executive"],
                 "default": "professional",
-                "description": "Visual design template for the document.",
+                "description": "Visual design template. Prefer the template from check_document_requirements export_config when available.",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": (
+                    "Document type — controls logo, hero image, template, and premium layout defaults. "
+                    "Use the same doc_type as check_document_requirements. "
+                    "Examples: business_proposal, invoice, contract, loan_application, report, memo."
+                ),
             },
             "image_prompt": {
                 "type": "string",
@@ -4609,7 +4607,23 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     fmt = (args.get("format") or "pdf").lower()
     if fmt not in ("pdf", "docx"):
         fmt = "pdf"
-    template = (args.get("template") or "professional").lower()
+
+    from .document_plan import (
+        build_export_config,
+        enrich_doc_style,
+        get_document_type_spec,
+        infer_document_type_from_title,
+        resolve_document_type,
+        sanitize_document_text,
+    )
+    raw_doc_type = (args.get("doc_type") or "").strip()
+    if not raw_doc_type:
+        raw_doc_type = infer_document_type_from_title((args.get("filename") or "document").replace("_", " "))
+    doc_type = resolve_document_type(raw_doc_type or "other")
+    type_spec = get_document_type_spec(doc_type)
+    export_cfg = build_export_config(doc_type, type_spec)
+
+    template = (args.get("template") or export_cfg.get("template") or "professional").lower()
     if template not in ("professional", "minimal", "executive"):
         template = "professional"
 
@@ -4620,19 +4634,38 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     # Fetch business name and document style for branded output
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business") if owner else "My Business"
+    owner_profile: Dict[str, Any] = {}
+    try:
+        owner_profile = await get_owner_info(ctx, {}) or {}
+        if owner_profile.get("error"):
+            owner_profile = {}
+    except Exception:
+        owner_profile = {}
     doc_style: Dict[str, Any] = {}
     try:
         from saved_designs import get_document_style as _get_doc_style
         doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
     except Exception:
         pass
+    doc_style, _spec = await enrich_doc_style(
+        ctx.db, ctx.business_id, doc_style, doc_type, owner=owner_profile,
+    )
+
+    content = sanitize_document_text(
+        content,
+        website_url=(owner_profile.get("website_url") or "").strip(),
+        email=(owner_profile.get("email") or "").strip(),
+    )
 
     _title = raw_name.replace("-", " ").replace("_", " ").title()
 
-    # Generate a hero image only when the AI explicitly provides an image_prompt
-    # The AI decides based on document content whether an image adds value
+    # Hero image: only when doc type allows it; use type-specific scene if AI omitted image_prompt
     hero_image_url: str | None = None
     _image_prompt = (args.get("image_prompt") or "").strip()
+    if not export_cfg.get("hero_image"):
+        _image_prompt = ""
+    elif not _image_prompt:
+        _image_prompt = (export_cfg.get("hero_hint") or "").strip()
     if _image_prompt:
         try:
             from nano_banana_service import generate_creative_image
@@ -4665,21 +4698,20 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     if fmt == "pdf":
         # Use Playwright (HTML→PDF) for polished, branded output
         try:
-            from .document_generator import generate_pdf_from_html
+            from .document_generator import generate_pdf_from_html_async
             if html_doc is None:
                 from .document_generator import generate_html_document
                 html_doc = generate_html_document(
                     content, title=_title, business_name=business_name,
                     style=doc_style, template=template, hero_image_url=hero_image_url,
                 )
-            filepath = await asyncio.get_event_loop().run_in_executor(
-                None, generate_pdf_from_html, html_doc, filename
-            )
+            filepath = await generate_pdf_from_html_async(html_doc, filename)
         except Exception as e:
-            logger.exception("[generate_document] WeasyPrint PDF failed, falling back to ReportLab")
+            logger.exception("[generate_document] HTML PDF failed, retrying once")
             try:
-                from .document_generator import generate_pdf
-                filepath = generate_pdf(content, filename, business_name=business_name, style=doc_style)
+                if html_doc is None:
+                    raise e
+                filepath = await generate_pdf_from_html_async(html_doc, filename)
             except Exception as e2:
                 return {"error": f"PDF generation failed: {e2}"}
     else:
@@ -4736,8 +4768,12 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
             "filename": filename,
             "format": fmt,
             "template": template,
-            "html_preview": html_doc or "",  # Stripped from LLM context by orchestrator
-            "content_md": content,            # Stripped from LLM context by orchestrator
+            "doc_type": doc_type,
+            "logo_included": bool(export_cfg.get("use_logo") and doc_style.get("logo_url")),
+            "preview_key": preview_key,
+            "preview_url": f"/api/document-preview/{preview_key}" if preview_key else "",
+            "html_preview": html_doc or "",
+            "content_md": content,
             "message": f"✅ **{raw_name}** is ready. See the document preview below.",
         }
     else:
@@ -4750,8 +4786,10 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
             "filename": filename,
             "format": fmt,
             "template": template,
-            "html_preview": html_doc or "",  # Stripped from LLM context by orchestrator
-            "content_md": content,            # Stripped from LLM context by orchestrator
+            "preview_key": preview_key,
+            "preview_url": f"/api/document-preview/{preview_key}" if preview_key else "",
+            "html_preview": html_doc or "",
+            "content_md": content,
             "message": f"✅ **{raw_name}** is ready. See the document preview below.",
         }
 
@@ -5427,11 +5465,23 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
                 ),
                 "additionalProperties": {"type": "string"},
             },
+            "original_request": {
+                "type": "string",
+                "description": (
+                    "The user's original wording for this deliverable (e.g. 'create a company profile'). "
+                    "Required when format may be ambiguous."
+                ),
+            },
         },
         "required": ["deck_purpose"],
     },
 )
 async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_format import (
+        combined_request_text,
+        format_choice_blocked_response,
+        needs_deliverable_format_choice,
+    )
     from .presentation_plan import (
         CHECKLIST_VERSION,
         RESEARCHABLE_KEYS,
@@ -5454,6 +5504,12 @@ async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]
     topic = (args.get("topic") or "Presentation").strip()
     audience = (args.get("audience") or "").strip()
     user_context = dict(args.get("user_context") or {})
+    original_request = (args.get("original_request") or user_context.get("original_request") or "").strip()
+    if needs_deliverable_format_choice(
+        combined_request_text(original_request, topic, user_context),
+        user_context,
+    ):
+        return format_choice_blocked_response()
 
     owner: Dict[str, Any] = {}
     analytics: Dict[str, Any] = {}
@@ -5581,6 +5637,165 @@ async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]
         "analytics": bool(analytics),
         "products_count": len(products),
         "team_count": len(team),
+    }
+    return assessment
+
+
+@tool(
+    name="check_document_requirements",
+    description=(
+        "STEP 1 of the written-document loop — verify you have every fact needed BEFORE drafting. "
+        "Call as soon as doc_type is known. Loads CRM profile automatically and web-researches "
+        "public industry/market context where appropriate. "
+        "Returns logo_policy (include_logo | no_logo), hero_image_policy, export_config (template), "
+        "design_notes, and recommended_sections for premium output. "
+        "Owner-only facts (bank name, client name, loan amount, contract party) must come from the user — never guess. "
+        "If ready=false, reply using chat_reply — ask ONE missing field at a time."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "doc_type": {
+                "type": "string",
+                "description": (
+                    "Document type, e.g. business_proposal, business_plan, contract, invoice, quote, "
+                    "loan_application, report, sow, memo, meeting_minutes, press_release, other."
+                ),
+            },
+            "topic": {
+                "type": "string",
+                "description": "Short subject line for the document (defaults to business name from CRM).",
+            },
+            "user_context": {
+                "type": "object",
+                "description": (
+                    "Facts the user already provided, keyed by requirement id "
+                    "(e.g. bank_name, recipient_company, loan_amount, invoice_items). "
+                    "Merge new answers after each user reply."
+                ),
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["doc_type"],
+    },
+)
+async def check_document_requirements(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_plan import (
+        CHECKLIST_VERSION,
+        assess_document_requirements,
+        auto_research_document_context,
+        build_document_agent_note,
+        build_document_chat_reply,
+        build_document_checklist,
+        build_website_policy,
+        researchable_keys_for_document,
+        resolve_document_type,
+        resolve_business_country,
+        seed_document_context_from_crm,
+    )
+    from .presentation_plan import _ctx_val
+
+    doc_type = resolve_document_type(args.get("doc_type") or "other")
+    topic = (args.get("topic") or "").strip()
+    user_context = dict(args.get("user_context") or {})
+
+    owner: Dict[str, Any] = {}
+    analytics: Dict[str, Any] = {}
+    products: List[Dict[str, Any]] = []
+
+    try:
+        owner = await get_owner_info(ctx, {}) or {}
+        if owner.get("error"):
+            owner = {}
+    except Exception:
+        logger.exception("[check_document_requirements] get_owner_info skipped")
+
+    try:
+        analytics = await get_analytics_summary(ctx, {}) or {}
+        if analytics.get("error"):
+            analytics = {}
+    except Exception:
+        logger.exception("[check_document_requirements] get_analytics_summary skipped")
+
+    try:
+        prod_result = await list_products(ctx, {"limit": 20}) or {}
+        products = prod_result.get("products") or []
+    except Exception:
+        logger.exception("[check_document_requirements] list_products skipped")
+
+    if not topic:
+        topic = (owner.get("business_name") or owner.get("owner_name") or "Document").strip()
+
+    user_context = seed_document_context_from_crm(
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        user_context=user_context,
+    )
+
+    purpose_researchable = researchable_keys_for_document(doc_type)
+    research_keys_list = [
+        k for k in purpose_researchable
+        if not _ctx_val(user_context, k)
+    ]
+    researched: Dict[str, str] = {}
+    research_sources: Dict[str, str] = {}
+    if research_keys_list:
+
+        async def _search_fn(query: str) -> Dict[str, Any]:
+            return await web_search(ctx, {"query": query, "max_results": 6})
+
+        researched, research_sources = await auto_research_document_context(
+            doc_type=doc_type,
+            topic=topic,
+            owner=owner,
+            user_context=user_context,
+            search_fn=_search_fn,
+        )
+        user_context.update(researched)
+
+    assessment = assess_document_requirements(
+        doc_type=doc_type,
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        user_context=user_context,
+        research_keys=set(researched.keys()),
+    )
+    checklist = build_document_checklist(assessment, owner=owner)
+    assessment["success"] = True
+    assessment["topic"] = topic
+    assessment["business_country"] = resolve_business_country(owner)
+    assessment["checklist"] = checklist
+    assessment["checklist_ui"] = not assessment.get("ready") and len(checklist) > 0
+    assessment["checklist_version"] = CHECKLIST_VERSION
+    assessment["auto_researched"] = researched
+    assessment["research_sources"] = research_sources
+    assessment["user_context"] = user_context
+    assessment["agent_reply_hint"] = build_document_agent_note(assessment, researched)
+    assessment["website_policy"] = build_website_policy(owner)
+    assessment["do_not_ask"] = sorted(purpose_researchable)
+    if not assessment.get("ready"):
+        assessment["chat_reply"] = build_document_chat_reply(assessment, owner=owner)
+    else:
+        assessment["chat_reply"] = (
+            f"All set for your **{assessment.get('doc_type_label', 'document')}**. "
+            "I have your business profile, researched public context, and the details you provided. "
+            "Drafting now with premium layout and branding."
+        )
+    assessment["crm_loaded"] = {
+        "owner": bool(owner),
+        "analytics": bool(analytics),
+        "products_count": len(products),
+        "currency": (owner.get("currency") or "").strip(),
+        "country": (owner.get("country") or "").strip(),
+        "country_code": (owner.get("country_code") or "").strip(),
+        "business_type": (owner.get("business_type") or "").strip(),
+        "website_url": (owner.get("website_url") or "").strip(),
+        "tagline": (owner.get("tagline") or "").strip(),
+        "settings": owner.get("settings") or {},
+        "business_knowledge_keys": sorted((owner.get("business_knowledge") or {}).keys()),
+        "has_document_style": bool(owner.get("document_style")),
     }
     return assessment
 
@@ -5715,6 +5930,11 @@ async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]
     },
 )
 async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_format import (
+        combined_request_text,
+        format_choice_blocked_response,
+        needs_deliverable_format_choice,
+    )
     from .presentation_plan import (
         RESEARCHABLE_KEYS,
         _PURPOSE_REQUIRED_KEYS,
@@ -5735,6 +5955,12 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
     deck_purpose = (args.get("deck_purpose") or "").strip()
     user_context = dict(args.get("user_context") or {})
     slides   = args.get("slides") or []
+    original_request = (args.get("original_request") or user_context.get("original_request") or "").strip()
+    if needs_deliverable_format_choice(
+        combined_request_text(original_request, topic, user_context),
+        user_context,
+    ):
+        return format_choice_blocked_response()
 
     if not slides:
         return {"error": "slides list is required."}
@@ -7316,9 +7542,53 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="plan_business_document",
+    description=(
+        "STEP 2 of the written-document loop — build the draft plan card ONLY (no PDF yet). "
+        "Call ONLY after check_document_requirements returns ready=true. "
+        "Pass the complete Markdown body as content and the document title. "
+        "The UI shows a preview + edit card — user taps Approve & Export PDF before create_business_document runs."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+            "title": {"type": "string", "description": "Document title."},
+            "content": {
+                "type": "string",
+                "description": "Full document body in Markdown (headings, bullets, tables). No # title line needed.",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": "From check_document_requirements (e.g. company_profile, business_proposal).",
+            },
+            "template": {
+                "type": "string",
+                "enum": ["professional", "minimal", "executive"],
+            },
+            "image_prompt": {"type": "string", "description": "Optional hero image prompt when doc_type allows."},
+        },
+    },
+)
+async def plan_business_document(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_flow import prepare_business_document
+    return await prepare_business_document(
+        ctx,
+        title=args.get("title", "Document"),
+        content=args.get("content", ""),
+        doc_type=(args.get("doc_type") or "").strip(),
+        template=(args.get("template") or "").strip(),
+        image_prompt=(args.get("image_prompt") or "").strip(),
+        export_pdf=False,
+    )
+
+
+@tool(
     name="create_business_document",
     description=(
-        "Create a professional PDF document like an invoice, quote, proposal, or report."
+        "Export PDF — call ONLY after the user taps Approve on the document plan card, "
+        "or when they explicitly say export/generate PDF now. "
+        "For the normal flow use plan_business_document first."
     ),
     parameters={
         "type": "object",
@@ -7330,84 +7600,38 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
             },
             "content": {
                 "type": "string",
-                "description": "The main body of the document. Use \\n for new paragraphs.",
-            }
+                "description": "The full document body in Markdown (headings, bullets, tables).",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": (
+                    "Document type from check_document_requirements "
+                    "(e.g. business_proposal, invoice, loan_application, contract, report, memo)."
+                ),
+            },
+            "template": {
+                "type": "string",
+                "enum": ["professional", "minimal", "executive"],
+                "description": "Override template; default comes from doc_type export_config.",
+            },
+            "image_prompt": {
+                "type": "string",
+                "description": "Optional hero image prompt — only used when doc_type allows hero images.",
+            },
         },
     },
 )
 async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
-    import asyncio
-    import base64
-    import uuid as _uuid
-    title = args.get("title", "Document")
-    content = args.get("content", "")
-
-    owner = await ctx.db.users.find_one({"_id": ctx.business_id})
-    business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business") if owner else "My Business"
-
-    # Fetch document style profile for branded output
-    doc_style: Dict[str, Any] = {}
-    try:
-        from saved_designs import get_document_style as _get_doc_style
-        doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
-    except Exception:
-        pass
-
-    md = f"# {title}\n\n{content}"
-    preview_key: str | None = None
-    html_preview: str | None = None
-    try:
-        from .document_generator import generate_html_document, generate_pdf_from_html, store_html_preview
-        html_preview = generate_html_document(md, title=title, business_name=business_name, style=doc_style)
-        preview_key = store_html_preview(html_preview)
-        filepath = await asyncio.get_event_loop().run_in_executor(
-            None, generate_pdf_from_html, html_preview, None
-        )
-    except Exception as e:
-        logger.exception("[create_business_document] PDF generation failed")
-        return {"error": f"PDF generation failed: {e}"}
-
-    try:
-        from pathlib import Path as _Path
-        from image_handler import S3Handler
-        _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
-        pdf_bytes = _filepath.read_bytes()
-        b64 = base64.b64encode(pdf_bytes).decode()
-        filename = f"doc-{_uuid.uuid4().hex[:8]}.pdf"
-        pdf_url = await S3Handler.upload_file(b64, filename, content_type="application/pdf")
-    except Exception as e:
-        logger.exception("[create_business_document] S3 upload failed")
-        return {"error": f"PDF upload failed: {e}"}
-    finally:
-        try:
-            _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
-            _filepath.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    try:
-        from saved_designs import insert_saved_design
-        await insert_saved_design(
-            ctx.db,
-            ctx.business_id,
-            name=(title or "PDF document")[:200],
-            asset_kind="pdf",
-            file_url=pdf_url,
-            thumbnail_url=None,
-            source_tool="create_business_document",
-            conversation_id=ctx.user.get("_active_conversation_id"),
-        )
-    except Exception:
-        logger.exception("[create_business_document] saved_designs insert skipped")
-
-    return {
-        "success": True,
-        "pdf_url": pdf_url,
-        "download_url": pdf_url,
-        "filename": f"{title}.pdf",
-        "html_preview": html_preview or "",   # Stripped from LLM context by orchestrator
-        "markdown": f"📄 **[Download {title}]({pdf_url})**" if pdf_url else "",
-    }
+    from .document_flow import prepare_business_document
+    return await prepare_business_document(
+        ctx,
+        title=args.get("title", "Document"),
+        content=args.get("content", ""),
+        doc_type=(args.get("doc_type") or "").strip(),
+        template=(args.get("template") or "").strip(),
+        image_prompt=(args.get("image_prompt") or "").strip(),
+        export_pdf=True,
+    )
 
 @tool(
     name="browse_presentation_themes",

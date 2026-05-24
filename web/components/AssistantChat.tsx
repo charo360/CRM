@@ -112,6 +112,7 @@ const TOOL_LABELS: Record<string, string> = {
   web_search:            "Searching the web…",
   // Documents
   create_business_document: "Designing document…",
+  plan_business_document:   "Building document draft…",
   create_presentation:        "Building presentation…",
   browse_presentation_themes: "Browse Presentation Themes",
   generate_document:     "Generating document…",
@@ -957,6 +958,179 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     }
   }
 
+  async function generateDocumentFromPlan(
+    messageIndex: number,
+    title: string,
+    bodyMarkdown: string,
+    contentMd: string,
+    docType: string,
+    edited: boolean,
+  ) {
+    if (sending || sendingRef.current) return;
+    sendingRef.current = true;
+    setError(null);
+    setSending(true);
+    stopRequestedRef.current = false;
+    setStreamingText("");
+    setStreamingTools(["create_business_document"]);
+    setStreamingAgentId("document");
+
+    const userLabel = edited
+      ? "✓ Approved edited document — export PDF now."
+      : "✓ Approved document draft — export PDF now.";
+    setMessages((prev) => [...prev, { role: "user", content: userLabel }]);
+
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const stream = assistantApi.generateDocumentStream({
+        title,
+        body_markdown: bodyMarkdown,
+        content_md: contentMd,
+        doc_type: docType,
+        conversation_id: convId,
+        message_index: messageIndex,
+        edited,
+        signal: abortController.signal,
+      });
+      const reader = stream.getReader();
+      streamReaderRef.current = reader;
+
+      let fullReply = "";
+      let donePayload: AssistantChatResponse | null = null;
+
+      while (true) {
+        if (stopRequestedRef.current) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (stopRequestedRef.current) break;
+        try {
+          const event = JSON.parse(value) as {
+            type: string;
+            text?: string;
+            tool?: string;
+            agent?: string;
+            reply?: string;
+            steps?: AssistantStep[];
+            conversation_id?: string;
+            message?: string;
+            active_agent?: string;
+            active_agent_label?: string;
+          };
+          if (event.type === "thinking") {
+            if (event.agent) setStreamingAgentId(event.agent);
+          } else if (event.type === "tool_start") {
+            setStreamingTools((prev) => [...prev, event.tool ?? ""]);
+          } else if (event.type === "token") {
+            fullReply += event.text ?? "";
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
+          } else if (event.type === "done") {
+            donePayload = {
+              conversation_id: event.conversation_id ?? convId ?? "",
+              reply: event.reply ?? fullReply,
+              steps: event.steps ?? [],
+              model: null,
+              needs_confirmation: null,
+              active_agent: event.active_agent ?? "document",
+              active_agent_label: event.active_agent_label ?? "Document Writer",
+            };
+          } else if (event.type === "error") {
+            throw new Error(event.message ?? "Stream error");
+          }
+        } catch {
+          /* skip non-JSON */
+        }
+      }
+
+      if (!stopRequestedRef.current && donePayload) {
+        if (!convId) {
+          selfCreatedConvIdRef.current = donePayload.conversation_id;
+          setConvId(donePayload.conversation_id);
+          onConversationChange?.(donePayload.conversation_id);
+        }
+        if (donePayload.active_agent) setActiveAgent(donePayload.active_agent);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: donePayload!.reply,
+            steps: donePayload!.steps,
+            agent: donePayload!.active_agent,
+          },
+        ]);
+      }
+    } catch (e) {
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to export document");
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          return last?.role === "user" && last.content === userLabel ? prev.slice(0, -1) : prev;
+        });
+      }
+    } finally {
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
+    }
+  }
+
+  async function saveDocumentPlan(
+    messageIndex: number,
+    title: string,
+    contentMd: string,
+    bodyMarkdown: string,
+  ): Promise<boolean> {
+    if (!convId) {
+      toast.error("Conversation not ready — wait a moment and try again.");
+      return false;
+    }
+    try {
+      const res = await assistantApi.saveDocumentPlan({
+        conversation_id: convId,
+        message_index: messageIndex,
+        title,
+        content_md: contentMd,
+        body_markdown: bodyMarkdown,
+      });
+      setMessages((prev) => {
+        const msg = prev[messageIndex];
+        if (!msg?.steps) return prev;
+        const newSteps = msg.steps.map((s) => {
+          if (s.tool !== "plan_business_document") return s;
+          const result = s.result as Record<string, unknown> | undefined;
+          if (!result?.plan_ready) return s;
+          return {
+            ...s,
+            result: {
+              ...result,
+              title: res.title ?? title,
+              content_md: res.content_md,
+              body_markdown: bodyMarkdown,
+              user_edited: true,
+              saved_at: res.saved_at,
+            },
+          };
+        });
+        const next = [...prev];
+        next[messageIndex] = { ...msg, steps: newSteps };
+        return next;
+      });
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not save draft");
+      return false;
+    }
+  }
+
   // Merge integration-specific extras into the personalized prompts (keep max 8)
   const mergedPrompts = (() => {
     const extras: string[] = [];
@@ -1194,6 +1368,10 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                         void generatePresentationFromPlan(messageIndex, topic, slides, edited)
                       }
                       onSavePresentationPlan={savePresentationPlan}
+                      onGenerateDocument={(messageIndex, title, bodyMarkdown, contentMd, docType, edited) =>
+                        void generateDocumentFromPlan(messageIndex, title, bodyMarkdown, contentMd, docType, edited)
+                      }
+                      onSaveDocumentPlan={saveDocumentPlan}
                       onRegeneratePresentationSlide={(messageIndex, slideIndex, instruction, slides, imageUrls, topic, textEdited) =>
                         void regeneratePresentationSlide(messageIndex, slideIndex, instruction, slides, imageUrls, topic, textEdited)
                       }
@@ -1625,11 +1803,86 @@ function WhatsAppPickerModal({
 const MULTI_SELECT_RE =
   /\b(select all that apply|choose one or more|pick any|you can select multiple|select as many|tick all|check all that apply|pick all|you may select more than one)\b/i;
 
+/** Split "A. foo B. bar C. baz" on one line into separate option lines. */
+function splitInlineLetteredLine(line: string): string[] | null {
+  const re = /(?:^|\s)([A-Za-z])[.)]\s+/g;
+  const hits: { index: number; letter: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    hits.push({ index: m.index + (m[0].startsWith(" ") ? 1 : 0), letter: m[1] });
+  }
+  if (hits.length < 2) return null;
+  const parts: string[] = [];
+  for (let i = 0; i < hits.length; i++) {
+    const start = hits[i].index;
+    const end = i + 1 < hits.length ? hits[i + 1].index : line.length;
+    parts.push(line.slice(start, end).trim());
+  }
+  return parts.every((p) => /^\(?[A-Za-z][.)]\s+\S/.test(p)) ? parts : null;
+}
+
+function expandOptionLines(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const split = splitInlineLetteredLine(line);
+    if (split) out.push(...split);
+    else out.push(line);
+  }
+  return out;
+}
+
+/** Parse lettered options anywhere in text (fallback when line-based detection fails). */
+function parseLetteredOptionsGlobally(content: string): { label: string; display: string }[] | null {
+  const re = /(?:^|\s)([A-Za-z])[.)]\s+(.+?)(?=(?:\s+[A-Za-z][.)]\s+)|$)/gs;
+  const parsed: { label: string; display: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const text = m[2].replace(/\*\*/g, "").trim();
+    if (!text) continue;
+    parsed.push({
+      label: text,
+      display: `${m[1]}. ${text}`,
+    });
+  }
+  return parsed.length >= 2 && parsed.length <= 10 ? parsed : null;
+}
+
+interface ChecklistOption {
+  id?: string;
+  label?: string;
+  value?: string;
+}
+
+/** Structured options from check_document_requirements tool result. */
+function extractDocumentChecklistOptions(steps?: AssistantStep[]): {
+  question?: string;
+  options: { label: string; display: string; sendValue: string }[];
+} | null {
+  const step = [...(steps ?? [])]
+    .reverse()
+    .find((s) => s.tool === "check_document_requirements" && s.result && !(s.result as Record<string, unknown>).error);
+  if (!step) return null;
+  const result = step.result as Record<string, unknown>;
+  if (result.ready) return null;
+  const checklist = result.checklist as Array<{ question?: string; label?: string; options?: ChecklistOption[] }> | undefined;
+  const first = checklist?.[0];
+  const raw = first?.options?.filter((o) => o.label?.trim()) ?? [];
+  if (raw.length < 2) return null;
+  return {
+    question: first?.question || first?.label,
+    options: raw.map((o, i) => {
+      const label = (o.label ?? "").trim();
+      const sendValue = (o.value ?? "").trim() || label;
+      return { label, display: `${String.fromCharCode(65 + i)}. ${label}`, sendValue };
+    }),
+  };
+}
+
 function extractInlineOptionList(content: string):
   | { before: string; after: string; options: { label: string; display: string }[]; multiSelect: boolean }
   | null {
   if (!content) return null;
-  const lines = content.split("\n");
+  const lines = expandOptionLines(content.split("\n"));
 
   const bulletRe = /^\s*[-*+]\s+\S/;
   const letterAnyRe = /^\s*(?:[-*+]\s+)?\(?[A-Za-z][.):\]]\s+\S/;
@@ -1665,7 +1918,19 @@ function extractInlineOptionList(content: string):
     }
     i = lastOption + 1;
   }
-  if (bestStart < 0) return null;
+  if (bestStart < 0) {
+    const global = parseLetteredOptionsGlobally(content);
+    if (!global) return null;
+    const cutRe = /(?:^|[\n\s])([A-Za-z])[.)]\s+/;
+    const cutMatch = cutRe.exec(content);
+    const before = cutMatch ? content.slice(0, cutMatch.index).trim() : content;
+    return {
+      before,
+      after: "",
+      options: global,
+      multiSelect: MULTI_SELECT_RE.test(content),
+    };
+  }
 
   // Keep only the option lines themselves (drop interleaved blanks before parsing).
   const optionLines = lines
@@ -1723,13 +1988,22 @@ function extractInlineOptionList(content: string):
     if (ok && numParsed.length >= 2) parsed = numParsed;
   }
 
-  if (!parsed || parsed.length > 10) return null;
+  if (!parsed || parsed.length > 10) {
+    // Fallback: options jammed onto one line (e.g. "A. KES 500,000 B. KES 1,000,000 …")
+    const global = parseLetteredOptionsGlobally(content);
+    if (!global) return null;
+    parsed = global;
+  }
+
+  const parsedFromLetteredList = parsed.some((o) => /^[A-Za-z][.)]\s/.test(o.display));
 
   // ── Informational-list guard ────────────────────────────────────────────────
   // Only promote to clickable chips when items look like genuine user choices.
   // Informational lists (facts, summaries, confirmations) stay as plain markdown.
   const isFactItem = (label: string, display?: string) => {
     const plain = label.replace(/\*\*/g, "").trim();
+    // Lettered tap-to-send choices (amounts, bank names) are never summary facts.
+    if (parsedFromLetteredList) return false;
     // Strip leading emoji / non-ASCII characters so "🎨 Visual: …" still matches "Key: value"
     const plainNoEmoji = plain.replace(/^[\p{Emoji}\p{S}\s]+/u, "").trim();
     // "Key: value" pattern (e.g. "Visual: Deep green", "Status: Published")
@@ -2079,6 +2353,73 @@ function EmailChatPreviewModal({
   );
 }
 
+/** Options that need free-text input instead of tap-to-send. */
+function isFreeTextOption(label: string): boolean {
+  return /something else|describe it|i['']ll describe|i['']ll explain|none of these|not listed|type (the )?(name|bank|lender|amount)|other bank|other amount|other —|different amount|i['']ll specify/i.test(
+    label,
+  );
+}
+
+function freeTextOptionPlaceholder(label: string, display?: string): string {
+  const text = `${label} ${display ?? ""}`;
+  if (/bank|lender/i.test(text)) return "Type bank name…";
+  if (/amount/i.test(text)) return "Type amount…";
+  return "Type here…";
+}
+
+function OptionInputChip({
+  letter,
+  label,
+  display,
+  onSubmit,
+}: {
+  letter?: string;
+  label: string;
+  display?: string;
+  onSubmit: (text: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  const placeholder = freeTextOptionPlaceholder(label, display);
+
+  return (
+    <div className="group flex items-center gap-2 rounded-xl border border-brand/30 bg-white px-2.5 py-2 shadow-sm transition focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30">
+      {letter ? (
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[12px] font-bold text-brand-dark">
+          {letter}
+        </span>
+      ) : null}
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && value.trim()) {
+            onSubmit(value.trim());
+            setValue("");
+          }
+        }}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium text-slate-800 placeholder:font-normal placeholder:text-slate-400 outline-none"
+        aria-label={display || label}
+      />
+      <button
+        type="button"
+        disabled={!value.trim()}
+        onClick={() => {
+          if (value.trim()) {
+            onSubmit(value.trim());
+            setValue("");
+          }
+        }}
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-brand transition hover:bg-brand/10 disabled:opacity-30"
+        aria-label="Send"
+      >
+        <Send size={14} />
+      </button>
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   messageIndex,
@@ -2087,6 +2428,8 @@ function MessageBubble({
   onSuggestionSend,
   onGeneratePresentation,
   onSavePresentationPlan,
+  onGenerateDocument,
+  onSaveDocumentPlan,
   onRegeneratePresentationSlide,
   onUserResend,
 }: {
@@ -2105,6 +2448,20 @@ function MessageBubble({
     messageIndex: number,
     topic: string,
     slides: PlanSlide[],
+  ) => Promise<boolean>;
+  onGenerateDocument?: (
+    messageIndex: number,
+    title: string,
+    bodyMarkdown: string,
+    contentMd: string,
+    docType: string,
+    edited: boolean,
+  ) => void;
+  onSaveDocumentPlan?: (
+    messageIndex: number,
+    title: string,
+    contentMd: string,
+    bodyMarkdown: string,
   ) => Promise<boolean>;
   onRegeneratePresentationSlide?: (
     messageIndex: number,
@@ -2128,7 +2485,6 @@ function MessageBubble({
   }, [msg.role, msg.content]);
   const [editedUserPrompt, setEditedUserPrompt] = useState(msg.content ?? "");
   const [checkedOptions, setCheckedOptions] = useState<Set<string>>(new Set());
-  const [describeText, setDescribeText] = useState("");
 
   // Inline form — takes priority over chip options when detected
   const inlineForm = useMemo(() => {
@@ -2137,15 +2493,20 @@ function MessageBubble({
   }, [msg.role, msg.content]);
 
   // Promote bullet/lettered/numbered option lists to tap-to-send chips with A/B/C
-  // letter badges, unless the backend already supplied msg.suggestions (avoid dupes)
-  // or we're rendering a form instead.
+  // letter badges. Structured checklist options from check_document_requirements
+  // take priority; msg.suggestions are a separate fallback row at the bottom.
+  const documentChecklist = useMemo(
+    () => (msg.role === "assistant" ? extractDocumentChecklistOptions(msg.steps) : null),
+    [msg.role, msg.steps],
+  );
+
   const inlineOptions = useMemo(() => {
     if (msg.role !== "assistant") return null;
     if (inlineForm) return null;
+    if (documentChecklist) return null;
     if (planAwaitingApproval(allMessages, messageIndex)) return null;
-    if (msg.suggestions && msg.suggestions.length > 0) return null;
     return extractInlineOptionList(msg.content ?? "");
-  }, [msg.role, msg.content, msg.suggestions, inlineForm, allMessages, messageIndex]);
+  }, [msg.role, msg.content, inlineForm, documentChecklist, allMessages, messageIndex]);
 
   async function handleExport(format: "pdf" | "docx") {
     if (!msg.content || exporting) return;
@@ -2249,7 +2610,9 @@ function MessageBubble({
     );
   }
   if (msg.role === "assistant") {
-    const hasContent = (msg.content ?? "").length > 120;
+    const documentDraftPending = isDocumentDraftPending(msg.steps);
+    const displayContent = documentDraftPending ? documentDraftIntro(msg.content ?? "") : (msg.content ?? "");
+    const hasContent = displayContent.length > 120;
     return (
       <div className="flex justify-start">
         <div className="flex w-full max-w-full gap-3">
@@ -2307,38 +2670,16 @@ function MessageBubble({
                             </button>
                           );
                         }
-                        // Escape hatch — render as text input so user can describe freely
-                        const isEscapeOpt = /something else|describe it|i['']ll describe|i['']ll explain|none of these/i.test(opt.label);
-                        if (isEscapeOpt) {
+                        // Free-text option — compact input chip (e.g. "Other bank — type name")
+                        if (isFreeTextOption(opt.label)) {
                           return (
-                            <div key={`${i}-${opt.label}`} className="flex gap-2">
-                              <input
-                                type="text"
-                                value={describeText}
-                                onChange={(e) => setDescribeText(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" && describeText.trim()) {
-                                    onSuggestionSend(describeText.trim());
-                                    setDescribeText("");
-                                  }
-                                }}
-                                placeholder="Describe what you want…"
-                                className="flex-1 rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-[13px] text-slate-700 placeholder:text-slate-400 shadow-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
-                              />
-                              <button
-                                type="button"
-                                disabled={!describeText.trim()}
-                                onClick={() => {
-                                  if (describeText.trim()) {
-                                    onSuggestionSend(describeText.trim());
-                                    setDescribeText("");
-                                  }
-                                }}
-                                className="rounded-xl bg-brand px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-40"
-                              >
-                                Send
-                              </button>
-                            </div>
+                            <OptionInputChip
+                              key={`${i}-${opt.label}`}
+                              letter={letter}
+                              label={opt.label}
+                              display={opt.display}
+                              onSubmit={onSuggestionSend}
+                            />
                           );
                         }
                         return (
@@ -2378,8 +2719,41 @@ function MessageBubble({
                       </div>
                     )}
                   </>
+                ) : documentChecklist && onSuggestionSend ? (
+                  <>
+                    <MarkdownBody content={msg.content} steps={msg.steps} />
+                    <div className="mt-2 flex flex-col items-stretch gap-1.5">
+                      {documentChecklist.options.map((opt, i) => {
+                        const letter = String.fromCharCode(65 + i);
+                        if (isFreeTextOption(opt.label)) {
+                          return (
+                            <OptionInputChip
+                              key={`doc-${i}-${opt.label}`}
+                              letter={letter}
+                              label={opt.label}
+                              display={opt.display}
+                              onSubmit={onSuggestionSend}
+                            />
+                          );
+                        }
+                        return (
+                          <button
+                            key={`doc-${i}-${opt.label}`}
+                            type="button"
+                            onClick={() => onSuggestionSend(opt.sendValue)}
+                            className="group flex items-center gap-2.5 rounded-xl border border-brand/30 bg-white px-2.5 py-2 text-left text-[13px] leading-snug text-brand-ink shadow-sm transition hover:border-brand hover:bg-brand/10"
+                          >
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[12px] font-bold text-brand-dark group-hover:bg-brand group-hover:text-white">
+                              {letter}
+                            </span>
+                            <span className="min-w-0 flex-1 break-words font-medium">{opt.display}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
                 ) : (
-                  <MarkdownBody content={msg.content} steps={msg.steps} />
+                  <MarkdownBody content={displayContent} steps={msg.steps} />
                 )
               ) : (
                 <span className="italic text-slate-400">(no reply)</span>
@@ -2401,50 +2775,35 @@ function MessageBubble({
               onRegenerateSlide={onRegeneratePresentationSlide}
             />
             <DesignPreview steps={msg.steps} />
+            <DocumentDraftPlan
+              steps={msg.steps}
+              messageIndex={messageIndex}
+              busy={presentationBusy}
+              onGenerateDocument={onGenerateDocument}
+              onSavePlan={onSaveDocumentPlan}
+            />
             <DocumentPreview steps={msg.steps} />
             <TemplateGalleryPreview steps={msg.steps} onSelect={(id, name) => onSuggestionSend?.(`Use template "${name}" — ID: ${id}`)} />
             {msg.suggestions &&
               msg.suggestions.length > 0 &&
-              onSuggestionSend && (
+              onSuggestionSend &&
+              !documentDraftPending &&
+              !inlineOptions &&
+              !documentChecklist &&
+              !inlineForm && (
                 <div className="mt-3 space-y-1.5">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                     Suggested next step — tap to send
                   </p>
                   <div className="flex flex-col gap-2">
                     {msg.suggestions.map((chip) => {
-                      // Detect "escape hatch" options — render as text input instead of button
-                      const isEscapeOption = /something else|describe it|i['']ll describe|i['']ll explain|none of these/i.test(chip);
-
-                      if (isEscapeOption) {
+                      if (isFreeTextOption(chip)) {
                         return (
-                          <div key={chip} className="flex gap-2">
-                            <input
-                              type="text"
-                              value={describeText}
-                              onChange={(e) => setDescribeText(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" && describeText.trim()) {
-                                  onSuggestionSend(describeText.trim());
-                                  setDescribeText("");
-                                }
-                              }}
-                              placeholder="Describe what you want…"
-                              className="flex-1 rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-[13px] text-slate-700 placeholder:text-slate-400 shadow-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
-                            />
-                            <button
-                              type="button"
-                              disabled={!describeText.trim()}
-                              onClick={() => {
-                                if (describeText.trim()) {
-                                  onSuggestionSend(describeText.trim());
-                                  setDescribeText("");
-                                }
-                              }}
-                              className="rounded-xl bg-brand px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-40"
-                            >
-                              Send
-                            </button>
-                          </div>
+                          <OptionInputChip
+                            key={chip}
+                            label={chip}
+                            onSubmit={onSuggestionSend}
+                          />
                         );
                       }
 
@@ -2574,9 +2933,104 @@ function _stripDesignUrls(content: string, designUrls: Set<string>): string {
     .trim();
 }
 
+/** Repair UTF-8 mojibake (e.g. â€" → –) from Windows-1252 mis-decoding. */
+function fixTextEncoding(text: string): string {
+  if (!text) return text;
+  let out = text;
+  if (/â|Ã/.test(out)) {
+    try {
+      const bytes = new Uint8Array(
+        [...out].map((c) => {
+          const cp = c.charCodeAt(0);
+          // Windows-1252 high bytes (matches Python cp1252 encode for mojibake repair)
+          if (cp === 0x20ac) return 0x80;
+          if (cp === 0x201c) return 0x93;
+          if (cp === 0x201d) return 0x94;
+          if (cp === 0x2018) return 0x91;
+          if (cp === 0x2019) return 0x92;
+          if (cp === 0x2026) return 0x85;
+          if (cp >= 0x100) return 0x3f;
+          return cp & 0xff;
+        }),
+      );
+      const repaired = new TextDecoder("utf-8").decode(bytes);
+      if (repaired && !repaired.includes("\uFFFD")) out = repaired;
+    } catch {
+      /* keep original */
+    }
+  }
+  out = out.replace(/â€(.)/g, (full, third: string) => {
+    if (third === "\u201c" || third === "\u0093") return "–";
+    if (third === "\u201d" || third === "\u0094") return "—";
+    if (third === "\u2018" || third === "\u0091") return "'";
+    if (third === "\u2019" || third === "\u0092") return "'";
+    return full;
+  });
+  for (const [bad, good] of [
+    ["Â·", "·"],
+    ["Â ", " "],
+  ] as const) {
+    out = out.split(bad).join(good);
+  }
+  return out;
+}
+
+function ensureBlankLineBeforeTables(md: string): string {
+  const lines = md.split("\n");
+  const out: string[] = [];
+  for (const line of lines) {
+    const s = line.trim();
+    if (s.startsWith("|") && out.length) {
+      const prev = out[out.length - 1].trim();
+      if (prev && !prev.startsWith("|") && !/^[-|:|\s]+$/.test(prev)) out.push("");
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+function isDocumentDraftPending(steps?: AssistantStep[]): boolean {
+  return (steps ?? []).some(
+    (s) =>
+      s.tool === "plan_business_document" &&
+      (s.result as Record<string, unknown>)?.plan_ready &&
+      !(steps ?? []).some(
+        (x) => x.tool === "create_business_document" && !(x.result as Record<string, unknown>)?.error,
+      ),
+  );
+}
+
+function documentDraftIntro(content: string): string {
+  const clean = stripDsmlMarkup(content).trim();
+  if (clean.length <= 320) return clean;
+  const intro: string[] = [];
+  for (const line of clean.split("\n")) {
+    const trimmed = line.trim();
+    if (/^#{1,2}\s/.test(trimmed)) break;
+    if (trimmed) intro.push(trimmed);
+  }
+  if (intro.length) return intro.join(" ");
+  return "Here's your draft — review it below. Edit anything inline, then hit **Approve & Export PDF** when you're ready.";
+}
+
+function stripDsmlMarkup(text: string): string {
+  if (!text || !text.includes("DSML")) return text;
+  return text
+    .replace(/<｜+DSML｜+tool_calls>[\s\S]*?<\/｜+DSML｜+tool_calls>/gi, "")
+    .replace(/<｜+DSML｜+invoke[\s\S]*?<\/｜+DSML｜+invoke>/gi, "")
+    .replace(/<\|+\s*DSML\s*\|+[\s\S]*?(?:<\/\|+\s*DSML\s*\|+[^>]*>|$)/gi, "")
+    .trim();
+}
+
 function MarkdownBody({ content, steps }: { content: string; steps?: AssistantStep[] }) {
   const designUrls = useMemo(() => _designImageUrls(steps), [steps]);
-  const cleanContent = useMemo(() => _stripDesignUrls(content, designUrls), [content, designUrls]);
+  const cleanContent = useMemo(
+    () =>
+      ensureBlankLineBeforeTables(
+        fixTextEncoding(_stripDesignUrls(stripDsmlMarkup(content), designUrls)),
+      ),
+    [content, designUrls],
+  );
   return (
     <div className="markdown-body">
       <ReactMarkdown
@@ -2946,24 +3400,229 @@ function TemplateGalleryPreview({
   );
 }
 
+function DocumentDraftPlan({
+  steps,
+  messageIndex,
+  busy,
+  onGenerateDocument,
+  onSavePlan,
+}: {
+  steps?: AssistantStep[];
+  messageIndex: number;
+  busy?: boolean;
+  onGenerateDocument?: (
+    messageIndex: number,
+    title: string,
+    bodyMarkdown: string,
+    contentMd: string,
+    docType: string,
+    edited: boolean,
+  ) => void;
+  onSavePlan?: (
+    messageIndex: number,
+    title: string,
+    contentMd: string,
+    bodyMarkdown: string,
+  ) => Promise<boolean>;
+}) {
+  const step = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find((s) => {
+        if (s.tool !== "plan_business_document") return false;
+        const r = s.result as Record<string, unknown> | undefined;
+        return Boolean(r?.plan_ready && (r?.html_preview || r?.preview_key));
+      }),
+    [steps],
+  );
+
+  const exported = useMemo(
+    () => (steps ?? []).some((s) => s.tool === "create_business_document" && !(s.result as Record<string, unknown>)?.error),
+    [steps],
+  );
+
+  const result = step?.result as Record<string, unknown> | undefined;
+  const title = (result?.title as string) ?? "Document";
+  const docType = (result?.doc_type as string) ?? "other";
+  const htmlPreviewRaw = typeof result?.html_preview === "string" ? result.html_preview : "";
+  const htmlPreview = useMemo(() => fixTextEncoding(htmlPreviewRaw), [htmlPreviewRaw]);
+  const previewKey = result?.preview_key as string | undefined;
+  const previewUrlRaw =
+    (result?.preview_url as string | undefined) || (previewKey ? `/api/document-preview/${previewKey}` : "");
+  const previewIframeSrc = previewUrlRaw ? resolveMediaUrl(previewUrlRaw) || previewUrlRaw : "";
+
+  const initialBody = useMemo(() => {
+    const body = (result?.body_markdown as string) || "";
+    const raw = body.trim()
+      ? body
+      : (() => {
+          const md = (result?.content_md as string) || "";
+          if (md.startsWith("#")) return md.split("\n").slice(1).join("\n").trim();
+          return md;
+        })();
+    return fixTextEncoding(raw);
+  }, [result?.body_markdown, result?.content_md]);
+
+  const [editing, setEditing] = useState(false);
+  const [draftBody, setDraftBody] = useState(initialBody);
+  const [committedBody, setCommittedBody] = useState(initialBody);
+  const [saving, setSaving] = useState(false);
+  const [planSaved, setPlanSaved] = useState(Boolean(result?.user_edited));
+
+  useEffect(() => {
+    if (editing) return;
+    setDraftBody(initialBody);
+    setCommittedBody(initialBody);
+    setPlanSaved(Boolean(result?.user_edited));
+  }, [initialBody, result?.user_edited, editing]);
+
+  if (!step || exported) return null;
+
+  const editDirty = draftBody.trim() !== committedBody.trim();
+
+  async function approveDraft() {
+    if (!onGenerateDocument || busy || saving) return;
+    let body = committedBody;
+    let wasEdited = planSaved;
+    if (editing || editDirty) {
+      if (!onSavePlan) return;
+      const contentMd = `# ${title}\n\n${draftBody.trim()}`;
+      setSaving(true);
+      const ok = await onSavePlan(messageIndex, title, contentMd, draftBody.trim());
+      setSaving(false);
+      if (!ok) return;
+      body = draftBody.trim();
+      setCommittedBody(body);
+      setEditing(false);
+      wasEdited = true;
+    }
+    onGenerateDocument(messageIndex, title, body, `# ${title}\n\n${body}`, docType, wasEdited);
+  }
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-brand/30 shadow-sm">
+      <div className="flex items-center justify-between gap-2 border-b border-brand/20 bg-brand/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-brand-ink">
+          <FileText size={13} className="text-brand shrink-0" />
+          Document draft — {title}
+        </div>
+      </div>
+      {editing ? (
+        <div className="p-3">
+          <textarea
+            value={draftBody}
+            onChange={(e) => setDraftBody(e.target.value)}
+            className="min-h-[280px] w-full rounded-lg border border-slate-200 p-3 font-mono text-[12px] leading-relaxed text-slate-800"
+            spellCheck
+          />
+        </div>
+      ) : (
+        !previewIframeSrc && htmlPreview ? (
+          <iframe
+            srcDoc={htmlPreview}
+            title="Document draft preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "560px" }}
+            sandbox="allow-same-origin"
+          />
+        ) : previewIframeSrc ? (
+          <iframe
+            src={previewIframeSrc}
+            title="Document draft preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "560px" }}
+          />
+        ) : null
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2">
+        {editing ? (
+          <>
+            <button
+              type="button"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
+              onClick={() => {
+                setDraftBody(committedBody);
+                setEditing(false);
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white"
+              onClick={async () => {
+                if (!onSavePlan) return;
+                setSaving(true);
+                const ok = await onSavePlan(
+                  messageIndex,
+                  title,
+                  `# ${title}\n\n${draftBody.trim()}`,
+                  draftBody.trim(),
+                );
+                setSaving(false);
+                if (!ok) return;
+                setCommittedBody(draftBody.trim());
+                setPlanSaved(true);
+                setEditing(false);
+              }}
+            >
+              {saving ? "Saving…" : "Save edits"}
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="text-[10.5px] text-slate-500">
+              {busy ? "Exporting PDF…" : "Review the draft, edit if needed, then export."}
+            </span>
+            <button
+              type="button"
+              disabled={busy || saving}
+              onClick={() => void approveDraft()}
+              className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+            >
+              {busy ? "Exporting…" : "✓ Approve & Export PDF"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setEditing(true)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
+            >
+              <span className="inline-flex items-center gap-1">
+                <PencilLine size={11} />
+                Edit draft
+              </span>
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
   const [collapsed, setCollapsed] = React.useState(false);
   const [wordLoading, setWordLoading] = React.useState(false);
 
   const docStep = useMemo(
     () =>
-      [...(steps ?? [])].reverse().find(
-        (s) =>
-          (s.tool === "generate_document" || s.tool === "create_business_document") &&
-          (s.result as Record<string, unknown>)?.html_preview,
-      ),
+      [...(steps ?? [])].reverse().find((s) => {
+        if (s.tool !== "generate_document" && s.tool !== "create_business_document") return false;
+        const r = s.result as Record<string, unknown> | undefined;
+        if (!r || r.error) return false;
+        const html = typeof r.html_preview === "string" ? r.html_preview.trim() : "";
+        return Boolean(html || r.preview_key || r.preview_url);
+      }),
     [steps],
   );
 
   if (!docStep) return null;
 
   const result = docStep.result as Record<string, unknown>;
-  const htmlPreview = result.html_preview as string;
+  const htmlPreview = typeof result.html_preview === "string" ? result.html_preview : "";
+  const previewKey = result.preview_key as string | undefined;
+  const previewUrlRaw = (result.preview_url as string | undefined) || (previewKey ? `/api/document-preview/${previewKey}` : "");
+  const previewIframeSrc = previewUrlRaw ? resolveMediaUrl(previewUrlRaw) || previewUrlRaw : "";
   const filename = (result.filename as string | undefined) ?? "document";
   const s3Url = (result.download_url ?? result.pdf_url) as string | undefined;
   const contentMd = result.content_md as string | undefined;
@@ -3032,13 +3691,22 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
 
       {/* Rendered document — injected via srcDoc so CSS is isolated and no fetch needed */}
       {!collapsed && (
-        <iframe
-          srcDoc={htmlPreview}
-          title="Document Preview"
-          className="w-full border-0 bg-white"
-          style={{ height: "700px" }}
-          sandbox="allow-same-origin"
-        />
+        previewIframeSrc ? (
+          <iframe
+            src={previewIframeSrc}
+            title="Document Preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "700px" }}
+          />
+        ) : htmlPreview ? (
+          <iframe
+            srcDoc={htmlPreview}
+            title="Document Preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "700px" }}
+            sandbox="allow-same-origin"
+          />
+        ) : null
       )}
     </div>
   );
