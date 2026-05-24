@@ -1833,7 +1833,7 @@ function expandOptionLines(lines: string[]): string[] {
 
 /** Parse lettered options anywhere in text (fallback when line-based detection fails). */
 function parseLetteredOptionsGlobally(content: string): { label: string; display: string }[] | null {
-  const re = /(?:^|\s)([A-Za-z])[.)]\s+(.+?)(?=(?:\s+[A-Za-z][.)]\s+)|$)/gs;
+  const re = /(?:^|\s)([A-Za-z])[.)]\s+([\s\S]+?)(?=(?:\s+[A-Za-z][.)]\s+)|$)/g;
   const parsed: { label: string; display: string }[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(content)) !== null) {
