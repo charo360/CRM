@@ -1977,6 +1977,29 @@ export const financeApi = {
   },
 };
 
+// ── Budgets ───────────────────────────────────────────────────────────────────
+export const budgetApi = {
+  list: (params?: { period?: string; year?: number; month?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.period) q.set("period", params.period);
+    if (params?.year != null) q.set("year", String(params.year));
+    if (params?.month != null) q.set("month", String(params.month));
+    return api.get<Record<string, unknown>[]>(`/finance/budgets${q.toString() ? `?${q}` : ""}`);
+  },
+  upsert: (body: { category: string; amount: number; period?: string; year?: number; month?: number; currency?: string; notes?: string }) =>
+    api.post<Record<string, unknown>>("/finance/budgets", body),
+  update: (id: string, body: { amount?: number; notes?: string; currency?: string }) =>
+    api.put<Record<string, unknown>>(`/finance/budgets/${id}`, body),
+  delete: (id: string) => api.delete<{ deleted: boolean }>(`/finance/budgets/${id}`),
+  vsActual: (params?: { year?: number; month?: number; period?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.year != null) q.set("year", String(params.year));
+    if (params?.month != null) q.set("month", String(params.month));
+    if (params?.period) q.set("period", params.period);
+    return api.get<Record<string, unknown>>(`/finance/budgets/vs-actual${q.toString() ? `?${q}` : ""}`);
+  },
+};
+
 // ── Quotes ────────────────────────────────────────────────────────────────────
 export const quotesApi = {
   list: (params?: { status?: string; q?: string }) => {
