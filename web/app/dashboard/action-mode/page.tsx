@@ -8,7 +8,7 @@ import {
   Loader2, AlertCircle, Target, Users,
   Globe, Settings2, DollarSign, Sparkles, ExternalLink,
   Activity, ListChecks, TrendingUp, Plus, Trash2,
-  BrainCircuit, Radio, StopCircle, Search,
+  BrainCircuit, Radio, StopCircle, Search, Eye,
 } from "lucide-react";
 
 interface FeedItem {
@@ -57,8 +57,17 @@ interface SocialSettings {
   location: string;
   daily_limit: number;
   auto_run: boolean;
-  mode: "review" | "auto";
+  mode: "review" | "auto" | "notify";
+  deal_mode?: string;
+  notify_push?: boolean;
   google_review_link?: string;
+  fb_usage?: {
+    configured: boolean;
+    pages_used: number;
+    pages_limit: number;
+    pages_remaining: number;
+    month: string;
+  } | null;
 }
 
 const SOCIAL_PLATFORMS = [
@@ -137,7 +146,22 @@ interface InstantAction {
   approved_at: string | null;
 }
 
-type Tab = "feed" | "queue" | "opportunities" | "radar" | "instant" | "settings";
+type Tab = "feed" | "queue" | "opportunities" | "scouts" | "radar" | "instant" | "settings";
+
+interface Scout {
+  _id: string;
+  title: string;
+  goal: string;
+  scout_type: string;
+  search_queries: string[];
+  location: string;
+  frequency: string;
+  is_active: boolean;
+  auto_generated?: boolean;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  created_at?: string;
+}
 
 const AGENTS = [
   { id: "funding_hunter", label: "Funding Hunter", icon: DollarSign, color: "text-emerald-600", bg: "bg-emerald-50", desc: "Finds VCs, grants & accelerator programs" },
@@ -185,6 +209,10 @@ export default function ActionModePage() {
   const [recon, setRecon] = useState<ReconItem[]>([]);
   const [runningRecon, setRunningRecon] = useState(false);
   const [instantActions, setInstantActions] = useState<InstantAction[]>([]);
+  const [scouts, setScouts] = useState<Scout[]>([]);
+  const [scoutPulse, setScoutPulse] = useState<Opportunity[]>([]);
+  const [runningScoutId, setRunningScoutId] = useState<string | null>(null);
+  const [scoutSetupLoading, setScoutSetupLoading] = useState(false);
   const [runningInstant, setRunningInstant] = useState(false);
   const [expandedAction, setExpandedAction] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState<Record<string, string>>({});
@@ -242,7 +270,7 @@ export default function ActionModePage() {
       const s = await api.get<Settings>("/action-mode/settings");
       setSettings(s);
 
-      const [f, q, o, ca, ss, cl, pr, rc, ia] = await Promise.all([
+      const [f, q, o, ca, ss, cl, pr, rc, ia, sc, pl] = await Promise.all([
         api.get<{ items: FeedItem[] }>("/action-mode/feed"),
         api.get<{ items: QueueItem[] }>("/action-mode/queue"),
         api.get<{ opportunities: Opportunity[] }>("/action-mode/opportunities"),
@@ -252,6 +280,8 @@ export default function ActionModePage() {
         api.get<{ predictions: Prediction[] }>("/action-mode/predictions"),
         api.get<{ recon: ReconItem[] }>("/action-mode/recon"),
         api.get<{ items: InstantAction[] }>("/action-mode/instant"),
+        api.get<{ scouts: Scout[] }>("/action-mode/scouts"),
+        api.get<{ pulse: Opportunity[] }>("/action-mode/scouts/pulse"),
       ]);
       setFeed(f.items);
       setQueue(q.items);
@@ -262,6 +292,8 @@ export default function ActionModePage() {
       setPredictions(pr.predictions);
       setRecon(rc.recon);
       setInstantActions(ia.items);
+      setScouts(sc.scouts);
+      setScoutPulse(pl.pulse);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -409,6 +441,53 @@ export default function ActionModePage() {
       setError(e instanceof Error ? e.message : "Agent failed");
       endLiveWatch();
       setRunningAgent(null);
+    }
+  }
+
+  async function runScout(scoutId: string) {
+    setRunningScoutId(scoutId);
+    try {
+      await api.post(`/action-mode/scouts/${scoutId}/run`, {});
+      toast.success("Scout running — check Activity in ~30s");
+      setTimeout(() => void load(), 25000);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Scout failed to start");
+    } finally {
+      setRunningScoutId(null);
+    }
+  }
+
+  async function setupScouts() {
+    setScoutSetupLoading(true);
+    try {
+      const data = await api.post<{ scouts: Scout[]; created: number }>("/action-mode/scouts/setup", {});
+      setScouts(data.scouts);
+      toast.success(`Created ${data.created} scouts from your profile`);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Setup failed");
+    } finally {
+      setScoutSetupLoading(false);
+    }
+  }
+
+  async function toggleScout(scout: Scout) {
+    try {
+      const updated = await api.put<Scout>(`/action-mode/scouts/${scout._id}`, {
+        is_active: !scout.is_active,
+      });
+      setScouts(prev => prev.map(s => s._id === scout._id ? updated : s));
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Update failed");
+    }
+  }
+
+  async function deleteScout(scoutId: string) {
+    try {
+      await api.delete(`/action-mode/scouts/${scoutId}`);
+      setScouts(prev => prev.filter(s => s._id !== scoutId));
+      toast.success("Scout removed");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Delete failed");
     }
   }
 
@@ -754,6 +833,7 @@ export default function ActionModePage() {
   const tabs: { id: Tab; label: string; icon: React.ElementType; count?: number }[] = [
     { id: "feed", label: "Activity", icon: Activity },
     { id: "queue", label: "Approval Queue", icon: ListChecks, count: queue.length },
+    { id: "scouts", label: "Scouts", icon: Eye, count: scouts.filter(s => s.is_active).length || undefined },
     { id: "opportunities", label: "Opportunities", icon: TrendingUp, count: opportunities.length },
     { id: "radar", label: "Intelligence", icon: BrainCircuit, count: (clusters.length + predictions.length + recon.length) || undefined },
     { id: "instant", label: "Instant Actions", icon: Zap, count: pendingInstant || undefined },
@@ -774,7 +854,7 @@ export default function ActionModePage() {
           <BrainCircuit size={40} className="relative text-cyan-300" style={{ animation: "action-pulse-core 2s ease-in-out infinite" }} />
         </div>
         <div className="text-center space-y-2">
-          <p className="text-sm font-semibold text-slate-800 tracking-wide uppercase text-[0.7rem]">Action Mode</p>
+          <p className="text-sm font-semibold text-slate-800 tracking-wide uppercase text-[0.7rem]">AI Scout</p>
           <p className="text-slate-500 text-sm">Initializing neural workspace…</p>
         </div>
         <div className="h-1 w-48 max-w-full overflow-hidden rounded-full bg-slate-200">
@@ -865,6 +945,7 @@ export default function ActionModePage() {
           { label: "Find Leads",      icon: Users,       fn: () => runSingleAgent("lead_gen") },
           { label: "Find Funding",    icon: DollarSign,  fn: () => runSingleAgent("funding_hunter") },
           { label: "Social Leads",    icon: Globe,       fn: () => runSingleAgent("social_scout") },
+          { label: "Run Scouts",      icon: Eye,         fn: () => setTab("scouts") },
           { label: "Recon Scan",      icon: Search,      fn: () => runRecon() },
           { label: "Predict 90 days", icon: Radio,       fn: () => runPredictions() },
           { label: "Get Actions",     icon: Zap,         fn: () => generateInstantActions() },
@@ -971,7 +1052,7 @@ export default function ActionModePage() {
                   ? "Streaming updates every second. New entries appear here as agents commit work."
                   : settings.enabled
                     ? "Hit Run now or open Agents to wake a channel."
-                    : "Turn on Action Mode to start."
+                    : "Turn on AI Scout to start."
               }
             />
           ) : (
@@ -1074,11 +1155,28 @@ export default function ActionModePage() {
 
                     <div className="flex items-center gap-2 flex-wrap">
                       {item.action_type === "post_comment" ? (
-                        <button onClick={() => openAndPost(item)} disabled={busy}
-                          className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium">
-                          {busy ? <Loader2 size={12} className="animate-spin" /> : <ExternalLink size={12} />}
-                          Open & Post
-                        </button>
+                        <>
+                          {item.metadata?.can_reply ? (
+                            <button onClick={() => handleQueueAction(item, "approve")} disabled={busy}
+                              className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-medium">
+                              {busy ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />}
+                              Send reply
+                            </button>
+                          ) : null}
+                          {item.metadata?.url ? (
+                            <button onClick={() => openAndPost(item)} disabled={busy}
+                              className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium">
+                              {busy ? <Loader2 size={12} className="animate-spin" /> : <ExternalLink size={12} />}
+                              {item.metadata?.can_reply ? "Open link" : "Open & post"}
+                            </button>
+                          ) : !item.metadata?.can_reply ? (
+                            <button onClick={() => handleQueueAction(item, "approve")} disabled={busy}
+                              className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-medium">
+                              {busy ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />}
+                              Approve
+                            </button>
+                          ) : null}
+                        </>
                       ) : (
                         <button onClick={() => handleQueueAction(item, "approve")} disabled={busy}
                           className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-medium">
@@ -1109,6 +1207,115 @@ export default function ActionModePage() {
                 );
               })}
             </>
+          )}
+        </div>
+      )}
+
+      {/* ── SCOUTS TAB ── */}
+      {tab === "scouts" && (
+        <div className="space-y-4">
+          <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-xl p-5 text-white">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300/90 mb-1">Pulse</p>
+                <h2 className="text-lg font-bold">Market scouts watching for you</h2>
+                <p className="text-sm text-slate-300 mt-1 max-w-xl">
+                  Scouts search the web every 6–24 hours for buying intent, brand mentions, and category discussions — no keyword limits per client.
+                </p>
+              </div>
+              <button
+                onClick={() => void setupScouts()}
+                disabled={scoutSetupLoading}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-white/10 hover:bg-white/20 border border-white/20 rounded-lg text-xs font-medium disabled:opacity-50"
+              >
+                {scoutSetupLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                {scouts.length ? "Reset from profile" : "Auto-setup"}
+              </button>
+            </div>
+            {scoutPulse.length > 0 && (
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                {scoutPulse.slice(0, 4).map(p => (
+                  <a
+                    key={p._id}
+                    href={p.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block rounded-lg bg-white/5 border border-white/10 p-3 hover:bg-white/10 transition-colors"
+                  >
+                    <p className="text-sm font-medium truncate">{p.title}</p>
+                    <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{p.snippet}</p>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {scouts.length === 0 ? (
+            <EmptyState
+              icon={Eye}
+              title="No scouts yet"
+              desc="Turn on Field Agents and click Auto-setup to create scouts from your business profile (country, industry, goals)."
+            />
+          ) : (
+            <div className="space-y-2">
+              {scouts.map(scout => (
+                <div key={scout._id} className="bg-white rounded-xl border border-slate-200 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-slate-800 text-sm">{scout.title}</p>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 uppercase">{scout.scout_type}</span>
+                        {scout.is_active ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700">Active</span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-400">Paused</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">{scout.goal}</p>
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {(scout.search_queries || []).slice(0, 4).map(q => (
+                          <span key={q} className="text-[10px] bg-slate-50 border border-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{q}</span>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-2">
+                        Every {scout.frequency || "12h"}
+                        {scout.last_run_at ? ` · Last run ${new Date(scout.last_run_at).toLocaleString()}` : " · Not run yet"}
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-1.5 shrink-0">
+                      <button
+                        onClick={() => void runScout(scout._id)}
+                        disabled={runningScoutId === scout._id}
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50"
+                      >
+                        {runningScoutId === scout._id ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
+                        Run now
+                      </button>
+                      <button
+                        onClick={() => void toggleScout(scout)}
+                        className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                      >
+                        {scout.is_active ? "Pause" : "Resume"}
+                      </button>
+                      {!scout.auto_generated && (
+                        <button
+                          onClick={() => void deleteScout(scout._id)}
+                          className="px-2.5 py-1.5 text-xs text-rose-600 hover:bg-rose-50 rounded-lg"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!settings.enabled && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+              Turn on Field Agents in Settings so scheduled scouts run automatically in the background.
+            </p>
           )}
         </div>
       )}
@@ -1517,7 +1724,7 @@ export default function ActionModePage() {
           {/* Header */}
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="font-semibold text-slate-800">Instant Action Mode</h3>
+              <h3 className="font-semibold text-slate-800">Instant AI Scout</h3>
               <p className="text-xs text-slate-500 mt-0.5">
                 AI-drafted actions from your intelligence signals — review, edit and approve each one before it runs.
               </p>
@@ -1875,13 +2082,14 @@ export default function ActionModePage() {
             </button>
           </div>
 
-          {/* ── Social Engagement ── */}
+          {/* ── Deal Alerts ── */}
           <div className="pt-4 border-t border-slate-100">
             <div className="flex items-center justify-between mb-1">
               <div>
-                <p className="text-sm font-semibold text-slate-700">Social Engagement</p>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Agent finds relevant posts on social platforms and drafts a comment for you to post — you review at night and click Open &amp; Post
+                <p className="text-sm font-semibold text-slate-700">Deal Alerts</p>
+                <p className="text-xs text-slate-400 mt-0.5 max-w-lg">
+                  When someone says they <strong>need a service you sell</strong> (comment, DM, WhatsApp group, or web post),
+                  you get a <strong>push notification</strong> with a link. Zilo drafts a reply — you tap <strong>Send reply</strong> (via Zernio) or open the link manually.
                 </p>
               </div>
               <button
@@ -2117,7 +2325,34 @@ export default function ActionModePage() {
                     ))}
                   </div>
                 )}
-                <p className="text-[10px] text-slate-400 mt-1.5">Extension opens these every 2 hours to scan for your keywords — no scrolling needed. <span className="text-emerald-600 font-medium">WhatsApp &amp; Telegram groups are monitored automatically via your connected account — no URLs needed.</span></p>
+                <p className="text-[10px] text-slate-400 mt-1.5">
+                  <span className="text-blue-600 font-medium">Public Facebook groups</span> are scanned automatically every 6 hours for your keywords — no browser extension needed.
+                  {" "}
+                  <span className="text-emerald-600 font-medium">WhatsApp &amp; Telegram groups</span> are monitored via your connected account.
+                </p>
+                {socialSettings.fb_usage?.configured && (socialSettings.groups ?? []).some(g => g.includes("facebook.com/group")) && (
+                  <div className="mt-2 flex items-center justify-between bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                    <p className="text-[10px] text-blue-700">
+                      FB group scans this month: {socialSettings.fb_usage.pages_used} / {socialSettings.fb_usage.pages_limit}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const r = await api.post<{ alerts: number; api_pages: number }>("/action-mode/social/fb-scan");
+                          toast.success(`Scan done — ${r.alerts} deal alert(s), ${r.api_pages} API page(s)`);
+                          const fresh = await api.get<SocialSettings>("/action-mode/social/settings");
+                          setSocialSettings(fresh);
+                        } catch (e: unknown) {
+                          toast.error(e instanceof Error ? e.message : "FB scan failed");
+                        }
+                      }}
+                      className="text-[10px] font-medium text-blue-700 hover:text-blue-900 underline"
+                    >
+                      Scan now
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Location + Daily limit */}
@@ -2204,7 +2439,7 @@ export default function ActionModePage() {
 
               {/* Mode toggle */}
               <div>
-                <p className="text-xs font-medium text-slate-600 mb-2">Posting mode</p>
+                <p className="text-xs font-medium text-slate-600 mb-2">When a deal alert fires</p>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => setSocialSettings(s => ({ ...s, mode: "review" }))}
@@ -2215,10 +2450,10 @@ export default function ActionModePage() {
                     }`}
                   >
                     <p className={`text-xs font-bold ${socialSettings.mode !== "auto" ? "text-white" : "text-slate-700"}`}>
-                      👀 Review first
+                      🔔 Notify + review
                     </p>
                     <p className={`text-[10px] mt-0.5 leading-relaxed ${socialSettings.mode !== "auto" ? "text-slate-400" : "text-slate-400"}`}>
-                      Posts go to your queue — you approve each one before it's posted
+                      Push alert with link + draft reply. You approve before sending.
                     </p>
                   </button>
                   <button
@@ -2230,10 +2465,10 @@ export default function ActionModePage() {
                     }`}
                   >
                     <p className={`text-xs font-bold ${socialSettings.mode === "auto" ? "text-white" : "text-slate-700"}`}>
-                      ⚡ Full auto
+                      ⚡ Auto-reply
                     </p>
                     <p className={`text-[10px] mt-0.5 leading-relaxed ${socialSettings.mode === "auto" ? "text-emerald-100" : "text-slate-400"}`}>
-                      Agent posts automatically — just check the activity feed for results
+                      Reply automatically on FB/IG comments when Zernio is connected
                     </p>
                   </button>
                 </div>
@@ -2241,7 +2476,7 @@ export default function ActionModePage() {
                   <div className="mt-2 flex items-start gap-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
                     <span className="text-emerald-600 mt-0.5">⚡</span>
                     <p className="text-xs text-emerald-700 leading-relaxed">
-                      Full auto is on. Agent finds posts → replies automatically → customer reaches out → your WhatsApp auto-reply handles the rest. Just check your activity feed.
+                      Auto-reply works on connected Facebook/Instagram via Zernio. WhatsApp group matches still notify you with a link.
                     </p>
                   </div>
                 )}
@@ -2251,7 +2486,7 @@ export default function ActionModePage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-medium text-slate-700">Run automatically with all agents</p>
-                  <p className="text-xs text-slate-400">Included every time you hit &quot;Run now&quot; in Action Mode</p>
+                  <p className="text-xs text-slate-400">Included every time you hit &quot;Run now&quot; in AI Scout</p>
                 </div>
                 <button
                   onClick={() => setSocialSettings(s => ({ ...s, auto_run: !s.auto_run }))}
@@ -2468,7 +2703,7 @@ function LiveMissionPanel({
       className="relative overflow-hidden rounded-2xl border border-cyan-500/30 bg-gradient-to-b from-slate-950 via-[#0a0f1c] to-slate-950 text-white shadow-[0_0_48px_-12px_rgba(34,211,238,0.45)]"
       role="status"
       aria-live="polite"
-      aria-label="Action Mode live status"
+      aria-label="AI Scout live status"
     >
       <div className="absolute top-3 right-3 z-10 md:top-4 md:right-4">
         <button
