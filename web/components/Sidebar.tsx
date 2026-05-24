@@ -52,6 +52,7 @@ import {
   Globe2,
   Activity,
   Radar,
+  Crosshair,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -120,6 +121,7 @@ export default function Sidebar() {
   const mainNavFiltered = mainNav.filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const salesAndGrowthNav = [
+    { href: "/dashboard/action-mode", label: "Action Mode", icon: Crosshair },
     { href: "/dashboard/broadcast", label: "Broadcast", icon: Megaphone },
     { href: "/dashboard/social-scheduler", label: "Social scheduler", icon: CalendarClock },
     { href: "/dashboard/meta-ads", label: "Meta Ads", icon: Target },

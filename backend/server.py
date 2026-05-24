@@ -12745,6 +12745,22 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"[social-publisher] Failed to start publisher: {e}")
 
+    # Start Zilo Scout worker (runs due keyword scouts every 5 min)
+    try:
+        from scout_worker import run_scout_worker as _run_scout_worker
+        asyncio.create_task(_run_scout_worker(db))
+        logging.info("[scout-worker] Zilo Scout worker started")
+    except Exception as e:
+        logging.error(f"[scout-worker] Failed to start scout worker: {e}")
+
+    # Start Facebook group worker (API Direct scans every 30 min)
+    try:
+        from fb_group_worker import run_fb_group_worker as _run_fb_group_worker
+        asyncio.create_task(_run_fb_group_worker(db))
+        logging.info("[fb-group-worker] Facebook group worker started")
+    except Exception as e:
+        logging.error(f"[fb-group-worker] Failed to start fb group worker: {e}")
+
     # Start social engagement syncer (syncs likes/reach/clicks every 30 min)
     try:
         from social_engagement_syncer import run_engagement_syncer as _run_engagement_syncer
@@ -15234,6 +15250,13 @@ except Exception as _e:
     logging.error(f"[finance] failed to mount routes: {_e}")
 
 try:
+    from field_agents.routes import make_field_agents_router as _mk_fa_router
+    api_router.include_router(_mk_fa_router(db, Depends(get_current_user)))
+    logging.info("[field-agents] routes mounted")
+except Exception as _e:
+    logging.error(f"[field-agents] failed to mount routes: {_e}")
+
+try:
     from quotes.routes import make_quotes_router as _mk_quo_router
     api_router.include_router(_mk_quo_router(db, Depends(get_current_user)))
     logging.info("[quotes] routes mounted")
@@ -16216,6 +16239,28 @@ async def zernio_webhook(request: Request):
 
     comment_event = _extract_zernio_comment_event(payload)
     if comment_event:
+        # ── Field Agents: deal alert when someone asks for a service ─────────
+        try:
+            from deal_alerts import queue_deal_alert
+            post_url = str(
+                _zernio_get(payload, "postUrl", "post_url", "permalink", "data.postUrl", default="")
+            ).strip()
+            await queue_deal_alert(
+                db,
+                str(user["_id"]),
+                text=comment_event["comment_text"],
+                author=comment_event.get("author_name") or "Commenter",
+                platform=comment_event.get("platform") or "facebook",
+                url=post_url,
+                source="zernio_webhook",
+                group_name="Post comment",
+                post_id=comment_event["post_id"],
+                comment_id=comment_event["comment_id"],
+                account_id=comment_event["account_id"],
+            )
+        except Exception as _deal_exc:
+            logging.warning("[Zernio] deal alert: %s", _deal_exc)
+
         settings = ((user.get("settings") or {}).get("zernio_comment_autoreply") or {}
                     if isinstance(user.get("settings"), dict)
                     else {})
@@ -16262,6 +16307,22 @@ async def zernio_webhook(request: Request):
 
     customer = await get_or_create_zernio_customer(db, user["_id"], sender_id, sender_name, platform, conversation_id)
     await save_incoming_zernio_message(db, user["_id"], customer["_id"], text, message_id, platform)
+
+    try:
+        from deal_alerts import queue_deal_alert
+        await queue_deal_alert(
+            db,
+            str(user["_id"]),
+            text=text,
+            author=sender_name or "Customer",
+            platform=platform,
+            url="",
+            source="zernio_inbox",
+            group_name=f"{platform} DM",
+            conversation_id=conversation_id,
+        )
+    except Exception as _dm_deal:
+        logging.warning("[Zernio] inbox deal alert: %s", _dm_deal)
 
     asyncio.create_task(
         _apply_inbound_routing_bg(user["_id"], customer["_id"], text, None, "social")

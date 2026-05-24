@@ -2024,6 +2024,35 @@ export const quotesApi = {
     api.post<{ customer_name: string; items: Array<{ name: string; description?: string; qty: number; unit_price: number; amount: number }>; notes: string; terms: string }>("/quotes/ai/draft", body),
 };
 
+// ── Field Agents ──────────────────────────────────────────────────────────────
+export const fieldAgentsApi = {
+  listAgents: () => api.get<Record<string, unknown>[]>("/field-agents/agents"),
+  getAgent: (id: string) => api.get<Record<string, unknown>>(`/field-agents/agents/${id}`),
+  summary: () => api.get<Record<string, unknown>>("/field-agents/summary"),
+  listTasks: (params?: { agent_id?: string; status?: string; priority?: string; from_date?: string; to_date?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id)  q.set("agent_id",  params.agent_id);
+    if (params?.status)    q.set("status",    params.status);
+    if (params?.priority)  q.set("priority",  params.priority);
+    if (params?.from_date) q.set("from_date", params.from_date);
+    if (params?.to_date)   q.set("to_date",   params.to_date);
+    return api.get<Record<string, unknown>[]>(`/field-agents/tasks${q.toString() ? `?${q}` : ""}`);
+  },
+  createTask: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/field-agents/tasks", body),
+  updateTask: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/field-agents/tasks/${id}`, body),
+  deleteTask: (id: string) => api.delete<{ deleted: boolean }>(`/field-agents/tasks/${id}`),
+  checkIn:  (taskId: string, body: { location_note?: string; notes?: string }) =>
+    api.post<Record<string, unknown>>(`/field-agents/tasks/${taskId}/checkin`, body),
+  checkOut: (taskId: string, body: { outcome?: string; notes?: string; status?: string }) =>
+    api.put<Record<string, unknown>>(`/field-agents/tasks/${taskId}/checkout`, body),
+  listActivity: (params?: { agent_id?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id) q.set("agent_id", params.agent_id);
+    if (params?.limit)    q.set("limit", String(params.limit));
+    return api.get<Record<string, unknown>[]>(`/field-agents/activity${q.toString() ? `?${q}` : ""}`);
+  },
+};
+
 // ── Loyalty ───────────────────────────────────────────────────────────────────
 export const loyaltyApi = {
   getSettings: () => api.get<Record<string, unknown>>("/loyalty/settings"),
