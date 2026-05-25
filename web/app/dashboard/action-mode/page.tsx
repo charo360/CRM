@@ -62,10 +62,12 @@ interface SocialSettings {
   location: string;
   daily_limit: number;
   auto_run: boolean;
-  mode: "review" | "auto" | "notify";
+  mode: "review" | "auto" | "notify" | string;
   competitors?: string[];
   morning_brief?: boolean;
   morning_brief_time?: string;
+  morning_brief_channel?: string;
+  morning_brief_language?: string;
   marketplace_lat?: number;
   marketplace_lng?: number;
 }
@@ -149,7 +151,7 @@ interface Scout {
   created_at?: string;
 }
 
-type Section = "hunt" | "pulse" | "funding" | "radar" | "setup" | "autopilot" | "settings";
+type Section = "hunt" | "pulse" | "funding" | "radar" | "setup" | "autopilot" | "settings" | string;
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -696,7 +698,7 @@ export default function ActionModePage() {
     ...customAgents
       .filter(a => a.enabled)
       .map(a => ({
-        id: `custom_${a._id}`,
+        id: `custom_${a._id}` as Section,
         label: a.name,
         icon: (props: any) => <span className="w-4 h-4 flex items-center justify-center text-sm select-none pr-0.5">{a.emoji || "🤖"}</span>,
         badge: opportunities.filter(o => o.agent_name === a.name).length || undefined,
@@ -748,9 +750,9 @@ export default function ActionModePage() {
                   : "text-slate-600 hover:bg-slate-50 hover:text-slate-800"
               }`}
             >
-              <span className="flex items-center gap-2.5">
+              <span className="flex items-center gap-2.5 min-w-0 max-w-[115px]">
                 <item.icon className="w-4 h-4 flex-shrink-0" />
-                {item.label}
+                <span className="truncate text-left block w-full">{item.label}</span>
               </span>
               {item.badge ? (
                 <span className="text-[10px] font-bold bg-emerald-600 text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
@@ -2583,12 +2585,16 @@ export default function ActionModePage() {
                   {/* Row 1: Name + Emoji Selector */}
                   <div className="grid grid-cols-[1fr,70px] gap-3">
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Agent Name</label>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase">Agent Name</label>
+                        <span className="text-[9px] text-slate-400 font-semibold">{newAgentName.length}/20</span>
+                      </div>
                       <input
                         type="text"
                         value={newAgentName}
                         onChange={e => setNewAgentName(e.target.value)}
-                        placeholder="e.g. Office Chair Hunter"
+                        maxLength={20}
+                        placeholder="e.g. Chair Hunter"
                         className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
                       />
                     </div>
