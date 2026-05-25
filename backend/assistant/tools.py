@@ -16936,3 +16936,43 @@ async def configure_email_provider(ctx: ToolContext, args: Dict[str, Any]) -> Di
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+@tool(
+    name="manage_gmail_filters",
+    description=(
+        "Manage Gmail filters through natural language commands. "
+        "Use this to create, list, suggest, or delete email filters. "
+        "Examples: 'Archive emails from newsletter@example.com', "
+        "'Set up newsletter filters', 'Show me filter suggestions', "
+        "'List all my filters', 'Delete filter for spam@example.com'"
+    ),
+    parameters={
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": (
+                    "Natural language command for filter management. "
+                    "Examples: 'Archive all emails from sender@example.com', "
+                    "'Set up filters for newsletters', 'Show filter suggestions', "
+                    "'Mark emails from boss@company.com as important'"
+                )
+            }
+        },
+    },
+    destructive=False,
+)
+async def manage_gmail_filters(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from agents.gmail_filter_agent import gmail_filter_agent_tool
+        result = await gmail_filter_agent_tool(
+            user_id=ctx.business_id,
+            db=ctx.db,
+            command=args["command"]
+        )
+        return result
+    except Exception as e:
+        logger.exception("[manage_gmail_filters] error")
+        return {"error": str(e)}

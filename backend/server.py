@@ -17255,6 +17255,15 @@ try:
 except Exception as _sme:
     logging.error("[sms-marketing] failed to mount routes: %s", _sme)
 
+# ── Gmail Filter Management ────────────────────────────────────────────────
+try:
+    from gmail_filter_routes import init_gmail_filter_routes
+    _gmail_filter_router = init_gmail_filter_routes(db)
+    app.include_router(_gmail_filter_router)
+    logging.info("[gmail-filters] routes mounted at /api/gmail/filters/*")
+except Exception as _gfe:
+    logging.error("[gmail-filters] failed to mount routes: %s", _gfe)
+
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)
 
