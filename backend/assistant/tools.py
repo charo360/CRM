@@ -9418,6 +9418,7 @@ async def fetch_url(ctx: ToolContext, args: Dict[str, Any]):
         async with httpx.AsyncClient(
             timeout=30,
             follow_redirects=True,
+            verify=False,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
         ) as client:
             resp = await client.get(normalized)
