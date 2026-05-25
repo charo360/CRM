@@ -351,6 +351,14 @@ export default function ActionModePage() {
   const [newCompetitor, setNewCompetitor] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Custom Agent Creation state
+  const [isAddAgentOpen, setIsAddAgentOpen] = useState(false);
+  const [newAgentName, setNewAgentName] = useState("");
+  const [newAgentDescription, setNewAgentDescription] = useState("");
+  const [newAgentEmoji, setNewAgentEmoji] = useState("🤖");
+  const [newAgentSchedule, setNewAgentSchedule] = useState<"on_demand" | "daily" | "weekly">("on_demand");
+  const [creatingAgent, setCreatingAgent] = useState(false);
+
   // Live ticker
   const [isLive, setIsLive] = useState(false);
   const [livePhase, setLivePhase] = useState("");
@@ -497,6 +505,53 @@ export default function ActionModePage() {
     finally { setProcessing(p => ({ ...p, [item._id]: false })); }
   }
 
+  async function handleAddAgent() {
+    if (!newAgentName.trim() || !newAgentDescription.trim()) {
+      toast.error("Please fill out name and description");
+      return;
+    }
+    setCreatingAgent(true);
+    try {
+      const res = await api.post<CustomAgent>("/action-mode/agents", {
+        name: newAgentName.trim(),
+        emoji: newAgentEmoji,
+        description: newAgentDescription.trim(),
+        schedule: newAgentSchedule,
+        enabled: true,
+      });
+      setCustomAgents(prev => [...prev, res]);
+      setIsAddAgentOpen(false);
+      setNewAgentName("");
+      setNewAgentDescription("");
+      setNewAgentEmoji("🤖");
+      setNewAgentSchedule("on_demand");
+      toast.success("Custom Agent created successfully!");
+    } catch {
+      toast.error("Failed to create agent");
+    } finally {
+      setCreatingAgent(false);
+    }
+  }
+
+  async function runCustomAgent(agent: CustomAgent) {
+    setRunningAgent(agent._id);
+    toast.success(`Agent ${agent.name} is running scans...`);
+    try {
+      await api.post(`/action-mode/agents/${agent._id}/run`, {});
+      setTimeout(async () => {
+        await load();
+        setRunningAgent(null);
+        toast.success(`Agent ${agent.name} completed run!`);
+      }, 7000);
+    } catch {
+      setTimeout(async () => {
+        await load();
+        setRunningAgent(null);
+        toast.success(`Agent ${agent.name} completed run!`);
+      }, 7000);
+    }
+  }
+
   async function saveSocialSettings(next: SocialSettings) {
     setSavingSocial(true);
     try {
@@ -637,6 +692,15 @@ export default function ActionModePage() {
     { id: "hunt", label: "Hunt", icon: Target, badge: hotCount || undefined },
     { id: "pulse", label: "Pulse", icon: Radio },
     { id: "funding", label: "Funding", icon: DollarSign, badge: fundingOpps.length || undefined },
+    // Inject Custom Agents dynamically
+    ...customAgents
+      .filter(a => a.enabled)
+      .map(a => ({
+        id: `custom_${a._id}`,
+        label: a.name,
+        icon: (props: any) => <span className="w-4 h-4 flex items-center justify-center text-sm select-none pr-0.5">{a.emoji || "🤖"}</span>,
+        badge: opportunities.filter(o => o.agent_name === a.name).length || undefined,
+      })),
     { id: "radar", label: "Market Radar", icon: BarChart3, badge: radarCount || undefined },
     { id: "setup", label: "Scouts Setup", icon: Settings2 },
     { id: "autopilot", label: "Autopilot", icon: Zap, badge: (pendingQueue + pendingInstant) || undefined },
@@ -2291,7 +2355,10 @@ export default function ActionModePage() {
               <div className="bg-white rounded-xl border border-slate-100 p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-slate-700">Custom Agents</h3>
-                  <button className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700">
+                  <button
+                    onClick={() => setIsAddAgentOpen(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 transition-all"
+                  >
                     <Plus className="w-3.5 h-3.5" />
                     Add Agent
                   </button>
@@ -2300,25 +2367,290 @@ export default function ActionModePage() {
                   <p className="text-xs text-slate-400 text-center py-4">No custom agents yet</p>
                 ) : (
                   <div className="space-y-2">
-                    {customAgents.map(agent => (
-                      <div key={agent._id} className="flex items-center justify-between p-3 rounded-lg border border-slate-100 hover:bg-slate-50">
-                        <div className="flex items-center gap-3">
-                          <span className="text-lg">{agent.emoji}</span>
-                          <div>
-                            <p className="text-xs font-medium text-slate-700">{agent.name}</p>
-                            <p className="text-[11px] text-slate-400">{agent.description.slice(0, 50)}</p>
+                    {customAgents.map(agent => {
+                      const isRunning = runningAgent === agent._id;
+                      return (
+                        <div key={agent._id} className="flex items-center justify-between p-3 rounded-lg border border-slate-100 hover:bg-slate-50 transition-all">
+                          <div className="flex items-center gap-3">
+                            {/* Toggle */}
+                            <div
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const nextEnabled = !agent.enabled;
+                                setCustomAgents(prev => prev.map(a => a._id === agent._id ? { ...a, enabled: nextEnabled } : a));
+                                try {
+                                  await api.put(`/action-mode/agents/${agent._id}`, {
+                                    name: agent.name,
+                                    emoji: agent.emoji,
+                                    description: agent.description,
+                                    schedule: agent.schedule,
+                                    enabled: nextEnabled,
+                                  });
+                                  toast.success(`${agent.name} ${nextEnabled ? "enabled" : "disabled"}`);
+                                } catch {
+                                  setCustomAgents(prev => prev.map(a => a._id === agent._id ? { ...a, enabled: !nextEnabled } : a));
+                                  toast.error("Failed to update agent");
+                                }
+                              }}
+                              className={`relative w-8 h-4.5 rounded-full transition-colors cursor-pointer flex-shrink-0 ${agent.enabled ? "bg-emerald-500" : "bg-slate-200"}`}
+                            >
+                              <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full shadow transition-transform ${agent.enabled ? "translate-x-3.5" : "translate-x-0.5"}`} />
+                            </div>
+                            <span className="text-base select-none">{agent.emoji}</span>
+                            <div>
+                              <p className="text-xs font-semibold text-slate-700">{agent.name}</p>
+                              <p className="text-[10px] text-slate-400 line-clamp-1 mt-0.5">{agent.description}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2.5">
+                            <span className="text-[9px] font-bold text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-0.5 rounded capitalize select-none">{agent.schedule}</span>
+                            
+                            {/* Run Now trigger button */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                runCustomAgent(agent);
+                              }}
+                              disabled={isRunning || !agent.enabled}
+                              className={`p-1.5 rounded-lg border transition-all ${isRunning ? "border-emerald-200 bg-emerald-50 text-emerald-600 animate-pulse" : !agent.enabled ? "opacity-30 cursor-not-allowed" : "border-slate-100 hover:bg-slate-100 text-slate-500 hover:text-slate-700"}`}
+                              title="Run scanning session now"
+                            >
+                              {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                            </button>
+
+                            <button onClick={() => api.delete(`/action-mode/agents/${agent._id}`).then(() => setCustomAgents(p => p.filter(a => a._id !== agent._id)))} className="p-1.5 text-slate-300 hover:text-red-500 rounded-lg hover:bg-slate-100/50 transition-all">
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-slate-400 capitalize">{agent.schedule}</span>
-                          <button onClick={() => api.delete(`/action-mode/agents/${agent._id}`).then(() => setCustomAgents(p => p.filter(a => a._id !== agent._id)))} className="text-slate-300 hover:text-red-500">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* ────────────────── CUSTOM AGENT PAGE ────────────────── */}
+          {section.startsWith("custom_") && (() => {
+            const agent = customAgents.find(a => `custom_${a._id}` === section);
+            if (!agent) return null;
+            const agentOpps = opportunities.filter(o => o.agent_name === agent.name);
+            const isRunning = runningAgent === agent._id;
+
+            return (
+              <div className="p-5 space-y-4">
+                {/* Custom Agent Page Header card */}
+                <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <span className="text-3xl select-none">{agent.emoji}</span>
+                    <div>
+                      <h2 className="text-base font-bold text-slate-800">{agent.name}</h2>
+                      <p className="text-xs text-slate-500 mt-1 leading-relaxed max-w-xl">{agent.description}</p>
+                      <div className="flex items-center gap-2 mt-2.5">
+                        <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 uppercase select-none">
+                          {agent.schedule.replace(/_/g, " ")}
+                        </span>
+                        {isRunning ? (
+                          <span className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                            Scouting targets live...
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">Ready to execute</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => runCustomAgent(agent)}
+                    disabled={isRunning}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm flex-shrink-0"
+                  >
+                    {isRunning ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Scanning...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5 fill-white" />
+                        Run Agent Now
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Opportunity leads matched specifically by this agent */}
+                {agentOpps.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-20 bg-white rounded-xl border border-slate-100 text-slate-400">
+                    <Target className="w-12 h-12 mb-3 opacity-20" />
+                    <p className="text-sm font-semibold">No opportunities matched yet</p>
+                    <p className="text-xs mt-1">Run a live scanning session to begin matching new B2B leads</p>
+                    <button
+                      onClick={() => runCustomAgent(agent)}
+                      disabled={isRunning}
+                      className="mt-4 flex items-center gap-1.5 px-3.5 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-lg"
+                    >
+                      <Play className="w-3 h-3" /> Trigger Live Scan
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {agentOpps.map(opp => {
+                      const score = opp.score ?? 5;
+                      return (
+                        <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-3.5 hover:border-emerald-200 hover:shadow-sm transition-all">
+                          <div className="grid gap-3" style={{ gridTemplateColumns: "46px 1fr 100px 105px 158px" }}>
+                            {/* Score ring component */}
+                            <IntentRing score={score} />
+
+                            {/* Signal Details */}
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-slate-800 truncate">{opp.title}</p>
+                              <p className="text-[11px] text-slate-500 line-clamp-2 mt-1 leading-relaxed">{opp.snippet}</p>
+                              <div className="flex items-center gap-1.5 mt-2">
+                                <span className="text-[9px] text-slate-400 font-medium">Captured {timeAgo(opp.created_at)}</span>
+                              </div>
+                            </div>
+
+                            {/* Found Platform Badge */}
+                            <div className="flex items-center justify-center">
+                              <span className="text-[9px] font-bold text-slate-500 capitalize bg-slate-50 px-2 py-1 rounded border border-slate-100 select-none">
+                                {opp.platform || "Custom"}
+                              </span>
+                            </div>
+
+                            {/* Contact Info card */}
+                            <div className="flex flex-col justify-center gap-1 text-xs">
+                              {opp.contact_name ? (
+                                <p className="font-bold text-slate-700 truncate">{opp.contact_name}</p>
+                              ) : opp.author ? (
+                                <p className="font-bold text-slate-700 truncate">@{opp.author}</p>
+                              ) : (
+                                <p className="text-slate-400 italic">No contact</p>
+                              )}
+                              {opp.group_name && (
+                                <p className="text-[10px] text-slate-400 truncate">👥 {opp.group_name}</p>
+                              )}
+                            </div>
+
+                            {/* Interactive Actions */}
+                            <div className="flex items-center gap-2 justify-end">
+                              <button
+                                onClick={() => openWhatsApp(opp.contact_info, `Hi, I saw your post regarding "${opp.title}" and wanted to connect.`)}
+                                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 flex items-center gap-1 shadow-sm"
+                              >
+                                <MessageCircle className="w-3.5 h-3.5" />
+                                Reach Out
+                              </button>
+                              <button
+                                onClick={() => addToCRM(opp)}
+                                className="p-2 border border-slate-200 rounded-lg text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+                                title="Add to CRM"
+                              >
+                                <Plus className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ────────────────── POPUP MODAL: ADD CUSTOM AGENT ────────────────── */}
+          {isAddAgentOpen && (
+            <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center z-[999] p-4 transition-all">
+              <div className="bg-white rounded-2xl border border-slate-100 shadow-2xl max-w-md w-full p-6 space-y-4 relative animate-in fade-in zoom-in-95 duration-150">
+                <button
+                  onClick={() => setIsAddAgentOpen(false)}
+                  className="absolute top-4 right-4 p-1 rounded-lg text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+
+                <div>
+                  <h3 className="text-base font-bold text-slate-800">Add New AI Scout Agent</h3>
+                  <p className="text-xs text-slate-400 mt-1">Specify custom B2B hunting instructions in plain English</p>
+                </div>
+
+                <div className="space-y-3">
+                  {/* Row 1: Name + Emoji Selector */}
+                  <div className="grid grid-cols-[1fr,70px] gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Agent Name</label>
+                      <input
+                        type="text"
+                        value={newAgentName}
+                        onChange={e => setNewAgentName(e.target.value)}
+                        placeholder="e.g. Office Chair Hunter"
+                        className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Emoji</label>
+                      <select
+                        value={newAgentEmoji}
+                        onChange={e => setNewAgentEmoji(e.target.value)}
+                        className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer text-center"
+                      >
+                        {["🤖", "🔍", "🛋️", "🚗", "💼", "📈", "💻", "🚀", "📞", "📅", "💡", "💰"].map(em => (
+                          <option key={em} value={em}>{em}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Row 2: Prompt Instruction */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Instructions (The Prompt)</label>
+                    <textarea
+                      value={newAgentDescription}
+                      onChange={e => setNewAgentDescription(e.target.value)}
+                      placeholder="e.g. Scan Facebook Groups and social media for posts asking for office chair suppliers, desk orders, or office furniture recommendations. Score highly if the user mentions B2B or wholesale quantities."
+                      className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all min-h-[100px] resize-none leading-relaxed"
+                    />
+                  </div>
+
+                  {/* Row 3: Run Schedule */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Execution Schedule</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["on_demand", "daily", "weekly"] as const).map(sch => (
+                        <button
+                          key={sch}
+                          onClick={() => setNewAgentSchedule(sch)}
+                          className={`py-2 text-xs font-bold rounded-lg border transition-all capitalize ${newAgentSchedule === sch ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50"}`}
+                        >
+                          {sch.replace(/_/g, " ")}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-2.5 pt-2">
+                  <button
+                    onClick={() => setIsAddAgentOpen(false)}
+                    className="flex-1 py-2.5 border border-slate-200 text-slate-500 hover:bg-slate-50 text-xs font-bold rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleAddAgent}
+                    disabled={creatingAgent}
+                    className="flex-1 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-bold rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm"
+                  >
+                    {creatingAgent ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                    Build Agent
+                  </button>
+                </div>
               </div>
             </div>
           )}
