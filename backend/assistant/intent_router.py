@@ -896,6 +896,14 @@ async def route_to_agent(
             logger.info("[IntentRouter] sticky → social_scheduler (mid-scheduling flow)")
             return "social_scheduler"
 
+    # ── 0c. Explicit Telegram override ───────────────────────────────────────
+    # If the user is talking about Telegram bot/channels/messages, ensure Tom handles it.
+    if "telegram" in msg_lower and "telegram" in agent_registry:
+        _TG_PHRASES = ("telegram bot", "telegram channel", "telegram group", "connect telegram", "in telegram", "on telegram", "telegram status", "search telegram", "search in telegram")
+        if any(p in msg_lower for p in _TG_PHRASES):
+            logger.info("[IntentRouter] Telegram override → telegram (user specified Telegram context)")
+            return "telegram"
+
     # ── 1. Semantic route — embedding cosine-similarity (no LLM call) ────────
     # ~50-80 ms vs ~500 ms for LLM. Falls back to LLM when confidence is low.
     try:
