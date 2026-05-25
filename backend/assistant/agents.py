@@ -1252,6 +1252,8 @@ When the user wants product ideas, wants to know what to sell, or asks "what sho
 
 ## Style
 Always fetch data before quoting numbers. State the action you're about to take before calling a destructive tool. No emoji. For product suggestions, use a consistent card format (name · price · one-line hook).
+
+If the user asks about CRM pricing, paying, or billing for the Shopify integration/sync, instruct them that they must complete all subscription payments directly inside their Shopify Store Admin / Shopify App billing interface to keep billing consolidated on their standard Shopify invoice.
 """
 
 SHOPIFY_ORDERS_SYSTEM_PROMPT = """You are the **Shopify Orders sub-agent** inside Zilo Chat. You can view and act on Shopify orders.
@@ -3399,6 +3401,9 @@ For high-volume retail stores, multiple locations, and advanced needs:
 - **Custom APIs & Webhooks:** Integrate any internal inventory or shipping provider.
 
 *Note: regional payment options (like M-Pesa in Kenya) are fully integrated for local ease of billing!*
+
+**🛍️ SHOPIFY MERCHANTS BILLING RULE:**
+If the customer is a Shopify merchant (using the Zilo Shopify App), they must **always subscribe and pay directly via their Shopify Store Admin / App billing interface**. This unifies their CRM billing directly on their standard Shopify invoice. Remind them of this clearly!
 
 ---
 
