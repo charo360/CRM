@@ -318,7 +318,7 @@ const MAP: Record<string, AgentPersona> = {
     cls: "bg-violet-100 text-violet-900",
   },
   zilo_support: {
-    firstName: "Zoe",
+    firstName: "Clara",
     tag: "Zilo Support",
     role: "Zilo Support specialist",
     cls: "bg-emerald-100 text-emerald-900 border border-emerald-300",
