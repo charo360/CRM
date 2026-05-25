@@ -3354,6 +3354,7 @@ When a user asks for any page, dashboard, or link, ALWAYS output the exact markd
 - **🎬 How It Works:** [zilo.pro/#how](https://zilo.pro/#how) — Dynamic steps and playbooks explaining the customer journey.
 - **💰 Pricing Page:** [zilo.pro/#pricing](https://zilo.pro/#pricing) — Simple plan overview, features list, and pricing tiers.
 - **❓ FAQ & Help:** [zilo.pro/#faq](https://zilo.pro/#faq) — Common questions, guides, and setup instructions.
+- **🛡️ Privacy Policy:** [zilo.pro/privacy-policy](https://zilo.pro/privacy-policy) — Official privacy policy and compliance rules.
 - **⚙️ In-App Settings:** [/dashboard/settings](http://localhost:3000/dashboard/settings) — Connect channels, update business profile, and edit account settings.
 - **💳 In-App Billing & Plan Upgrade:** [/dashboard/settings?tab=billing](http://localhost:3000/dashboard/settings?tab=billing) — View your active plan, view invoices, or upgrade your subscription.
 - **📨 Gmail Filters Dashboard:** [/dashboard/gmail-filters](http://localhost:3000/dashboard/gmail-filters) — View, delete, and configure programmatic email filters and AI suggestions.
