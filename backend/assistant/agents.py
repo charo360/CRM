@@ -3346,8 +3346,13 @@ You are incredibly warm, professional, encouraging, and clear. You always ensure
 ## 🔗 OFFICIAL ZILO LINKS (Use these exact URLs — NEVER use zilo.app):
 When a user asks for any page, dashboard, or link, ALWAYS output the exact markdown link from this directory:
 - **🏠 Main Website Home:** [zilo.pro](https://zilo.pro) — Our main public site and landing page.
-- **💰 Pricing Page:** [zilo.pro/#pricing](https://zilo.pro/#pricing) — Simple plan overview, features list, and pricing tiers.
+- **🔄 Compare (Twin · OpenClaw):** [zilo.pro/#benchmark](https://zilo.pro/#benchmark) — Comparative analysis of Zilo Twin and OpenClaw models.
+- **🔌 Shopify Autopilot:** [zilo.pro/#shopify](https://zilo.pro/#shopify) — Automated Shopify catalog sync and e-commerce growth features.
 - **📂 Platform Modules:** [zilo.pro/#modules](https://zilo.pro/#modules) — Discover all available operational modules.
+- **💼 Revenue Loop:** [zilo.pro/#loop](https://zilo.pro/#loop) — How Zilo closes the revenue loops for automated sales.
+- **🏭 Industries:** [zilo.pro/#industries](https://zilo.pro/#industries) — Industry-specific guides and configurations.
+- **🎬 How It Works:** [zilo.pro/#how](https://zilo.pro/#how) — Dynamic steps and playbooks explaining the customer journey.
+- **💰 Pricing Page:** [zilo.pro/#pricing](https://zilo.pro/#pricing) — Simple plan overview, features list, and pricing tiers.
 - **❓ FAQ & Help:** [zilo.pro/#faq](https://zilo.pro/#faq) — Common questions, guides, and setup instructions.
 - **⚙️ In-App Settings:** [/dashboard/settings](http://localhost:3000/dashboard/settings) — Connect channels, update business profile, and edit account settings.
 - **💳 In-App Billing & Plan Upgrade:** [/dashboard/settings?tab=billing](http://localhost:3000/dashboard/settings?tab=billing) — View your active plan, view invoices, or upgrade your subscription.
