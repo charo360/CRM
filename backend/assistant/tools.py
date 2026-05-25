@@ -9253,7 +9253,7 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
             resp = await client.get(
                 "https://api.duckduckgo.com/",
                 params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-                headers={"User-Agent": "ZiloAI/1.0"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -9418,7 +9418,7 @@ async def fetch_url(ctx: ToolContext, args: Dict[str, Any]):
         async with httpx.AsyncClient(
             timeout=30,
             follow_redirects=True,
-            headers={"User-Agent": "ZiloAI/1.0 (assistant; +https://zilo.pro)"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
         ) as client:
             resp = await client.get(normalized)
             resp.raise_for_status()
