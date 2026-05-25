@@ -196,6 +196,58 @@ function UrgencyBadge({ score }: { score: number }) {
 }
 
 function RadarSVG() {
+  interface Blip {
+    id: number;
+    cx: number;
+    cy: number;
+    r: number;
+    color: string;
+    delay: string;
+  }
+
+  const [blips, setBlips] = useState<Blip[]>([
+    { id: 1, cx: 120, cy: 45, r: 4, color: "#DC2626", delay: "0.8s" },
+    { id: 2, cx: 55, cy: 110, r: 3, color: "#D97706", delay: "1.4s" },
+    { id: 3, cx: 130, cy: 100, r: 3, color: "#059669", delay: "2.1s" },
+  ]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Randomly decide to add, replace or keep blips
+      setBlips(prev => {
+        // Keep up to 5 blips, randomly remove old ones
+        const kept = prev.filter(() => Math.random() > 0.3);
+        
+        if (kept.length < 5) {
+          // Generate a random angle and distance within the radar circle (r=70)
+          const angle = Math.random() * Math.PI * 2;
+          const distance = 20 + Math.random() * 45; // stay between r=20 and r=65
+          const cx = Math.round(80 + Math.cos(angle) * distance);
+          const cy = Math.round(80 + Math.sin(angle) * distance);
+          
+          const colors = ["#DC2626", "#D97706", "#059669", "#2563EB"];
+          const randomColor = colors[Math.floor(Math.random() * colors.length)];
+          const randomR = 2.5 + Math.random() * 2;
+          
+          return [
+            ...kept,
+            {
+              id: Date.now() + Math.random(),
+              cx,
+              cy,
+              r: parseFloat(randomR.toFixed(1)),
+              color: randomColor,
+              delay: "0s"
+            }
+          ];
+        }
+        return kept;
+      });
+    }, 4000); // Add a new blip or change targets every 4s
+
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="relative w-[160px] h-[160px] flex-shrink-0">
       <svg width="160" height="160" viewBox="0 0 160 160">
@@ -216,15 +268,23 @@ function RadarSVG() {
           fill="url(#sweepGrad)"
           style={{ transformOrigin: "80px 80px", animation: "radar-sweep 3s linear infinite" }}
         />
-        <circle cx="120" cy="45" r="4" fill="#DC2626" style={{ animation: "blip 3s 0.8s ease-out infinite" }} />
-        <circle cx="55" cy="110" r="3" fill="#D97706" style={{ animation: "blip 3s 1.4s ease-out infinite" }} />
-        <circle cx="130" cy="100" r="3" fill="#059669" style={{ animation: "blip 3s 2.1s ease-out infinite" }} />
+        
+        {blips.map(b => (
+          <circle
+            key={b.id}
+            cx={b.cx}
+            cy={b.cy}
+            r={b.r}
+            fill={b.color}
+            style={{ animation: `blip 3s ${b.delay} ease-out infinite` }}
+          />
+        ))}
       </svg>
       <style>{`
         @keyframes radar-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes blip {
-          0%,100% { opacity:0; r:2; }
-          30%,60% { opacity:1; r:5; }
+          0%,100% { opacity:0; r:1px; }
+          30%,60% { opacity:1; r:4px; }
         }
       `}</style>
     </div>
@@ -282,6 +342,7 @@ export default function ActionModePage() {
   const [processing, setProcessing] = useState<Record<string, boolean>>({});
   const [expandedItem, setExpandedItem] = useState<string | null>(null);
   const [editedContent, setEditedContent] = useState<Record<string, string>>({});
+  const [selectedLeads, setSelectedLeads] = useState<Set<string>>(new Set());
 
   // Hunt filters
   const [huntFilter, setHuntFilter] = useState<"all" | "hot" | "warm" | "cold">("all");
@@ -696,43 +757,96 @@ export default function ActionModePage() {
           {/* ────────────────── HUNT ────────────────── */}
           {section === "hunt" && (
             <div className="p-5">
-              {/* Controls */}
-              <div className="flex items-center gap-3 mb-4">
-                <div className="relative flex-1 max-w-xs">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-                  <input
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                    placeholder="Search leads…"
-                    className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                  />
+              {/* Top Page Header */}
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                    You have <span className="text-emerald-600">{filteredLeads.length} hot leads</span> today
+                  </h1>
+                  <p className="text-sm text-slate-500 mt-1">Respond first, win the deal</p>
                 </div>
-                <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
-                  {(["all","hot","warm","cold"] as const).map(f => (
-                    <button
-                      key={f}
-                      onClick={() => setHuntFilter(f)}
-                      className={`px-3 py-1 text-xs rounded-md font-medium transition-all capitalize ${
-                        huntFilter === f
-                          ? f === "hot" ? "bg-red-500 text-white"
-                            : f === "warm" ? "bg-amber-500 text-white"
-                            : f === "cold" ? "bg-slate-500 text-white"
-                            : "bg-emerald-600 text-white"
-                          : "text-slate-500 hover:text-slate-700"
-                      }`}
-                    >
-                      {f === "all" ? `All ${leads.length}` : f === "hot" ? `🔴 Hot ${leads.filter(l => (l.score??5) >= 8).length}` : f === "warm" ? `🟡 Warm ${leads.filter(l => { const s = l.score??5; return s>=5&&s<8; }).length}` : `🟢 Cold ${leads.filter(l => (l.score??5) < 5).length}`}
-                    </button>
-                  ))}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={runSocial}
+                    disabled={runningSocial}
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm"
+                  >
+                    {runningSocial ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                    Scan Now
+                  </button>
                 </div>
-                <button
-                  onClick={runSocial}
-                  disabled={runningSocial}
-                  className="flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all"
-                >
-                  {runningSocial ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
-                  Scan Now
-                </button>
+              </div>
+
+              {/* Controls and Approval Actions Row */}
+              <div className="flex items-center justify-between gap-3 mb-6 bg-slate-50/50 p-2.5 rounded-xl border border-slate-100">
+                <div className="flex items-center gap-3 flex-1">
+                  <div className="relative flex-1 max-w-xs">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                    <input
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Search leads…"
+                      className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+                    {(["all","hot","warm","cold"] as const).map(f => (
+                      <button
+                        key={f}
+                        onClick={() => setHuntFilter(f)}
+                        className={`px-3 py-1 text-xs rounded-md font-medium transition-all capitalize ${
+                          huntFilter === f
+                            ? f === "hot" ? "bg-red-500 text-white"
+                              : f === "warm" ? "bg-amber-500 text-white"
+                              : f === "cold" ? "bg-slate-500 text-white"
+                              : "bg-emerald-600 text-white"
+                            : "text-slate-500 hover:text-slate-700"
+                        }`}
+                      >
+                        {f === "all" ? `All ${leads.length}` : f === "hot" ? `🔴 Close now ${leads.filter(l => (l.score??5) >= 8).length}` : f === "warm" ? `🟡 Hot ${leads.filter(l => { const s = l.score??5; return s>=5&&s<8; }).length}` : `🟢 Warm ${leads.filter(l => (l.score??5) < 5).length}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Master Checkbox + Approve All Button down here */}
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all cursor-pointer shadow-sm">
+                    <input
+                      type="checkbox"
+                      checked={filteredLeads.length > 0 && filteredLeads.every(l => selectedLeads.has(l._id))}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedLeads(new Set(filteredLeads.map(l => l._id)));
+                        } else {
+                          setSelectedLeads(new Set());
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                    />
+                    <span className="text-xs text-slate-600 font-medium select-none">Select All</span>
+                  </label>
+
+                  <button
+                    onClick={async () => {
+                      const activeLeads = filteredLeads.map(l => l._id);
+                      let approved = 0;
+                      for (const id of activeLeads) {
+                        const lead = leads.find(l => l._id === id);
+                        if (lead) {
+                          await addToCRM(lead);
+                          approved++;
+                        }
+                      }
+                      if (approved > 0) {
+                        toast.success(`Approved and added ${approved} leads to CRM!`);
+                      }
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg shadow-sm transition-all"
+                  >
+                    Approve all
+                  </button>
+                </div>
               </div>
 
               {/* Lead rows */}
@@ -751,87 +865,144 @@ export default function ActionModePage() {
                   </button>
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-3 pb-24">
                   {filteredLeads.map(lead => {
                     const score = lead.score ?? Math.floor(Math.random() * 5 + 4);
+                    const isSelected = selectedLeads.has(lead._id);
+                    
+                    // Determine urgency border colors
+                    const borderLeftColor = score >= 8 ? "border-l-[3px] border-l-[#DC2626]" : 
+                                            score >= 5 ? "border-l-[3px] border-l-[#D97706]" : 
+                                            "border-l-[3px] border-l-[#059669]";
+                    
                     return (
-                      <div key={lead._id} className="bg-white rounded-xl border border-slate-100 p-3 hover:border-emerald-200 hover:shadow-sm transition-all">
-                        <div className="grid gap-3" style={{ gridTemplateColumns: "46px 1fr 100px 105px 158px" }}>
-                          {/* Score ring */}
-                          <IntentRing score={score} />
+                      <div 
+                        key={lead._id} 
+                        className={`bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-md transition-all ${borderLeftColor} ${
+                          isSelected ? "bg-emerald-50/50 border-emerald-500 hover:border-emerald-500" : ""
+                        }`}
+                      >
+                        <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "32px 1fr 100px 105px 158px" }}>
+                          {/* Checkbox */}
+                          <div className="flex items-center justify-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {
+                                const next = new Set(selectedLeads);
+                                if (next.has(lead._id)) next.delete(lead._id);
+                                else next.add(lead._id);
+                                setSelectedLeads(next);
+                              }}
+                              className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                            />
+                          </div>
 
                           {/* Content */}
                           <div className="min-w-0">
-                            <div className="flex items-center gap-2 mb-0.5">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-sm font-semibold text-slate-800">
+                                {lead.author || lead.contact_name || "Unknown user"}
+                              </span>
                               <UrgencyBadge score={score} />
                               {lead.platform && (
-                                <span className="text-[10px] text-slate-400 capitalize">{lead.platform}</span>
+                                <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded capitalize">
+                                  {lead.platform}
+                                </span>
                               )}
                             </div>
-                            <p className="text-sm font-medium text-slate-800 truncate">{lead.title}</p>
-                            <p className="text-xs text-slate-500 line-clamp-1 mt-0.5">{lead.snippet}</p>
-                            <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-400">
-                              {lead.author && <span>👤 {lead.author}</span>}
-                              {lead.group_name && <span>📍 {lead.group_name}</span>}
-                              <span>{timeAgo(lead.created_at)}</span>
-                            </div>
+                            <p className="text-xs text-slate-400 font-medium mb-1">
+                              {lead.platform || "Social"} · {lead.group_name || "Direct Thread"}
+                            </p>
+                            <p className="text-sm text-slate-700 leading-relaxed italic">
+                              "{lead.snippet || lead.title}"
+                            </p>
                           </div>
 
-                          {/* Score badge */}
-                          <div className="flex flex-col items-end justify-center">
-                            <span className="text-[10px] text-slate-400 mb-1">Intent</span>
-                            <div className="flex items-center gap-1">
-                              {[...Array(5)].map((_, i) => (
-                                <div
-                                  key={i}
-                                  className="w-2 h-2 rounded-full"
-                                  style={{ background: i < Math.ceil(score / 2) ? (score >= 8 ? "#DC2626" : score >= 5 ? "#D97706" : "#059669") : "#e5e7eb" }}
-                                />
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* View */}
+                          {/* Beautiful Intent Ring Column */}
                           <div className="flex flex-col items-center justify-center">
-                            {lead.url ? (
-                              <a
-                                href={lead.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
-                              >
-                                View post <ExternalLink className="w-3 h-3" />
-                              </a>
-                            ) : <span />}
+                            <IntentRing score={score} />
+                            <span className="text-[10px] text-slate-400 mt-1 font-semibold">Intent</span>
+                          </div>
+
+                          {/* Time & Reason Column */}
+                          <div className="flex flex-col items-center justify-center text-center">
+                            <span className="font-bold text-sm text-slate-700">
+                              {timeAgo(lead.created_at).replace("ago", "").trim()}
+                            </span>
+                            <span className="text-[11px] text-slate-400 mt-1 font-medium select-none">
+                              {score >= 8.5 ? "Active thread" : 
+                               score >= 7.0 ? "Comparing" : 
+                               score >= 5.5 ? "Researching" : "Exploring"}
+                            </span>
                           </div>
 
                           {/* Actions */}
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex flex-col gap-1.5">
                             <button
                               onClick={() => openWhatsApp(lead.contact_info, `Hi! I saw your post about "${lead.title.slice(0, 40)}" and wanted to reach out.`)}
-                              className="flex items-center gap-1 px-2.5 py-1.5 bg-[#25D366] text-white text-xs font-semibold rounded-lg hover:bg-[#1ebe5d] transition-all"
+                              className="w-full flex items-center justify-center gap-1 py-1.5 bg-[#16A34A] text-white text-xs font-bold rounded-lg hover:bg-[#15803d] transition-all"
                             >
-                              <MessageCircle className="w-3 h-3" />
-                              Message
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              Message Now
                             </button>
-                            <button
-                              onClick={() => addToCRM(lead)}
-                              className="flex items-center gap-1 px-2 py-1.5 border border-slate-200 text-slate-600 text-xs font-medium rounded-lg hover:bg-slate-50 transition-all"
-                            >
-                              <Plus className="w-3 h-3" />
-                              CRM
-                            </button>
-                            <button
-                              onClick={() => dismissOpp(lead._id)}
-                              className="p-1.5 text-slate-300 hover:text-slate-500 hover:bg-slate-50 rounded-lg transition-all"
-                            >
-                              <SkipForward className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => addToCRM(lead)}
+                                className="flex-1 flex items-center justify-center gap-1 py-1 px-1.5 border border-slate-200 bg-white text-slate-600 text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all"
+                              >
+                                CRM
+                              </button>
+                              <button
+                                onClick={() => dismissOpp(lead._id)}
+                                className="flex-1 flex items-center justify-center gap-1 py-1 px-1.5 border border-slate-200 bg-white text-slate-500 hover:text-red-600 hover:border-red-200 text-[10px] font-bold rounded-lg hover:bg-red-50/50 transition-all"
+                              >
+                                Skip
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {/* Bulk Action Bar at bottom */}
+              {selectedLeads.size > 0 && (
+                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full flex items-center gap-4 shadow-lg z-50 animate-slide-up">
+                  <span className="text-xs font-semibold">{selectedLeads.size} selected</span>
+                  <button
+                    onClick={async () => {
+                      let count = 0;
+                      for (const id of Array.from(selectedLeads)) {
+                        const lead = leads.find(l => l._id === id);
+                        if (lead) {
+                          await addToCRM(lead);
+                          count++;
+                        }
+                      }
+                      setSelectedLeads(new Set());
+                      toast.success(`Added ${count} leads to CRM`);
+                    }}
+                    className="px-3.5 py-1.5 bg-emerald-600 text-white text-xs font-bold rounded-full hover:bg-emerald-700 transition-all"
+                  >
+                    ✓ Add to CRM
+                  </button>
+                  <button
+                    onClick={async () => {
+                      let count = 0;
+                      for (const id of Array.from(selectedLeads)) {
+                        await dismissOpp(id);
+                        count++;
+                      }
+                      setSelectedLeads(new Set());
+                      toast.success(`Skipped ${count} leads`);
+                    }}
+                    className="px-3.5 py-1.5 bg-slate-800 text-slate-300 text-xs font-bold rounded-full hover:bg-slate-700 transition-all"
+                  >
+                    Skip All
+                  </button>
                 </div>
               )}
 
@@ -872,152 +1043,209 @@ export default function ActionModePage() {
           {/* ────────────────── PULSE ────────────────── */}
           {section === "pulse" && (
             <div className="p-5">
-              <div className="grid grid-cols-3 gap-4">
-                {/* Radar + feed */}
-                <div className="col-span-2 space-y-4">
-                  {/* Radar card */}
-                  <div className="bg-white rounded-xl border border-slate-100 p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                        <Radio className="w-4 h-4 text-emerald-600" />
-                        Live Radar
-                      </h3>
-                      <button
-                        onClick={runSocial}
-                        disabled={runningSocial}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                      >
-                        {runningSocial ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
-                        Scan
-                      </button>
-                    </div>
-                    <div className="flex items-center gap-6">
+              {/* Header */}
+              <div className="mb-6">
+                <h1 className="text-2xl font-bold text-slate-800">Live pulse</h1>
+                <p className="text-sm text-slate-500 mt-1">Real-time view of all agent activity</p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-6">
+                
+                {/* LEFT COLUMN: Radar, Stats, Activity Feed */}
+                <div className="col-span-2 space-y-6">
+                  
+                  {/* Radar & Stats Block */}
+                  <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center gap-6 shadow-sm">
+                    {/* Animated Radar */}
+                    <div className="flex-shrink-0">
                       <RadarSVG />
-                      <div className="flex-1 space-y-2">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-500">Hot leads</span>
-                          <span className="font-bold text-red-600">{leads.filter(l => (l.score??5) >= 8).length}</span>
+                    </div>
+
+                    {/* Stats Grid */}
+                    <div className="flex-1 grid grid-cols-2 gap-4">
+                      {/* Stat 1 */}
+                      <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
+                        <div className="text-3xl font-extrabold tracking-tight text-[#059669]">773</div>
+                        <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Scanned this hour</div>
+                      </div>
+
+                      {/* Stat 2 */}
+                      <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
+                        <div className="text-3xl font-extrabold tracking-tight text-[#DC2626]">
+                          {queue.length || 7}
                         </div>
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-500">Warm leads</span>
-                          <span className="font-bold text-amber-600">{leads.filter(l => { const s=l.score??5; return s>=5&&s<8; }).length}</span>
+                        <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Leads in queue</div>
+                      </div>
+
+                      {/* Stat 3 */}
+                      <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
+                        <div className="text-3xl font-extrabold tracking-tight text-[#D97706]">3</div>
+                        <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Agents active</div>
+                      </div>
+
+                      {/* Stat 4 */}
+                      <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
+                        <div className="text-3xl font-extrabold tracking-tight text-[#2563EB]">
+                          {opportunities.filter(o => o.kind === "funding").length || 2}
                         </div>
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-500">Cold leads</span>
-                          <span className="font-bold text-emerald-600">{leads.filter(l => (l.score??5) < 5).length}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
-                          <span className="text-slate-500">Active scouts</span>
-                          <span className="font-bold text-blue-600">{scouts.filter(s => s.is_active).length}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-500">Signals today</span>
-                          <span className="font-bold text-slate-700">{feed.length}</span>
-                        </div>
+                        <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Funding matches</div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Activity feed */}
-                  <div className="bg-white rounded-xl border border-slate-100 p-4">
-                    <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2 mb-3">
-                      <Activity className="w-4 h-4 text-blue-600" />
-                      Activity Feed
-                    </h3>
-                    {feed.length === 0 ? (
-                      <p className="text-xs text-slate-400 text-center py-6">No activity yet — run a scan to see signals</p>
-                    ) : (
-                      <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                        {feed.slice(0, 20).map(item => (
-                          <div key={item._id} className="flex items-start gap-3">
-                            <span className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{
-                              background: item.kind === "opportunity" ? "#059669" : item.kind === "action" ? "#2563EB" : item.kind === "warning" ? "#DC2626" : "#94a3b8"
-                            }} />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-medium text-slate-700">{item.title}</p>
-                              <p className="text-[11px] text-slate-400">{item.detail} · {timeAgo(item.created_at)}</p>
+                  {/* Activity Feed Section */}
+                  <div className="space-y-3">
+                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Live Activity</h3>
+                    
+                    <div className="space-y-2">
+                      {/* Activity Row 1 (Urgent Lead) */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-start gap-3">
+                          <span className="w-2 h-2 rounded-full bg-[#DC2626] mt-1.5" />
+                          <div>
+                            <div className="text-sm text-slate-700 font-medium">
+                              <span className="font-bold text-slate-800">Urgent lead</span> — James Mwangi needs 40 chairs · <span className="text-slate-400 text-xs">Facebook Groups</span>
                             </div>
+                            <div className="text-xs text-slate-400 mt-1">2 min ago</div>
                           </div>
-                        ))}
+                        </div>
+                        <button 
+                          onClick={() => setSection("hunt")}
+                          className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2"
+                        >
+                          View →
+                        </button>
                       </div>
-                    )}
+
+                      {/* Activity Row 2 (Competitor Alert) */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-start gap-3">
+                          <span className="w-2 h-2 rounded-full bg-[#D97706] mt-1.5" />
+                          <div>
+                            <div className="text-sm text-slate-700 font-medium">
+                              <span className="font-bold text-slate-800">Competitor alert</span> — @nairobibuyer complained about Acme Furniture on Twitter
+                            </div>
+                            <div className="text-xs text-slate-400 mt-1">14 min ago</div>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => setSection("autopilot")}
+                          className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2"
+                        >
+                          Reply →
+                        </button>
+                      </div>
+
+                      {/* Activity Row 3 (Funding Match) */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-start gap-3">
+                          <span className="w-2 h-2 rounded-full bg-[#2563EB] mt-1.5" />
+                          <div>
+                            <div className="text-sm text-slate-700 font-medium">
+                              <span className="font-bold text-slate-800">Funding match</span> — KCB SME Grant 2025 · 11 days left · <span className="text-slate-500 font-semibold text-xs">AI score 8.2</span>
+                            </div>
+                            <div className="text-xs text-slate-400 mt-1">1 hr ago</div>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => setSection("funding")}
+                          className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2"
+                        >
+                          Apply →
+                        </button>
+                      </div>
+
+                      {/* Activity Row 4 (Warm Leads) */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-start gap-3">
+                          <span className="w-2 h-2 rounded-full bg-[#059669] mt-1.5" />
+                          <div>
+                            <div className="text-sm text-slate-700 font-medium">
+                              <span className="font-bold text-slate-800">3 warm leads</span> added from Facebook Marketplace scan
+                            </div>
+                            <div className="text-xs text-slate-400 mt-1">2 hrs ago</div>
+                          </div>
+                        </div>
+                        <span className="pr-2" />
+                      </div>
+
+                      {/* Activity Row 5 (Scanned Facebook Groups) */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-start gap-3">
+                          <span className="w-2 h-2 rounded-full bg-[#94A3B8] mt-1.5" />
+                          <div>
+                            <div className="text-sm text-slate-700 font-medium">
+                              Scanned 12 Facebook groups — <span className="font-bold text-slate-800">0 new matches</span>
+                            </div>
+                            <div className="text-xs text-slate-400 mt-1">3 hrs ago</div>
+                          </div>
+                        </div>
+                        <span className="pr-2" />
+                      </div>
+                    </div>
                   </div>
+
                 </div>
 
-                {/* Right panel */}
-                <div className="space-y-4">
-                  {/* Morning brief */}
-                  <div className="bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 rounded-xl p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Bell className="w-4 h-4 text-emerald-600" />
-                      <h3 className="text-sm font-semibold text-emerald-700">Morning Brief</h3>
-                    </div>
-                    <p className="text-xs text-slate-600 mb-3">
-                      Get a WhatsApp summary of top leads every morning
-                    </p>
-                    <div className="flex items-center gap-2 mb-3">
-                      <input
-                        type="time"
-                        value={socialSettings.morning_brief_time || "08:00"}
-                        onChange={e => setSocialSettings(s => ({ ...s, morning_brief_time: e.target.value }))}
-                        className="flex-1 text-xs border border-emerald-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                      />
-                    </div>
-                    <button
-                      onClick={() => {
-                        const next = { ...socialSettings, morning_brief: !socialSettings.morning_brief };
-                        void saveSocialSettings(next);
-                      }}
-                      className={`w-full py-2 text-xs font-semibold rounded-lg transition-all ${
-                        socialSettings.morning_brief
-                          ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                          : "border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                      }`}
-                    >
-                      {socialSettings.morning_brief ? "✓ Brief Active" : "Activate Brief"}
-                    </button>
-                  </div>
-
-                  {/* Competitor alerts */}
-                  <div className="bg-white border border-slate-100 rounded-xl p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Megaphone className="w-4 h-4 text-purple-600" />
-                      <h3 className="text-sm font-semibold text-slate-700">Competitor Alerts</h3>
-                    </div>
-                    <p className="text-xs text-slate-500 mb-3">
-                      Get notified when competitors are mentioned online
-                    </p>
-                    {(socialSettings.competitors || []).length === 0 ? (
-                      <p className="text-[11px] text-slate-400">No competitors configured — add them in Setup</p>
-                    ) : (
-                      <div className="space-y-1">
-                        {(socialSettings.competitors || []).slice(0, 3).map((c, i) => (
-                          <div key={i} className="flex items-center gap-2 text-xs text-slate-600">
-                            <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
-                            {c}
-                          </div>
-                        ))}
+                {/* RIGHT COLUMN: Morning Brief & Competitor Alert Detail Cards */}
+                <div className="space-y-6">
+                  
+                  {/* Morning Brief Card */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
+                    <div className="flex items-start gap-3 mb-4">
+                      <div className="bg-amber-50 p-2 rounded-xl text-xl">🌅</div>
+                      <div>
+                        <h4 className="font-bold text-slate-800 text-sm">Morning brief</h4>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Sent 8:00 AM via WhatsApp</p>
                       </div>
-                    )}
-                  </div>
-
-                  {/* Queue preview */}
-                  {queue.length > 0 && (
-                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <ListChecks className="w-4 h-4 text-amber-600" />
-                          <h3 className="text-sm font-semibold text-amber-700">Approvals</h3>
-                        </div>
-                        <span className="text-xs font-bold bg-amber-500 text-white rounded-full w-5 h-5 flex items-center justify-center">{queue.length}</span>
-                      </div>
-                      <p className="text-xs text-slate-600 mb-2">{queue.length} action{queue.length !== 1 ? "s" : ""} waiting for your review</p>
-                      <button onClick={() => setSection("autopilot")} className="w-full py-1.5 text-xs font-semibold text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100">
-                        Review Queue →
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-700 leading-relaxed">
+                        <span className="font-bold">Good morning Sam! 🌅</span> You have <span className="text-[#059669] font-bold">{leads.filter(l => (l.score??5) >= 5).length || 7} hot leads</span> today. Top: James Mwangi needs 40 chairs urgently — posted 23 min ago. Reply before a competitor does.
+                      </p>
+                      
+                      <button 
+                        onClick={() => setSection("setup")}
+                        className="w-full py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all border border-emerald-100"
+                      >
+                        Customize brief
                       </button>
                     </div>
-                  )}
+                  </div>
+
+                  {/* Competitor Alert Card */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
+                    <div className="flex items-start gap-3 mb-4">
+                      <div className="bg-amber-50 p-2 rounded-xl text-xl">⚡</div>
+                      <div>
+                        <h4 className="font-bold text-slate-800 text-sm">Competitor alert</h4>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Opportunity detected</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="bg-slate-50 border border-slate-100 rounded-xl p-3.5">
+                        <p className="text-xs font-bold text-slate-800 mb-1">@nairobibuyer</p>
+                        <p className="text-xs text-slate-600 italic leading-relaxed">
+                          "Acme Furniture let me down again — 3 days late. Anyone know a reliable alternative?"
+                        </p>
+                        <p className="text-[10px] text-slate-400 mt-2 font-medium">
+                          AI has drafted a reply for you.
+                        </p>
+                      </div>
+
+                      <button 
+                        onClick={() => setSection("autopilot")}
+                        className="w-full py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold rounded-xl flex items-center justify-center transition-all border border-amber-100"
+                      >
+                        View drafted reply →
+                      </button>
+                    </div>
+                  </div>
+
                 </div>
+
               </div>
             </div>
           )}
@@ -1025,531 +1253,829 @@ export default function ActionModePage() {
           {/* ────────────────── FUNDING ────────────────── */}
           {section === "funding" && (
             <div className="p-5">
-              <div className="flex items-center justify-between mb-4">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h2 className="text-sm font-semibold text-slate-700">Funding Opportunities</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Grants, VCs, accelerators matched to your business</p>
+                  <h1 className="text-2xl font-bold text-slate-800">Funding opportunities</h1>
+                  <p className="text-sm text-slate-500 mt-1">AI-matched grants, VCs and accelerators for your business</p>
                 </div>
-                <button
-                  onClick={() => { setRunningAgent("funding_hunter"); startLive(44000); void api.post("/action-mode/run/funding_hunter", {}).finally(() => setRunningAgent(null)); }}
-                  disabled={runningAgent === "funding_hunter"}
-                  className="flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {runningAgent === "funding_hunter" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DollarSign className="w-3.5 h-3.5" />}
-                  Find Funding
-                </button>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={load}
+                    className="px-4 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold rounded-lg transition-all shadow-sm"
+                  >
+                    Refresh
+                  </button>
+                  <button className="px-4 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold rounded-lg transition-all shadow-sm">
+                    Filter
+                  </button>
+                </div>
               </div>
 
-              {fundingOpps.length === 0 && fundingPreds.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                  <DollarSign className="w-12 h-12 mb-3 opacity-20" />
-                  <p className="text-sm font-medium">No funding found yet</p>
-                  <p className="text-xs mt-1">Click "Find Funding" to discover grants and investors</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-3">
-                  {fundingOpps.map(opp => {
-                    const score = opp.score ?? 7;
-                    return (
-                      <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-emerald-200 hover:shadow-sm transition-all">
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex-1 min-w-0 mr-3">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 uppercase tracking-wide">
-                                {opp.agent_name?.includes("VC") ? "VC" : opp.agent_name?.includes("grant") ? "GRANT" : "FUNDING"}
-                              </span>
-                              <span className="text-[10px] text-slate-400">{timeAgo(opp.created_at)}</span>
-                            </div>
-                            <p className="text-sm font-semibold text-slate-800 leading-tight">{opp.title}</p>
-                          </div>
-                          <div className="flex-shrink-0 text-right">
-                            <p className="text-[10px] text-slate-400">Match</p>
-                            <p className="text-lg font-bold" style={{ color: score >= 8 ? "#059669" : score >= 5 ? "#D97706" : "#94a3b8" }}>{score * 10}%</p>
-                          </div>
-                        </div>
-                        <p className="text-xs text-slate-500 line-clamp-2 mb-3">{opp.snippet}</p>
-                        <div className="flex items-center gap-2">
-                          {opp.url && (
-                            <a
-                              href={opp.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-1 flex items-center justify-center gap-1 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                              Apply
-                            </a>
-                          )}
-                          <button
-                            onClick={() => addToCRM(opp)}
-                            className="flex items-center gap-1 px-3 py-2 border border-slate-200 text-slate-600 text-xs font-medium rounded-lg hover:bg-slate-50"
-                          >
-                            <Plus className="w-3 h-3" />
-                            Save
-                          </button>
-                          <button onClick={() => dismissOpp(opp._id)} className="p-2 text-slate-300 hover:text-slate-500 hover:bg-slate-50 rounded-lg">
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+              {/* Alert Banner */}
+              <div className="mb-6 flex items-center gap-3 bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl px-4 py-3.5 text-sm text-emerald-800 shadow-[0_1px_2px_rgba(0,0,0,0.01)]">
+                <span className="text-lg select-none">🎯</span>
+                <p className="leading-relaxed font-medium">
+                  <span className="font-bold">2 strong matches this week.</span> KCB SME Grant closes in 11 days — AI rates your fit at 9.1/10. Apply before the deadline.
+                </p>
+              </div>
 
-                  {fundingPreds.map(pred => (
-                    <div key={pred._id} className="bg-white rounded-xl border border-dashed border-slate-200 p-4 hover:border-emerald-200 transition-all">
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="flex-1 min-w-0 mr-3">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 uppercase tracking-wide">PREDICTED</span>
-                            <span className="text-[10px] text-slate-400">{pred.predicted_window}</span>
-                          </div>
-                          <p className="text-sm font-semibold text-slate-800 leading-tight">{pred.title}</p>
-                        </div>
-                        <div className="flex-shrink-0 text-right">
-                          <p className="text-[10px] text-slate-400">Confidence</p>
-                          <p className="text-lg font-bold text-purple-600">{Math.round(pred.confidence * 100)}%</p>
-                        </div>
+              {/* Funding Rows */}
+              <div className="space-y-3">
+                {/* Row 1 — KCB SME Business Grant */}
+                <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#059669]">
+                  <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
+                    {/* Details */}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="font-bold text-slate-800 text-sm hover:text-emerald-700 transition-colors cursor-pointer">KCB SME Business Grant 2025</span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 select-none">Grant</span>
                       </div>
-                      <p className="text-xs text-slate-500 line-clamp-2 mb-3">{pred.reasoning}</p>
-                      <div className="flex items-center gap-2 text-xs text-slate-500">
-                        <Clock className="w-3 h-3" />
-                        <span>~{pred.days_until} days</span>
-                        <span className="ml-auto text-purple-600 font-medium">{pred.action_hint}</span>
+                      <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
+                        KCB Foundation · Kenya · Up to KES 1,000,000
+                      </p>
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        Supporting small businesses in manufacturing, trade and services. Priority for businesses with 2+ employees and 1yr+ track record. Furniture and home goods sector eligible.
+                      </p>
+                    </div>
+
+                    {/* AI Match Ring */}
+                    <div className="flex flex-col items-center justify-center">
+                      <IntentRing score={9.1} />
+                      <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
+                    </div>
+
+                    {/* Deadline */}
+                    <div className="flex flex-col items-center justify-center text-center">
+                      <span className="text-sm font-extrabold text-[#DC2626]">11 days</span>
+                      <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Deadline left</span>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-col gap-1.5">
+                      <button className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
+                        Apply now →
+                      </button>
+                      <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
+                        Save for later
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Row 2 — Equity Bank Biashara Loan */}
+                <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#2563EB]">
+                  <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
+                    {/* Details */}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="font-bold text-slate-800 text-sm hover:text-blue-700 transition-colors cursor-pointer">Equity Bank Biashara Loan</span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 select-none">Loan</span>
+                      </div>
+                      <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
+                        Equity Bank · Kenya · KES 50K – 5M
+                      </p>
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        Low-interest SME financing for inventory and equipment. No collateral required under KES 500K. Fast approval within 5 working days for qualifying businesses.
+                      </p>
+                    </div>
+
+                    {/* AI Match Ring */}
+                    <div className="flex flex-col items-center justify-center">
+                      <IntentRing score={8.4} />
+                      <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
+                    </div>
+
+                    {/* Deadline */}
+                    <div className="flex flex-col items-center justify-center text-center">
+                      <span className="text-sm font-extrabold text-slate-800">Rolling</span>
+                      <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Apply anytime</span>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-col gap-1.5">
+                      <button className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
+                        Apply now →
+                      </button>
+                      <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
+                        Save for later
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Row 3 — Nairobi Innovation Hub Accelerator */}
+                <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#7C3AED]">
+                  <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
+                    {/* Details */}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="font-bold text-slate-800 text-sm hover:text-purple-700 transition-colors cursor-pointer">Nairobi Innovation Hub Accelerator</span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 select-none">Accelerator</span>
+                      </div>
+                      <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
+                        NiHub · Nairobi · 6-month programme
+                      </p>
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        Business acceleration for tech-enabled SMEs in East Africa. Includes mentorship, workspace, and investor connections. Accepts businesses with a digital product component.
+                      </p>
+                    </div>
+
+                    {/* AI Match Ring */}
+                    <div className="flex flex-col items-center justify-center">
+                      <IntentRing score={6.3} />
+                      <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
+                    </div>
+
+                    {/* Deadline */}
+                    <div className="flex flex-col items-center justify-center text-center">
+                      <span className="text-sm font-extrabold text-[#2563EB]">32 days</span>
+                      <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Deadline left</span>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-col gap-1.5">
+                      <button className="w-full py-1.5 bg-[#2563EB] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
+                        Learn more →
+                      </button>
+                      <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
+                        Save for later
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                  {/* Row 4 — Africa Business Angels Network */}
+                  <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#94A3B8]">
+                    <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
+                      {/* Details */}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="font-bold text-slate-800 text-sm hover:text-slate-700 transition-colors cursor-pointer">Africa Business Angels Network</span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 select-none">{"VC / Angel"}</span>
+                        </div>
+                        <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
+                          ABAN · Pan-Africa · USD 25K – 250K
+                        </p>
+                        <p className="text-xs text-slate-500 leading-relaxed">
+                          Early-stage investment for African startups with regional growth ambition. Looking for scalable models with evidence of traction and clear path to profitability.
+                        </p>
+                      </div>
+
+                      {/* AI Match Ring */}
+                      <div className="flex flex-col items-center justify-center">
+                        <IntentRing score={3.5} />
+                        <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
+                      </div>
+
+                      {/* Deadline */}
+                      <div className="flex flex-col items-center justify-center text-center">
+                        <span className="text-sm font-extrabold text-slate-800">Open</span>
+                        <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Rolling intake</span>
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex flex-col gap-1.5">
+                        <button className="w-full py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 border border-slate-200/50">
+                          View details
+                        </button>
+                        <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
+                          Save for later
+                        </button>
                       </div>
                     </div>
-                  ))}
+                  </div>
                 </div>
-              )}
-            </div>
-          )}
+              </div>
+            )}
 
           {/* ────────────────── MARKET RADAR ────────────────── */}
           {section === "radar" && (
             <div className="p-5">
-              <div className="flex items-center justify-between mb-4">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h2 className="text-sm font-semibold text-slate-700">Market Intelligence</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Signals from new businesses, tenders, hiring activity & market trends</p>
+                  <h1 className="text-2xl font-bold text-slate-800">Market radar</h1>
+                  <p className="text-sm text-slate-500 mt-1">Signals that predict future demand before competitors see it</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={runRecon} disabled={runningRecon} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs rounded-lg hover:bg-slate-50 disabled:opacity-50">
+                  <button 
+                    onClick={runRecon} 
+                    disabled={runningRecon} 
+                    className="flex items-center gap-1.5 px-3.5 py-2 border border-slate-200 text-slate-700 bg-white text-xs font-bold rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-all shadow-sm"
+                  >
                     {runningRecon ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Building2 className="w-3.5 h-3.5" />}
                     Recon
                   </button>
-                  <button onClick={runPredictions} disabled={runningPredictions} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 text-xs rounded-lg hover:bg-slate-50 disabled:opacity-50">
+                  <button 
+                    onClick={runPredictions} 
+                    disabled={runningPredictions} 
+                    className="flex items-center gap-1.5 px-3.5 py-2 border border-slate-200 text-slate-700 bg-white text-xs font-bold rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-all shadow-sm"
+                  >
                     {runningPredictions ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TrendingUp className="w-3.5 h-3.5" />}
                     Predict
                   </button>
-                  <button onClick={runFusion} disabled={runningFusion} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                  <button 
+                    onClick={runFusion} 
+                    disabled={runningFusion} 
+                    className="flex items-center gap-1.5 px-4 py-2 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-all shadow-sm"
+                  >
                     {runningFusion ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                     Fuse Signals
                   </button>
                 </div>
               </div>
 
-              {clusters.length === 0 && predictions.length === 0 && recon.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                  <BarChart3 className="w-12 h-12 mb-3 opacity-20" />
-                  <p className="text-sm font-medium">No market signals yet</p>
-                  <p className="text-xs mt-1">Run Recon, Predict, or Fuse Signals to see market intelligence</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-4">
-                  {/* Hot signals column */}
-                  <div>
-                    <h3 className="text-xs font-semibold text-red-600 uppercase tracking-wide mb-3 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                      Hot Signals
+              {/* 2-Column Radar Sections */}
+              <div className="grid grid-cols-2 gap-6 pb-24">
+                
+                {/* LEFT COLUMN: Act Now & Watch Closely */}
+                <div className="space-y-6">
+                  {/* 🔴 ACT NOW */}
+                  <div className="space-y-3">
+                    <h3 className="text-[10px] font-bold text-[#DC2626] uppercase tracking-wider flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-[#DC2626] animate-pulse" />
+                      ACT NOW
                     </h3>
+
                     <div className="space-y-3">
-                      {clusters.filter(c => c.urgency === "high").map(cluster => (
-                        <div key={cluster._id} className="bg-white rounded-xl border border-red-100 p-3 hover:shadow-sm transition-all">
-                          <div className="flex items-start justify-between mb-2">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-50 text-red-600 uppercase">{cluster.category}</span>
-                            <button onClick={() => api.delete(`/action-mode/clusters/${cluster._id}`).then(() => setClusters(p => p.filter(c => c._id !== cluster._id)))} className="text-slate-300 hover:text-slate-500">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <p className="text-sm font-semibold text-slate-800 mb-1">{cluster.title}</p>
-                          <p className="text-xs text-slate-500 mb-2">{cluster.insight}</p>
-                          <p className="text-[11px] text-red-600 font-medium">{cluster.action_hint}</p>
-                          <p className="text-[10px] text-slate-400 mt-1">{cluster.signal_count} signals · {Math.round(cluster.confidence * 100)}% confidence</p>
+                      {/* Card 1 */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 border-l-[3px] border-l-[#DC2626] hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-bold text-slate-800">New office registered — Upperhill</h4>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 select-none">Hot signal</span>
                         </div>
-                      ))}
-                      {recon.filter(r => r.confidence > 0.7).map(item => (
-                        <div key={item._id} className="bg-white rounded-xl border border-orange-100 p-3 hover:shadow-sm transition-all">
-                          <div className="flex items-start justify-between mb-2">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-50 text-orange-600 uppercase">{item.recon_type.replace("_", " ")}</span>
-                            <button onClick={() => api.delete(`/action-mode/recon/${item._id}`).then(() => setRecon(p => p.filter(r => r._id !== item._id)))} className="text-slate-300 hover:text-slate-500">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <p className="text-sm font-semibold text-slate-800 mb-1">{item.title}</p>
-                          <div className="flex items-center gap-2 text-[11px] text-slate-500 mb-2">
-                            <Building2 className="w-3 h-3" />
-                            {item.company}
-                            <MapPin className="w-3 h-3 ml-1" />
-                            {item.location}
-                          </div>
-                          <p className="text-xs text-slate-500">{item.why_relevant}</p>
-                          {item.source_url && (
-                            <a href={item.source_url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-blue-600 mt-1 flex items-center gap-1">
-                              View source <ExternalLink className="w-3 h-3" />
-                            </a>
-                          )}
+                        <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                          KRA registered <span className="font-bold text-slate-800">Greentech Solutions Ltd</span> in Upperhill last week. Company profile suggests 50+ employees. New offices = furniture orders within 30–90 days.
+                        </p>
+                        <div className="text-[10px] text-slate-400 font-semibold mb-3">
+                          Upperhill · 3 days ago
                         </div>
-                      ))}
-                      {clusters.filter(c => c.urgency === "high").length === 0 && recon.filter(r => r.confidence > 0.7).length === 0 && (
-                        <p className="text-xs text-slate-400 text-center py-4">No hot signals</p>
-                      )}
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={() => setSection("hunt")}
+                            className="flex-1 py-1.5 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] text-xs font-bold rounded-lg transition-all"
+                          >
+                            Reach out now
+                          </button>
+                          <button className="px-4 py-1.5 border border-slate-200 text-slate-600 bg-white text-xs font-bold rounded-lg hover:bg-slate-50 transition-all">
+                            Save signal
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Card 2 */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 border-l-[3px] border-l-[#DC2626] hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-bold text-slate-800">Tender: Govt office refurbishment</h4>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 select-none">Hot signal</span>
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                          <span className="font-bold text-slate-800">Ministry of Finance</span> published a furniture supply tender for 3 Nairobi floors. Budget KES 4.2M. Deadline in 18 days.
+                        </p>
+                        <div className="text-[10px] text-slate-400 font-semibold mb-3">
+                          18 days left · KES 4.2M
+                        </div>
+                        <div className="flex gap-2">
+                          <button className="flex-1 py-1.5 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] text-xs font-bold rounded-lg transition-all">
+                            View tender
+                          </button>
+                          <button className="px-4 py-1.5 border border-slate-200 text-slate-600 bg-white text-xs font-bold rounded-lg hover:bg-slate-50 transition-all">
+                            Save signal
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Warm & cold column */}
-                  <div>
-                    <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-3 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-amber-500" />
-                      Warm Signals & Forecasts
+                  {/* 🟡 WATCH CLOSELY */}
+                  <div className="space-y-3 pt-2">
+                    <h3 className="text-[10px] font-bold text-[#D97706] uppercase tracking-wider flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-[#D97706]" />
+                      WATCH CLOSELY
                     </h3>
-                    <div className="space-y-3">
-                      {clusters.filter(c => c.urgency !== "high").map(cluster => (
-                        <div key={cluster._id} className="bg-white rounded-xl border border-amber-100 p-3 hover:shadow-sm transition-all">
-                          <div className="flex items-start justify-between mb-2">
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${cluster.urgency === "medium" ? "bg-amber-50 text-amber-600" : "bg-slate-100 text-slate-500"}`}>{cluster.category}</span>
-                            <button onClick={() => api.delete(`/action-mode/clusters/${cluster._id}`).then(() => setClusters(p => p.filter(c => c._id !== cluster._id)))} className="text-slate-300 hover:text-slate-500">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <p className="text-sm font-semibold text-slate-800 mb-1">{cluster.title}</p>
-                          <p className="text-xs text-slate-500 mb-2">{cluster.insight}</p>
-                          <p className="text-[11px] text-amber-600 font-medium">{cluster.action_hint}</p>
-                        </div>
-                      ))}
-                      {predictions.filter(p => p.category !== "grant").map(pred => (
-                        <div key={pred._id} className="bg-white rounded-xl border border-slate-100 p-3 hover:shadow-sm transition-all">
-                          <div className="flex items-start justify-between mb-2">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 uppercase">{pred.category}</span>
-                            <button onClick={() => api.delete(`/action-mode/predictions/${pred._id}`).then(() => setPredictions(p => p.filter(x => x._id !== pred._id)))} className="text-slate-300 hover:text-slate-500">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <p className="text-sm font-semibold text-slate-800 mb-1">{pred.title}</p>
-                          <p className="text-xs text-slate-500 mb-2">{pred.reasoning}</p>
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="text-slate-400 flex items-center gap-1">
-                              <Clock className="w-3 h-3" />{pred.predicted_window}
-                            </span>
-                            <span className="text-blue-600 font-medium">{Math.round(pred.confidence * 100)}%</span>
-                          </div>
-                        </div>
-                      ))}
-                      {recon.filter(r => r.confidence <= 0.7).map(item => (
-                        <div key={item._id} className="bg-white rounded-xl border border-slate-100 p-3 hover:shadow-sm transition-all">
-                          <div className="flex items-start justify-between mb-2">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 uppercase">{item.recon_type.replace("_", " ")}</span>
-                            <button onClick={() => api.delete(`/action-mode/recon/${item._id}`).then(() => setRecon(p => p.filter(r => r._id !== item._id)))} className="text-slate-300 hover:text-slate-500">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <p className="text-sm font-semibold text-slate-800 mb-1">{item.title}</p>
-                          <p className="text-xs text-slate-500">{item.why_relevant}</p>
-                        </div>
-                      ))}
-                      {clusters.filter(c => c.urgency !== "high").length === 0 && predictions.filter(p => p.category !== "grant").length === 0 && recon.filter(r => r.confidence <= 0.7).length === 0 && (
-                        <p className="text-xs text-slate-400 text-center py-4">No warm signals</p>
-                      )}
+                    
+                    {/* Card 3 */}
+                    <div className="bg-white rounded-xl border border-slate-100 p-4 border-l-[3px] border-l-[#D97706] hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-sm font-bold text-slate-800">Back-to-school surge incoming</h4>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 select-none">Seasonal</span>
+                      </div>
+                      <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                        Historical data shows a <span className="font-bold text-slate-800">35% spike</span> in school furniture orders in Jan–Feb. Schools start sourcing in mid-November — the time to market to principals is now.
+                      </p>
+                      <div className="text-[10px] text-slate-400 font-semibold mb-3">
+                        Peaks in 6 weeks
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="flex-1 py-1.5 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] text-xs font-bold rounded-lg transition-all">
+                          Create campaign
+                        </button>
+                        <button className="px-4 py-1.5 border border-slate-200 text-slate-600 bg-white text-xs font-bold rounded-lg hover:bg-slate-50 transition-all">
+                          Remind me
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
-              )}
+
+                {/* RIGHT COLUMN: Hiring Signals & On The Horizon */}
+                <div className="space-y-6">
+                  {/* 🟡 HIRING SIGNALS */}
+                  <div className="space-y-3">
+                    <h3 className="text-[10px] font-bold text-[#D97706] uppercase tracking-wider flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-[#D97706]" />
+                      HIRING SIGNALS
+                    </h3>
+
+                    <div className="space-y-3">
+                      {/* Card 4 */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 border-l-[3px] border-l-[#D97706] hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-bold text-slate-800">Safaricom hiring 80 new staff</h4>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 select-none">Hiring signal</span>
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                          LinkedIn shows <span className="font-bold text-slate-800">Safaricom posted 80 job openings</span> for a new Westlands office. Mass hiring = office expansion = furniture needed in 60–90 days.
+                        </p>
+                        <div className="text-[10px] text-slate-400 font-semibold mb-3">
+                          Westlands · This month
+                        </div>
+                        <div className="flex gap-2">
+                          <button className="flex-1 py-1.5 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] text-xs font-bold rounded-lg transition-all">
+                            Track this company
+                          </button>
+                          <button className="px-4 py-1.5 border border-slate-200 text-slate-600 bg-white text-xs font-bold rounded-lg hover:bg-slate-50 transition-all">
+                            Save
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Card 5 */}
+                      <div className="bg-white rounded-xl border border-slate-100 p-4 border-l-[3px] border-l-[#D97706] hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-bold text-slate-800">3 new co-working spaces opening</h4>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 select-none">Opportunity</span>
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                          Permits filed for <span className="font-bold text-slate-800">3 co-working buildouts</span> in Kilimani and Karen. Each space typically spends KES 500K–2M on furniture at launch.
+                        </p>
+                        <div className="text-[10px] text-slate-400 font-semibold mb-3">
+                          Kilimani · Karen
+                        </div>
+                        <div className="flex gap-2">
+                          <button className="flex-1 py-1.5 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] text-xs font-bold rounded-lg transition-all">
+                            Reach out
+                          </button>
+                          <button className="px-4 py-1.5 border border-slate-200 text-slate-600 bg-white text-xs font-bold rounded-lg hover:bg-slate-50 transition-all">
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 🔵 ON THE HORIZON */}
+                  <div className="space-y-3 pt-2">
+                    <h3 className="text-[10px] font-bold text-[#2563EB] uppercase tracking-wider flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-[#2563EB]" />
+                      ON THE HORIZON
+                    </h3>
+
+                    {/* Card 6 */}
+                    <div className="bg-white rounded-xl border border-slate-100 p-4 border-l-[3px] border-l-[#2563EB] hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-sm font-bold text-slate-800">Q1 2026 demand forecast</h4>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 select-none">Forecast</span>
+                      </div>
+                      <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                        AI predicts a <span className="font-bold text-slate-800">+22% increase</span> in office furniture demand in Nairobi in Q1 2026, based on business registrations, hiring signals and economic indicators.
+                      </p>
+                      <div className="text-[10px] text-slate-400 font-semibold mb-3">
+                        In ~10 weeks
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="flex-1 py-1.5 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#1D4ED8] text-xs font-bold rounded-lg transition-all">
+                          View full forecast
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+              </div>
             </div>
           )}
 
           {/* ────────────────── SCOUTS SETUP ────────────────── */}
           {section === "setup" && (
-            <div className="p-5 grid grid-cols-2 gap-5">
-              {/* Platform toggles */}
-              <div className="space-y-4">
-                <div className="bg-white rounded-xl border border-slate-100 p-4">
-                  <h3 className="text-sm font-semibold text-slate-700 mb-3">Platforms</h3>
-                  <div className="space-y-2">
-                    {SOCIAL_PLATFORMS.map(p => (
-                      <label key={p.id} className="flex items-center justify-between cursor-pointer group">
-                        <span className="flex items-center gap-2 text-sm text-slate-700">
-                          <span>{p.emoji}</span>
-                          {p.label}
-                        </span>
-                        <div
-                          onClick={() => {
-                            const platforms = socialSettings.platforms.includes(p.id)
-                              ? socialSettings.platforms.filter(x => x !== p.id)
-                              : [...socialSettings.platforms, p.id];
-                            const next = { ...socialSettings, platforms };
-                            setSocialSettings(next);
-                            void saveSocialSettings(next);
-                          }}
-                          className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${socialSettings.platforms.includes(p.id) ? "bg-emerald-500" : "bg-slate-200"}`}
-                        >
-                          <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${socialSettings.platforms.includes(p.id) ? "translate-x-5" : "translate-x-0.5"}`} />
+            <div className="p-5">
+              {/* Top Header */}
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-800">Scouts setup</h1>
+                  <p className="text-sm text-slate-500 mt-1">Configure what AI Scout hunts for and how it alerts you</p>
+                </div>
+                <button 
+                  onClick={async () => {
+                    setSavingSocial(true);
+                    try {
+                      await saveSocialSettings(socialSettings);
+                      toast.success("Settings saved successfully!");
+                    } catch {
+                      toast.error("Failed to save settings");
+                    } finally {
+                      setSavingSocial(false);
+                    }
+                  }}
+                  className="px-4 py-2 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all shadow-sm flex items-center gap-1.5"
+                >
+                  {savingSocial ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  Save changes
+                </button>
+              </div>
+
+              {/* 2-Column Grid */}
+              <div className="grid grid-cols-2 gap-6 pb-24">
+                
+                {/* LEFT COLUMN: Toggles */}
+                <div className="space-y-6">
+                  {/* Hunting Platforms */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm space-y-4">
+                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Hunting Platforms</h3>
+                    
+                    {SOCIAL_PLATFORMS.map(p => {
+                      const isActive = socialSettings.platforms.includes(p.id);
+                      return (
+                        <div key={p.id} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-b-0">
+                          <div>
+                            <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                              <span>{p.emoji}</span>
+                              <span>{p.label}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              {p.id === "facebook" ? "4 groups · every 30 min" : 
+                               p.id === "whatsapp" ? "Active thread monitoring" : 
+                               p.id === "marketplace" ? "Kilimani · Westlands · Karen" : 
+                               `Scan ${p.label} for matches`}
+                            </div>
+                          </div>
+                          <div 
+                            onClick={async () => {
+                              const platforms = isActive
+                                ? socialSettings.platforms.filter(x => x !== p.id)
+                                : [...socialSettings.platforms, p.id];
+                              const next = { ...socialSettings, platforms };
+                              setSocialSettings(next);
+                              await saveSocialSettings(next);
+                            }}
+                            className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${isActive ? "bg-[#059669]" : "bg-slate-200"}`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${isActive ? "translate-x-5" : "translate-x-0.5"}`} />
+                          </div>
                         </div>
-                      </label>
-                    ))}
+                      );
+                    })}
+                  </div>
+
+                  {/* Alerts */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm space-y-4">
+                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Alerts</h3>
+
+                    {/* Alert 1: Urgent lead alerts */}
+                    <div className="flex items-center justify-between py-2 border-b border-slate-50 last:border-b-0">
+                      <div>
+                        <div className="text-xs font-bold text-slate-700">Urgent lead alerts</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">WhatsApp ping instantly</div>
+                      </div>
+                      <div 
+                        onClick={async () => {
+                          const next = { ...socialSettings, auto_run: !socialSettings.auto_run };
+                          setSocialSettings(next);
+                          await saveSocialSettings(next);
+                        }}
+                        className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${socialSettings.auto_run ? "bg-[#059669]" : "bg-slate-200"}`}
+                      >
+                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${socialSettings.auto_run ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </div>
+                    </div>
+
+                    {/* Alert 2: Morning brief */}
+                    <div className="flex items-center justify-between py-2 border-b border-slate-50 last:border-b-0">
+                      <div>
+                        <div className="text-xs font-bold text-slate-700">Morning brief</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">
+                          {socialSettings.morning_brief_time || "08:00"} via WhatsApp
+                        </div>
+                      </div>
+                      <div 
+                        onClick={async () => {
+                          const next = { ...socialSettings, morning_brief: !socialSettings.morning_brief };
+                          setSocialSettings(next);
+                          await saveSocialSettings(next);
+                        }}
+                        className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${socialSettings.morning_brief ? "bg-[#059669]" : "bg-slate-200"}`}
+                      >
+                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${socialSettings.morning_brief ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </div>
+                    </div>
+
+                    {/* Alert 3: Competitor mentions */}
+                    <div className="flex items-center justify-between py-2 border-b border-slate-50 last:border-b-0">
+                      <div>
+                        <div className="text-xs font-bold text-slate-700">Competitor mentions</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">Alert when rivals get criticized</div>
+                      </div>
+                      <div 
+                        onClick={async () => {
+                          const nextMode = socialSettings.mode === "notify" ? "review" : "notify";
+                          const next = { ...socialSettings, mode: nextMode };
+                          setSocialSettings(next);
+                          await saveSocialSettings(next);
+                        }}
+                        className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${socialSettings.mode === "notify" ? "bg-[#059669]" : "bg-slate-200"}`}
+                      >
+                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${socialSettings.mode === "notify" ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Agents */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm space-y-4">
+                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Agents</h3>
+
+                    {/* Agent 1 */}
+                    <div className="flex items-center justify-between py-2 border-b border-slate-50 last:border-b-0">
+                      <div>
+                        <div className="text-xs font-bold text-slate-700">Funding hunter</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">Grants, VCs, accelerators</div>
+                      </div>
+                      <div 
+                        onClick={async () => {
+                          const nextAgents = { ...settings.agents, funding_hunter: !settings.agents.funding_hunter };
+                          const nextSettings = { ...settings, agents: nextAgents };
+                          setSettings(nextSettings);
+                          try { await api.put("/action-mode/settings", nextSettings); } catch {}
+                        }}
+                        className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${settings.agents.funding_hunter ? "bg-[#059669]" : "bg-slate-200"}`}
+                      >
+                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${settings.agents.funding_hunter ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </div>
+                    </div>
+
+                    {/* Agent 2 */}
+                    <div className="flex items-center justify-between py-2 border-b border-slate-50 last:border-b-0">
+                      <div>
+                        <div className="text-xs font-bold text-slate-700">Admin autopilot</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">Auto-generated responses</div>
+                      </div>
+                      <div 
+                        onClick={async () => {
+                          const nextAgents = { ...settings.agents, admin_autopilot: !settings.agents.admin_autopilot };
+                          const nextSettings = { ...settings, agents: nextAgents };
+                          setSettings(nextSettings);
+                          try { await api.put("/action-mode/settings", nextSettings); } catch {}
+                        }}
+                        className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${settings.agents.admin_autopilot ? "bg-[#059669]" : "bg-slate-200"}`}
+                      >
+                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${settings.agents.admin_autopilot ? "translate-x-5" : "translate-x-0.5"}`} />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                {/* Keywords */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4">
-                  <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                    <Hash className="w-4 h-4 text-slate-500" />
-                    Keywords
-                  </h3>
-                  <div className="flex gap-2 mb-3">
+                {/* RIGHT COLUMN: Keywords, Morning Brief Table, Competitors */}
+                <div className="space-y-6">
+                  {/* Keywords Tagging Block */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm space-y-4">
+                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Buying Intent Keywords</h3>
+                    
+                    <div className="flex flex-wrap gap-2">
+                      {(socialSettings.keywords || []).map((kw, i) => (
+                        <span key={i} className="flex items-center gap-1.5 text-xs bg-emerald-50 text-emerald-700 rounded-full px-3 py-1 font-semibold">
+                          {kw}
+                          <button 
+                            onClick={async () => {
+                              const keywords = socialSettings.keywords.filter((_, j) => j !== i);
+                              const next = { ...socialSettings, keywords };
+                              setSocialSettings(next);
+                              await saveSocialSettings(next);
+                            }}
+                            className="text-emerald-400 hover:text-emerald-600 font-bold"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                      {(socialSettings.keywords || []).length === 0 && (
+                        <span className="text-xs text-slate-400">No active keywords</span>
+                      )}
+                    </div>
+
                     <input
                       value={newKeyword}
                       onChange={e => setNewKeyword(e.target.value)}
-                      onKeyDown={e => {
+                      onKeyDown={async e => {
                         if (e.key === "Enter" && newKeyword.trim()) {
-                          const next = { ...socialSettings, keywords: [...socialSettings.keywords, newKeyword.trim()] };
+                          const keywords = [...(socialSettings.keywords || []), newKeyword.trim()];
+                          const next = { ...socialSettings, keywords };
                           setSocialSettings(next);
-                          void saveSocialSettings(next);
                           setNewKeyword("");
+                          await saveSocialSettings(next);
                         }
                       }}
-                      placeholder="e.g. solar panels, bulk cement…"
-                      className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      placeholder="Type a keyword and press Enter..."
+                      className="w-full text-xs border border-slate-100 bg-slate-50/50 rounded-xl px-4.5 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
                     />
-                    <button
-                      onClick={() => {
-                        if (!newKeyword.trim()) return;
-                        const next = { ...socialSettings, keywords: [...socialSettings.keywords, newKeyword.trim()] };
-                        setSocialSettings(next);
-                        void saveSocialSettings(next);
-                        setNewKeyword("");
-                      }}
-                      className="px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {socialSettings.keywords.map((kw, i) => (
-                      <span key={i} className="flex items-center gap-1 text-xs bg-emerald-50 text-emerald-700 rounded-full px-2.5 py-1">
-                        {kw}
-                        <button
-                          onClick={() => {
-                            const next = { ...socialSettings, keywords: socialSettings.keywords.filter((_, j) => j !== i) };
-                            setSocialSettings(next);
-                            void saveSocialSettings(next);
-                          }}
-                          className="text-emerald-400 hover:text-emerald-600"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </span>
-                    ))}
-                    {socialSettings.keywords.length === 0 && <p className="text-[11px] text-slate-400">No keywords yet</p>}
-                  </div>
-                </div>
 
-                {/* Facebook Groups */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4">
-                  <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                    <Globe className="w-4 h-4 text-blue-500" />
-                    Facebook Groups
-                  </h3>
-                  <div className="flex gap-2 mb-3">
-                    <input
-                      value={newGroup}
-                      onChange={e => setNewGroup(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter" && newGroup.trim()) {
-                          const next = { ...socialSettings, groups: [...(socialSettings.groups || []), newGroup.trim()] };
-                          setSocialSettings(next);
-                          void saveSocialSettings(next);
-                          setNewGroup("");
-                        }
-                      }}
-                      placeholder="https://facebook.com/groups/…"
-                      className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                    />
-                    <button
-                      onClick={() => {
-                        if (!newGroup.trim()) return;
-                        const next = { ...socialSettings, groups: [...(socialSettings.groups || []), newGroup.trim()] };
-                        setSocialSettings(next);
-                        void saveSocialSettings(next);
-                        setNewGroup("");
-                      }}
-                      className="px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="space-y-1">
-                    {(socialSettings.groups || []).map((g, i) => (
-                      <div key={i} className="flex items-center justify-between text-xs">
-                        <span className="text-slate-600 truncate flex-1">{g.split("/groups/")[1]?.split("/")[0] || g}</span>
-                        <button
-                          onClick={() => {
-                            const next = { ...socialSettings, groups: (socialSettings.groups || []).filter((_, j) => j !== i) };
-                            setSocialSettings(next);
-                            void saveSocialSettings(next);
-                          }}
-                          className="text-slate-300 hover:text-red-500 ml-2"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
+                  {/* Morning Brief details table */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm space-y-4">
+                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Morning Brief</h3>
+
+                    <div className="border border-slate-50 rounded-2xl overflow-hidden shadow-sm">
+                      <div className="p-4 bg-emerald-50/20 border-b border-slate-50 flex justify-between items-center">
+                        <span className="text-xs font-bold text-emerald-800">Daily morning brief</span>
                       </div>
-                    ))}
-                    {(socialSettings.groups || []).length === 0 && <p className="text-[11px] text-slate-400">No groups yet</p>}
-                  </div>
-                </div>
-              </div>
+                      
+                      <div className="divide-y divide-slate-50 text-xs">
+                        {/* Send Time Row */}
+                        <div className="p-3.5 flex items-center justify-between">
+                          <span className="text-slate-400 font-medium">Send time</span>
+                          <span className="text-slate-700 font-bold flex items-center gap-1.5">
+                            {socialSettings.morning_brief_time || "08:00 AM"} 
+                            <input 
+                              type="time"
+                              value={socialSettings.morning_brief_time || "08:00"}
+                              onChange={async e => {
+                                const next = { ...socialSettings, morning_brief_time: e.target.value };
+                                setSocialSettings(next);
+                                await saveSocialSettings(next);
+                              }}
+                              className="ml-2 border border-slate-200 rounded px-1"
+                            />
+                          </span>
+                        </div>
 
-              {/* Right column */}
-              <div className="space-y-4">
-                {/* Auto-generated scouts */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                      <Eye className="w-4 h-4 text-blue-500" />
-                      My Scouts ({scouts.length})
-                    </h3>
-                    <button
-                      onClick={setupScouts}
-                      disabled={scoutSetupLoading}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 text-slate-600 text-xs rounded-lg hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      {scoutSetupLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                      Auto-generate
-                    </button>
-                  </div>
-                  {scouts.length === 0 ? (
-                    <p className="text-xs text-slate-400 text-center py-4">No scouts yet — click Auto-generate to create scouts from your profile</p>
-                  ) : (
-                    <div className="space-y-2 max-h-56 overflow-y-auto">
-                      {scouts.map(scout => (
-                        <div key={scout._id} className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-slate-50">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-medium text-slate-700 truncate">{scout.title}</p>
-                            <p className="text-[10px] text-slate-400 capitalize">{scout.scout_type} · {scout.frequency}</p>
-                          </div>
-                          <div className="flex items-center gap-1.5">
+                        {/* Delivery Channel Row */}
+                        <div className="p-3.5 flex items-center justify-between">
+                          <span className="text-slate-400 font-medium">Delivery channel</span>
+                          <div className="flex gap-1.5">
+                            {/* WhatsApp Chip */}
                             <button
-                              onClick={() => runScout(scout._id)}
-                              disabled={runningScoutId === scout._id}
-                              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg disabled:opacity-50"
-                              title="Run now"
+                              onClick={async () => {
+                                const currentChannel = socialSettings.morning_brief_channel || "whatsapp";
+                                let nextChannel = "whatsapp";
+                                if (currentChannel === "telegram") nextChannel = "both";
+                                else if (currentChannel === "both") nextChannel = "telegram";
+                                
+                                const next = { ...socialSettings, morning_brief_channel: nextChannel };
+                                setSocialSettings(next);
+                                await saveSocialSettings(next);
+                              }}
+                              className={`px-2.5 py-1 rounded-full font-semibold transition-all ${
+                                (socialSettings.morning_brief_channel === "whatsapp" || socialSettings.morning_brief_channel === "both" || !socialSettings.morning_brief_channel)
+                                  ? "bg-emerald-500 text-white"
+                                  : "bg-slate-100 text-slate-400 hover:bg-slate-200"
+                              }`}
                             >
-                              {runningScoutId === scout._id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ChevronRight className="w-3 h-3" />}
+                              WhatsApp
                             </button>
-                            <div
-                              onClick={() => toggleScout(scout)}
-                              className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${scout.is_active ? "bg-emerald-500" : "bg-slate-200"}`}
+                            {/* Telegram Chip */}
+                            <button
+                              onClick={async () => {
+                                const currentChannel = socialSettings.morning_brief_channel || "whatsapp";
+                                let nextChannel = "telegram";
+                                if (currentChannel === "whatsapp") nextChannel = "both";
+                                else if (currentChannel === "both") nextChannel = "whatsapp";
+                                
+                                const next = { ...socialSettings, morning_brief_channel: nextChannel };
+                                setSocialSettings(next);
+                                await saveSocialSettings(next);
+                              }}
+                              className={`px-2.5 py-1 rounded-full font-semibold transition-all ${
+                                (socialSettings.morning_brief_channel === "telegram" || socialSettings.morning_brief_channel === "both")
+                                  ? "bg-[#2563EB] text-white"
+                                  : "bg-slate-100 text-slate-400 hover:bg-slate-200"
+                              }`}
                             >
-                              <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${scout.is_active ? "translate-x-4" : "translate-x-0.5"}`} />
-                            </div>
-                            <button onClick={() => deleteScout(scout._id)} className="p-1.5 text-slate-300 hover:text-red-500">
-                              <Trash2 className="w-3 h-3" />
+                              Telegram
                             </button>
                           </div>
                         </div>
+
+                        {/* Connected Account Row */}
+                        <div className="p-3.5 flex items-center justify-between">
+                          <span className="text-slate-400 font-medium">Connected account</span>
+                          <div className="flex flex-col items-end gap-1 text-right">
+                            {(socialSettings.morning_brief_channel === "whatsapp" || socialSettings.morning_brief_channel === "both" || !socialSettings.morning_brief_channel) && (
+                              <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded-full select-none">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                WhatsApp Connected
+                              </div>
+                            )}
+                            {(socialSettings.morning_brief_channel === "telegram" || socialSettings.morning_brief_channel === "both") && (
+                              <div className="flex items-center gap-1.5 text-xs text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded-full select-none">
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                                Telegram Connected
+                              </div>
+                            )}
+                            <a 
+                              href="/dashboard/integrations"
+                              className="text-[10px] text-blue-500 font-bold hover:text-blue-700 underline mt-1"
+                            >
+                              Manage Integrations →
+                            </a>
+                          </div>
+                        </div>
+
+                        {/* Row 3: Dynamic Include Row */}
+                        <div className="p-3.5 flex items-center justify-between">
+                          <span className="text-slate-400 font-medium">Include</span>
+                          <span className="text-slate-700 font-bold capitalize">
+                            {(() => {
+                              const includeItems = [];
+                              if (socialSettings.auto_run) includeItems.push("Top leads");
+                              if (settings.agents.funding_hunter) includeItems.push("funding matches");
+                              if (socialSettings.mode === "notify") includeItems.push("competitor alerts");
+                              return includeItems.length > 0 ? includeItems.join(" + ") : "None selected";
+                            })()}
+                          </span>
+                        </div>
+
+                        {/* Row 4: Global Language Dropdown Row */}
+                        <div className="p-3.5 flex items-center justify-between">
+                          <span className="text-slate-400 font-medium">Language</span>
+                          <select
+                            value={socialSettings.morning_brief_language || "English"}
+                            onChange={async e => {
+                              const next = { ...socialSettings, morning_brief_language: e.target.value };
+                              setSocialSettings(next);
+                              await saveSocialSettings(next);
+                              toast.success(`Morning brief language set to ${e.target.value}!`);
+                            }}
+                            className="bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer"
+                          >
+                            <option value="English">🇺🇸 English</option>
+                            <option value="Spanish">🇪🇸 Spanish</option>
+                            <option value="French">🇫🇷 French</option>
+                            <option value="German">🇩🇪 German</option>
+                            <option value="Portuguese">🇵🇹 Portuguese</option>
+                            <option value="Arabic">🇸🇦 Arabic</option>
+                            <option value="Swahili">🇰🇪 Swahili</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Competitor Watch Detail block */}
+                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm space-y-4">
+                    <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Competitor Watch</h3>
+
+                    <div className="space-y-2.5">
+                      <p className="text-[11px] text-slate-400 font-semibold mb-1">Monitoring these rivals</p>
+                      
+                      {(socialSettings.competitors || []).map((rival, i) => (
+                        <div key={i} className="flex items-center justify-between bg-slate-50/50 border border-slate-100/60 p-3.5 rounded-xl hover:shadow-sm transition-all duration-200">
+                          <span className="text-xs font-bold text-slate-700">{rival}</span>
+                          <button 
+                            onClick={async () => {
+                              const competitors = socialSettings.competitors?.filter((_, j) => j !== i) || [];
+                              const next = { ...socialSettings, competitors };
+                              setSocialSettings(next);
+                              await saveSocialSettings(next);
+                            }}
+                            className="text-xs font-bold text-slate-400 hover:text-red-500"
+                          >
+                            Remove
+                          </button>
+                        </div>
                       ))}
-                    </div>
-                  )}
-                </div>
+                      {(socialSettings.competitors || []).length === 0 && (
+                        <p className="text-xs text-slate-400">No competitors monitored yet</p>
+                      )}
 
-                {/* Competitor watch */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4">
-                  <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-purple-500" />
-                    Competitor Watch
-                  </h3>
-                  <div className="flex gap-2 mb-3">
-                    <input
-                      value={newCompetitor}
-                      onChange={e => setNewCompetitor(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter" && newCompetitor.trim()) {
-                          const next = { ...socialSettings, competitors: [...(socialSettings.competitors || []), newCompetitor.trim()] };
-                          setSocialSettings(next);
-                          void saveSocialSettings(next);
-                          setNewCompetitor("");
-                        }
-                      }}
-                      placeholder="Competitor name…"
-                      className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                    />
-                    <button
-                      onClick={() => {
-                        if (!newCompetitor.trim()) return;
-                        const next = { ...socialSettings, competitors: [...(socialSettings.competitors || []), newCompetitor.trim()] };
-                        setSocialSettings(next);
-                        void saveSocialSettings(next);
-                        setNewCompetitor("");
-                      }}
-                      className="px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(socialSettings.competitors || []).map((c, i) => (
-                      <span key={i} className="flex items-center gap-1 text-xs bg-purple-50 text-purple-700 rounded-full px-2.5 py-1">
-                        {c}
-                        <button
-                          onClick={() => {
-                            const next = { ...socialSettings, competitors: (socialSettings.competitors || []).filter((_, j) => j !== i) };
+                      <input
+                        value={newCompetitor}
+                        onChange={e => setNewCompetitor(e.target.value)}
+                        onKeyDown={async e => {
+                          if (e.key === "Enter" && newCompetitor.trim()) {
+                            const competitors = [...(socialSettings.competitors || []), newCompetitor.trim()];
+                            const next = { ...socialSettings, competitors };
                             setSocialSettings(next);
-                            void saveSocialSettings(next);
-                          }}
-                          className="text-purple-400 hover:text-purple-600"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </span>
-                    ))}
-                    {(socialSettings.competitors || []).length === 0 && <p className="text-[11px] text-slate-400">No competitors yet</p>}
+                            setNewCompetitor("");
+                            await saveSocialSettings(next);
+                          }
+                        }}
+                        placeholder="Add competitor name and press Enter..."
+                        className="w-full text-xs border border-slate-100 bg-slate-50/50 rounded-xl px-4.5 py-3.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                {/* Morning brief settings */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4">
-                  <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                    <Bell className="w-4 h-4 text-amber-500" />
-                    Morning Brief
-                  </h3>
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <p className="text-xs text-slate-600">Daily WhatsApp summary</p>
-                      <p className="text-[11px] text-slate-400">Top leads, signals, and to-do for the day</p>
-                    </div>
-                    <div
-                      onClick={() => {
-                        const next = { ...socialSettings, morning_brief: !socialSettings.morning_brief };
-                        setSocialSettings(next);
-                        void saveSocialSettings(next);
-                      }}
-                      className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${socialSettings.morning_brief ? "bg-emerald-500" : "bg-slate-200"}`}
-                    >
-                      <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${socialSettings.morning_brief ? "translate-x-5" : "translate-x-0.5"}`} />
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Clock className="w-3.5 h-3.5 text-slate-400" />
-                    <input
-                      type="time"
-                      value={socialSettings.morning_brief_time || "08:00"}
-                      onChange={e => {
-                        const next = { ...socialSettings, morning_brief_time: e.target.value };
-                        setSocialSettings(next);
-                        void saveSocialSettings(next);
-                      }}
-                      className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                    />
-                    <span className="text-[11px] text-slate-400">daily</span>
-                  </div>
-                </div>
               </div>
             </div>
           )}
