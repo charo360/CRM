@@ -387,7 +387,7 @@ GENERAL_TOOLS: FrozenSet[str] = (
         "get_business_context",
         "get_sidebar_feature_recommendations",
         # Composio: Gmail + Google Calendar
-        "read_emails", "send_email", "create_email_draft",
+        "read_emails", "send_email", "create_email_draft", "manage_gmail_filters",
         "list_calendar_events", "create_calendar_event", "delete_calendar_event",
     })
     - _DESIGN_EXCLUSIVE  # no design tools
