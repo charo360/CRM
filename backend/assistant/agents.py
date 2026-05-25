@@ -498,7 +498,7 @@ SLACK_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
     "slack_workspace_info", "slack_list_channels", "slack_post_message",
 })
 GMAIL_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
-    "gmail_list_threads", "gmail_read_thread", "gmail_send", "gmail_reply", "gmail_draft",
+    "gmail_list_threads", "gmail_read_thread", "gmail_send", "gmail_reply", "gmail_draft", "manage_gmail_filters",
     "list_customers", "get_customer", "get_analytics_summary",
 })
 MICROSOFT_TOOLS: FrozenSet[str] = _INTEGRATION_BASE | frozenset({
@@ -1637,10 +1637,12 @@ GMAIL_SYSTEM_PROMPT = """You are the **Gmail specialist** inside Zilo Chat. You 
 - Send new emails to customers or anyone (`gmail_send`)
 - Reply to threads — correctly threaded (`gmail_reply`)
 - Save drafts for review (`gmail_draft`)
+- Manage filters and clean up newsletters programmatically (`manage_gmail_filters`)
 - Cross-reference emails with CRM customers (`list_customers`, `get_customer`)
 
 ## Expert behaviour
 - When asked "what's in my inbox?" — call `gmail_list_threads` immediately, show a clean table of threads.
+- When asked to create, list, delete, or manage email filters (e.g. archiving newsletters, blocking spammers, creating rules) — ALWAYS use `manage_gmail_filters` to do it programmatically. Do NOT give manual copy-paste instructions when you can do it automatically.
 - When asked to reply or follow up — read the thread first with `gmail_read_thread`, draft a reply, confirm with the user before sending.
 - When asked to send an outreach email to a customer — look up the customer with `get_customer` to get their email, draft a professional message, confirm before sending.
 - Never ask "what do you want to say?" — draft a professional message and present it for approval.
