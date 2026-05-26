@@ -9087,8 +9087,11 @@ async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
         mid = (m.get("id") or m.get("messageId") or "").strip() if isinstance(m, dict) else ""
         if not mid:
             continue
-        r = await execute_action(ctx.business_id, "GMAIL_MOVE_TO_TRASH", {
-            "user_id": "me", "message_id": mid,
+        # GMAIL_MOVE_TO_TRASH is gated by Composio plan tier — use
+        # GMAIL_ADD_LABEL_TO_EMAIL with the system TRASH label as an
+        # equivalent that's enabled on the current project.
+        r = await execute_action(ctx.business_id, "GMAIL_ADD_LABEL_TO_EMAIL", {
+            "user_id": "me", "message_id": mid, "add_label_ids": ["TRASH"],
         })
         if "error" in r and not r.get("success"):
             failed.append({"message_id": mid, "error": r["error"]})
@@ -9124,13 +9127,15 @@ async def gmail_trash_message(ctx: ToolContext, args: Dict[str, Any]):
     message_id = (args.get("message_id") or "").strip()
     if not message_id:
         return {"error": "message_id is required"}
-    r = await execute_action(ctx.business_id, "GMAIL_MOVE_TO_TRASH", {
-        "user_id": "me", "message_id": message_id,
+    # GMAIL_MOVE_TO_TRASH is gated by Composio plan tier — use
+    # GMAIL_ADD_LABEL_TO_EMAIL with the system TRASH label as an
+    # equivalent that's enabled on the current project.
+    r = await execute_action(ctx.business_id, "GMAIL_ADD_LABEL_TO_EMAIL", {
+        "user_id": "me", "message_id": message_id, "add_label_ids": ["TRASH"],
     })
     if "error" in r and not r.get("success"):
         return {"error": r["error"]}
-    inner = _gmail_response_data(r)
-    return {"status": "trashed", "message_id": inner.get("id") or message_id}
+    return {"status": "trashed", "message_id": message_id}
 
 
 # ── Slack tools (Composio packaged actions, Slack Web API proxy fallback) ────
