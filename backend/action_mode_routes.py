@@ -118,6 +118,9 @@ class ScoutBody(BaseModel):
     is_active: Optional[bool] = True
 
 
+_VALID_CONTACT_TYPES = {"Customer", "Lead", "Investor", "Partner", "Supplier", "Other"}
+
+
 def make_action_mode_router(db, user_dep):
     router = APIRouter(prefix="/action-mode", tags=["action-mode"])
 
@@ -327,6 +330,109 @@ def make_action_mode_router(db, user_dep):
         return {"leads": leads, "total": len(leads), "keyword": keyword}
 
     # ─────────────────────────────────────────────────────────────────────────
+    # LinkedIn Leads — paste URLs, get emails enriched via RapidAPI
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.post("/linkedin-leads/find-urls")
+    async def linkedin_find_urls(body: Dict[str, Any], user=Depends(user_dep)):
+        """
+        Find LinkedIn profile URLs by title / location / company via web search.
+        Body: { title?, location?, company?, keywords?, limit? }
+        """
+        title    = (body.get("title")    or "").strip()
+        location = (body.get("location") or "").strip()
+        company  = (body.get("company")  or "").strip()
+        keywords = (body.get("keywords") or "").strip()
+        limit    = min(int(body.get("limit") or 30), 60)
+        expand   = bool(body.get("expand_title", True))
+
+        if not any([title, location, company, keywords]):
+            raise HTTPException(400, "Provide at least one of: title, location, company, keywords")
+
+        from linkedin_leads import find_linkedin_urls
+        result = await find_linkedin_urls(
+            title=title, location=location, company=company,
+            keywords=keywords, limit=limit, expand_title=expand,
+        )
+        return {
+            "profiles":        result["profiles"],
+            "total":           len(result["profiles"]),
+            "expanded_titles": result["expanded_titles"],
+        }
+
+    @router.post("/linkedin-leads/enrich")
+    async def linkedin_enrich(body: Dict[str, Any], user=Depends(user_dep)):
+        """Enrich LinkedIn profile URLs with emails. Body: { urls: [str] }"""
+        raw_urls = body.get("urls")
+        if not isinstance(raw_urls, list) or not raw_urls:
+            raise HTTPException(400, "urls (list) is required")
+        urls = [str(u) for u in raw_urls if isinstance(u, (str, int))][:200]   # cap at 200 per request
+        from linkedin_leads import enrich_linkedin_urls
+        leads = await enrich_linkedin_urls(urls)
+        return {
+            "leads":     leads,
+            "total":     len(leads),
+            "with_email": sum(1 for l in leads if l.get("email")),
+            "errors":    sum(1 for l in leads if l.get("status") == "error"),
+        }
+
+    @router.post("/linkedin-leads/bulk-save")
+    async def linkedin_bulk_save(body: Dict[str, Any], user=Depends(user_dep)):
+        """Add a batch of enriched LinkedIn leads to the CRM. Body: { leads: [...], contact_type?: str }"""
+        uid = _uid(user)
+        leads = body.get("leads") or []
+        if not isinstance(leads, list) or not leads:
+            raise HTTPException(400, "leads (list) is required")
+        contact_type = (body.get("contact_type") or "Lead").strip().title()
+        if contact_type not in _VALID_CONTACT_TYPES:
+            contact_type = "Lead"
+
+        saved, skipped = 0, 0
+        for l in leads:
+            if not isinstance(l, dict):
+                skipped += 1
+                continue
+            name  = (l.get("name") or "").strip()
+            email = (l.get("email") or "").strip().lower() or None
+            url   = (l.get("linkedin_url") or "").strip()
+            if not name and not email and not url:
+                skipped += 1
+                continue
+            notes = "\n".join(filter(None, [
+                f"LinkedIn: {url}" if url else "",
+                f"Title: {l.get('title')}" if l.get("title") else "",
+                f"Company: {l.get('company')}" if l.get("company") else "",
+                "Added via LinkedIn Email Finder",
+            ]))
+            payload: Dict[str, Any] = {
+                "_id":            str(uuid.uuid4()),
+                "user_id":        uid,
+                "name":           name or (email or url),
+                "email":          email,
+                "phone_number":   "",
+                "notes":          notes,
+                "tags":           [contact_type, "LinkedIn"],
+                "contact_type":   contact_type,
+                "linkedin_url":   url or None,
+                "purchase_count": 0,
+                "total_spent":    0.0,
+                "last_message":   None,
+                "last_contacted": None,
+                "created_at":     datetime.utcnow(),
+                "is_customer":    contact_type == "Customer",
+            }
+            if not payload["email"]:
+                # Customer collection requires a unique key — synthesize a placeholder phone
+                seed = (payload["name"] or "li").replace(" ", "")[:7].encode().hex()[:7]
+                payload["phone_number"] = f"+1555{seed}"
+            try:
+                await db.customers.insert_one(payload)
+                saved += 1
+            except Exception:
+                skipped += 1
+        return {"saved": saved, "skipped": skipped, "total": len(leads), "contact_type": contact_type}
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Lead Scouts — saved searches that discover new leads automatically
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -511,8 +617,6 @@ def make_action_mode_router(db, user_dep):
         if result.matched_count == 0:
             raise HTTPException(404, "Lead not found")
         return {"status": "restored"}
-
-    _VALID_CONTACT_TYPES = {"Customer", "Lead", "Investor", "Partner", "Supplier", "Other"}
 
     @router.post("/lead-scouts/inbox/{lead_id}/save")
     async def save_inbox_lead(lead_id: str, body: Dict[str, Any] = None, user=Depends(user_dep)):

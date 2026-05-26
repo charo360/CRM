@@ -181,6 +181,16 @@ interface ShopifyLead {
   platform: string | null;
 }
 
+interface LinkedInLead {
+  linkedin_url: string;
+  name: string;
+  email: string | null;
+  title?: string;
+  company?: string;
+  status: "ok" | "no_email" | "error";
+  error?: string;
+}
+
 interface LeadScout {
   _id: string;
   name: string;
@@ -448,6 +458,22 @@ export default function ActionModePage() {
   const [bizSearched, setBizSearched] = useState(false);
   const [bizAdded, setBizAdded] = useState<Set<string>>(new Set());
   const [bizAdding, setBizAdding] = useState<string | null>(null);
+
+  // LinkedIn Leads — URL discovery (via search) + Email Finder enricher
+  const [liSearchTitle,    setLiSearchTitle]    = useState("");
+  const [liSearchLocation, setLiSearchLocation] = useState("");
+  const [liSearchCompany,  setLiSearchCompany]  = useState("");
+  const [liSearchKeywords, setLiSearchKeywords] = useState("");
+  const [liSearching,      setLiSearching]      = useState(false);
+  const [liFoundProfiles,  setLiFoundProfiles]  = useState<{ linkedin_url: string; name: string; headline?: string; snippet?: string }[]>([]);
+  const [liExpandedTitles, setLiExpandedTitles] = useState<string[]>([]);
+  const [linkedinUrlsText, setLinkedinUrlsText] = useState("");
+  const [linkedinEnriching, setLinkedinEnriching] = useState(false);
+  const [linkedinResults, setLinkedinResults] = useState<LinkedInLead[]>([]);
+  const [linkedinFilter, setLinkedinFilter] = useState<"all"|"with_email"|"no_email">("all");
+  const [linkedinBulkSaving, setLinkedinBulkSaving] = useState(false);
+  const [linkedinSavingId, setLinkedinSavingId] = useState<string|null>(null);
+  const [linkedinAddedIds, setLinkedinAddedIds] = useState<Set<string>>(new Set());
 
   // Lead Scouts (automated saved searches — separate from AI Scouts)
   const [leadScouts, setLeadScouts] = useState<LeadScout[]>([]);
@@ -869,6 +895,105 @@ export default function ActionModePage() {
     }
   }
 
+  // ─── LinkedIn Leads (Search + Email Finder) ────────────────────────────────
+
+  async function findLinkedinUrls() {
+    if (!liSearchTitle.trim() && !liSearchCompany.trim() && !liSearchLocation.trim() && !liSearchKeywords.trim()) {
+      toast.error("Enter at least a title, company, location or keywords");
+      return;
+    }
+    setLiSearching(true);
+    try {
+      const res = await api.post<{ profiles: { linkedin_url: string; name: string; headline?: string; snippet?: string }[]; total: number; expanded_titles: string[] }>(
+        "/action-mode/linkedin-leads/find-urls",
+        {
+          title:    liSearchTitle.trim(),
+          location: liSearchLocation.trim(),
+          company:  liSearchCompany.trim(),
+          keywords: liSearchKeywords.trim(),
+          limit:    50,
+        }
+      );
+      setLiFoundProfiles(res.profiles ?? []);
+      setLiExpandedTitles(res.expanded_titles ?? []);
+      if (!res.profiles?.length) toast.info("No LinkedIn profiles found — try a broader title or remove filters");
+      else toast.success(`Found ${res.profiles.length} LinkedIn profile${res.profiles.length === 1 ? "" : "s"}`);
+    } catch (e) {
+      toast.error("Search failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLiSearching(false);
+    }
+  }
+
+  function addFoundToTextarea(urls: string[]) {
+    const existing = new Set(linkedinUrlsText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean));
+    const merged = [...existing, ...urls.filter(u => !existing.has(u))];
+    setLinkedinUrlsText(merged.join("\n"));
+    toast.success(`Added ${urls.length} URL${urls.length === 1 ? "" : "s"} to enrichment queue`);
+  }
+
+  async function enrichLinkedinUrls() {
+    const urls = linkedinUrlsText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    if (urls.length === 0) { toast.error("Paste at least one LinkedIn URL"); return; }
+    setLinkedinEnriching(true);
+    setLinkedinResults([]);
+    try {
+      const res = await api.post<{ leads: LinkedInLead[]; with_email: number; total: number }>(
+        "/action-mode/linkedin-leads/enrich",
+        { urls }
+      );
+      setLinkedinResults(res.leads ?? []);
+      toast.success(`Found ${res.with_email} email${res.with_email !== 1 ? "s" : ""} from ${res.total} URLs`);
+    } catch (e) {
+      toast.error("Enrich failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLinkedinEnriching(false);
+    }
+  }
+
+  async function addLinkedinLeadToCRM(lead: LinkedInLead) {
+    setLinkedinSavingId(lead.linkedin_url);
+    try {
+      await api.post("/action-mode/linkedin-leads/bulk-save", {
+        leads: [lead],
+        contact_type: addAsType,
+      });
+      setLinkedinAddedIds(prev => new Set(prev).add(lead.linkedin_url));
+      toast.success(`${lead.name || lead.email || "Lead"} added as ${addAsType}`);
+    } catch (e) {
+      toast.error("Failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLinkedinSavingId(null);
+    }
+  }
+
+  async function bulkAddLinkedinToCRM() {
+    const filtered = linkedinResults.filter(l => {
+      if (linkedinFilter === "with_email") return !!l.email;
+      if (linkedinFilter === "no_email") return !l.email;
+      return true;
+    }).filter(l => !linkedinAddedIds.has(l.linkedin_url));
+    if (!filtered.length) { toast.info("Nothing to add"); return; }
+    if (!confirm(`Add ${filtered.length} LinkedIn lead${filtered.length > 1 ? "s" : ""} to CRM as ${addAsType}?`)) return;
+    setLinkedinBulkSaving(true);
+    try {
+      const res = await api.post<{ saved: number; skipped: number }>("/action-mode/linkedin-leads/bulk-save", {
+        leads: filtered,
+        contact_type: addAsType,
+      });
+      toast.success(`Added ${res.saved} ${addAsType.toLowerCase()}${res.saved !== 1 ? "s" : ""}${res.skipped > 0 ? ` (${res.skipped} skipped)` : ""}`);
+      setLinkedinAddedIds(prev => {
+        const next = new Set(prev);
+        filtered.forEach(l => next.add(l.linkedin_url));
+        return next;
+      });
+    } catch (e) {
+      toast.error("Bulk save failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLinkedinBulkSaving(false);
+    }
+  }
+
   async function loadCredits() {
     try {
       const res = await api.get<typeof creditInfo>("/action-mode/lead-credits");
@@ -1161,7 +1286,7 @@ export default function ActionModePage() {
         badge: opportunities.filter(o => o.agent_name === a.name).length || undefined,
       })),
     { id: "shopify_leads", label: "Shopify Leads", icon: ShoppingBag },
-    { id: "business_leads", label: "Business Leads", icon: Building2 },
+    { id: "business_leads", label: "LinkedIn Leads", icon: Briefcase },
     { id: "lead_scouts", label: "Lead Scouts", icon: Antenna, badge: inboxLeads.length || undefined },
     { id: "radar", label: "Market Radar", icon: BarChart3, badge: radarCount || undefined },
     { id: "setup", label: "Scouts Setup", icon: Settings2 },
@@ -2175,232 +2300,303 @@ export default function ActionModePage() {
             </div>
           )}
 
-          {/* ────────────────── BUSINESS LEADS ────────────────── */}
+          {/* ────────────────── LINKEDIN LEADS ────────────────── */}
           {section === "business_leads" && (
             <div className="p-5">
               {/* Header */}
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h1 className="text-2xl font-bold text-slate-800">Business Leads</h1>
-                  <p className="text-sm text-slate-500 mt-1">Find any type of business by keyword and location — get phone, email, address and website from Google Maps data</p>
+                  <h1 className="text-2xl font-bold text-slate-800">LinkedIn Leads</h1>
+                  <p className="text-sm text-slate-500 mt-1">Search LinkedIn profiles by title + location, then enrich them with verified emails.</p>
                 </div>
               </div>
 
-              {/* Search bar */}
+              {/* ── STEP 1: Search LinkedIn URLs ── */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">1</span>
+                  <h2 className="text-sm font-bold text-slate-800">Find LinkedIn profiles</h2>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Job title</label>
+                    <input
+                      value={liSearchTitle}
+                      onChange={e => setLiSearchTitle(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. marketing director, CTO, founder"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Location</label>
+                    <input
+                      value={liSearchLocation}
+                      onChange={e => setLiSearchLocation(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. San Francisco, Germany"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Company (optional)</label>
+                    <input
+                      value={liSearchCompany}
+                      onChange={e => setLiSearchCompany(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. Microsoft, Stripe"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Extra keywords</label>
+                    <input
+                      value={liSearchKeywords}
+                      onChange={e => setLiSearchKeywords(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. B2B SaaS, fintech"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Search className="w-3 h-3" />
+                    Title alone usually works best. Add location/company to narrow down.
+                  </p>
+                  <button
+                    onClick={findLinkedinUrls}
+                    disabled={liSearching}
+                    className="flex items-center gap-2 px-5 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-sm font-semibold rounded-xl shadow-sm">
+                    {liSearching
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
+                      : <><Search className="w-4 h-4" /> Find LinkedIn URLs</>}
+                  </button>
+                </div>
+
+                {/* AI-expanded titles */}
+                {liExpandedTitles.length > 1 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[9px] text-slate-400 font-semibold uppercase tracking-wider mr-1">AI searched:</span>
+                    {liExpandedTitles.map((t, i) => (
+                      <span key={i} className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${i === 0 ? "bg-brand/10 text-brand-dark" : "bg-slate-100 text-slate-600"}`}>{t}</span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Found profiles list */}
+                {liFoundProfiles.length > 0 && (
+                  <div className="mt-4 border-t border-slate-100 pt-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-semibold text-slate-600">{liFoundProfiles.length} profiles found</p>
+                      <button
+                        onClick={() => addFoundToTextarea(liFoundProfiles.map(p => p.linkedin_url))}
+                        className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1">
+                        <Plus className="w-3 h-3" />Add all to queue
+                      </button>
+                    </div>
+                    <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                      {liFoundProfiles.map(p => (
+                        <div key={p.linkedin_url} className="flex items-start gap-2 p-2 rounded-lg hover:bg-slate-50 group">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-slate-800 truncate">{p.name || "Unknown"}</p>
+                            {p.headline && <p className="text-xs text-slate-500 truncate">{p.headline}</p>}
+                            <a href={p.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-brand hover:underline font-mono">
+                              {p.linkedin_url.replace(/^https?:\/\//,"").replace(/\/$/,"")}
+                            </a>
+                          </div>
+                          <button
+                            onClick={() => addFoundToTextarea([p.linkedin_url])}
+                            title="Add to enrichment queue"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity text-xs font-semibold text-emerald-600 hover:bg-emerald-50 px-2 py-1 rounded">
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── STEP 2: Enrich with emails ── */}
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">2</span>
+                <h2 className="text-sm font-bold text-slate-800">Enrich with emails</h2>
+              </div>
+
+              {/* URL paste input */}
               <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-6 shadow-sm">
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <div className="flex-1">
-                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Business type / keyword *</label>
-                    <input
-                      value={bizKeyword}
-                      onChange={e => setBizKeyword(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && !bizSearching && searchBusinessLeads()}
-                      placeholder="e.g. dental clinic, fitness gym, coffee roaster…"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
-                    />
-                  </div>
-                  <div className="w-full sm:w-56">
-                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">City / Location (optional)</label>
-                    <input
-                      value={bizLocation}
-                      onChange={e => setBizLocation(e.target.value)}
-                      placeholder="e.g. New York, Toronto, London…"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
-                    />
-                  </div>
-                  <div className="flex items-end">
+                <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">LinkedIn profile URLs (one per line, or comma-separated)</label>
+                <textarea
+                  value={linkedinUrlsText}
+                  onChange={e => setLinkedinUrlsText(e.target.value)}
+                  rows={6}
+                  placeholder={"https://www.linkedin.com/in/ondra-urban/\nhttps://www.linkedin.com/in/satyanadella/\nhttps://www.linkedin.com/in/elonmusk/"}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all font-mono"
+                />
+                <div className="flex items-center justify-between mt-3 gap-3 flex-wrap">
+                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Briefcase className="w-3 h-3" />
+                    Up to 200 URLs per batch.
+                    {linkedinEnriching && <span className="text-amber-600 font-medium"> Finding verified emails…</span>}
+                  </p>
+                  <div className="flex gap-2">
                     <button
-                      onClick={searchBusinessLeads}
-                      disabled={bizSearching || !bizKeyword.trim()}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-all shadow-sm whitespace-nowrap"
-                    >
-                      {bizSearching
-                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
-                        : <><Search className="w-4 h-4" /> Find businesses</>}
+                      onClick={() => { setLinkedinUrlsText(""); setLinkedinResults([]); setLinkedinAddedIds(new Set()); }}
+                      className="px-3 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700">
+                      Clear
+                    </button>
+                    <button
+                      onClick={enrichLinkedinUrls}
+                      disabled={linkedinEnriching || !linkedinUrlsText.trim()}
+                      className="flex items-center gap-2 px-5 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-all shadow-sm whitespace-nowrap">
+                      {linkedinEnriching
+                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Enriching…</>
+                        : <><Mail className="w-4 h-4" /> Find emails</>}
                     </button>
                   </div>
                 </div>
-                <p className="text-xs text-slate-400 mt-3 flex items-center gap-1.5">
-                  <Building2 className="w-3 h-3" />
-                  Pulls real listings from Google Maps — includes verified phone numbers and business addresses.
-                  {bizSearching && <span className="text-amber-600 font-medium"> Scraping websites for emails… this takes 15–30 seconds.</span>}
-                </p>
               </div>
 
               {/* Loading skeleton */}
-              {bizSearching && (
+              {linkedinEnriching && linkedinResults.length === 0 && (
                 <div className="space-y-3">
-                  {[1,2,3,4,5].map(i => (
-                    <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse">
-                      <div className="flex items-start gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-slate-200 shrink-0" />
-                        <div className="flex-1 space-y-2">
-                          <div className="h-4 bg-slate-200 rounded w-1/3" />
-                          <div className="h-3 bg-slate-100 rounded w-2/3" />
-                          <div className="flex gap-3 mt-1">
-                            <div className="h-3 bg-slate-100 rounded w-28" />
-                            <div className="h-3 bg-slate-100 rounded w-20" />
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <div className="h-8 w-24 bg-slate-200 rounded-xl" />
-                          <div className="h-8 w-20 bg-slate-100 rounded-xl" />
-                        </div>
-                      </div>
-                    </div>
+                  {[1,2,3].map(i => (
+                    <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse h-20" />
                   ))}
                 </div>
               )}
 
-              {/* No results */}
-              {!bizSearching && bizSearched && bizLeads.length === 0 && (
-                <div className="bg-white rounded-xl border border-slate-100 p-10 text-center">
-                  <div className="text-3xl mb-3">🔍</div>
-                  <p className="text-sm font-semibold text-slate-600 mb-1">No businesses found</p>
-                  <p className="text-xs text-slate-400">Try a broader keyword or add a different city</p>
-                </div>
-              )}
-
               {/* Results */}
-              {!bizSearching && bizLeads.length > 0 && (
+              {!linkedinEnriching && linkedinResults.length > 0 && (
                 <div className="space-y-3">
-                  <p className="text-xs text-slate-500 font-medium">
-                    {bizLeads.length} businesses found for <span className="text-brand font-semibold">{bizKeyword}</span>
-                    {bizLocation && <> in <span className="text-brand font-semibold">{bizLocation}</span></>}
-                    {" — "}{bizLeads.filter(l => l.phone).length} with phone · {bizLeads.filter(l => l.email).length} with email
-                  </p>
-                  {bizLeads.map((lead, idx) => {
-                    const key = lead.domain || lead.name.toLowerCase();
-                    const mapsUrl = lead.place_id
-                      ? `https://www.google.com/maps/place/?q=place_id:${lead.place_id}`
-                      : lead.website;
-                    return (
-                      <div key={idx} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                        <div className="flex items-start gap-4">
-                          {/* Icon + rating */}
-                          <div className="flex flex-col items-center gap-1 shrink-0">
-                            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
-                              <Building2 className="w-5 h-5 text-blue-600" />
+                  {/* Filter pills + add-as + bulk action */}
+                  <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {(["all","with_email","no_email"] as const).map(f => {
+                        const labels = { all: "All", with_email: "✓ With email", no_email: "No email" };
+                        const cnt = f === "all"
+                          ? linkedinResults.length
+                          : f === "with_email"
+                            ? linkedinResults.filter(l => !!l.email).length
+                            : linkedinResults.filter(l => !l.email).length;
+                        const isActive = linkedinFilter === f;
+                        const activeColor = f === "with_email" ? "bg-emerald-600 text-white border-emerald-600" : "bg-brand-dark text-white border-brand-dark";
+                        const styles = isActive ? activeColor : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50";
+                        return (
+                          <button key={f} onClick={() => setLinkedinFilter(f)}
+                            className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all ${styles}`}>
+                            {labels[f]} <span className={`ml-1 ${isActive ? "opacity-80" : "text-slate-400"}`}>({cnt})</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Add as:</label>
+                      <select
+                        value={addAsType}
+                        onChange={e => setAddAsType(e.target.value as typeof addAsType)}
+                        className="text-xs font-semibold border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 cursor-pointer hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand/30">
+                        <option value="Customer">Customer</option>
+                        <option value="Lead">Lead</option>
+                        <option value="Investor">Investor</option>
+                        <option value="Partner">Partner</option>
+                        <option value="Supplier">Supplier</option>
+                        <option value="Other">Other</option>
+                      </select>
+                      <button
+                        onClick={bulkAddLinkedinToCRM}
+                        disabled={linkedinBulkSaving}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg transition-all shadow-sm">
+                        {linkedinBulkSaving
+                          ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Adding…</>
+                          : <><Users className="w-3.5 h-3.5" />Add all to CRM</>}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Lead cards */}
+                  {linkedinResults
+                    .filter(l => linkedinFilter === "all" || (linkedinFilter === "with_email" ? !!l.email : !l.email))
+                    .map(lead => {
+                      const added = linkedinAddedIds.has(lead.linkedin_url);
+                      return (
+                        <div key={lead.linkedin_url}
+                          className={`bg-white rounded-xl border p-4 transition-all hover:shadow-sm ${lead.email ? "border-l-4 border-l-emerald-400 border-slate-100" : "border-slate-100"}`}>
+                          <div className="flex items-start gap-3">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${lead.email ? "bg-emerald-50 border border-emerald-100" : "bg-slate-50 border border-slate-100"}`}>
+                              <Briefcase className={`w-5 h-5 ${lead.email ? "text-emerald-600" : "text-slate-400"}`} />
                             </div>
-                            {lead.rating && (
-                              <span className="text-[10px] font-bold text-amber-600">
-                                ★ {lead.rating.toFixed(1)}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Info */}
-                          <div className="flex-1 min-w-0">
-                            {/* Name + badges */}
-                            <div className="flex items-center gap-2 flex-wrap mb-1">
-                              <span className="font-bold text-slate-800 text-sm">{lead.name}</span>
-                              {lead.category && (
-                                <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-2 py-0.5 rounded-full font-semibold">{lead.category}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-slate-800 text-sm">{lead.name || "Unknown"}</span>
+                                {lead.email ? (
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded-full font-semibold">Email found</span>
+                                ) : (
+                                  <span
+                                    title={lead.status === "error" ? `Could not fetch — ${lead.error || "unknown"}` : "No email in the directory for this profile"}
+                                    className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-semibold">
+                                    No email found
+                                  </span>
+                                )}
+                              </div>
+                              {(lead.title || lead.company) && (
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                  {lead.title}{lead.title && lead.company ? " · " : ""}{lead.company}
+                                </p>
                               )}
-                              {(lead.email || lead.phone) && (
-                                <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded-full font-semibold">Has contact</span>
-                              )}
-                              {lead.reviews && lead.reviews > 0 && (
-                                <span className="text-[10px] text-slate-400">{lead.reviews.toLocaleString()} reviews</span>
-                              )}
-                            </div>
-
-                            {/* Address */}
-                            {lead.address && (
-                              <p className="text-xs text-slate-500 flex items-center gap-1 mb-1.5">
-                                <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
-                                {lead.address}
-                              </p>
-                            )}
-
-                            {/* Contact row */}
-                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                              {lead.phone && (
-                                <span className="flex items-center gap-1 text-xs text-slate-600">
-                                  <Phone className="w-3 h-3 text-slate-400" />
-                                  <button
-                                    onClick={() => { navigator.clipboard.writeText(lead.phone!); toast.success("Phone copied"); }}
-                                    className="hover:text-brand transition-colors font-medium"
-                                  >{lead.phone}</button>
-                                </span>
-                              )}
-                              {lead.email && (
-                                <span className="flex items-center gap-1 text-xs text-slate-600">
-                                  <Mail className="w-3 h-3 text-slate-400" />
+                              <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                                {lead.email && (
                                   <button
                                     onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
-                                    className="hover:text-brand transition-colors"
-                                  >{lead.email}</button>
-                                </span>
-                              )}
-                              {lead.website && (
-                                <a href={lead.website} target="_blank" rel="noopener noreferrer"
-                                  className="text-xs text-brand hover:underline font-mono">
-                                  {lead.domain || lead.website.replace(/^https?:\/\//, "").split("/")[0]}
+                                    className="flex items-center gap-1 text-xs text-slate-600 hover:text-brand transition-colors">
+                                    <Mail className="w-3 h-3 text-slate-400" />{lead.email}
+                                  </button>
+                                )}
+                                <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer"
+                                  className="text-xs text-brand hover:underline font-mono break-all">
+                                  {lead.linkedin_url.replace(/^https?:\/\//,"").replace(/\/$/,"")}
                                 </a>
+                              </div>
+                            </div>
+                            <div className="flex flex-col gap-1.5 shrink-0">
+                              {added ? (
+                                <span className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg">
+                                  <CheckCircle2 className="w-3 h-3" />In CRM
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => addLinkedinLeadToCRM(lead)}
+                                  disabled={linkedinSavingId === lead.linkedin_url}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all">
+                                  {linkedinSavingId === lead.linkedin_url
+                                    ? <><Loader2 className="w-3 h-3 animate-spin" />Saving…</>
+                                    : <><Users className="w-3 h-3" />Add to CRM</>}
+                                </button>
+                              )}
+                              {lead.email && (
+                                <button
+                                  onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all">
+                                  <Copy className="w-3 h-3" />Copy email
+                                </button>
                               )}
                             </div>
                           </div>
-
-                          {/* Actions */}
-                          <div className="flex flex-col gap-1.5 shrink-0">
-                            {bizAdded.has(key) ? (
-                              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg">
-                                <CheckCircle2 className="w-3 h-3" /> In CRM
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => addBusinessLeadToCRM(lead)}
-                                disabled={bizAdding === key}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all"
-                              >
-                                {bizAdding === key
-                                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Adding…</>
-                                  : <><Users className="w-3 h-3" /> Add to CRM</>}
-                              </button>
-                            )}
-                            {lead.phone && (
-                              <button
-                                onClick={() => { navigator.clipboard.writeText(lead.phone!); toast.success("Phone copied"); }}
-                                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
-                              >
-                                <Copy className="w-3 h-3" /> Copy phone
-                              </button>
-                            )}
-                            {mapsUrl && (
-                              <a
-                                href={mapsUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
-                              >
-                                <Globe className="w-3 h-3" /> View on Maps
-                              </a>
-                            )}
-                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
               )}
 
               {/* Empty initial state */}
-              {!bizSearching && !bizSearched && (
+              {!linkedinEnriching && linkedinResults.length === 0 && (
                 <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center">
-                  <div className="text-4xl mb-4">🏢</div>
-                  <p className="text-sm font-semibold text-slate-600 mb-2">Find any business as a lead</p>
+                  <div className="text-4xl mb-4">🔗</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-2">Paste LinkedIn URLs to find their emails</p>
                   <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                    Search by business type and city — we pull real Google Maps listings with verified phone numbers, then scrape each website for email addresses.
+                    Each URL gets enriched with a verified email. Then filter by "With email" and bulk-add to your CRM as customers, leads, investors, partners or suppliers.
                   </p>
-                  <div className="flex flex-wrap justify-center gap-2 mt-4">
-                    {["dental clinic", "fitness gym", "coffee roaster", "marketing agency", "law firm"].map(ex => (
-                      <button key={ex} onClick={() => { setBizKeyword(ex); }}
-                        className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition-all font-medium">
-                        {ex}
-                      </button>
-                    ))}
-                  </div>
                 </div>
               )}
             </div>
