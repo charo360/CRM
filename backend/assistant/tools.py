@@ -8523,9 +8523,55 @@ async def list_x_ads_campaign_drafts(ctx: ToolContext, args: Dict[str, Any]):
 # ── Email helpers ─────────────────────────────────────────────────────────────
 
 import base64
+import mimetypes
 import os as _os
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email import encoders as _email_encoders
+
+import httpx as _httpx_email
+
+_GMAIL_MAX_TOTAL_BYTES = 24 * 1024 * 1024  # Gmail hard limit is ~25MB; leave headroom
+_GMAIL_PER_FILE_BYTES = 20 * 1024 * 1024
+
+
+async def _fetch_attachments(attachments: Optional[List[Dict[str, Any]]]) -> tuple[list[tuple[str, bytes, str]], Optional[str]]:
+    """Download each attachment from its URL.
+
+    Returns (parts, error) where parts is a list of (filename, raw_bytes, mime_type).
+    Returns ([], error_message) if any fetch fails or size limits are exceeded.
+    """
+    if not attachments:
+        return [], None
+    out: list[tuple[str, bytes, str]] = []
+    total = 0
+    async with _httpx_email.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        for i, att in enumerate(attachments):
+            url = (att.get("url") or "").strip()
+            filename = (att.get("filename") or "").strip() or f"attachment-{i + 1}"
+            if not url:
+                return [], f"attachment[{i}] is missing 'url'"
+            try:
+                resp = await client.get(url)
+            except Exception as e:
+                return [], f"attachment[{i}] fetch failed: {e}"
+            if resp.status_code != 200:
+                return [], f"attachment[{i}] fetch failed: HTTP {resp.status_code}"
+            data = resp.content
+            if len(data) > _GMAIL_PER_FILE_BYTES:
+                return [], f"attachment[{i}] '{filename}' is {len(data)} bytes; per-file limit is {_GMAIL_PER_FILE_BYTES}"
+            total += len(data)
+            if total > _GMAIL_MAX_TOTAL_BYTES:
+                return [], f"total attachment size exceeds Gmail limit ({_GMAIL_MAX_TOTAL_BYTES} bytes)"
+            ctype = resp.headers.get("content-type", "").split(";")[0].strip()
+            if not ctype or ctype == "application/octet-stream":
+                guessed, _ = mimetypes.guess_type(filename)
+                if guessed:
+                    ctype = guessed
+            out.append((filename, data, ctype or "application/octet-stream"))
+    return out, None
+
 
 _GMAIL_KEY     = "gmail"       # Composio toolkit slug (was: google-mail via Nango)
 _MICROSOFT_KEY = "outlook"     # Composio toolkit slug (was: microsoft via Nango)
@@ -8570,8 +8616,29 @@ def _gmail_build_raw(
     bcc: str = "",
     in_reply_to: str = "",
     references: str = "",
+    attachments: Optional[list[tuple[str, bytes, str]]] = None,
 ) -> str:
-    msg = MIMEMultipart("alternative")
+    """Build a base64url-encoded RFC 2822 message. If attachments are provided,
+    wraps the text body inside a multipart/mixed envelope so files attach cleanly.
+    Each attachment tuple is (filename, raw_bytes, mime_type)."""
+    body_part = MIMEMultipart("alternative")
+    body_part.attach(MIMEText(body, "plain", "utf-8"))
+
+    if attachments:
+        msg = MIMEMultipart("mixed")
+        msg.attach(body_part)
+        for filename, data, ctype in attachments:
+            maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
+            if not subtype:
+                subtype = "octet-stream"
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(data)
+            _email_encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+    else:
+        msg = body_part
+
     msg["To"] = to
     msg["Subject"] = subject
     if cc:
@@ -8582,7 +8649,6 @@ def _gmail_build_raw(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
-    msg.attach(MIMEText(body, "plain", "utf-8"))
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
 
@@ -8694,17 +8760,39 @@ async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
     return {"thread_id": thread_id, "message_count": len(messages), "messages": messages}
 
 
+_ATTACHMENT_SCHEMA = {
+    "type": "array",
+    "description": (
+        "Optional file attachments. Each item must have a public 'url' the server can fetch "
+        "and a 'filename' to display in the email. Up to 20MB per file and 24MB total. "
+        "Pass URLs returned by other tools (e.g. generate_document's download_url) here."
+    ),
+    "items": {
+        "type": "object",
+        "properties": {
+            "url":      {"type": "string", "description": "Direct download URL"},
+            "filename": {"type": "string", "description": "Filename shown in the email, e.g. 'invoice.pdf'"},
+        },
+        "required": ["url", "filename"],
+    },
+}
+
+
 @tool(
     name="gmail_send",
-    description="Send a new email via Gmail. Requires to, subject, and body. cc and bcc are optional.",
+    description=(
+        "Send a new email via Gmail. Requires to, subject, and body. "
+        "cc and bcc are optional. Pass 'attachments' (array of {url, filename}) to attach files."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "to":      {"type": "string", "description": "Recipient email address"},
-            "subject": {"type": "string", "description": "Subject line"},
-            "body":    {"type": "string", "description": "Plain text email body"},
-            "cc":      {"type": "string"},
-            "bcc":     {"type": "string"},
+            "to":          {"type": "string", "description": "Recipient email address"},
+            "subject":     {"type": "string", "description": "Subject line"},
+            "body":        {"type": "string", "description": "Plain text email body"},
+            "cc":          {"type": "string"},
+            "bcc":         {"type": "string"},
+            "attachments": _ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
@@ -8717,7 +8805,14 @@ async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
     body = (args.get("body") or "").strip()
     if not to or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    raw = _gmail_build_raw(to, subject, body, cc=args.get("cc") or "", bcc=args.get("bcc") or "")
+    parts, err = await _fetch_attachments(args.get("attachments"))
+    if err:
+        return {"error": err}
+    raw = _gmail_build_raw(
+        to, subject, body,
+        cc=args.get("cc") or "", bcc=args.get("bcc") or "",
+        attachments=parts,
+    )
     try:
         result = await nango_proxy(
             ctx.business_id, _GMAIL_KEY, "POST",
@@ -8726,21 +8821,28 @@ async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
         )
     except RuntimeError as e:
         return {"error": str(e)}
-    return {"status": "sent", "message_id": result.get("id"), "thread_id": result.get("threadId")}
+    return {
+        "status": "sent",
+        "message_id": result.get("id"),
+        "thread_id": result.get("threadId"),
+        "attachment_count": len(parts),
+    }
 
 
 @tool(
     name="gmail_reply",
     description=(
         "Reply to an existing Gmail thread. Automatically threads correctly. "
-        "Set reply_all=true to include all original recipients."
+        "Set reply_all=true to include all original recipients. "
+        "Pass 'attachments' (array of {url, filename}) to include files."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "thread_id": {"type": "string", "description": "Gmail thread ID to reply to"},
-            "body":      {"type": "string", "description": "Reply body text"},
-            "reply_all": {"type": "boolean", "description": "Reply all. Default false."},
+            "thread_id":   {"type": "string", "description": "Gmail thread ID to reply to"},
+            "body":        {"type": "string", "description": "Reply body text"},
+            "reply_all":   {"type": "boolean", "description": "Reply all. Default false."},
+            "attachments": _ATTACHMENT_SCHEMA,
         },
         "required": ["thread_id", "body"],
     },
@@ -8776,7 +8878,14 @@ async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
     if not subject.lower().startswith("re:"):
         subject = "Re: " + subject
     refs = (existing_refs + " " + msg_id_hdr).strip() if existing_refs else msg_id_hdr
-    raw = _gmail_build_raw(reply_to, subject, body, in_reply_to=msg_id_hdr, references=refs)
+    parts, err = await _fetch_attachments(args.get("attachments"))
+    if err:
+        return {"error": err}
+    raw = _gmail_build_raw(
+        reply_to, subject, body,
+        in_reply_to=msg_id_hdr, references=refs,
+        attachments=parts,
+    )
     try:
         result = await nango_proxy(
             ctx.business_id, _GMAIL_KEY, "POST",
@@ -8785,20 +8894,29 @@ async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
         )
     except RuntimeError as e:
         return {"error": str(e)}
-    return {"status": "sent", "message_id": result.get("id"), "thread_id": result.get("threadId")}
+    return {
+        "status": "sent",
+        "message_id": result.get("id"),
+        "thread_id": result.get("threadId"),
+        "attachment_count": len(parts),
+    }
 
 
 @tool(
     name="gmail_draft",
-    description="Save a Gmail draft without sending. Returns the draft ID.",
+    description=(
+        "Save a Gmail draft without sending. Returns the draft ID. "
+        "Pass 'attachments' (array of {url, filename}) to include files."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "to":      {"type": "string"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string"},
-            "cc":      {"type": "string"},
-            "bcc":     {"type": "string"},
+            "to":          {"type": "string"},
+            "subject":     {"type": "string"},
+            "body":        {"type": "string"},
+            "cc":          {"type": "string"},
+            "bcc":         {"type": "string"},
+            "attachments": _ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
@@ -8810,7 +8928,14 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     body = (args.get("body") or "").strip()
     if not to or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    raw = _gmail_build_raw(to, subject, body, cc=args.get("cc") or "", bcc=args.get("bcc") or "")
+    parts, err = await _fetch_attachments(args.get("attachments"))
+    if err:
+        return {"error": err}
+    raw = _gmail_build_raw(
+        to, subject, body,
+        cc=args.get("cc") or "", bcc=args.get("bcc") or "",
+        attachments=parts,
+    )
     try:
         result = await nango_proxy(
             ctx.business_id, _GMAIL_KEY, "POST",
@@ -8819,7 +8944,67 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
         )
     except RuntimeError as e:
         return {"error": str(e)}
-    return {"status": "draft_saved", "draft_id": result.get("id")}
+    return {"status": "draft_saved", "draft_id": result.get("id"), "attachment_count": len(parts)}
+
+
+@tool(
+    name="gmail_trash_thread",
+    description=(
+        "Move an entire Gmail thread to Trash. Recoverable from the Trash folder for 30 days. "
+        "Use this — not a permanent delete — when the user asks to delete emails."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "thread_id": {"type": "string", "description": "Gmail thread ID to trash"},
+        },
+        "required": ["thread_id"],
+    },
+    destructive=True,
+)
+async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    thread_id = (args.get("thread_id") or "").strip()
+    if not thread_id:
+        return {"error": "thread_id is required"}
+    try:
+        result = await nango_proxy(
+            ctx.business_id, _GMAIL_KEY, "POST",
+            f"gmail/v1/users/me/threads/{thread_id}/trash",
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+    return {"status": "trashed", "thread_id": result.get("id") or thread_id}
+
+
+@tool(
+    name="gmail_trash_message",
+    description=(
+        "Move a single Gmail message to Trash (not the whole thread). "
+        "Recoverable from Trash for 30 days. Prefer gmail_trash_thread for most delete requests."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "message_id": {"type": "string", "description": "Gmail message ID to trash"},
+        },
+        "required": ["message_id"],
+    },
+    destructive=True,
+)
+async def gmail_trash_message(ctx: ToolContext, args: Dict[str, Any]):
+    from .composio_helper import composio_proxy as nango_proxy
+    message_id = (args.get("message_id") or "").strip()
+    if not message_id:
+        return {"error": "message_id is required"}
+    try:
+        result = await nango_proxy(
+            ctx.business_id, _GMAIL_KEY, "POST",
+            f"gmail/v1/users/me/messages/{message_id}/trash",
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+    return {"status": "trashed", "message_id": result.get("id") or message_id}
 
 
 # ── Slack tools (Composio packaged actions, Slack Web API proxy fallback) ────
