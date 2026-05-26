@@ -1,9 +1,10 @@
 """
 Multi-Engine Search Pipeline
-Runs DDG + Brave Search + Reddit + NewsAPI in parallel.
-No new dependencies needed — uses httpx (already installed).
+Runs Tavily (primary) + Brave + Reddit + NewsAPI in parallel.
+DDG used as fallback when Tavily key is absent.
 
 Env vars (all optional, degrade gracefully):
+  TAVILY_API_KEY         — https://tavily.com (free: 1000/month)
   BRAVE_SEARCH_API_KEY   — https://api.search.brave.com (free: 2000/month)
   NEWS_API_KEY           — https://newsapi.org (free: 100/day)
 """
@@ -54,6 +55,49 @@ async def _search_ddg(query: str, max_results: int = 6) -> List[SearchResult]:
         ]
     except Exception as e:
         logger.debug("[search_ddg] %s: %s", query[:60], e)
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tavily — AI-native search, pre-extracted content, relevance scores
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _search_tavily(
+    client: httpx.AsyncClient,
+    query: str,
+    max_results: int = 7,
+    search_depth: str = "basic",
+) -> List[SearchResult]:
+    key = os.environ.get("TAVILY_API_KEY", "")
+    if not key:
+        return []
+    try:
+        resp = await client.post(
+            "https://api.tavily.com/search",
+            headers={"Content-Type": "application/json"},
+            json={
+                "api_key": key,
+                "query": query,
+                "max_results": max_results,
+                "search_depth": search_depth,
+                "include_answer": False,
+                "include_raw_content": False,
+            },
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for r in data.get("results", []):
+            results.append({
+                "title":   r.get("title", ""),
+                "url":     r.get("url", ""),
+                "snippet": (r.get("content") or r.get("snippet") or "")[:400],
+                "score":   str(r.get("score", "")),
+            })
+        return results
+    except Exception as e:
+        logger.debug("[search_tavily] %s: %s", query[:60], e)
         return []
 
 
@@ -315,19 +359,30 @@ async def run_search_plan(
     brave_country    = plan.get("brave_country", "us")
 
     all_results: List[SearchResult] = []
+    have_tavily = bool(os.environ.get("TAVILY_API_KEY"))
 
     async with httpx.AsyncClient(timeout=15.0) as client:
 
-        # ── 1. DDG queries in parallel (batch of 8 at a time to avoid rate limits) ──
-        for i in range(0, len(queries), 8):
-            batch = queries[i:i+8]
-            ddg_tasks = [_search_ddg(q, max_results=5) for q in batch]
-            batched = await asyncio.gather(*ddg_tasks, return_exceptions=True)
-            for res in batched:
+        # ── 1. Tavily (primary) — AI-native, reliable on cloud IPs ───────────
+        if have_tavily:
+            tavily_tasks = [_search_tavily(client, q, max_results=7) for q in queries[:12]]
+            tavily_batches = await asyncio.gather(*tavily_tasks, return_exceptions=True)
+            for res in tavily_batches:
                 if isinstance(res, list):
                     all_results.extend(res)
+            logger.debug("[search_engine] tavily returned %d results", len(all_results))
 
-        # ── 2. Brave Search in parallel ───────────────────────────────────────
+        # ── 2. DDG fallback — used when Tavily key absent ─────────────────────
+        if not have_tavily:
+            for i in range(0, len(queries), 8):
+                batch = queries[i:i+8]
+                ddg_tasks = [_search_ddg(q, max_results=5) for q in batch]
+                batched = await asyncio.gather(*ddg_tasks, return_exceptions=True)
+                for res in batched:
+                    if isinstance(res, list):
+                        all_results.extend(res)
+
+        # ── 3. Brave Search in parallel ───────────────────────────────────────
         if os.environ.get("BRAVE_SEARCH_API_KEY"):
             brave_tasks = [
                 _search_brave(client, q, max_results=5, country=brave_country)
@@ -338,7 +393,7 @@ async def run_search_plan(
                 if isinstance(res, list):
                     all_results.extend(res)
 
-        # ── 3. Reddit scan ────────────────────────────────────────────────────
+        # ── 4. Reddit scan ────────────────────────────────────────────────────
         if subreddits:
             reddit_tasks = [
                 _search_reddit(client, q, subreddits=subreddits, max_results=8)
@@ -356,7 +411,7 @@ async def run_search_plan(
             )
             all_results.extend(reddit_sub_results)
 
-        # ── 4. News search ────────────────────────────────────────────────────
+        # ── 5. News search ────────────────────────────────────────────────────
         if news_terms and os.environ.get("NEWS_API_KEY"):
             news_tasks = [_search_news(client, term, max_results=5) for term in news_terms]
             news_results = await asyncio.gather(*news_tasks, return_exceptions=True)
@@ -364,7 +419,7 @@ async def run_search_plan(
                 if isinstance(res, list):
                     all_results.extend(res)
 
-        # ── 5. US gov grant portals ───────────────────────────────────────────
+        # ── 6. US gov grant portals ───────────────────────────────────────────
         if search_us_gov and queries:
             gov_results = await _search_us_gov_grants(client, queries[0])
             all_results.extend(gov_results)
