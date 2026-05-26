@@ -359,8 +359,13 @@ async def scan_marketplace(
     if not is_configured():
         return {"alerts": 0, "credits": 0, "skipped": "SCRAPECREATORS_API_KEY not set"}
 
-    lat  = float(cfg.get("marketplace_lat") or biz.get("lat") or -1.2921)   # default Nairobi
-    lng  = float(cfg.get("marketplace_lng") or biz.get("lng") or 36.8219)
+    raw_lat = cfg.get("marketplace_lat") or biz.get("lat")
+    raw_lng = cfg.get("marketplace_lng") or biz.get("lng")
+    if not raw_lat or not raw_lng:
+        return {"alerts": 0, "credits": 0, "skipped": "no_location_set"}
+
+    lat    = float(raw_lat)
+    lng    = float(raw_lng)
     radius = int(cfg.get("marketplace_radius_km") or 50)
 
     keywords = [k.strip() for k in (cfg.get("keywords") or []) if k.strip()]

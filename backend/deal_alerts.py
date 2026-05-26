@@ -165,10 +165,6 @@ async def queue_deal_alert(
     """
     from action_mode_routes import _draft_contextual_comment, _log_activity
 
-    settings_doc = await db.action_mode_settings.find_one({"user_id": user_id}) or {}
-    if not settings_doc.get("enabled") and not force:
-        return False
-
     cfg = await _get_deal_settings(db, user_id)
     biz = await db.users.find_one({"_id": user_id}) or {}
     biz_name = biz.get("business_name", "") or biz.get("name", "")
