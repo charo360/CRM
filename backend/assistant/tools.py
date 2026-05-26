@@ -9112,19 +9112,23 @@ async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
     description=(
         "Move many Gmail threads to Trash in one call using a search query. "
         "Recoverable for 30 days. Designed for inbox cleanup — newsletters, "
-        "promotions, bulk archives. Common queries:\n"
+        "promotions, bulk archives. Auto-paginates up to the cap. Common queries:\n"
         "  - 'category:promotions' — Gmail's auto-categorized Promotions tab\n"
         "  - 'list:*' — anything with a List-Unsubscribe header (real newsletters)\n"
         "  - 'from:noreply OR from:newsletter' — sender-based filter\n"
         "  - 'older_than:1y category:promotions' — old promotions only\n"
         "Always confirm with the user how many threads will be trashed before running. "
-        "Hard cap of 500 threads per call to prevent runaway agent action."
+        "Throughput is ~1 thread/second (Composio rate-limits modify-label calls), "
+        "so 100 threads ≈ 90s, 300 threads ≈ 5min, 500 threads ≈ 8–10min. "
+        "Default 100; hard cap 500 per call. For larger cleanups, tell the user "
+        "the realistic time and consider splitting into multiple calls or doing it "
+        "with a tighter query first (e.g. add older_than:1y)."
     ),
     parameters={
         "type": "object",
         "properties": {
             "query":       {"type": "string", "description": "Gmail search query identifying threads to trash"},
-            "max_threads": {"type": "integer", "description": "Max threads to trash (default 50, hard cap 500)"},
+            "max_threads": {"type": "integer", "description": "Max threads to trash (default 100, hard cap 500). At 500 expect ~8min runtime."},
         },
         "required": ["query"],
     },
@@ -9132,26 +9136,47 @@ async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
 )
 async def gmail_bulk_trash(ctx: ToolContext, args: Dict[str, Any]):
     from composio_service import execute_action
+    import asyncio as _asyncio
+
     query = (args.get("query") or "").strip()
     if not query:
         return {"error": "query is required"}
-    limit = min(max(int(args.get("max_threads") or 50), 1), 500)
+    limit = min(max(int(args.get("max_threads") or 100), 1), 500)
 
-    # Find matching threads (verbose so we can echo subjects back for confirmation)
-    list_r = await execute_action(ctx.business_id, "GMAIL_LIST_THREADS", {
-        "user_id": "me", "query": query, "max_results": limit, "verbose": True,
-    })
-    if "error" in list_r and not list_r.get("success"):
-        return {"error": list_r["error"]}
-    raw_threads = (_gmail_response_data(list_r).get("threads") or [])
-    if not raw_threads:
+    # Paginate through Gmail in ids_only mode. Composio caps response payload
+    # size, so we don't request thread metadata here — the agent is instructed
+    # to preview via gmail_list_threads first, so subjects aren't needed in
+    # this destructive call.
+    thread_ids: list[str] = []
+    page_token: Optional[str] = None
+    PAGE_SIZE = 500
+    while len(thread_ids) < limit:
+        page_limit = min(PAGE_SIZE, limit - len(thread_ids))
+        list_args: Dict[str, Any] = {
+            "user_id": "me", "query": query, "max_results": page_limit, "ids_only": True,
+        }
+        if page_token:
+            list_args["page_token"] = page_token
+        list_r = await execute_action(ctx.business_id, "GMAIL_LIST_THREADS", list_args)
+        if "error" in list_r and not list_r.get("success"):
+            return {"error": list_r["error"]}
+        inner = _gmail_response_data(list_r)
+        page_threads = inner.get("threads") or []
+        for t in page_threads:
+            tid = (t.get("id") or t.get("threadId") or "") if isinstance(t, dict) else str(t)
+            if tid:
+                thread_ids.append(tid)
+        page_token = inner.get("nextPageToken") or inner.get("next_page_token")
+        if not page_token or not page_threads:
+            break
+
+    if not thread_ids:
         return {"status": "nothing_to_trash", "query": query, "trashed_count": 0}
 
-    # Trash threads in parallel batches (10 at a time) — adds the TRASH system label,
-    # which moves the whole thread to Trash. Works on projects where
-    # GMAIL_MOVE_TO_TRASH is plan-gated.
-    import asyncio as _asyncio
-
+    # Trash threads in parallel batches (20 at a time) — adds the TRASH system
+    # label, which moves the whole thread to Trash. Works on projects where
+    # GMAIL_MOVE_TO_TRASH is plan-gated. Gmail's per-user quota is generous
+    # enough for this concurrency; back off if you start seeing rateLimitExceeded.
     async def _trash_one(thread_id: str) -> tuple[str, Optional[str]]:
         r = await execute_action(ctx.business_id, "GMAIL_MODIFY_THREAD_LABELS", {
             "user_id": "me", "thread_id": thread_id, "add_label_ids": ["TRASH"],
@@ -9159,37 +9184,23 @@ async def gmail_bulk_trash(ctx: ToolContext, args: Dict[str, Any]):
         err = r["error"] if ("error" in r and not r.get("success")) else None
         return thread_id, err
 
-    targets: list[tuple[str, str]] = []  # (thread_id, subject preview)
-    for t in raw_threads:
-        tid = t.get("id") or t.get("threadId") or ""
-        if not tid:
-            continue
-        # extract subject from first message's headers if available
-        msgs = t.get("messages") or []
-        subj = ""
-        if msgs:
-            hdrs = (msgs[0].get("payload") or {}).get("headers") or []
-            subj = _gmail_header(hdrs, "Subject") or msgs[0].get("subject") or ""
-        targets.append((tid, subj[:80]))
-
-    trashed: list[Dict[str, str]] = []
+    trashed: list[str] = []
     failed: list[Dict[str, str]] = []
-    BATCH = 10
-    for i in range(0, len(targets), BATCH):
-        chunk = targets[i:i + BATCH]
-        results = await _asyncio.gather(*[_trash_one(tid) for tid, _ in chunk])
-        for (tid, subj), (_tid, err) in zip(chunk, results):
+    BATCH = 20
+    for i in range(0, len(thread_ids), BATCH):
+        chunk = thread_ids[i:i + BATCH]
+        results = await _asyncio.gather(*[_trash_one(tid) for tid in chunk])
+        for tid, err in results:
             if err:
-                failed.append({"thread_id": tid, "subject": subj, "error": err})
+                failed.append({"thread_id": tid, "error": err})
             else:
-                trashed.append({"thread_id": tid, "subject": subj})
+                trashed.append(tid)
 
     return {
         "status": "trashed",
         "query": query,
         "trashed_count": len(trashed),
         "failed_count": len(failed),
-        "trashed_sample": trashed[:10],  # truncate for chat brevity
         "failed": failed[:5] or None,
     }
 
