@@ -276,7 +276,7 @@ ACTION_GMAIL_SEND         = "GMAIL_SEND_EMAIL"
 
 ACTION_GMAIL_DRAFT        = "GMAIL_CREATE_EMAIL_DRAFT"
 
-ACTION_CALENDAR_LIST      = "GOOGLECALENDAR_LIST_EVENTS"
+ACTION_CALENDAR_LIST      = "GOOGLECALENDAR_EVENTS_LIST"
 
 ACTION_CALENDAR_CREATE    = "GOOGLECALENDAR_CREATE_EVENT"
 
@@ -294,9 +294,9 @@ ACTION_OUTLOOK_SEARCH     = "OUTLOOK_OUTLOOK_SEARCH_MESSAGES"
 
 # Shopify — prefer packaged actions over raw REST where possible
 
-ACTION_SHOPIFY_GET_ORDERS_WITH_FILTERS = "SHOPIFY_GET_ORDERS_WITH_FILTERS"
+ACTION_SHOPIFY_GET_ORDERS_WITH_FILTERS = "SHOPIFY_GET_ORDER_LIST"
 
-ACTION_SHOPIFY_GET_PRODUCTS_PAGINATED = "SHOPIFY_GET_PRODUCTS_PAGINATED"
+ACTION_SHOPIFY_GET_PRODUCTS_PAGINATED = "SHOPIFY_GET_PRODUCTS"
 
 
 
@@ -318,7 +318,7 @@ ACTION_KLAVIYO_GET_METRICS = "KLAVIYO_GET_METRICS"
 
 # Slack
 
-ACTION_SLACK_TEST_AUTH = "SLACK_TEST_AUTH"
+ACTION_SLACK_TEST_AUTH = "SLACK_FETCH_TEAM_INFO"
 
 ACTION_SLACK_LIST_CONVERSATIONS = "SLACK_LIST_CONVERSATIONS"
 
@@ -2065,84 +2065,65 @@ async def slack_post_message_via_composio_or_proxy(
 
 
 async def execute_action(user_id: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a Composio action on behalf of a user (v3 tools/execute endpoint).
 
-    """Execute a Composio action on behalf of a user."""
-
+    v2 (/api/v2/actions/{action}/execute) was retired with HTTP 410.
+    v3 uses /api/v3/tools/execute/{slug} with body {user_id, arguments,
+    connected_account_id?} and response {data, successful, error, log_id}.
+    """
     if not _get_key():
-
         return {"error": "COMPOSIO_API_KEY not configured in .env"}
 
-
-
-    # Look up connectedAccountId (required by Composio v2 execute for auth apps)
-
+    # Resolve connected_account_id for auth-requiring toolkits
     conn_id: Optional[str] = None
-
     toolkit = _toolkit_for_action(action)
-
     if toolkit:
-
         status = await get_connection_status(user_id, toolkit)
-
         conn_id = status.get("connection_id")
-
         if not status.get("connected"):
-
             return {
-
                 "error": f"{toolkit.title()} is not connected. Connect it in the Integrations page first.",
-
             }
 
-
+    body: Dict[str, Any] = {
+        "user_id": user_id,
+        "arguments": params or {},
+    }
+    if conn_id:
+        body["connected_account_id"] = conn_id
 
     try:
-
         async with httpx.AsyncClient(timeout=60.0) as client:
-
-            body: Dict[str, Any] = {
-
-                "entityId": user_id,
-
-                "input": params,
-
-            }
-
-            if conn_id:
-
-                body["connectedAccountId"] = conn_id
-
             resp = await client.post(
-
-                f"{_BASE}/v2/actions/{action}/execute",
-
+                f"{_BASE}/v3/tools/execute/{action}",
                 headers=_headers(),
-
                 json=body,
-
             )
-
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                logger.warning("[composio] execute_action %s non-JSON response (HTTP %s)", action, resp.status_code)
+                return {"error": f"HTTP {resp.status_code}"}
 
             if resp.status_code not in (200, 201):
-
-                err = data.get("message") or data.get("error") or f"HTTP {resp.status_code}"
-
+                err = (
+                    (data.get("error") or {}).get("message") if isinstance(data.get("error"), dict)
+                    else data.get("error")
+                ) or data.get("message") or f"HTTP {resp.status_code}"
                 logger.warning("[composio] execute_action %s error: %s", action, err)
+                return {"error": str(err)}
 
-                return {"error": err}
+            # v3 wrapper: {data, successful, error, log_id}
+            if data.get("successful") is False:
+                err = data.get("error") or "action failed"
+                logger.warning("[composio] execute_action %s not successful: %s", action, err)
+                return {"error": str(err)}
 
-            result = data.get("data") or data.get("response") or data.get("result") or data
-
-            if isinstance(result, dict) and result.get("error"):
-
-                return {"error": result["error"]}
-
+            result = data.get("data")
+            if result is None:
+                result = data
             return {"success": True, "data": result}
-
     except Exception as e:
-
         logger.error("[composio] execute_action %s error: %s", action, e)
-
         return {"error": str(e)}
 
