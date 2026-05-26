@@ -375,19 +375,26 @@ export default function ActionModePage() {
 
   const load = useCallback(async () => {
     try {
-      const [s, f, q, o, ca, ss, cl, pr, rc, ia, sc, pl] = await Promise.all([
-        api.get<Settings>("/action-mode/settings"),
-        api.get<{ items: FeedItem[] }>("/action-mode/feed"),
-        api.get<{ items: QueueItem[] }>("/action-mode/queue"),
-        api.get<{ opportunities: Opportunity[] }>("/action-mode/opportunities"),
-        api.get<{ agents: CustomAgent[] }>("/action-mode/agents"),
-        api.get<SocialSettings>("/action-mode/social/settings"),
-        api.get<{ clusters: Cluster[] }>("/action-mode/clusters"),
-        api.get<{ predictions: Prediction[] }>("/action-mode/predictions"),
-        api.get<{ recon: ReconItem[] }>("/action-mode/recon"),
-        api.get<{ items: InstantAction[] }>("/action-mode/instant"),
-        api.get<{ scouts: Scout[] }>("/action-mode/scouts"),
-        api.get<{ pulse: Opportunity[] }>("/action-mode/scouts/pulse"),
+      const timeoutPromise = new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error("Connection request timed out. Please check if your backend server and MongoDB database are running.")), 10000)
+      );
+
+      const [s, f, q, o, ca, ss, cl, pr, rc, ia, sc, pl] = await Promise.race([
+        Promise.all([
+          api.get<Settings>("/action-mode/settings"),
+          api.get<{ items: FeedItem[] }>("/action-mode/feed"),
+          api.get<{ items: QueueItem[] }>("/action-mode/queue"),
+          api.get<{ opportunities: Opportunity[] }>("/action-mode/opportunities"),
+          api.get<{ agents: CustomAgent[] }>("/action-mode/agents"),
+          api.get<SocialSettings>("/action-mode/social/settings"),
+          api.get<{ clusters: Cluster[] }>("/action-mode/clusters"),
+          api.get<{ predictions: Prediction[] }>("/action-mode/predictions"),
+          api.get<{ recon: ReconItem[] }>("/action-mode/recon"),
+          api.get<{ items: InstantAction[] }>("/action-mode/instant"),
+          api.get<{ scouts: Scout[] }>("/action-mode/scouts"),
+          api.get<{ pulse: Opportunity[] }>("/action-mode/scouts/pulse"),
+        ]),
+        timeoutPromise
       ]);
       setSettings(s);
       setFeed(f.items);
