@@ -323,6 +323,7 @@ export default function ActionModePage() {
   const [instantActions, setInstantActions] = useState<InstantAction[]>([]);
   const [scouts, setScouts] = useState<Scout[]>([]);
   const [scoutPulse, setScoutPulse] = useState<Opportunity[]>([]);
+  const [totalScanned, setTotalScanned] = useState(0);
   const [socialSettings, setSocialSettings] = useState<SocialSettings>({
     platforms: ["facebook"], keywords: [], groups: [], location: "",
     daily_limit: 10, auto_run: true, mode: "review",
@@ -392,7 +393,7 @@ export default function ActionModePage() {
           api.get<{ recon: ReconItem[] }>("/action-mode/recon"),
           api.get<{ items: InstantAction[] }>("/action-mode/instant"),
           api.get<{ scouts: Scout[] }>("/action-mode/scouts"),
-          api.get<{ pulse: Opportunity[] }>("/action-mode/scouts/pulse"),
+          api.get<{ pulse: Opportunity[]; total_scanned: number }>("/action-mode/scouts/pulse"),
         ]),
         timeoutPromise
       ]);
@@ -408,6 +409,7 @@ export default function ActionModePage() {
       setInstantActions(ia.items);
       setScouts(sc.scouts);
       setScoutPulse(pl.pulse);
+      setTotalScanned(pl.total_scanned ?? pl.pulse.length);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -1160,28 +1162,28 @@ export default function ActionModePage() {
                     <div className="flex-1 grid grid-cols-2 gap-4">
                       {/* Stat 1 */}
                       <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
-                        <div className="text-3xl font-extrabold tracking-tight text-[#059669]">773</div>
-                        <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Scanned this hour</div>
+                        <div className="text-3xl font-extrabold tracking-tight text-[#059669]">{totalScanned}</div>
+                        <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Signals found</div>
                       </div>
 
                       {/* Stat 2 */}
                       <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
                         <div className="text-3xl font-extrabold tracking-tight text-[#DC2626]">
-                          {queue.length || 7}
+                          {queue.length}
                         </div>
                         <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Leads in queue</div>
                       </div>
 
                       {/* Stat 3 */}
                       <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
-                        <div className="text-3xl font-extrabold tracking-tight text-[#D97706]">3</div>
+                        <div className="text-3xl font-extrabold tracking-tight text-[#D97706]">{Object.values(settings.agents || {}).filter(Boolean).length}</div>
                         <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Agents active</div>
                       </div>
 
                       {/* Stat 4 */}
                       <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
                         <div className="text-3xl font-extrabold tracking-tight text-[#2563EB]">
-                          {opportunities.filter(o => o.kind === "funding").length || 2}
+                          {fundingOpps.length}
                         </div>
                         <div className="text-xs font-semibold text-slate-400 mt-1.5 select-none">Funding matches</div>
                       </div>
@@ -1193,90 +1195,47 @@ export default function ActionModePage() {
                     <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Live Activity</h3>
                     
                     <div className="space-y-2">
-                      {/* Activity Row 1 (Urgent Lead) */}
-                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                        <div className="flex items-start gap-3">
-                          <span className="w-2 h-2 rounded-full bg-[#DC2626] mt-1.5" />
-                          <div>
-                            <div className="text-sm text-slate-700 font-medium">
-                              <span className="font-bold text-slate-800">Urgent lead</span> — James Mwangi needs 40 chairs · <span className="text-slate-400 text-xs">Facebook Groups</span>
-                            </div>
-                            <div className="text-xs text-slate-400 mt-1">2 min ago</div>
-                          </div>
+                      {scoutPulse.length === 0 && fundingOpps.length === 0 ? (
+                        <div className="bg-slate-50 rounded-xl border border-slate-100 p-6 text-center text-xs text-slate-400">
+                          No activity yet — run a scout to see live signals here.
                         </div>
-                        <button 
-                          onClick={() => setSection("hunt")}
-                          className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2"
-                        >
-                          View →
-                        </button>
-                      </div>
-
-                      {/* Activity Row 2 (Competitor Alert) */}
-                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                        <div className="flex items-start gap-3">
-                          <span className="w-2 h-2 rounded-full bg-[#D97706] mt-1.5" />
-                          <div>
-                            <div className="text-sm text-slate-700 font-medium">
-                              <span className="font-bold text-slate-800">Competitor alert</span> — @nairobibuyer complained about Acme Furniture on Twitter
-                            </div>
-                            <div className="text-xs text-slate-400 mt-1">14 min ago</div>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => setSection("autopilot")}
-                          className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2"
-                        >
-                          Reply →
-                        </button>
-                      </div>
-
-                      {/* Activity Row 3 (Funding Match) */}
-                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                        <div className="flex items-start gap-3">
-                          <span className="w-2 h-2 rounded-full bg-[#2563EB] mt-1.5" />
-                          <div>
-                            <div className="text-sm text-slate-700 font-medium">
-                              <span className="font-bold text-slate-800">Funding match</span> — KCB SME Grant 2025 · 11 days left · <span className="text-slate-500 font-semibold text-xs">AI score 8.2</span>
-                            </div>
-                            <div className="text-xs text-slate-400 mt-1">1 hr ago</div>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => setSection("funding")}
-                          className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2"
-                        >
-                          Apply →
-                        </button>
-                      </div>
-
-                      {/* Activity Row 4 (Warm Leads) */}
-                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                        <div className="flex items-start gap-3">
-                          <span className="w-2 h-2 rounded-full bg-[#059669] mt-1.5" />
-                          <div>
-                            <div className="text-sm text-slate-700 font-medium">
-                              <span className="font-bold text-slate-800">3 warm leads</span> added from Facebook Marketplace scan
-                            </div>
-                            <div className="text-xs text-slate-400 mt-1">2 hrs ago</div>
-                          </div>
-                        </div>
-                        <span className="pr-2" />
-                      </div>
-
-                      {/* Activity Row 5 (Scanned Facebook Groups) */}
-                      <div className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                        <div className="flex items-start gap-3">
-                          <span className="w-2 h-2 rounded-full bg-[#94A3B8] mt-1.5" />
-                          <div>
-                            <div className="text-sm text-slate-700 font-medium">
-                              Scanned 12 Facebook groups — <span className="font-bold text-slate-800">0 new matches</span>
-                            </div>
-                            <div className="text-xs text-slate-400 mt-1">3 hrs ago</div>
-                          </div>
-                        </div>
-                        <span className="pr-2" />
-                      </div>
+                      ) : (
+                        [...scoutPulse.slice(0, 4), ...fundingOpps.slice(0, 2)]
+                          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                          .slice(0, 5)
+                          .map(item => {
+                            const isFunding = item.kind === "funding";
+                            const isUrgent = !isFunding && (item.score ?? 0) >= 8;
+                            const dotColor = isFunding ? "#2563EB" : isUrgent ? "#DC2626" : "#059669";
+                            const label = isFunding ? "Funding match" : isUrgent ? "Urgent lead" : "New lead";
+                            const target = isFunding ? "funding" : "hunt";
+                            const btnLabel = isFunding ? "Apply →" : "View →";
+                            const ms = Date.now() - new Date(item.created_at).getTime();
+                            const minAgo = Math.max(1, Math.round(ms / 60000));
+                            const timeLabel = minAgo < 60 ? `${minAgo} min ago` : `${Math.round(minAgo / 60)} hr ago`;
+                            return (
+                              <div key={item._id} className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                                <div className="flex items-start gap-3">
+                                  <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: dotColor }} />
+                                  <div>
+                                    <div className="text-sm text-slate-700 font-medium">
+                                      <span className="font-bold text-slate-800">{label}</span> — {item.title}
+                                      {item.platform && <span className="text-slate-400 text-xs"> · {item.platform}</span>}
+                                      {!isFunding && item.score != null && <span className="text-slate-400 text-xs"> · AI score {item.score.toFixed(1)}</span>}
+                                    </div>
+                                    <div className="text-xs text-slate-400 mt-1">{timeLabel}</div>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => setSection(target)}
+                                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2 flex-shrink-0"
+                                >
+                                  {btnLabel}
+                                </button>
+                              </div>
+                            );
+                          })
+                      )}
                     </div>
                   </div>
 
@@ -1297,7 +1256,18 @@ export default function ActionModePage() {
                     
                     <div className="space-y-3">
                       <p className="text-xs text-slate-700 leading-relaxed">
-                        <span className="font-bold">Good morning Sam! 🌅</span> You have <span className="text-[#059669] font-bold">{leads.filter(l => (l.score??5) >= 5).length || 7} hot leads</span> today. Top: James Mwangi needs 40 chairs urgently — posted 23 min ago. Reply before a competitor does.
+                        {(() => {
+                          const hotLeads = leads.filter(l => (l.score ?? 5) >= 5);
+                          const topLead = hotLeads[0];
+                          return (
+                            <>
+                              <span className="font-bold">Good morning! 🌅</span> You have <span className="text-[#059669] font-bold">{hotLeads.length} hot lead{hotLeads.length !== 1 ? "s" : ""}</span> today.{" "}
+                              {topLead
+                                ? <>Top: {topLead.title}{topLead.platform ? ` · ${topLead.platform}` : ""}. Reply before a competitor does.</>
+                                : "Run your scouts to surface the latest signals."}
+                            </>
+                          );
+                        })()}
                       </p>
                       
                       <button 
@@ -1310,34 +1280,55 @@ export default function ActionModePage() {
                   </div>
 
                   {/* Competitor Alert Card */}
-                  <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
-                    <div className="flex items-start gap-3 mb-4">
-                      <div className="bg-amber-50 p-2 rounded-xl text-xl">⚡</div>
-                      <div>
-                        <h4 className="font-bold text-slate-800 text-sm">Competitor alert</h4>
-                        <p className="text-[10px] text-slate-400 mt-0.5">Opportunity detected</p>
+                  {recon.length > 0 ? (
+                    <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
+                      <div className="flex items-start gap-3 mb-4">
+                        <div className="bg-amber-50 p-2 rounded-xl text-xl">⚡</div>
+                        <div>
+                          <h4 className="font-bold text-slate-800 text-sm">Market signal</h4>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Opportunity detected</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="bg-slate-50 border border-slate-100 rounded-xl p-3.5">
+                          <p className="text-xs font-bold text-slate-800 mb-1">{recon[0].company}</p>
+                          <p className="text-xs text-slate-600 leading-relaxed">
+                            {recon[0].why_relevant}
+                          </p>
+                          <p className="text-[10px] text-slate-400 mt-2 font-medium">
+                            {recon[0].action_hint}
+                          </p>
+                        </div>
+
+                        <button
+                          onClick={() => setSection("radar")}
+                          className="w-full py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold rounded-xl flex items-center justify-center transition-all border border-amber-100"
+                        >
+                          View in Radar →
+                        </button>
                       </div>
                     </div>
-
-                    <div className="space-y-4">
-                      <div className="bg-slate-50 border border-slate-100 rounded-xl p-3.5">
-                        <p className="text-xs font-bold text-slate-800 mb-1">@nairobibuyer</p>
-                        <p className="text-xs text-slate-600 italic leading-relaxed">
-                          "Acme Furniture let me down again — 3 days late. Anyone know a reliable alternative?"
-                        </p>
-                        <p className="text-[10px] text-slate-400 mt-2 font-medium">
-                          AI has drafted a reply for you.
-                        </p>
+                  ) : (
+                    <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm">
+                      <div className="flex items-start gap-3 mb-3">
+                        <div className="bg-slate-50 p-2 rounded-xl text-xl">⚡</div>
+                        <div>
+                          <h4 className="font-bold text-slate-800 text-sm">Market signals</h4>
+                          <p className="text-[10px] text-slate-400 mt-0.5">No signals yet</p>
+                        </div>
                       </div>
-
-                      <button 
-                        onClick={() => setSection("autopilot")}
-                        className="w-full py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold rounded-xl flex items-center justify-center transition-all border border-amber-100"
+                      <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                        Run Market Radar to detect competitor complaints, job postings, and new business opportunities in your area.
+                      </p>
+                      <button
+                        onClick={() => setSection("radar")}
+                        className="w-full py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl flex items-center justify-center transition-all border border-slate-200"
                       >
-                        View drafted reply →
+                        Open Radar →
                       </button>
                     </div>
-                  </div>
+                  )}
 
                 </div>
 
@@ -1368,181 +1359,84 @@ export default function ActionModePage() {
               </div>
 
               {/* Alert Banner */}
-              <div className="mb-6 flex items-center gap-3 bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl px-4 py-3.5 text-sm text-emerald-800 shadow-[0_1px_2px_rgba(0,0,0,0.01)]">
-                <span className="text-lg select-none">🎯</span>
-                <p className="leading-relaxed font-medium">
-                  <span className="font-bold">2 strong matches this week.</span> KCB SME Grant closes in 11 days — AI rates your fit at 9.1/10. Apply before the deadline.
-                </p>
-              </div>
+              {fundingOpps.length > 0 && (
+                <div className="mb-6 flex items-center gap-3 bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl px-4 py-3.5 text-sm text-emerald-800 shadow-[0_1px_2px_rgba(0,0,0,0.01)]">
+                  <span className="text-lg select-none">🎯</span>
+                  <p className="leading-relaxed font-medium">
+                    <span className="font-bold">{fundingOpps.length} funding match{fundingOpps.length !== 1 ? "es" : ""} found.</span>{" "}
+                    {fundingOpps[0] && <>Top match: {fundingOpps[0].title}{fundingOpps[0].score != null ? ` — AI score ${fundingOpps[0].score.toFixed(1)}/10` : ""}.</>}
+                  </p>
+                </div>
+              )}
 
               {/* Funding Rows */}
               <div className="space-y-3">
-                {/* Row 1 — KCB SME Business Grant */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#059669]">
-                  <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
-                    {/* Details */}
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="font-bold text-slate-800 text-sm hover:text-emerald-700 transition-colors cursor-pointer">KCB SME Business Grant 2025</span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 select-none">Grant</span>
-                      </div>
-                      <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
-                        KCB Foundation · Kenya · Up to KES 1,000,000
-                      </p>
-                      <p className="text-xs text-slate-500 leading-relaxed">
-                        Supporting small businesses in manufacturing, trade and services. Priority for businesses with 2+ employees and 1yr+ track record. Furniture and home goods sector eligible.
-                      </p>
-                    </div>
-
-                    {/* AI Match Ring */}
-                    <div className="flex flex-col items-center justify-center">
-                      <IntentRing score={9.1} />
-                      <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
-                    </div>
-
-                    {/* Deadline */}
-                    <div className="flex flex-col items-center justify-center text-center">
-                      <span className="text-sm font-extrabold text-[#DC2626]">11 days</span>
-                      <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Deadline left</span>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex flex-col gap-1.5">
-                      <button className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
-                        Apply now →
-                      </button>
-                      <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
-                        Save for later
-                      </button>
-                    </div>
+                {fundingOpps.length === 0 ? (
+                  <div className="bg-white rounded-xl border border-slate-100 p-10 text-center">
+                    <div className="text-3xl mb-3">💰</div>
+                    <p className="text-sm font-semibold text-slate-600 mb-1">No funding matches yet</p>
+                    <p className="text-xs text-slate-400 mb-4">Run your AI scouts to find grants, loans, and accelerators matched to your business.</p>
+                    <button
+                      onClick={load}
+                      className="px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-lg transition-all border border-emerald-100"
+                    >
+                      Refresh
+                    </button>
                   </div>
-                </div>
+                ) : (
+                  fundingOpps.map((opp, idx) => {
+                    const accentColors = ["#059669", "#2563EB", "#7C3AED", "#D97706", "#DC2626"];
+                    const accent = accentColors[idx % accentColors.length];
+                    const score = opp.score ?? 5;
+                    return (
+                      <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200" style={{ borderLeftWidth: 3, borderLeftColor: accent }}>
+                        <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 140px" }}>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <span className="font-bold text-slate-800 text-sm">{opp.title}</span>
+                              {opp.platform && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 select-none">{opp.platform}</span>
+                              )}
+                            </div>
+                            {opp.agent_name && (
+                              <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
+                                Via {opp.agent_name}
+                              </p>
+                            )}
+                            {opp.snippet && (
+                              <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{opp.snippet}</p>
+                            )}
+                          </div>
 
-                {/* Row 2 — Equity Bank Biashara Loan */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#2563EB]">
-                  <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
-                    {/* Details */}
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="font-bold text-slate-800 text-sm hover:text-blue-700 transition-colors cursor-pointer">Equity Bank Biashara Loan</span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 select-none">Loan</span>
-                      </div>
-                      <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
-                        Equity Bank · Kenya · KES 50K – 5M
-                      </p>
-                      <p className="text-xs text-slate-500 leading-relaxed">
-                        Low-interest SME financing for inventory and equipment. No collateral required under KES 500K. Fast approval within 5 working days for qualifying businesses.
-                      </p>
-                    </div>
+                          <div className="flex flex-col items-center justify-center">
+                            <IntentRing score={score} />
+                            <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
+                          </div>
 
-                    {/* AI Match Ring */}
-                    <div className="flex flex-col items-center justify-center">
-                      <IntentRing score={8.4} />
-                      <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
-                    </div>
-
-                    {/* Deadline */}
-                    <div className="flex flex-col items-center justify-center text-center">
-                      <span className="text-sm font-extrabold text-slate-800">Rolling</span>
-                      <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Apply anytime</span>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex flex-col gap-1.5">
-                      <button className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
-                        Apply now →
-                      </button>
-                      <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
-                        Save for later
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Row 3 — Nairobi Innovation Hub Accelerator */}
-                <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#7C3AED]">
-                  <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
-                    {/* Details */}
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="font-bold text-slate-800 text-sm hover:text-purple-700 transition-colors cursor-pointer">Nairobi Innovation Hub Accelerator</span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 select-none">Accelerator</span>
-                      </div>
-                      <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
-                        NiHub · Nairobi · 6-month programme
-                      </p>
-                      <p className="text-xs text-slate-500 leading-relaxed">
-                        Business acceleration for tech-enabled SMEs in East Africa. Includes mentorship, workspace, and investor connections. Accepts businesses with a digital product component.
-                      </p>
-                    </div>
-
-                    {/* AI Match Ring */}
-                    <div className="flex flex-col items-center justify-center">
-                      <IntentRing score={6.3} />
-                      <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
-                    </div>
-
-                    {/* Deadline */}
-                    <div className="flex flex-col items-center justify-center text-center">
-                      <span className="text-sm font-extrabold text-[#2563EB]">32 days</span>
-                      <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Deadline left</span>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex flex-col gap-1.5">
-                      <button className="w-full py-1.5 bg-[#2563EB] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
-                        Learn more →
-                      </button>
-                      <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
-                        Save for later
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                  {/* Row 4 — Africa Business Angels Network */}
-                  <div className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200 border-l-[3px] border-l-[#94A3B8]">
-                    <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 110px 140px" }}>
-                      {/* Details */}
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className="font-bold text-slate-800 text-sm hover:text-slate-700 transition-colors cursor-pointer">Africa Business Angels Network</span>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 select-none">{"VC / Angel"}</span>
+                          <div className="flex flex-col gap-1.5">
+                            {opp.url ? (
+                              <a
+                                href={opp.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1"
+                              >
+                                Apply now →
+                              </a>
+                            ) : (
+                              <button className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
+                                View details →
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
-                          ABAN · Pan-Africa · USD 25K – 250K
-                        </p>
-                        <p className="text-xs text-slate-500 leading-relaxed">
-                          Early-stage investment for African startups with regional growth ambition. Looking for scalable models with evidence of traction and clear path to profitability.
-                        </p>
                       </div>
-
-                      {/* AI Match Ring */}
-                      <div className="flex flex-col items-center justify-center">
-                        <IntentRing score={3.5} />
-                        <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
-                      </div>
-
-                      {/* Deadline */}
-                      <div className="flex flex-col items-center justify-center text-center">
-                        <span className="text-sm font-extrabold text-slate-800">Open</span>
-                        <span className="text-[10px] text-slate-400 mt-0.5 font-medium select-none">Rolling intake</span>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="flex flex-col gap-1.5">
-                        <button className="w-full py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 border border-slate-200/50">
-                          View details
-                        </button>
-                        <button className="w-full py-1 px-1.5 border border-slate-200 text-slate-600 bg-white text-[10px] font-bold rounded-lg hover:bg-slate-50 transition-all">
-                          Save for later
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                    );
+                  })
+                )}
               </div>
-            )}
+            </div>
+          )}
 
           {/* ────────────────── MARKET RADAR ────────────────── */}
           {section === "radar" && (

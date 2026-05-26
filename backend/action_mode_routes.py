@@ -891,8 +891,9 @@ def make_action_mode_router(db, user_dep):
     async def scouts_pulse_route(user=Depends(user_dep)):
         from scout_service import get_pulse
         uid = _uid(user)
-        items = await get_pulse(db, uid, limit=5)
-        return {"pulse": items}
+        items = await get_pulse(db, uid, limit=20)
+        total = await db.action_mode_opportunities.count_documents({"user_id": uid, "agent": "zilo_scout"})
+        return {"pulse": items, "total_scanned": total}
 
     @router.post("/scouts/setup")
     async def scouts_setup_route(user=Depends(user_dep)):
