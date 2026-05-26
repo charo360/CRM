@@ -9108,6 +9108,93 @@ async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="gmail_bulk_trash",
+    description=(
+        "Move many Gmail threads to Trash in one call using a search query. "
+        "Recoverable for 30 days. Designed for inbox cleanup — newsletters, "
+        "promotions, bulk archives. Common queries:\n"
+        "  - 'category:promotions' — Gmail's auto-categorized Promotions tab\n"
+        "  - 'list:*' — anything with a List-Unsubscribe header (real newsletters)\n"
+        "  - 'from:noreply OR from:newsletter' — sender-based filter\n"
+        "  - 'older_than:1y category:promotions' — old promotions only\n"
+        "Always confirm with the user how many threads will be trashed before running. "
+        "Hard cap of 500 threads per call to prevent runaway agent action."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query":       {"type": "string", "description": "Gmail search query identifying threads to trash"},
+            "max_threads": {"type": "integer", "description": "Max threads to trash (default 50, hard cap 500)"},
+        },
+        "required": ["query"],
+    },
+    destructive=True,
+)
+async def gmail_bulk_trash(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"error": "query is required"}
+    limit = min(max(int(args.get("max_threads") or 50), 1), 500)
+
+    # Find matching threads (verbose so we can echo subjects back for confirmation)
+    list_r = await execute_action(ctx.business_id, "GMAIL_LIST_THREADS", {
+        "user_id": "me", "query": query, "max_results": limit, "verbose": True,
+    })
+    if "error" in list_r and not list_r.get("success"):
+        return {"error": list_r["error"]}
+    raw_threads = (_gmail_response_data(list_r).get("threads") or [])
+    if not raw_threads:
+        return {"status": "nothing_to_trash", "query": query, "trashed_count": 0}
+
+    # Trash threads in parallel batches (10 at a time) — adds the TRASH system label,
+    # which moves the whole thread to Trash. Works on projects where
+    # GMAIL_MOVE_TO_TRASH is plan-gated.
+    import asyncio as _asyncio
+
+    async def _trash_one(thread_id: str) -> tuple[str, Optional[str]]:
+        r = await execute_action(ctx.business_id, "GMAIL_MODIFY_THREAD_LABELS", {
+            "user_id": "me", "thread_id": thread_id, "add_label_ids": ["TRASH"],
+        })
+        err = r["error"] if ("error" in r and not r.get("success")) else None
+        return thread_id, err
+
+    targets: list[tuple[str, str]] = []  # (thread_id, subject preview)
+    for t in raw_threads:
+        tid = t.get("id") or t.get("threadId") or ""
+        if not tid:
+            continue
+        # extract subject from first message's headers if available
+        msgs = t.get("messages") or []
+        subj = ""
+        if msgs:
+            hdrs = (msgs[0].get("payload") or {}).get("headers") or []
+            subj = _gmail_header(hdrs, "Subject") or msgs[0].get("subject") or ""
+        targets.append((tid, subj[:80]))
+
+    trashed: list[Dict[str, str]] = []
+    failed: list[Dict[str, str]] = []
+    BATCH = 10
+    for i in range(0, len(targets), BATCH):
+        chunk = targets[i:i + BATCH]
+        results = await _asyncio.gather(*[_trash_one(tid) for tid, _ in chunk])
+        for (tid, subj), (_tid, err) in zip(chunk, results):
+            if err:
+                failed.append({"thread_id": tid, "subject": subj, "error": err})
+            else:
+                trashed.append({"thread_id": tid, "subject": subj})
+
+    return {
+        "status": "trashed",
+        "query": query,
+        "trashed_count": len(trashed),
+        "failed_count": len(failed),
+        "trashed_sample": trashed[:10],  # truncate for chat brevity
+        "failed": failed[:5] or None,
+    }
+
+
+@tool(
     name="gmail_trash_message",
     description=(
         "Move a single Gmail message to Trash (not the whole thread). "
