@@ -9,7 +9,7 @@ import {
   BarChart3, Clock, MapPin, Mail, Search, Filter, Zap,
   CheckCircle2, XCircle, Circle, RotateCcw, ExternalLink,
   DollarSign, Percent, Calendar, Eye, TrendingDown, Star,
-  Wand2,
+  Wand2, ArrowLeft, Globe, Store,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -133,29 +133,45 @@ function StockBadge({ qty }: { qty: number }) {
 // ── No connection ─────────────────────────────────────────────────────────────
 
 function NoShopify({
-  shop, setShop, onOAuth,
-  connecting,
+  shop, setShop, onOAuth, connecting, onCreateStore,
 }: {
   shop: string; setShop: (v: string) => void;
   onOAuth: () => void;
   connecting: boolean;
+  onCreateStore: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-8 py-16">
+    <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-8 py-12">
       <div className="w-16 h-16 rounded-2xl bg-brand/10 border border-brand/20 flex items-center justify-center">
         <ShoppingBag size={28} className="text-brand" />
       </div>
       <div>
-        <p className="font-bold text-slate-800 text-base">Connect your Shopify store</p>
+        <p className="font-bold text-slate-800 text-base">Get started with Shopify</p>
         <p className="text-sm text-slate-500 mt-1.5 max-w-xs leading-relaxed">
-          Enter your store name and click Connect — you’ll be taken to Shopify to approve access.
+          Connect an existing store or create a brand-new one — free, right here in Zilo.
         </p>
       </div>
 
-      {/* OAuth form */}
-      <div className="w-full max-w-sm space-y-3 text-left">
-        <div>
-          <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5 block">Store name</label>
+      {/* Two options */}
+      <div className="w-full max-w-sm space-y-3">
+        {/* Option 1 — create new */}
+        <button
+          onClick={onCreateStore}
+          className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl border-2 border-violet-200 bg-violet-50 hover:bg-violet-100 transition-colors text-left"
+        >
+          <div className="w-9 h-9 rounded-lg bg-violet-600 flex items-center justify-center shrink-0">
+            <Store size={18} className="text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-violet-900">Create a new store</p>
+            <p className="text-[11px] text-violet-600">Free dev store — go live when you&apos;re ready</p>
+          </div>
+          <ChevronRight size={16} className="text-violet-400 shrink-0" />
+        </button>
+
+        {/* Option 2 — connect existing */}
+        <div className="w-full space-y-2 text-left">
+          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-center">or connect an existing store</p>
           <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-brand transition-all">
             <input
               value={shop}
@@ -167,17 +183,17 @@ function NoShopify({
             />
             <span className="px-3 text-slate-500 text-sm select-none">.myshopify.com</span>
           </div>
+          <button
+            onClick={onOAuth}
+            disabled={connecting || !shop.trim()}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand hover:bg-brand-dark disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
+          >
+            {connecting ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+            {connecting ? "Connecting…" : "Connect with Shopify"}
+          </button>
         </div>
-        <button
-          onClick={onOAuth}
-          disabled={connecting || !shop.trim()}
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand hover:bg-brand-dark disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
-        >
-          {connecting ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
-          {connecting ? "Connecting…" : "Connect with Shopify"}
-        </button>
-
       </div>
+
       <div className="grid grid-cols-2 gap-3 text-left mt-2 max-w-sm">
         {[
           ["📦", "Order management", "Fulfill, cancel, track every order"],
@@ -193,6 +209,182 @@ function NoShopify({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Create Store Wizard ───────────────────────────────────────────────────────
+
+const COUNTRIES = [
+  { code: "US", name: "United States" }, { code: "GB", name: "United Kingdom" },
+  { code: "CA", name: "Canada" }, { code: "AU", name: "Australia" },
+  { code: "DE", name: "Germany" }, { code: "FR", name: "France" },
+  { code: "NL", name: "Netherlands" }, { code: "SE", name: "Sweden" },
+  { code: "NO", name: "Norway" }, { code: "DK", name: "Denmark" },
+  { code: "FI", name: "Finland" }, { code: "NG", name: "Nigeria" },
+  { code: "ZA", name: "South Africa" }, { code: "KE", name: "Kenya" },
+  { code: "IN", name: "India" }, { code: "SG", name: "Singapore" },
+  { code: "AE", name: "UAE" }, { code: "BR", name: "Brazil" },
+  { code: "MX", name: "Mexico" }, { code: "NZ", name: "New Zealand" },
+];
+
+type WizardStep = "form" | "creating" | "done";
+
+function CreateStoreWizard({ onBack, onConnectStore }: {
+  onBack: () => void;
+  onConnectStore: (domain: string) => void;
+}) {
+  const [step, setStep] = useState<WizardStep>("form");
+  const [storeName, setStoreName]   = useState("");
+  const [firstName, setFirstName]   = useState("");
+  const [lastName, setLastName]     = useState("");
+  const [email, setEmail]           = useState("");
+  const [country, setCountry]       = useState("US");
+  const [createdDomain, setCreatedDomain] = useState("");
+  const [error, setError]           = useState("");
+
+  const slug = storeName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!storeName.trim() || !firstName.trim() || !email.trim()) return;
+    setError("");
+    setStep("creating");
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${apiBase}/shopify/partner/create-store`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          store_name: slug,
+          first_name: firstName.trim(),
+          last_name:  lastName.trim(),
+          email:      email.trim(),
+          country_code: country,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Store creation failed");
+      setCreatedDomain(data.domain);
+      setStep("done");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+      setStep("form");
+    }
+  }
+
+  if (step === "creating") return (
+    <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-8 py-20">
+      <div className="w-16 h-16 rounded-2xl bg-violet-50 border border-violet-200 flex items-center justify-center">
+        <Loader2 size={28} className="text-violet-600 animate-spin" />
+      </div>
+      <div>
+        <p className="font-bold text-slate-800 text-base">Creating your store…</p>
+        <p className="text-sm text-slate-500 mt-1">This usually takes 10–20 seconds</p>
+      </div>
+      <div className="space-y-2 text-left w-full max-w-xs">
+        {["Setting up store infrastructure", "Configuring payment settings", "Preparing your dashboard"].map((t, i) => (
+          <div key={i} className="flex items-center gap-2 text-sm text-slate-600">
+            <div className="w-4 h-4 rounded-full border-2 border-violet-300 border-t-violet-600 animate-spin shrink-0" style={{ animationDelay: `${i * 150}ms` }} />
+            {t}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (step === "done") return (
+    <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-8 py-16">
+      <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center">
+        <CheckCircle2 size={28} className="text-emerald-600" />
+      </div>
+      <div>
+        <p className="font-bold text-slate-800 text-base">Your store is ready!</p>
+        <p className="text-sm text-slate-500 mt-1">
+          <span className="font-mono text-slate-700">{createdDomain}</span> has been created
+        </p>
+      </div>
+      <div className="w-full max-w-sm space-y-3">
+        <button
+          onClick={() => onConnectStore(createdDomain.replace(".myshopify.com", ""))}
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors"
+        >
+          <Zap size={14} /> Connect store to Zilo
+        </button>
+        <a
+          href={`https://${createdDomain}/admin`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors"
+        >
+          <ExternalLink size={14} /> Open Shopify admin
+        </a>
+        <p className="text-[11px] text-slate-400 leading-relaxed">
+          Your store is a free development store. When you&apos;re ready to sell, pick a Shopify plan inside your admin — Zilo earns a partnership commission that helps keep the platform free.
+        </p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col h-full px-8 py-10 max-w-sm mx-auto w-full">
+      <button onClick={onBack} className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-800 mb-6 self-start">
+        <ArrowLeft size={14} /> Back
+      </button>
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-violet-50 border border-violet-200 flex items-center justify-center">
+          <Store size={20} className="text-violet-600" />
+        </div>
+        <div>
+          <p className="font-bold text-slate-800">Create a new Shopify store</p>
+          <p className="text-xs text-slate-500">Free dev store — go live anytime</p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-4 px-3 py-2 rounded-xl bg-red-50 border border-red-200 text-xs text-red-600">{error}</div>
+      )}
+
+      <form onSubmit={handleCreate} className="space-y-3 flex-1">
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1 block">Store name *</label>
+          <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl overflow-hidden focus-within:ring-1 focus-within:ring-violet-400">
+            <input value={storeName} onChange={e => setStoreName(e.target.value)} placeholder="my-store"
+              className="flex-1 bg-transparent px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-500 outline-none" required />
+            <span className="px-3 text-slate-400 text-xs select-none">.myshopify.com</span>
+          </div>
+          {slug && slug !== storeName && <p className="text-[10px] text-slate-400 mt-1">Will be: <span className="font-mono">{slug}.myshopify.com</span></p>}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1 block">First name *</label>
+            <input value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="Jane"
+              className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-1 focus:ring-violet-400" required />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1 block">Last name</label>
+            <input value={lastName} onChange={e => setLastName(e.target.value)} placeholder="Doe"
+              className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-1 focus:ring-violet-400" />
+          </div>
+        </div>
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1 block">Email *</label>
+          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="jane@example.com"
+            className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-1 focus:ring-violet-400" required />
+        </div>
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1 block">Country</label>
+          <select value={country} onChange={e => setCountry(e.target.value)}
+            className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 outline-none focus:ring-1 focus:ring-violet-400">
+            {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+          </select>
+        </div>
+        <button type="submit" disabled={!storeName.trim() || !firstName.trim() || !email.trim()}
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors mt-2">
+          <Globe size={14} /> Create store
+        </button>
+      </form>
     </div>
   );
 }
@@ -805,6 +997,21 @@ type AEProduct = {
   detail_url: string;
 };
 
+// ── Unified compare type ─────────────────────────────────────────────────────
+type CompareProduct = {
+  source: "cj" | "ae";
+  id: string;
+  title: string;
+  image_url: string;
+  category: string;
+  cost_price: number;
+  suggested_price: number;
+  popularity: number;
+  is_free_shipping?: boolean;
+  shipping_time?: string;
+  store_name?: string;
+};
+
 // ── AI Product Finder types ───────────────────────────────────────────────────
 type ProductSuggestion = {
   title: string;
@@ -887,7 +1094,7 @@ function ProductsTab() {
 
   // ── AI finder state ─────────────────────────────────────────────────────────
   const [finderOpen, setFinderOpen] = useState(false);
-  const [finderTab, setFinderTab] = useState<"ai" | "cj" | "ae">("ai");
+  const [finderTab, setFinderTab] = useState<"ai" | "cj" | "ae" | "compare">("ai");
   const [category, setCategory] = useState("");
   const [keywords, setKeywords] = useState("");
   const [count, setCount] = useState<number>(8);
@@ -916,6 +1123,14 @@ function ProductsTab() {
   const [aeResults, setAeResults] = useState<AEProduct[]>([]);
   const [aeImportingIdx, setAeImportingIdx] = useState<number | null>(null);
   const [aeImportedIdxs, setAeImportedIdxs] = useState<Set<number>>(new Set());
+
+  // ── Compare state ─────────────────────────────────────────────────────────────
+  const [cmpSearching, setCmpSearching] = useState(false);
+  const [cmpResults, setCmpResults] = useState<CompareProduct[]>([]);
+  const [cmpImportingId, setCmpImportingId] = useState<string | null>(null);
+  const [cmpImportedIds, setCmpImportedIds] = useState<Set<string>>(new Set());
+  const [cmpSort, setCmpSort] = useState<"price_asc" | "price_desc" | "popular">("price_asc");
+  const [cmpSource, setCmpSource] = useState<"all" | "cj" | "ae">("all");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -996,7 +1211,7 @@ function ProductsTab() {
     try {
       const token = getToken();
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
-      const params = new URLSearchParams({ keyword: kw, page_size: "20" });
+      const params = new URLSearchParams({ keyword: kw, page_size: "50" });
       if (maxP) params.set("max_price", maxP);
       const r = await fetch(`${apiBase}/cj/products?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1049,7 +1264,7 @@ function ProductsTab() {
     try {
       const token = getToken();
       const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
-      const params = new URLSearchParams({ keyword: kw, page_size: "20" });
+      const params = new URLSearchParams({ keyword: kw, page_size: "50" });
       if (maxP) params.set("max_price", maxP);
       const r = await fetch(`${apiBase}/ae/products?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -1088,6 +1303,60 @@ function ProductsTab() {
       toast.error(e instanceof Error ? e.message : "Import failed");
     } finally {
       setAeImportingIdx(null);
+    }
+  }
+
+  async function searchCompare() {
+    const kw = srcKeyword.trim();
+    if (!kw) { toast.error("Enter a search keyword"); return; }
+    setCmpSearching(true);
+    setCmpResults([]);
+    setCmpImportedIds(new Set());
+    try {
+      const token = getToken();
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const params = new URLSearchParams({ keyword: kw, sort: cmpSort });
+      if (srcMaxPrice) params.set("max_price", srcMaxPrice);
+      const r = await fetch(`${apiBase}/products/compare?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json() as { products: CompareProduct[]; total: number };
+      setCmpResults(data.products ?? []);
+      if (!data.products?.length) toast.info("No products found — try different keywords");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Compare search failed");
+    } finally {
+      setCmpSearching(false);
+    }
+  }
+
+  async function importFromCompare(p: CompareProduct) {
+    const uid = `${p.source}:${p.id}`;
+    setCmpImportingId(uid);
+    try {
+      const vendor = p.source === "cj" ? "CJdropshipping" : (p.store_name || "AliExpress");
+      const tag = p.source === "cj" ? "dropship,cj" : "dropship,aliexpress";
+      await shopPost({
+        action: "create_product",
+        product: {
+          title:            p.title,
+          description:      `Sourced from ${vendor}. Category: ${p.category}`,
+          vendor,
+          product_type:     p.category,
+          price:            String(p.suggested_price),
+          compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
+          tags:             `${tag},${p.category.toLowerCase()}`,
+          variants:         [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+        },
+      });
+      setCmpImportedIds((prev) => new Set(prev).add(uid));
+      toast.success(`"${p.title.slice(0, 40)}" added to Shopify`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setCmpImportingId(null);
     }
   }
 
@@ -1390,7 +1659,7 @@ function ProductsTab() {
           </>}
 
           {/* Unified Sourcing Panel */}
-          {(finderTab === "cj" || finderTab === "ae") && (
+          {(finderTab === "cj" || finderTab === "ae" || finderTab === "compare") && (
             <div className="flex flex-col" style={{maxHeight: "500px"}}>
               {/* Search bar + supplier toggle — sticky */}
               <div className="px-4 pt-3 pb-3 border-b border-slate-200 flex-shrink-0 space-y-2">
@@ -1419,6 +1688,17 @@ function ProductsTab() {
                   >
                     <TrendingUp size={10} /> AliExpress
                   </button>
+                  <button
+                    onClick={() => setFinderTab("compare")}
+                    className={cn(
+                      "flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all",
+                      finderTab === "compare"
+                        ? "bg-violet-600 text-white border-violet-600 shadow-sm"
+                        : "bg-white text-slate-500 border-slate-200 hover:border-violet-500 hover:text-violet-600"
+                    )}
+                  >
+                    <Sparkles size={10} /> Compare Both
+                  </button>
                 </div>
 
                 {/* Search inputs */}
@@ -1426,7 +1706,7 @@ function ProductsTab() {
                   <input
                     value={srcKeyword}
                     onChange={(e) => setSrcKeyword(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") finderTab === "cj" ? searchCJ() : searchAE(); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") finderTab === "cj" ? searchCJ() : finderTab === "ae" ? searchAE() : searchCompare(); }}
                     placeholder="e.g. phone case, wireless earbuds, yoga mat..."
                     className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-72"
                   />
@@ -1437,16 +1717,16 @@ function ProductsTab() {
                     className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 placeholder-slate-500 outline-none focus:ring-1 focus:ring-brand w-32"
                   />
                   <button
-                    onClick={() => finderTab === "cj" ? searchCJ() : searchAE()}
-                    disabled={(finderTab === "cj" ? cjSearching : aeSearching) || !srcKeyword.trim()}
+                    onClick={() => finderTab === "cj" ? searchCJ() : finderTab === "ae" ? searchAE() : searchCompare()}
+                    disabled={(finderTab === "cj" ? cjSearching : finderTab === "ae" ? aeSearching : cmpSearching) || !srcKeyword.trim()}
                     className={cn(
                       "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors",
-                      finderTab === "cj" ? "bg-[#FF6600] hover:bg-[#e05a00]" : "bg-[#E62222] hover:bg-[#c71c1c]"
+                      finderTab === "cj" ? "bg-[#FF6600] hover:bg-[#e05a00]" : finderTab === "ae" ? "bg-[#E62222] hover:bg-[#c71c1c]" : "bg-violet-600 hover:bg-violet-700"
                     )}
                   >
-                    {(finderTab === "cj" ? cjSearching : aeSearching)
+                    {(finderTab === "cj" ? cjSearching : finderTab === "ae" ? aeSearching : cmpSearching)
                       ? <><Loader2 size={12} className="animate-spin" /> Searching…</>
-                      : <><Search size={12} /> Search {finderTab === "cj" ? "CJ" : "AliExpress"}</>}
+                      : <><Search size={12} /> {finderTab === "compare" ? "Compare Both" : `Search ${finderTab === "cj" ? "CJ" : "AliExpress"}`}</>}
                   </button>
                 </div>
               </div>
@@ -1455,7 +1735,7 @@ function ProductsTab() {
               <div className="overflow-y-auto flex-1 px-4 pb-4 pt-3">
 
                 {/* Skeleton */}
-                {(finderTab === "cj" ? cjSearching : aeSearching) && (
+                {(finderTab === "cj" ? cjSearching : finderTab === "ae" ? aeSearching : cmpSearching) && (
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
                     {Array.from({ length: 8 }).map((_, i) => (
                       <div key={i} className="bg-slate-100 rounded-2xl p-3 animate-pulse flex flex-col gap-2">
@@ -1557,18 +1837,97 @@ function ProductsTab() {
                   </>
                 )}
 
+                {/* Compare Results */}
+                {finderTab === "compare" && !cmpSearching && cmpResults.length > 0 && (() => {
+                  const filtered = cmpSource === "all" ? cmpResults : cmpResults.filter(p => p.source === cmpSource);
+                  return (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 mb-3">
+                        <p className="text-xs text-slate-500 flex-1">
+                          <span className="font-semibold text-slate-800">{filtered.length}</span> products from both suppliers · <span className="text-brand">{cmpImportedIds.size} imported</span>
+                        </p>
+                        <div className="flex items-center gap-1">
+                          {(["all", "cj", "ae"] as const).map(s => (
+                            <button key={s} onClick={() => setCmpSource(s)}
+                              className={cn("px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-all",
+                                cmpSource === s ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200")}>
+                              {s === "all" ? "All" : s === "cj" ? "CJ only" : "AE only"}
+                            </button>
+                          ))}
+                        </div>
+                        <select value={cmpSort} onChange={e => { setCmpSort(e.target.value as typeof cmpSort); setCmpResults(prev => [...prev].sort((a, b) => e.target.value === "price_asc" ? a.cost_price - b.cost_price : e.target.value === "price_desc" ? b.cost_price - a.cost_price : b.popularity - a.popularity)); }}
+                          className="text-[10px] border border-slate-200 rounded-lg px-2 py-1 bg-white text-slate-600">
+                          <option value="price_asc">Cheapest first</option>
+                          <option value="price_desc">Most expensive</option>
+                          <option value="popular">Most popular</option>
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+                        {filtered.map((p) => {
+                          const uid = `${p.source}:${p.id}`;
+                          const imported = cmpImportedIds.has(uid);
+                          const importing = cmpImportingId === uid;
+                          const marginPct = p.suggested_price > 0 ? Math.round((p.suggested_price - p.cost_price) / p.suggested_price * 100) : 0;
+                          const isCJ = p.source === "cj";
+                          return (
+                            <div key={uid} className={cn("bg-white border rounded-2xl p-3 flex flex-col gap-2 transition-all",
+                              imported ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:border-slate-300 hover:shadow-sm")}>
+                              <div className="h-24 bg-slate-100 rounded-xl overflow-hidden relative flex items-center justify-center">
+                                {p.image_url
+                                  ? <img src={p.image_url} alt={p.title} className="w-full h-full object-cover" />
+                                  : <Package size={24} className="text-slate-400" />}
+                                <span className={cn("absolute top-1 right-1 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full", isCJ ? "bg-[#FF6600]" : "bg-[#E62222]")}>
+                                  {isCJ ? "CJ" : "AE"}
+                                </span>
+                                {p.is_free_shipping && <span className="absolute bottom-1 left-1 bg-emerald-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full">FREE SHIP</span>}
+                                {imported && <div className="absolute inset-0 bg-emerald-100/80 flex items-center justify-center rounded-xl"><CheckCircle2 size={20} className="text-emerald-600" /></div>}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-semibold text-slate-800 leading-tight line-clamp-2 mb-0.5">{p.title}</p>
+                                <p className="text-[10px] text-slate-400 truncate">{p.store_name || p.category}</p>
+                                {p.popularity > 0 && <p className="text-[10px] text-emerald-600 font-medium">{p.popularity.toLocaleString()} {isCJ ? "listed" : "orders"}</p>}
+                                {p.shipping_time && <p className="text-[10px] text-slate-400">Ships in {p.shipping_time}d</p>}
+                              </div>
+                              <div className="bg-slate-50 rounded-xl p-2 flex items-center justify-between">
+                                <div><p className="text-[9px] text-slate-400 uppercase">Cost</p><p className="text-xs font-bold text-slate-700">${p.cost_price.toFixed(2)}</p></div>
+                                <div className="text-center"><p className="text-[9px] text-emerald-600 font-semibold">{marginPct}% margin</p></div>
+                                <div className="text-right"><p className="text-[9px] text-slate-400 uppercase">Sell at</p><p className="text-xs font-bold text-brand">${p.suggested_price.toFixed(2)}</p></div>
+                              </div>
+                              <button onClick={() => importFromCompare(p)} disabled={imported || importing}
+                                className={cn("w-full py-1.5 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5",
+                                  imported ? "bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-default" : "bg-brand-dark hover:bg-brand text-white disabled:opacity-50")}>
+                                {importing ? <><Loader2 size={11} className="animate-spin" /> Importing…</> : imported ? <><Check size={11} /> Imported</> : <><Plus size={11} /> Import to Shopify</>}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  );
+                })()}
+
                 {/* Empty state */}
-                {!cjSearching && !aeSearching && (finderTab === "cj" ? cjResults : aeResults).length === 0 && (
-                  <div className="flex flex-col items-center gap-2 text-center py-8">
-                    <Package size={28} className="text-slate-300 mb-1" />
-                    <p className="text-sm font-medium text-slate-600">Source Real Products from {finderTab === "cj" ? "CJdropshipping" : "AliExpress"}</p>
-                    <p className="text-xs text-slate-400 max-w-sm">
-                      {finderTab === "cj"
-                        ? "Search 500,000+ supplier products with real images, cost prices, and shipping info."
-                        : "Search millions of AliExpress products sorted by bestseller ranking and order volume."}
-                      {" "}Import any product to your Shopify store instantly.
-                    </p>
-                  </div>
+                {!cjSearching && !aeSearching && !cmpSearching && (
+                  finderTab === "compare"
+                    ? cmpResults.length === 0 && (
+                      <div className="flex flex-col items-center gap-2 text-center py-8">
+                        <Sparkles size={28} className="text-slate-300 mb-1" />
+                        <p className="text-sm font-medium text-slate-600">Compare CJ & AliExpress side by side</p>
+                        <p className="text-xs text-slate-400 max-w-sm">Search once and see products from both suppliers together — sorted by cheapest cost price so you always pick the best deal.</p>
+                      </div>
+                    )
+                    : (finderTab === "cj" ? cjResults : aeResults).length === 0 && (
+                      <div className="flex flex-col items-center gap-2 text-center py-8">
+                        <Package size={28} className="text-slate-300 mb-1" />
+                        <p className="text-sm font-medium text-slate-600">Source Real Products from {finderTab === "cj" ? "CJdropshipping" : "AliExpress"}</p>
+                        <p className="text-xs text-slate-400 max-w-sm">
+                          {finderTab === "cj"
+                            ? "Search 500,000+ supplier products with real images, cost prices, and shipping info."
+                            : "Search millions of AliExpress products sorted by bestseller ranking and order volume."}
+                          {" "}Import any product to your Shopify store instantly.
+                        </p>
+                      </div>
+                    )
                 )}
               </div>
             </div>
@@ -2200,6 +2559,7 @@ function ShopifyPageInner() {
   const [period, setPeriod] = useState<Period>("month");
   const [connecting, setConnecting] = useState(false);
   const [shop, setShop] = useState("");
+  const [showCreateWizard, setShowCreateWizard] = useState(false);
   const searchParams = useSearchParams();
 
   useEffect(() => {
@@ -2283,11 +2643,23 @@ function ShopifyPageInner() {
   if (connected === false) {
     return (
       <div className="flex-1 overflow-y-auto bg-white text-slate-900">
-        <NoShopify
-          shop={shop} setShop={setShop}
-          onOAuth={connectViaOAuth}
-          connecting={connecting}
-        />
+        {showCreateWizard ? (
+          <CreateStoreWizard
+            onBack={() => setShowCreateWizard(false)}
+            onConnectStore={(domain) => {
+              setShowCreateWizard(false);
+              setShop(domain);
+              connectViaOAuth();
+            }}
+          />
+        ) : (
+          <NoShopify
+            shop={shop} setShop={setShop}
+            onOAuth={connectViaOAuth}
+            connecting={connecting}
+            onCreateStore={() => setShowCreateWizard(true)}
+          />
+        )}
       </div>
     );
   }

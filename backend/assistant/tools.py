@@ -393,6 +393,70 @@ async def list_followups(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="search_meeting_notes",
+    description=(
+        "Search the meeting knowledge base using natural language. "
+        "Use for: finding past decisions, open action items, what was discussed with a client, "
+        "project status from meetings, who attended a call, follow-ups agreed in a meeting. "
+        "Examples: 'action items from last week', 'what did we decide about pricing', "
+        "'meetings with Acme Corp', 'open tasks from client calls'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for — use natural language"},
+            "limit": {"type": "integer", "default": 6, "minimum": 1, "maximum": 20},
+        },
+        "required": ["query"],
+    },
+)
+async def search_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
+    query = (args.get("query") or "").strip()
+    limit = min(int(args.get("limit") or 6), 20)
+    if not query:
+        return {"error": "query is required"}
+    try:
+        from smart_notes.knowledge import search_knowledge, list_recent_notes_summary
+        results = await search_knowledge(ctx.db, ctx.business_id, query, top_k=limit)
+        if not results:
+            # Fall back to listing recent notes
+            recent = await list_recent_notes_summary(ctx.db, ctx.business_id, limit=5)
+            return {
+                "message": "No close semantic match found. Showing recent notes instead.",
+                "recent_notes": recent,
+            }
+        return {"query": query, "results": results}
+    except Exception as e:
+        logger.warning("[search_meeting_notes] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
+    name="list_meeting_notes",
+    description=(
+        "List recent AI-generated meeting notes. Use when the user asks to see their notes, "
+        "recent meetings, or wants a summary of what meetings happened. "
+        "Returns title, date, attendees, summary and action items for each note."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+        },
+    },
+)
+async def list_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
+    limit = min(int(args.get("limit") or 10), 50)
+    try:
+        from smart_notes.knowledge import list_recent_notes_summary
+        notes = await list_recent_notes_summary(ctx.db, ctx.business_id, limit=limit)
+        return {"count": len(notes), "notes": notes}
+    except Exception as e:
+        logger.warning("[list_meeting_notes] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
     name="get_analytics_summary",
     description="High-level business stats: customer count, sales today, revenue, active orders, bookings today.",
     parameters={"type": "object", "properties": {}},
@@ -4152,6 +4216,163 @@ async def get_revenue_trends(ctx: ToolContext, args: Dict[str, Any]):
         "trend_direction": "up" if trend_pct > 2 else "down" if trend_pct < -2 else "flat",
         "trend_percent": round(trend_pct, 1),
         "data": trend_list,
+    }
+
+
+@tool(
+    name="get_field_agent_status",
+    description=(
+        "Return a summary of field agent tasks and team performance. "
+        "Use this when the user asks about their field team, agent tasks, who is overdue, "
+        "which agent has the most pending work, or what tasks are assigned today."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "agent_name": {"type": "string", "description": "Filter by a specific agent's name (partial match, optional)."},
+            "status":     {"type": "string", "enum": ["pending", "in_progress", "completed", "missed", "overdue"],
+                          "description": "Filter tasks by status. 'overdue' returns open tasks past their due date."},
+        },
+    },
+)
+async def get_field_agent_status(ctx: ToolContext, args: Dict[str, Any]):
+    from datetime import date as _date
+    tid = ctx.business_id
+    today_str = _date.today().isoformat()
+
+    # Agents with task counts via aggregation
+    pipeline = [
+        {"$match": {"user_id": tid}},
+        {"$group": {
+            "_id": "$assigned_to",
+            "agent_name": {"$first": "$agent_name"},
+            "total":     {"$sum": 1},
+            "pending":   {"$sum": {"$cond": [{"$eq": ["$status", "pending"]},   1, 0]}},
+            "in_progress": {"$sum": {"$cond": [{"$eq": ["$status", "in_progress"]}, 1, 0]}},
+            "completed": {"$sum": {"$cond": [{"$eq": ["$status", "completed"]}, 1, 0]}},
+            "overdue":   {"$sum": {"$cond": [{"$and": [
+                {"$in": ["$status", ["pending", "in_progress"]]},
+                {"$gt": ["$due_date", ""]},
+                {"$lt": ["$due_date", today_str]},
+            ]}, 1, 0]}},
+        }},
+    ]
+    agent_rows = await ctx.db.field_agent_tasks.aggregate(pipeline).to_list(200)
+
+    # Filter by agent name if requested
+    name_filter = (args.get("agent_name") or "").lower()
+    if name_filter:
+        agent_rows = [r for r in agent_rows if name_filter in (r.get("agent_name") or "").lower()]
+
+    # Fetch matching tasks if status filter given
+    status_filter = args.get("status")
+    tasks = []
+    if status_filter:
+        q: Dict[str, Any] = {"user_id": tid}
+        if status_filter == "overdue":
+            q["status"] = {"$in": ["pending", "in_progress"]}
+            q["due_date"] = {"$gt": "", "$lt": today_str}
+        else:
+            q["status"] = status_filter
+        if name_filter:
+            q["agent_name"] = {"$regex": name_filter, "$options": "i"}
+        raw = await ctx.db.field_agent_tasks.find(q, sort=[("due_date", 1)]).to_list(50)
+        tasks = [{"title": t["title"], "agent": t.get("agent_name",""), "due": t.get("due_date",""),
+                  "customer": t.get("customer_name",""), "type": t.get("task_type",""),
+                  "status": t["status"]} for t in raw]
+
+    total_agents = await ctx.db.team_members.count_documents({"business_id": tid, "status": {"$ne": "suspended"}})
+    total_overdue = sum(r.get("overdue", 0) for r in agent_rows)
+    total_pending = sum(r.get("pending", 0) for r in agent_rows)
+
+    return {
+        "total_agents": total_agents,
+        "total_pending": total_pending,
+        "total_overdue": total_overdue,
+        "agents": [
+            {"name": r.get("agent_name", r["_id"]), "total": r["total"], "pending": r["pending"],
+             "in_progress": r.get("in_progress", 0), "completed": r["completed"], "overdue": r["overdue"]}
+            for r in sorted(agent_rows, key=lambda x: x.get("overdue", 0), reverse=True)
+        ],
+        "filtered_tasks": tasks,
+    }
+
+
+@tool(
+    name="get_budget_status",
+    description=(
+        "Return the business's expense budget vs actual spend for a given month. "
+        "Use this when the user asks about their budget, how much they've spent vs budget, "
+        "which categories are over budget, or how much budget is left. "
+        "Returns per-category breakdown with % used, remaining amount, and over/near-limit flags."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "year":  {"type": "integer", "description": "Year (defaults to current year)."},
+            "month": {"type": "integer", "minimum": 1, "maximum": 12,
+                      "description": "Month number 1-12 (defaults to current month)."},
+        },
+    },
+)
+async def get_budget_status(ctx: ToolContext, args: Dict[str, Any]):
+    import calendar as _cal
+    from datetime import date as _date
+    today = _date.today()
+    year  = int(args.get("year")  or today.year)
+    month = int(args.get("month") or today.month)
+
+    from_date = f"{year:04d}-{month:02d}-01"
+    last_day  = _cal.monthrange(year, month)[1]
+    to_date   = f"{year:04d}-{month:02d}-{last_day:02d}"
+
+    budget_q = {"user_id": ctx.business_id, "period": "monthly", "year": year, "month": month}
+    budgets  = await ctx.db.budgets.find(budget_q).to_list(200)
+
+    pipeline = [
+        {"$match": {"user_id": ctx.business_id, "type": "expense",
+                    "date": {"$gte": from_date, "$lte": to_date}}},
+        {"$group": {"_id": "$category", "actual": {"$sum": "$amount"}}},
+    ]
+    rows = await ctx.db.finance_entries.aggregate(pipeline).to_list(200)
+    actual_by_cat: Dict[str, float] = {r["_id"]: round(r["actual"], 2) for r in rows}
+
+    items = []
+    for b in budgets:
+        cat     = b["category"]
+        actual  = actual_by_cat.get(cat, 0.0)
+        budgeted = b["amount"]
+        items.append({
+            "category": cat,
+            "budgeted": budgeted,
+            "actual": actual,
+            "remaining": round(budgeted - actual, 2),
+            "pct_used": round((actual / budgeted * 100) if budgeted > 0 else 0, 1),
+            "status": "over" if actual > budgeted else "warning" if actual >= budgeted * 0.75 else "ok",
+        })
+
+    budgeted_cats = {b["category"] for b in budgets}
+    for cat, actual in actual_by_cat.items():
+        if cat not in budgeted_cats:
+            items.append({"category": cat, "budgeted": None, "actual": actual,
+                           "remaining": None, "pct_used": None, "status": "no_budget"})
+
+    items.sort(key=lambda x: (x["status"] not in ("over", "warning"), x["category"]))
+
+    total_budgeted = sum(i["budgeted"] for i in items if i["budgeted"] is not None)
+    total_actual   = sum(i["actual"] for i in items)
+    over_budget    = [i for i in items if i["status"] == "over"]
+    near_limit     = [i for i in items if i["status"] == "warning"]
+
+    return {
+        "month": f"{year}-{month:02d}",
+        "total_budgeted": round(total_budgeted, 2),
+        "total_actual": round(total_actual, 2),
+        "total_remaining": round(total_budgeted - total_actual, 2),
+        "overall_pct_used": round((total_actual / total_budgeted * 100) if total_budgeted > 0 else 0, 1),
+        "over_budget_categories": over_budget,
+        "near_limit_categories": near_limit,
+        "all_categories": items,
     }
 
 
@@ -9032,7 +9253,7 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
             resp = await client.get(
                 "https://api.duckduckgo.com/",
                 params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-                headers={"User-Agent": "ZiloAI/1.0"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -9197,7 +9418,8 @@ async def fetch_url(ctx: ToolContext, args: Dict[str, Any]):
         async with httpx.AsyncClient(
             timeout=30,
             follow_redirects=True,
-            headers={"User-Agent": "ZiloAI/1.0 (assistant; +https://zilo.pro)"},
+            verify=False,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
         ) as client:
             resp = await client.get(normalized)
             resp.raise_for_status()
@@ -12095,6 +12317,56 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
         "quick_stats": quick_stats,
         "window_days": days,
     }
+
+
+@tool(
+    name="get_sidebar_feature_recommendations",
+    description=(
+        "Check if the user's goal needs an optional sidebar tool that is not enabled yet. "
+        "Call when they want to do something that lives in a CRM module (SMS, broadcast, "
+        "field agents, invoices, SEO, etc.) OR when they ask which features to turn on. "
+        "Returns disabled tools only, with exact steps: Features page → search → toggle on. "
+        "Do NOT call for general questions unrelated to a specific module."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "user_intent": {
+                "type": "string",
+                "description": "What the user is trying to do, in plain language (e.g. 'send SMS promos').",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["intent", "profile"],
+                "description": (
+                    "intent = their current task needs a specific tool; "
+                    "profile = they asked what to enable for their business type."
+                ),
+            },
+        },
+        "required": ["user_intent", "mode"],
+    },
+    destructive=False,
+)
+async def get_sidebar_feature_recommendations(ctx: ToolContext, args: Dict[str, Any]):
+    from .sidebar_features import build_feature_guidance
+
+    user = await ctx.db.users.find_one({"_id": ctx.business_id}, {"settings": 1})
+    settings = (user or {}).get("settings") or {}
+    features = settings.get("features") or {}
+    business_type = settings.get("business_type") or "general"
+    user_intent = (args.get("user_intent") or "").strip()
+    mode = (args.get("mode") or "intent").strip().lower()
+    if mode not in ("intent", "profile"):
+        mode = "intent"
+
+    return build_feature_guidance(
+        business_type=business_type,
+        features=features,
+        user_intent=user_intent,
+        mode=mode,
+        limit=3,
+    )
 
 
 @tool(
@@ -16664,4 +16936,44 @@ async def configure_email_provider(ctx: ToolContext, args: Dict[str, Any]) -> Di
             "message":  f"Email provider set to {provider}. Use send_email_campaign to test it.",
         }
     except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="manage_gmail_filters",
+    description=(
+        "Manage Gmail filters through natural language commands. "
+        "Use this to create, list, suggest, or delete email filters. "
+        "Examples: 'Archive emails from newsletter@example.com', "
+        "'Set up newsletter filters', 'Show me filter suggestions', "
+        "'List all my filters', 'Delete filter for spam@example.com'"
+    ),
+    parameters={
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": (
+                    "Natural language command for filter management. "
+                    "Examples: 'Archive all emails from sender@example.com', "
+                    "'Set up filters for newsletters', 'Show filter suggestions', "
+                    "'Mark emails from boss@company.com as important'"
+                )
+            }
+        },
+    },
+    destructive=False,
+)
+async def manage_gmail_filters(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from agents.gmail_filter_agent import gmail_filter_agent_tool
+        result = await gmail_filter_agent_tool(
+            user_id=ctx.business_id,
+            db=ctx.db,
+            command=args["command"]
+        )
+        return result
+    except Exception as e:
+        logger.exception("[manage_gmail_filters] error")
         return {"error": str(e)}

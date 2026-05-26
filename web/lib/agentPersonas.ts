@@ -317,6 +317,12 @@ const MAP: Record<string, AgentPersona> = {
     role: "Documents & business writing specialist",
     cls: "bg-violet-100 text-violet-900",
   },
+  zilo_support: {
+    firstName: "Zoe",
+    tag: "Zilo Support",
+    role: "Zilo Support specialist",
+    cls: "bg-emerald-100 text-emerald-900 border border-emerald-300",
+  },
 };
 
 function titleCaseId(raw: string): string {

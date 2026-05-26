@@ -210,6 +210,8 @@ async def run_agent_stream(
         messages.append({"role": "user", "content": task})
 
     tool_ctx = ToolContext(db, user)
+    from .orchestrator import _load_sidebar_features, _nudge_tool_result
+    _sidebar_features = await _load_sidebar_features(db, tool_ctx.business_id)
     steps: List[Dict[str, Any]] = []
     artifacts: Dict[str, Any] = {}
     result_text = ""
@@ -296,6 +298,7 @@ async def run_agent_stream(
                 logger.info("[agent_runner] document agent: redirect create_business_document → plan_business_document")
             try:
                 result = await run_tool(name, tool_ctx, args)
+                result = _nudge_tool_result(name, result, _sidebar_features)
             except Exception as exc:
                 result = {"error": str(exc)}
             return tc, name, args, result

@@ -1,6 +1,6 @@
 """Finance / P&L — income, expenses, profit & loss reports."""
 from __future__ import annotations
-import logging, uuid
+import logging, uuid, calendar
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
@@ -30,7 +30,8 @@ class FinanceEntry(BaseModel):
     description: str = ""
     date: Optional[str] = None  # ISO date string, defaults to today
     reference: str = ""
-    currency: str = "KES"
+    currency: str = "USD"
+    customer_id: Optional[str] = None
 
 class FinanceEntryUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -40,6 +41,22 @@ class FinanceEntryUpdate(BaseModel):
     description: Optional[str] = None
     date: Optional[str] = None
     reference: Optional[str] = None
+
+class Budget(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    category: str
+    amount: float
+    period: str = "monthly"   # monthly | yearly
+    year: Optional[int] = None
+    month: Optional[int] = None
+    currency: str = "USD"
+    notes: str = ""
+
+class BudgetUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    amount: Optional[float] = None
+    notes: Optional[str] = None
+    currency: Optional[str] = None
 
 def make_finance_router(db, user_dep):
     router = APIRouter(prefix="/finance", tags=["finance"])
@@ -70,6 +87,29 @@ def make_finance_router(db, user_dep):
         tid = _tid(user)
         now = datetime.utcnow()
         entry_date = payload.date or date.today().isoformat()
+
+        # Duplicate detection: check for unreconciled field-agent entry same day, customer, amount ±5%
+        potential_duplicate = None
+        customer_id = getattr(payload, "customer_id", None) or ""
+        if customer_id and payload.type == "income":
+            amount = round(payload.amount, 2)
+            existing = await db.finance_entries.find_one({
+                "user_id": tid,
+                "source": "field_agent",
+                "reconciliation_status": "unreconciled",
+                "customer_id": customer_id,
+                "date": entry_date,
+                "amount": {"$gte": amount * 0.95, "$lte": amount * 1.05},
+            })
+            if existing:
+                potential_duplicate = {
+                    "id": str(existing["_id"]),
+                    "amount": existing["amount"],
+                    "agent_name": existing.get("agent_name", ""),
+                    "payment_method": existing.get("payment_method", ""),
+                    "date": existing.get("date", ""),
+                }
+
         doc = {
             "_id": str(uuid.uuid4()),
             "user_id": tid,
@@ -83,7 +123,23 @@ def make_finance_router(db, user_dep):
             "created_at": now, "updated_at": now,
         }
         await db.finance_entries.insert_one(doc)
-        return _ser(doc)
+        result = _ser(doc)
+        if potential_duplicate:
+            result["potential_duplicate"] = potential_duplicate
+        return result
+
+    @router.put("/entries/{entry_id}/reconcile")
+    async def reconcile_entry(entry_id: str, user=user_dep):
+        """Mark a field-agent entry as reconciled (confirmed payment received)."""
+        tid = _tid(user)
+        doc = await db.finance_entries.find_one({"_id": entry_id, "user_id": tid})
+        if not doc: raise HTTPException(404, "Entry not found")
+        await db.finance_entries.update_one(
+            {"_id": entry_id},
+            {"$set": {"reconciliation_status": "reconciled", "updated_at": datetime.utcnow()}}
+        )
+        updated = await db.finance_entries.find_one({"_id": entry_id})
+        return _ser(updated)
 
     @router.get("/entries/{entry_id}")
     async def get_entry(entry_id: str, user=user_dep):
@@ -229,5 +285,169 @@ def make_finance_router(db, user_dep):
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename=finance_export.csv"},
         )
+
+    # ── Budget routes ─────────────────────────────────────────────────────────
+
+    @router.get("/budgets")
+    async def list_budgets(
+        period: Optional[str] = None,
+        year: Optional[int] = None,
+        month: Optional[int] = None,
+        user=user_dep,
+    ):
+        q: Dict[str, Any] = {"user_id": _tid(user)}
+        if period: q["period"] = period
+        if year is not None: q["year"] = year
+        if month is not None: q["month"] = month
+        docs = await db.budgets.find(q, sort=[("category", 1)]).to_list(200)
+        return [_ser(d) for d in docs]
+
+    @router.post("/budgets")
+    async def upsert_budget(payload: Budget, user=user_dep):
+        """Create or replace a budget for a category+period+year+month combo."""
+        if payload.amount < 0:
+            raise HTTPException(400, "amount must be non-negative")
+        tid = _tid(user)
+        today_ = date.today()
+        year = payload.year if payload.year is not None else today_.year
+        month = payload.month if payload.month is not None else (today_.month if payload.period == "monthly" else None)
+        now = datetime.utcnow()
+        # Upsert: one budget per category/period/year/month per user
+        key: Dict[str, Any] = {
+            "user_id": tid,
+            "category": payload.category,
+            "period": payload.period,
+            "year": year,
+        }
+        if payload.period == "monthly":
+            key["month"] = month
+        existing = await db.budgets.find_one(key)
+        if existing:
+            await db.budgets.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"amount": round(payload.amount, 2), "currency": payload.currency.upper()[:6],
+                           "notes": payload.notes, "updated_at": now}}
+            )
+            updated = await db.budgets.find_one({"_id": existing["_id"]})
+            return _ser(updated)
+        doc = {
+            "_id": str(uuid.uuid4()),
+            **key,
+            "month": month,
+            "amount": round(payload.amount, 2),
+            "currency": payload.currency.upper()[:6],
+            "notes": payload.notes,
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.budgets.insert_one(doc)
+        return _ser(doc)
+
+    @router.put("/budgets/{budget_id}")
+    async def update_budget(budget_id: str, payload: BudgetUpdate, user=user_dep):
+        doc = await db.budgets.find_one({"_id": budget_id, "user_id": _tid(user)})
+        if not doc:
+            raise HTTPException(404, "Budget not found")
+        upd: Dict[str, Any] = {"updated_at": datetime.utcnow()}
+        for f, v in payload.model_dump(exclude_none=True).items():
+            upd[f] = v
+        if "amount" in upd:
+            upd["amount"] = round(upd["amount"], 2)
+        await db.budgets.update_one({"_id": budget_id}, {"$set": upd})
+        updated = await db.budgets.find_one({"_id": budget_id})
+        return _ser(updated)
+
+    @router.delete("/budgets/{budget_id}")
+    async def delete_budget(budget_id: str, user=user_dep):
+        doc = await db.budgets.find_one({"_id": budget_id, "user_id": _tid(user)})
+        if not doc:
+            raise HTTPException(404, "Budget not found")
+        await db.budgets.delete_one({"_id": budget_id})
+        return {"deleted": True}
+
+    @router.get("/budgets/vs-actual")
+    async def budgets_vs_actual(
+        year: Optional[int] = None,
+        month: Optional[int] = None,
+        period: str = "monthly",
+        user=user_dep,
+    ):
+        """Return each budget with its actual spend for the given period."""
+        tid = _tid(user)
+        today_ = date.today()
+        yr = year if year is not None else today_.year
+        mo = month if month is not None else today_.month
+
+        # Date range for the period
+        if period == "monthly":
+            from_date = f"{yr:04d}-{mo:02d}-01"
+            last_day = calendar.monthrange(yr, mo)[1]
+            to_date = f"{yr:04d}-{mo:02d}-{last_day:02d}"
+            budget_q: Dict[str, Any] = {"user_id": tid, "period": "monthly", "year": yr, "month": mo}
+        else:
+            from_date = f"{yr:04d}-01-01"
+            to_date = f"{yr:04d}-12-31"
+            budget_q = {"user_id": tid, "period": "yearly", "year": yr}
+
+        budgets = await db.budgets.find(budget_q).to_list(200)
+
+        # Aggregate actual expense per category in range
+        pipeline = [
+            {"$match": {"user_id": tid, "type": "expense", "date": {"$gte": from_date, "$lte": to_date}}},
+            {"$group": {"_id": "$category", "actual": {"$sum": "$amount"}}},
+        ]
+        rows = await db.finance_entries.aggregate(pipeline).to_list(200)
+        actual_by_cat: Dict[str, float] = {r["_id"]: round(r["actual"], 2) for r in rows}
+
+        result = []
+        for b in budgets:
+            cat = b["category"]
+            actual = actual_by_cat.get(cat, 0.0)
+            budgeted = b["amount"]
+            result.append({
+                "id": str(b["_id"]),
+                "category": cat,
+                "budgeted": budgeted,
+                "actual": actual,
+                "remaining": round(budgeted - actual, 2),
+                "pct_used": round((actual / budgeted * 100) if budgeted > 0 else 0, 1),
+                "currency": b.get("currency", "KES"),
+                "notes": b.get("notes", ""),
+                "period": b.get("period", "monthly"),
+                "year": b.get("year"),
+                "month": b.get("month"),
+            })
+
+        # Also include categories with actual spend but no budget set
+        budgeted_cats = {b["category"] for b in budgets}
+        for cat, actual in actual_by_cat.items():
+            if cat not in budgeted_cats:
+                result.append({
+                    "id": None,
+                    "category": cat,
+                    "budgeted": None,
+                    "actual": actual,
+                    "remaining": None,
+                    "pct_used": None,
+                    "currency": "KES",
+                    "notes": "",
+                    "period": period,
+                    "year": yr,
+                    "month": mo if period == "monthly" else None,
+                })
+
+        result.sort(key=lambda x: (x["budgeted"] is None, x["category"]))
+        return {
+            "from_date": from_date,
+            "to_date": to_date,
+            "period": period,
+            "year": yr,
+            "month": mo if period == "monthly" else None,
+            "items": result,
+            "totals": {
+                "budgeted": round(sum(r["budgeted"] for r in result if r["budgeted"] is not None), 2),
+                "actual": round(sum(r["actual"] for r in result), 2),
+            },
+        }
 
     return router

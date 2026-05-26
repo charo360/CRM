@@ -19,7 +19,7 @@ const IMPORT_CONFIGS = {
     requiredFields: ["name", "phone_number"],
     optionalFields: ["email", "notes", "tags"],
     endpoint: "/customers",
-    template: "name,phone_number,email,notes,tags\nJane Doe,+254700000000,jane@example.com,VIP customer,vip",
+    template: "name,phone_number,email,notes,tags\nJane Doe,+12025550100,jane@example.com,VIP customer,vip",
   },
   products: {
     label: "Products",

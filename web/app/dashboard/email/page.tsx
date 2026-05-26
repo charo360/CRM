@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Inbox, RefreshCw, Search, Send, Sparkles, X, ChevronLeft,
   Loader2, Mail, MailOpen, Clock, Bot, ToggleLeft, ToggleRight,
@@ -798,6 +799,7 @@ function ComposeModal({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function EmailPage() {
+  const searchParams = useSearchParams();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState<boolean | null>(null);
@@ -830,6 +832,7 @@ export default function EmailPage() {
   const [autoreply, setAutoreply] = useState<AutoreplyRule>({ enabled: false, targets: [] });
 
   const [showCompose, setShowCompose] = useState(false);
+  const [composePrefill, setComposePrefill] = useState<{ to: string; subject: string } | null>(null);
 
   const [starred, setStarred] = useState<Set<string>>(new Set());
 
@@ -870,6 +873,16 @@ export default function EmailPage() {
   }, [activeProvider]);
 
   useEffect(() => { loadThreads(); }, [loadThreads]);
+
+  useEffect(() => {
+    const to = searchParams.get("to")?.trim() || "";
+    const subject = searchParams.get("subject")?.trim() || "";
+    if (searchParams.get("compose") === "1" || to) {
+      setComposePrefill({ to, subject });
+      setShowCompose(true);
+      window.history.replaceState(null, "", "/dashboard/email");
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     try {
@@ -1765,7 +1778,12 @@ export default function EmailPage() {
         <ComposeModal
           provider={provider}
           contacts={contacts}
-          onClose={() => setShowCompose(false)}
+          prefillTo={composePrefill?.to ?? ""}
+          prefillSubject={composePrefill?.subject ?? ""}
+          onClose={() => {
+            setShowCompose(false);
+            setComposePrefill(null);
+          }}
           onSent={() => loadThreads(activeSearch)}
         />
       )}

@@ -254,7 +254,7 @@ def _default_fields() -> list:
             "id": str(uuid.uuid4())[:8],
             "type": "phone",
             "label": "Phone Number",
-            "placeholder": "+254...",
+            "placeholder": "+1...",
             "required": True,
         },
         {
@@ -280,13 +280,13 @@ _BLOG_FORM_DEFS: dict[str, list[dict]] = {
     "restaurant": [
         {"type": "contact", "title": "Contact Us", "fields": [
             {"id": "name",    "type": "text",     "label": "Full Name",        "placeholder": "Your name",         "required": True},
-            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+254…",             "required": True},
+            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+1…",             "required": True},
             {"id": "email",   "type": "email",    "label": "Email Address",    "placeholder": "you@example.com",   "required": False},
             {"id": "message", "type": "textarea", "label": "Message",          "placeholder": "How can we help?",  "required": False},
         ]},
         {"type": "order", "title": "Table Reservation", "fields": [
             {"id": "name",    "type": "text",     "label": "Full Name",        "placeholder": "Your name",         "required": True},
-            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+254…",             "required": True},
+            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+1…",             "required": True},
             {"id": "guests",  "type": "dropdown", "label": "Number of Guests", "placeholder": "",                  "required": True,
              "options": ["1–2", "3–5", "6–10", "11–20", "Above 20"]},
             {"id": "date",    "type": "text",     "label": "Date",             "placeholder": "e.g. 15 Jan 2026",  "required": True},
@@ -306,7 +306,7 @@ _BLOG_FORM_DEFS: dict[str, list[dict]] = {
     "salon": [
         {"type": "order", "title": "Appointment Booking", "fields": [
             {"id": "name",    "type": "text",     "label": "Full Name",        "placeholder": "Your name",         "required": True},
-            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+254…",             "required": True},
+            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+1…",             "required": True},
             {"id": "service", "type": "dropdown", "label": "Service",          "placeholder": "Select service",    "required": True,
              "options": ["Hair Braiding", "Relaxer / Perming", "Hair Cut & Style", "Weave Installation", "Nails", "Facial", "Massage", "Other"]},
             {"id": "date",    "type": "text",     "label": "Preferred Date",   "placeholder": "e.g. 15 Jan 2026",  "required": True},
@@ -316,7 +316,7 @@ _BLOG_FORM_DEFS: dict[str, list[dict]] = {
         ]},
         {"type": "contact", "title": "Contact Us", "fields": [
             {"id": "name",    "type": "text",     "label": "Full Name",        "placeholder": "Your name",         "required": True},
-            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+254…",             "required": True},
+            {"id": "phone",   "type": "phone",    "label": "Phone Number",     "placeholder": "+1…",             "required": True},
             {"id": "message", "type": "textarea", "label": "Message",          "placeholder": "How can we help?",  "required": False},
         ]},
         {"type": "survey", "title": "Customer Feedback", "fields": [
@@ -331,13 +331,13 @@ _BLOG_FORM_DEFS: dict[str, list[dict]] = {
 _DEFAULT_BLOG_FORMS = [
     {"type": "contact", "title": "Contact Us", "fields": [
         {"id": "name",    "type": "text",     "label": "Full Name",    "placeholder": "Your name",        "required": True},
-        {"id": "phone",   "type": "phone",    "label": "Phone Number", "placeholder": "+254…",            "required": True},
+        {"id": "phone",   "type": "phone",    "label": "Phone Number", "placeholder": "+1…",            "required": True},
         {"id": "email",   "type": "email",    "label": "Email",        "placeholder": "you@example.com",  "required": False},
         {"id": "message", "type": "textarea", "label": "Message",      "placeholder": "How can we help?", "required": False},
     ]},
     {"type": "order", "title": "Service Inquiry", "fields": [
         {"id": "name",    "type": "text",     "label": "Full Name",    "placeholder": "Your name",        "required": True},
-        {"id": "phone",   "type": "phone",    "label": "Phone Number", "placeholder": "+254…",            "required": True},
+        {"id": "phone",   "type": "phone",    "label": "Phone Number", "placeholder": "+1…",            "required": True},
         {"id": "service", "type": "textarea", "label": "Service Needed","placeholder": "What do you need?","required": True},
         {"id": "date",    "type": "text",     "label": "Preferred Date","placeholder": "e.g. 15 Jan 2026", "required": False},
     ]},

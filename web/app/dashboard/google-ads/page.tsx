@@ -257,9 +257,9 @@ function AIBuilderDrawer({
               <p className="text-xs text-slate-400 leading-relaxed">I'll suggest the best keywords, bidding strategy, and campaign structure for Google Ads.</p>
               <div className="space-y-2 text-left mt-4">
                 {[
-                  "I sell furniture in Nairobi and want leads from people searching to buy sofas",
+                  "I sell furniture in Chicago and want leads from people searching to buy sofas",
                   "Tech startup looking for sign-ups — people searching for project management tools",
-                  "Restaurant in Westlands wanting more lunch reservations from nearby offices",
+                  "Restaurant in downtown Austin wanting more lunch reservations from nearby offices",
                 ].map((ex) => (
                   <button key={ex} type="button" onClick={() => setInput(ex)}
                     className="w-full text-left rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 hover:border-emerald-300 hover:bg-emerald-50/50 transition-colors">

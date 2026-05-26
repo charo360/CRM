@@ -61,10 +61,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const maxAttempts = 5;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const isFormData = options.body instanceof FormData;
     const res = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers || {}),
       },
@@ -104,6 +105,7 @@ export const api = {
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  postForm: <T>(path: string, form: FormData) => request<T>(path, { method: "POST", body: form }),
 };
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -1977,6 +1979,29 @@ export const financeApi = {
   },
 };
 
+// ── Budgets ───────────────────────────────────────────────────────────────────
+export const budgetApi = {
+  list: (params?: { period?: string; year?: number; month?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.period) q.set("period", params.period);
+    if (params?.year != null) q.set("year", String(params.year));
+    if (params?.month != null) q.set("month", String(params.month));
+    return api.get<Record<string, unknown>[]>(`/finance/budgets${q.toString() ? `?${q}` : ""}`);
+  },
+  upsert: (body: { category: string; amount: number; period?: string; year?: number; month?: number; currency?: string; notes?: string }) =>
+    api.post<Record<string, unknown>>("/finance/budgets", body),
+  update: (id: string, body: { amount?: number; notes?: string; currency?: string }) =>
+    api.put<Record<string, unknown>>(`/finance/budgets/${id}`, body),
+  delete: (id: string) => api.delete<{ deleted: boolean }>(`/finance/budgets/${id}`),
+  vsActual: (params?: { year?: number; month?: number; period?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.year != null) q.set("year", String(params.year));
+    if (params?.month != null) q.set("month", String(params.month));
+    if (params?.period) q.set("period", params.period);
+    return api.get<Record<string, unknown>>(`/finance/budgets/vs-actual${q.toString() ? `?${q}` : ""}`);
+  },
+};
+
 // ── Quotes ────────────────────────────────────────────────────────────────────
 export const quotesApi = {
   list: (params?: { status?: string; q?: string }) => {
@@ -1999,6 +2024,84 @@ export const quotesApi = {
   getBranding: () => api.get<Record<string, unknown>>("/quotes/meta/branding"),
   aiDraft: (body: { prompt: string; currency?: string; customer_name?: string }) =>
     api.post<{ customer_name: string; items: Array<{ name: string; description?: string; qty: number; unit_price: number; amount: number }>; notes: string; terms: string }>("/quotes/ai/draft", body),
+};
+
+// ── Field Agents ──────────────────────────────────────────────────────────────
+export const fieldAgentsApi = {
+  listAgents: () => api.get<Record<string, unknown>[]>("/field-agents/agents"),
+  getAgent: (id: string) => api.get<Record<string, unknown>>(`/field-agents/agents/${id}`),
+  summary: () => api.get<Record<string, unknown>>("/field-agents/summary"),
+  listTasks: (params?: { agent_id?: string; status?: string; priority?: string; from_date?: string; to_date?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id)  q.set("agent_id",  params.agent_id);
+    if (params?.status)    q.set("status",    params.status);
+    if (params?.priority)  q.set("priority",  params.priority);
+    if (params?.from_date) q.set("from_date", params.from_date);
+    if (params?.to_date)   q.set("to_date",   params.to_date);
+    return api.get<Record<string, unknown>[]>(`/field-agents/tasks${q.toString() ? `?${q}` : ""}`);
+  },
+  createTask: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/field-agents/tasks", body),
+  updateTask: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/field-agents/tasks/${id}`, body),
+  deleteTask: (id: string) => api.delete<{ deleted: boolean }>(`/field-agents/tasks/${id}`),
+  checkIn:  (taskId: string, body: { location_note?: string; notes?: string }) =>
+    api.post<Record<string, unknown>>(`/field-agents/tasks/${taskId}/checkin`, body),
+  checkOut: (taskId: string, body: { outcome?: string; notes?: string; status?: string }) =>
+    api.put<Record<string, unknown>>(`/field-agents/tasks/${taskId}/checkout`, body),
+  listActivity: (params?: { agent_id?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id) q.set("agent_id", params.agent_id);
+    if (params?.limit)    q.set("limit", String(params.limit));
+    return api.get<Record<string, unknown>[]>(`/field-agents/activity${q.toString() ? `?${q}` : ""}`);
+  },
+  setCommission: (agentId: string, body: { commission_type: string; commission_rate: number }) =>
+    api.put<Record<string, unknown>>(`/field-agents/agents/${agentId}/commission`, body),
+  listCollections: (params?: { agent_id?: string; reconciliation_status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id)              q.set("agent_id", params.agent_id);
+    if (params?.reconciliation_status) q.set("reconciliation_status", params.reconciliation_status);
+    return api.get<Record<string, unknown>>(`/field-agents/collections${q.toString() ? `?${q}` : ""}`);
+  },
+  reconcileEntry: (entryId: string) =>
+    api.put<Record<string, unknown>>(`/field-agents/collections/${entryId}/reconcile`, {}),
+  reconcileAll: () =>
+    api.post<{ reconciled: number }>("/field-agents/collections/reconcile-all", {}),
+};
+
+// ── Smart Notes ───────────────────────────────────────────────────────────────
+
+export interface DiarizeUtterance {
+  speaker: string;   // "A" | "B" | ... from AssemblyAI, then overwritten with real name
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface DiarizeResult {
+  status: "queued" | "processing" | "completed" | "error";
+  speakers?: string[];
+  utterances?: DiarizeUtterance[];
+  text?: string;
+  error?: string;
+}
+
+export const smartNotesApi = {
+  upcoming: () => api.get<{ meetings: Record<string, unknown>[]; connected: boolean }>("/smart-notes/upcoming"),
+  transcribe: (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "recording.webm");
+    return api.postForm<{ transcript: string }>("/smart-notes/transcribe", form);
+  },
+  startDiarize: (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "recording.webm");
+    return api.postForm<{ job_id: string }>("/smart-notes/diarize", form);
+  },
+  pollDiarize: (jobId: string) => api.get<DiarizeResult>(`/smart-notes/diarize/${jobId}`),
+  generate: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes/generate", body),
+  list: () => api.get<{ notes: Record<string, unknown>[] }>("/smart-notes"),
+  save: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes", body),
+  get: (id: string) => api.get<Record<string, unknown>>(`/smart-notes/${id}`),
+  delete: (id: string) => api.delete<{ ok: boolean }>(`/smart-notes/${id}`),
 };
 
 // ── Loyalty ───────────────────────────────────────────────────────────────────

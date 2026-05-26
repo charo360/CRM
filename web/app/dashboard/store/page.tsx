@@ -252,10 +252,10 @@ function WebsiteEditor({ slug, storeUrl }: { slug: string; storeUrl: string }) {
           <Phone className="h-4 w-4 text-brand" /> Contact Info
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Phone" id="phone" placeholder="+254 712 345 678" icon={Phone} />
+          <Field label="Phone" id="phone" placeholder="+1 555 123 4567" icon={Phone} />
           <Field label="Email" id="email" type="email" placeholder="hello@mybiz.com" icon={Mail} />
-          <Field label="WhatsApp number" id="whatsapp" placeholder="+254712345678" icon={Phone} />
-          <Field label="Address" id="address" placeholder="123 Main St, Nairobi" icon={MapPin} />
+          <Field label="WhatsApp number" id="whatsapp" placeholder="+15551234567" icon={Phone} />
+          <Field label="Address" id="address" placeholder="123 Main St, New York" icon={MapPin} />
         </div>
       </div>
 

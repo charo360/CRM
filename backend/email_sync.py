@@ -260,6 +260,19 @@ async def sync_emails_for_user(
 
     result = {"synced_threads": total_threads, "synced_messages": total_messages}
     logger.info("[email_sync] quick sync user=%s → %s", user_id, result)
+
+    # Auto-classify new email contacts after sync
+    if total_messages > 0:
+        try:
+            from email_classifier import get_email_classifier
+            classifier = get_email_classifier(db)
+            classify_result = await classifier.classify_new_emails(user_id)
+            result["contacts_classified"] = classify_result.get("classified", 0)
+            result["contacts_created"] = classify_result.get("created", 0)
+            result["contacts_updated"] = classify_result.get("updated", 0)
+        except Exception as e:
+            logger.warning("[email_sync] classification failed for user %s: %s", user_id, e)
+
     return result
 
 
@@ -469,6 +482,9 @@ async def ensure_indexes(db: Any) -> None:
         await db.email_threads.create_index([("user_id", 1), ("last_message_at", -1)])
         await db.email_threads.create_index([("user_id", 1), ("subject", "text"), ("snippet", "text")])
         await db.email_messages.create_index([("user_id", 1), ("thread_id", 1), ("date", 1)])
+        await db.email_messages.create_index([("user_id", 1), ("contact_classified", 1)])
+        await db.customers.create_index([("user_id", 1), ("email", 1)])
+        await db.pending_email_classifications.create_index([("user_id", 1), ("status", 1)])
     except Exception as e:
         logger.warning("[email_sync] index creation failed: %s", e)
 

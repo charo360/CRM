@@ -80,7 +80,7 @@ export default function TeamManagementModal({
         }
 
         if (invitePhone.trim().length < 8) {
-            Alert.alert('Error', 'Please enter a valid phone number with country code (e.g. +254712345678)');
+            Alert.alert('Error', 'Please enter a valid phone number with country code (e.g. +15551234567)');
             return;
         }
 
@@ -229,7 +229,7 @@ export default function TeamManagementModal({
                                     style={styles.input}
                                     value={invitePhone}
                                     onChangeText={setInvitePhone}
-                                    placeholder="+254712345678"
+                                    placeholder="+15551234567"
                                     placeholderTextColor="#556"
                                     keyboardType="phone-pad"
                                     autoCapitalize="none"

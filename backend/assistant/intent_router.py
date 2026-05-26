@@ -535,6 +535,12 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "product seo", "e-commerce seo", "category seo",
         "blog post seo", "content optimization", "seo content",
     ],
+    "zilo_support": [
+        "zilo support", "zilo pricing", "zilo plans", "zilo features",
+        "zilo crm", "upgrade my plan", "how do i upgrade", "how much is zilo",
+        "zilo cost", "about zilo", "free plan", "growth plan", "zilo feature list",
+        "billing on zilo", "subscription plans", "billing info zilo", "tell me about zilo",
+    ],
 
     # ── Spreadsheet / Workspace integrations ──────────────────────────────────
     "google_sheets": [
@@ -773,7 +779,8 @@ async def _llm_route_choice(
             "- follow_ups: follow-up reminders, overdue contacts, reconnect scheduling\n"
             "- bookings: appointments, reservations, scheduling services, availability\n"
             "- automations: workflow triggers, auto-reply rules, sequences, automation setup\n"
-            "- general: integrations/account status questions, cross-domain fallback\n\n"
+            "- zilo_support: questions about Zilo (features, CRM capabilities, help guides, subscription plans, and billing/upgrade prices)\n"
+            "- general: account status questions, cross-domain fallback\n\n"
             "DISAMBIGUATION RULES (apply in order):\n"
             "1. 'invoice' / 'create invoice' / 'unpaid invoice' / 'overdue invoice' → invoices (not finance, not stripe)\n"
             "2. 'expense' / 'cash flow' / 'P&L' / 'profit and loss' → finance (not invoices)\n"
@@ -895,6 +902,14 @@ async def route_to_agent(
         if not any(p in msg_lower for p in _SCHEDULER_EXIT_PHRASES):
             logger.info("[IntentRouter] sticky → social_scheduler (mid-scheduling flow)")
             return "social_scheduler"
+
+    # ── 0c. Explicit Telegram override ───────────────────────────────────────
+    # If the user is talking about Telegram bot/channels/messages, ensure Tom handles it.
+    if "telegram" in msg_lower and "telegram" in agent_registry:
+        _TG_PHRASES = ("telegram bot", "telegram channel", "telegram group", "connect telegram", "in telegram", "on telegram", "telegram status", "search telegram", "search in telegram")
+        if any(p in msg_lower for p in _TG_PHRASES):
+            logger.info("[IntentRouter] Telegram override → telegram (user specified Telegram context)")
+            return "telegram"
 
     # ── 1. Semantic route — embedding cosine-similarity (no LLM call) ────────
     # ~50-80 ms vs ~500 ms for LLM. Falls back to LLM when confidence is low.

@@ -11,6 +11,7 @@ import Navbar from "@/components/Navbar";
 import AssistantLauncher from "@/components/AssistantLauncher";
 import CommandBar from "@/components/CommandBar";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
+import MeetingOverlay from "@/components/MeetingOverlay";
 
 /**
  * Auth uses localStorage, which is absent on the server. Without a client-only gate,
@@ -67,6 +68,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {mounted && <AssistantLauncher />}
       {mounted && <CommandBar />}
       {mounted && <OnboardingWizard />}
+      {mounted && <MeetingOverlay />}
       <Toaster richColors position="top-center" />
       </ZernioAccountsProvider>
     </BusinessProvider>

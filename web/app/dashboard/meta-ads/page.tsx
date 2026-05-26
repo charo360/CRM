@@ -301,9 +301,9 @@ function AICampaignBuilderDrawer({
               </p>
               <div className="space-y-2 text-left mt-4">
                 {[
-                  "I run a restaurant in Nairobi and want more table bookings from young professionals",
+                  "I run a restaurant in Austin and want more table bookings from young professionals",
                   "Promote my online clothing store to women aged 18-35 interested in fashion",
-                  "Get leads for my real estate project targeting high-income buyers in Kenya",
+                  "Get leads for my real estate project targeting high-income buyers in the US",
                 ].map((ex) => (
                   <button
                     key={ex}
