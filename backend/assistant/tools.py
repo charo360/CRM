@@ -13603,31 +13603,88 @@ async def list_calendar_events(ctx: ToolContext, args: Dict[str, Any]) -> Dict[s
     return result
 
 
+def _split_attendees(s: Any) -> list[str]:
+    if not s:
+        return []
+    if isinstance(s, list):
+        return [str(e).strip() for e in s if str(e).strip()]
+    return [e.strip() for e in str(s).split(",") if e.strip()]
+
+
+def _parse_naive_dt_and_tz(s: str, fallback_tz: str = "UTC") -> tuple[str, str]:
+    """Composio's CREATE/UPDATE_EVENT requires a naive ISO datetime (no Z, no
+    offset) plus a separate `timezone`. Accept user input in either form and
+    normalize. Returns (naive_iso, timezone).
+    """
+    s = (s or "").strip()
+    if s.endswith("Z"):
+        return s[:-1], "UTC"
+    # detect ±HH:MM offset
+    if len(s) >= 6 and s[-3] == ":" and s[-6] in ("+", "-"):
+        # We can't reliably map offset → IANA tz, so warn-default to UTC for
+        # the offset and pass the naive part.
+        return s[:-6], fallback_tz
+    return s, fallback_tz
+
+
+def _duration_from_range(start_iso: str, end_iso: str) -> tuple[int, int]:
+    """Compute (hours, minutes) from two ISO datetimes."""
+    from datetime import datetime
+    def _parse(x: str) -> datetime:
+        x = x.strip().rstrip("Z")
+        # strip offset if present
+        if len(x) >= 6 and x[-3] == ":" and x[-6] in ("+", "-"):
+            x = x[:-6]
+        return datetime.fromisoformat(x)
+    delta = _parse(end_iso) - _parse(start_iso)
+    total_min = max(int(delta.total_seconds() // 60), 1)
+    return total_min // 60, total_min % 60
+
+
 @tool(
     name="create_calendar_event",
-    description="Create a new event in the user's Google Calendar.",
+    description=(
+        "Create a Google Calendar event. Provide either end_datetime or duration_minutes "
+        "(not both). Set create_meeting_room=true to attach a Google Meet link automatically."
+    ),
     parameters={
         "type": "object",
-        "required": ["title", "start_datetime", "end_datetime"],
+        "required": ["title", "start_datetime"],
         "properties": {
             "title": {"type": "string", "description": "Event title/summary."},
             "start_datetime": {
                 "type": "string",
-                "description": "Start time in ISO 8601 format e.g. '2025-05-10T14:00:00Z'.",
+                "description": "Start time in ISO 8601 (Z for UTC, or naive + timezone), e.g. '2026-06-01T14:00:00Z'.",
             },
             "end_datetime": {
                 "type": "string",
-                "description": "End time in ISO 8601 format e.g. '2025-05-10T15:00:00Z'.",
+                "description": "End time in ISO 8601. Either this OR duration_minutes is required.",
             },
-            "description": {"type": "string", "description": "Optional event description/notes."},
+            "duration_minutes": {
+                "type": "integer",
+                "description": "Event duration in minutes (alternative to end_datetime). Default 60.",
+            },
+            "timezone": {
+                "type": "string",
+                "description": "IANA timezone (e.g. 'America/New_York'). Required if start_datetime is naive. Defaults UTC.",
+            },
+            "description": {"type": "string", "description": "Optional event description (can be HTML)."},
             "location": {"type": "string", "description": "Optional event location."},
             "attendees": {
                 "type": "string",
                 "description": "Optional comma-separated attendee email addresses.",
             },
+            "create_meeting_room": {
+                "type": "boolean",
+                "description": "If true, attach a Google Meet video link to the event. Default false.",
+            },
+            "send_updates": {
+                "type": "boolean",
+                "description": "Email invitations to attendees. Default true.",
+            },
             "calendar_id": {
                 "type": "string",
-                "description": "Calendar ID to create the event in (defaults to primary).",
+                "description": "Calendar ID (default 'primary').",
             },
         },
     },
@@ -13641,21 +13698,316 @@ async def create_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[
             "error": "Google Calendar is not connected.",
             "action_required": "Connect Google Calendar in the Integrations page first.",
         }
+
+    explicit_tz = (args.get("timezone") or "").strip()
+    naive_start, inferred_tz = _parse_naive_dt_and_tz(args["start_datetime"], explicit_tz or "UTC")
+    tz = explicit_tz or inferred_tz
+
+    # Resolve duration: end_datetime overrides duration_minutes if both present
+    if args.get("end_datetime"):
+        hours, minutes = _duration_from_range(args["start_datetime"], args["end_datetime"])
+    else:
+        total = max(int(args.get("duration_minutes") or 60), 1)
+        hours, minutes = total // 60, total % 60
+
     params: Dict[str, Any] = {
         "summary": args["title"],
-        "start": {"dateTime": args["start_datetime"]},
-        "end": {"dateTime": args["end_datetime"]},
+        "start_datetime": naive_start,
+        "timezone": tz,
+        "event_duration_hour": hours,
+        "event_duration_minutes": minutes,
         "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": bool(args.get("send_updates", True)),
     }
     if args.get("description"):
         params["description"] = args["description"]
     if args.get("location"):
         params["location"] = args["location"]
-    if args.get("attendees"):
-        emails = [e.strip() for e in args["attendees"].split(",") if e.strip()]
-        params["attendees"] = [{"email": e} for e in emails]
-    result = await execute_action(ctx.business_id, ACTION_CALENDAR_CREATE, params)
-    return result
+    attendees = _split_attendees(args.get("attendees"))
+    if attendees:
+        params["attendees"] = attendees
+    if args.get("create_meeting_room"):
+        params["create_meeting_room"] = True
+
+    r = await execute_action(ctx.business_id, ACTION_CALENDAR_CREATE, params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    evt = inner.get("response_data") or inner
+    return {
+        "status": "created",
+        "event_id": evt.get("id"),
+        "html_link": evt.get("htmlLink"),
+        "meet_link": evt.get("hangoutLink") or None,
+    }
+
+
+@tool(
+    name="update_calendar_event",
+    description=(
+        "Update / reschedule an existing Google Calendar event. Provide event_id plus any "
+        "fields to change. To add a Google Meet link to an existing event, set create_meeting_room=true."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["event_id", "start_datetime"],
+        "properties": {
+            "event_id":           {"type": "string", "description": "Event ID to update."},
+            "title":              {"type": "string", "description": "New title/summary."},
+            "start_datetime":     {"type": "string", "description": "New start time (ISO 8601). Required by the v3 action."},
+            "end_datetime":       {"type": "string", "description": "New end time (ISO 8601). Either this OR duration_minutes."},
+            "duration_minutes":   {"type": "integer", "description": "New duration in minutes (alternative to end_datetime). Default 60."},
+            "timezone":           {"type": "string", "description": "IANA timezone for naive datetimes. Defaults UTC."},
+            "description":        {"type": "string"},
+            "location":           {"type": "string"},
+            "attendees":          {"type": "string", "description": "Comma-separated emails. Replaces existing attendees."},
+            "create_meeting_room": {"type": "boolean", "description": "Add a Google Meet link to the event."},
+            "send_updates":       {"type": "boolean", "description": "Email attendees about the change. Default true."},
+            "calendar_id":        {"type": "string", "description": "Calendar ID (default 'primary')."},
+        },
+    },
+    destructive=True,
+)
+async def update_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+
+    tz = (args.get("timezone") or "").strip() or "UTC"
+    naive_start, inferred_tz = _parse_naive_dt_and_tz(args["start_datetime"], tz)
+    tz = inferred_tz if inferred_tz != "UTC" or not args.get("timezone") else tz
+
+    if args.get("end_datetime"):
+        hours, minutes = _duration_from_range(args["start_datetime"], args["end_datetime"])
+    else:
+        total = max(int(args.get("duration_minutes") or 60), 1)
+        hours, minutes = total // 60, total % 60
+
+    params: Dict[str, Any] = {
+        "event_id": args["event_id"],
+        "start_datetime": naive_start,
+        "timezone": tz,
+        "event_duration_hour": hours,
+        "event_duration_minutes": minutes,
+        "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": bool(args.get("send_updates", True)),
+    }
+    if args.get("title"):
+        params["summary"] = args["title"]
+    if args.get("description"):
+        params["description"] = args["description"]
+    if args.get("location"):
+        params["location"] = args["location"]
+    attendees = _split_attendees(args.get("attendees"))
+    if attendees:
+        params["attendees"] = attendees
+    if args.get("create_meeting_room"):
+        params["create_meeting_room"] = True
+
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_UPDATE_EVENT", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    evt = inner.get("response_data") or inner
+    return {
+        "status": "updated",
+        "event_id": evt.get("id") or args["event_id"],
+        "html_link": evt.get("htmlLink"),
+        "meet_link": evt.get("hangoutLink") or None,
+    }
+
+
+@tool(
+    name="quick_add_calendar_event",
+    description=(
+        "Create a calendar event from a natural-language string. Google parses it "
+        "and infers time, duration, attendees. Examples: 'Lunch with John tomorrow at 1pm', "
+        "'Team standup every Monday at 9am'. Use this when the user describes an event "
+        "casually and exact times aren't easy to extract — saves a round trip."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text":         {"type": "string", "description": "Natural language event description."},
+            "calendar_id":  {"type": "string", "description": "Calendar ID (default 'primary')."},
+            "send_updates": {"type": "string", "description": "'all' | 'externalOnly' | 'none'. Default 'none'."},
+        },
+    },
+    destructive=True,
+)
+async def quick_add_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    params: Dict[str, Any] = {
+        "text": args["text"],
+        "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": args.get("send_updates") or "none",
+    }
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_QUICK_ADD", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # QUICK_ADD returns {"event": {...}}; fall through to inner for safety
+    evt = inner.get("event") or inner.get("response_data") or inner
+    return {
+        "status": "created",
+        "event_id": evt.get("id"),
+        "summary": evt.get("summary"),
+        "start": (evt.get("start") or {}).get("dateTime") or (evt.get("start") or {}).get("date"),
+        "html_link": evt.get("htmlLink"),
+    }
+
+
+@tool(
+    name="find_calendar_event",
+    description=(
+        "Search the user's calendar for events matching a free-text query. "
+        "Use this to look up a specific event before editing/deleting it (gives you the event_id)."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query":       {"type": "string", "description": "Free-text search terms."},
+            "time_min":    {"type": "string", "description": "Only events ending after this ISO time (optional)."},
+            "time_max":    {"type": "string", "description": "Only events starting before this ISO time (optional)."},
+            "max_results": {"type": "integer", "description": "Max events (default 10, max 50)."},
+            "calendar_id": {"type": "string", "description": "Calendar ID (default 'primary')."},
+        },
+    },
+)
+async def find_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    params: Dict[str, Any] = {
+        "query": args["query"],
+        "calendar_id": args.get("calendar_id") or "primary",
+        "max_results": min(int(args.get("max_results") or 10), 50),
+        "single_events": True,
+        "order_by": "startTime",
+    }
+    if args.get("time_min"):
+        params["timeMin"] = args["time_min"]
+    if args.get("time_max"):
+        params["timeMax"] = args["time_max"]
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_FIND_EVENT", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # FIND_EVENT returns {"event_data": {"event_data": [...]}}; unwrap both layers
+    ed = inner.get("event_data") or inner.get("response_data") or inner
+    if isinstance(ed, dict) and isinstance(ed.get("event_data"), list):
+        items = ed["event_data"]
+    else:
+        items = ed.get("items") or ed.get("events") or ed if isinstance(ed, list) else []
+        if not isinstance(items, list):
+            items = []
+    events = []
+    for e in items:
+        if not isinstance(e, dict):
+            continue
+        start = (e.get("start") or {}).get("dateTime") or (e.get("start") or {}).get("date")
+        end = (e.get("end") or {}).get("dateTime") or (e.get("end") or {}).get("date")
+        events.append({
+            "event_id":  e.get("id"),
+            "summary":   e.get("summary"),
+            "start":     start,
+            "end":       end,
+            "location":  e.get("location"),
+            "attendees": [a.get("email") for a in (e.get("attendees") or []) if isinstance(a, dict)],
+            "meet_link": e.get("hangoutLink"),
+            "html_link": e.get("htmlLink"),
+        })
+    return {"query": args["query"], "count": len(events), "events": events}
+
+
+@tool(
+    name="find_calendar_free_slots",
+    description=(
+        "Find free time slots across one or more calendars in a given window. "
+        "Returns busy intervals; agent can compute gaps to propose meeting times."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["time_min", "time_max"],
+        "properties": {
+            "time_min":  {"type": "string", "description": "Start of search window (ISO 8601)."},
+            "time_max":  {"type": "string", "description": "End of search window (ISO 8601)."},
+            "calendars": {"type": "string", "description": "Comma-separated calendar IDs or emails (default 'primary')."},
+            "timezone":  {"type": "string", "description": "IANA timezone for interpreting times (default UTC)."},
+        },
+    },
+)
+async def find_calendar_free_slots(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    cals = _split_attendees(args.get("calendars")) or ["primary"]
+    params: Dict[str, Any] = {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "items": cals,  # v3 expects an array of strings
+        "timezone": args.get("timezone") or "UTC",
+    }
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_FIND_FREE_SLOTS", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    rd = inner.get("response_data") or inner
+    cal_busy = (rd.get("calendars") or {})
+    out: Dict[str, list] = {}
+    for cal_id, info in cal_busy.items():
+        if isinstance(info, dict):
+            out[cal_id] = info.get("busy") or []
+    return {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "busy_by_calendar": out,
+    }
+
+
+@tool(
+    name="list_calendars",
+    description="List all Google Calendars the user has access to (primary + secondary + shared).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "description": "Max calendars (default 50, max 250)."},
+        },
+    },
+)
+async def list_calendars(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_LIST_CALENDARS", {
+        "max_results": min(int(args.get("max_results") or 50), 250),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # LIST_CALENDARS returns {"calendars": [...]}
+    items = inner.get("calendars") or (inner.get("response_data") or {}).get("items") or []
+    cals = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        cals.append({
+            "calendar_id": c.get("id"),
+            "summary":     c.get("summary") or c.get("summaryOverride"),
+            "primary":     bool(c.get("primary")),
+            "access_role": c.get("accessRole"),
+            "timezone":    c.get("timeZone"),
+        })
+    return {"count": len(cals), "calendars": cals}
 
 
 @tool(
