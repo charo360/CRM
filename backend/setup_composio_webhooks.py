@@ -46,12 +46,15 @@ async def create_webhook_subscription():
             
             if response.status_code == 200:
                 existing = response.json()
-                if existing:
+                items = existing.get("items") if isinstance(existing, dict) else existing
+                if items:
+                    sub = items[0] if isinstance(items, list) else items
                     print(f"ℹ️  Webhook subscription already exists:")
-                    print(f"   URL: {existing.get('webhook_url')}")
-                    print(f"   Secret: {existing.get('secret', 'N/A')[:20]}...")
+                    print(f"   URL: {sub.get('webhook_url')}")
+                    secret = sub.get('secret') or ''
+                    print(f"   Secret: {secret[:20]}..." if secret else "   Secret: <not exposed by API>")
                     print("\n   To update, delete the existing subscription first")
-                    return existing
+                    return sub
         except Exception as e:
             print(f"⚠️  Could not check existing subscription: {e}")
         
@@ -65,8 +68,12 @@ async def create_webhook_subscription():
                 },
                 json={
                     "webhook_url": WEBHOOK_URL,
-                    "enabled_events": ["trigger"],  # Subscribe to all trigger events
-                    "version": "V3"
+                    "enabled_events": [
+                        "composio.trigger.message",
+                        "composio.connected_account.expired",
+                        "composio.trigger.disabled",
+                    ],
+                    "version": "V3",
                 }
             )
             
@@ -108,30 +115,49 @@ async def register_gmail_triggers():
     db_name = os.environ.get("DB_NAME", "whatsapp_crm")
     db = client[db_name]
     
-    # Get all users
-    all_users = await db.users.find({}).to_list(length=1000)
-    
-    # Check Gmail connections via Composio API
-    from composio_service import get_connection_status
-    
+    # Fetch all ACTIVE Gmail connections from Composio (v3 endpoint — v1 is gone)
+    gmail_accounts = []
+    async with httpx.AsyncClient(timeout=30) as http:
+        resp = await http.get(
+            "https://backend.composio.dev/api/v3/connected_accounts",
+            headers={"X-API-Key": COMPOSIO_API_KEY},
+        )
+        if resp.status_code != 200:
+            print(f"❌ Failed to list connected accounts: {resp.status_code} {resp.text[:200]}")
+            client.close()
+            return
+        for item in resp.json().get("items", []):
+            toolkit_slug = (item.get("toolkit") or {}).get("slug", "").lower()
+            if toolkit_slug != "gmail":
+                continue
+            if item.get("status") != "ACTIVE":
+                print(f"⏭  Skipping {item.get('id')} (status={item.get('status')})")
+                continue
+            gmail_accounts.append({
+                "id": item.get("id"),
+                "user_uuid": item.get("user_id"),
+            })
+
+    if not gmail_accounts:
+        print("❌ No ACTIVE Gmail connections in Composio")
+        client.close()
+        return
+
+    print(f"📧 Found {len(gmail_accounts)} ACTIVE Gmail connection(s) in Composio\n")
+
+    # Map each Composio account back to a MongoDB user (business_id == user_uuid)
     gmail_users = []
-    
-    for user in all_users:
+    for acct in gmail_accounts:
+        user = await db.users.find_one({"business_id": acct["user_uuid"]})
+        if not user:
+            user = await db.users.find_one({"_id": acct["user_uuid"]})
+        if not user:
+            print(f"⚠️  {acct['id']} — no MongoDB user matches Composio user_uuid={acct['user_uuid']}")
+            continue
+        email = user.get("email", str(user.get("_id")))
         user_id = str(user.get("business_id") or user["_id"])
-        email = user.get("email", user_id)
-        
-        try:
-            status = await get_connection_status(user_id, "gmail")
-            
-            if status.get("connected"):
-                connected_account_id = status.get("connection_id") or status.get("connected_account_id")
-                if connected_account_id:
-                    gmail_users.append((user, user_id, email, connected_account_id))
-                    print(f"✅ {email} - Connected (ID: {connected_account_id})")
-                else:
-                    print(f"⚠️  {email} - Connected but no account ID")
-        except Exception as e:
-            print(f"⚠️  {email} - Error: {e}")
+        gmail_users.append((user, user_id, email, acct["id"]))
+        print(f"✅ {email} → {acct['id']}")
     
     if not gmail_users:
         print("\n❌ No users with Gmail connected")
