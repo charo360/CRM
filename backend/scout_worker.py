@@ -13,7 +13,6 @@ from scout_service import (
     EXECUTIONS_COLLECTION,
     execute_scout,
     find_due_scouts,
-    is_user_scouts_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,15 +44,13 @@ async def run_scout_worker(db) -> None:
                     if not uid or not scout_id:
                         continue
 
-                    if not await is_user_scouts_enabled(db, uid):
-                        continue
-
                     if await _scout_already_running(db, scout_id):
                         logger.debug("[scout_worker] skip scout=%s already running", scout_id)
                         continue
 
                     try:
-                        await execute_scout(db, scout)
+                        result = await execute_scout(db, scout)
+                        logger.info("[scout_worker] scout=%s done: found=%s raw=%s", scout_id, result.get("results_found"), result.get("raw_count"))
                     except Exception as e:
                         logger.error("[scout_worker] scout=%s failed: %s", scout_id, e)
 
