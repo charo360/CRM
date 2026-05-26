@@ -9,6 +9,7 @@ import {
   Radio, Search, Eye, Loader2, ChevronRight, Bell, MessageCircle, X,
   BarChart3, Antenna, Calendar, Hash, MapPin, CheckCircle2, SkipForward,
   AlertTriangle, Clock, Building2, Briefcase, Megaphone, Filter,
+  ShoppingBag, Mail, Phone, Copy,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -151,7 +152,90 @@ interface Scout {
   created_at?: string;
 }
 
-type Section = "hunt" | "pulse" | "funding" | "radar" | "setup" | "autopilot" | "settings" | string;
+type Section = "hunt" | "pulse" | "funding" | "radar" | "shopify_leads" | "business_leads" | "lead_scouts" | "setup" | "autopilot" | "settings" | string;
+
+interface ShopifyLead {
+  domain: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  facebook: string | null;
+  instagram: string | null;
+  tiktok: string | null;
+  twitter: string | null;
+  youtube: string | null;
+  pinterest: string | null;
+  description: string | null;
+  niche: string;
+  source: string;
+  product_count: number | null;
+  price_min: number | null;
+  price_max: number | null;
+  avg_price: number | null;
+  categories: string[] | null;
+  top_products: { title: string; price: number }[] | null;
+  vendors: string[] | null;
+  tags_sample: string[] | null;
+  has_free_shipping: boolean | null;
+  currency: string | null;
+  platform: string | null;
+}
+
+interface LeadScout {
+  _id: string;
+  name: string;
+  keyword: string;
+  location: string;
+  frequency: "manual" | "daily" | "weekly";
+  expanded_keywords?: string[];
+  min_rating: number;
+  require_phone: boolean;
+  require_email: boolean;
+  enabled: boolean;
+  last_run: string | null;
+  next_run: string | null;
+  new_leads: number;
+  inbox_count: number;
+  last_error: string | null;
+}
+
+interface InboxLead {
+  _id: string;
+  _batch_index?: number;          // which unlock batch this lead belongs to (0 = free, 1+ = paid)
+  _batch_unlocked_at?: string;    // when this batch was unlocked
+  scout_id: string;
+  scout_name: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  website: string | null;
+  domain: string | null;
+  category: string | null;
+  rating: number | null;
+  reviews: number | null;
+  place_id: string | null;
+  keyword: string;
+  discovered_at: string;
+  status: "new" | "saved" | "dismissed";
+}
+
+interface BusinessLead {
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  website: string | null;
+  domain: string | null;
+  category: string | null;
+  rating: number | null;
+  reviews: number | null;
+  place_id: string | null;
+  keyword: string;
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -347,6 +431,52 @@ export default function ActionModePage() {
   const [editedContent, setEditedContent] = useState<Record<string, string>>({});
   const [selectedLeads, setSelectedLeads] = useState<Set<string>>(new Set());
 
+  // Shopify leads search
+  const [shopifyNiche, setShopifyNiche] = useState("");
+  const [shopifyCountry, setShopifyCountry] = useState("");
+  const [shopifySearching, setShopifySearching] = useState(false);
+  const [shopifyLeads, setShopifyLeads] = useState<ShopifyLead[]>([]);
+  const [shopifySearched, setShopifySearched] = useState(false);
+  const [shopifyAdded, setShopifyAdded] = useState<Set<string>>(new Set());
+  const [shopifyAdding, setShopifyAdding] = useState<string | null>(null);
+
+  // Business leads search
+  const [bizKeyword, setBizKeyword] = useState("");
+  const [bizLocation, setBizLocation] = useState("");
+  const [bizSearching, setBizSearching] = useState(false);
+  const [bizLeads, setBizLeads] = useState<BusinessLead[]>([]);
+  const [bizSearched, setBizSearched] = useState(false);
+  const [bizAdded, setBizAdded] = useState<Set<string>>(new Set());
+  const [bizAdding, setBizAdding] = useState<string | null>(null);
+
+  // Lead Scouts (automated saved searches — separate from AI Scouts)
+  const [leadScouts, setLeadScouts] = useState<LeadScout[]>([]);
+  const [leadScoutsLoading, setLeadScoutsLoading] = useState(false);
+  const [inboxLeads, setInboxLeads] = useState<InboxLead[]>([]);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxPage, setInboxPage] = useState(0);
+  const [inboxTotal, setInboxTotal] = useState(0);
+  const [inboxHasMore, setInboxHasMore] = useState(false);
+  const [loadingMoreInbox, setLoadingMoreInbox] = useState(false);
+  const [inboxStatus, setInboxStatus] = useState<"new"|"saved"|"dismissed"|"with_contacts">("new");
+  const [inboxCounts, setInboxCounts] = useState<{new: number; saved: number; dismissed: number; with_contacts: number}>({new: 0, saved: 0, dismissed: 0, with_contacts: 0});
+  const [inboxFilterScoutId, setInboxFilterScoutId] = useState<string>("");
+  const [bulkSavingInbox, setBulkSavingInbox] = useState(false);
+  const [addAsType, setAddAsType] = useState<"Customer"|"Lead"|"Investor"|"Partner"|"Supplier"|"Other">("Customer");
+  const [scoutTab, setScoutTab] = useState<"scouts" | "inbox">("inbox");
+  const [showLeadScoutForm, setShowLeadScoutForm] = useState(false);
+  const [runningLeadScout, setRunningLeadScout] = useState<string | null>(null);
+  const [runningAllLeadScouts, setRunningAllLeadScouts] = useState(false);
+  const [savingInboxLead, setSavingInboxLead] = useState<string | null>(null);
+  const [leadScoutForm, setLeadScoutForm] = useState({
+    name: "", keyword: "", location: "", frequency: "weekly" as "manual"|"daily"|"weekly",
+    require_phone: false, require_email: false,
+  });
+  const [creditInfo, setCreditInfo] = useState<{
+    balance: number; total_runs: number; total_spent_usd: number;
+    credit_price_usd: number; dfs_cost_usd: number; margin_usd: number; free_credits: number;
+  } | null>(null);
+
   // Hunt filters
   const [huntFilter, setHuntFilter] = useState<"all" | "hot" | "warm" | "cold">("all");
   const [newKeyword, setNewKeyword] = useState("");
@@ -418,6 +548,16 @@ export default function ActionModePage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Load lead scouts + inbox + credits when section becomes active
+  useEffect(() => {
+    if (section === "lead_scouts") {
+      loadLeadScouts();
+      loadInbox();
+      loadCredits();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
 
   useEffect(() => {
     if (!isLive) { setLivePhase(""); return; }
@@ -605,6 +745,289 @@ export default function ActionModePage() {
     } catch { toast.error("Failed"); setRunningPredictions(false); }
   }
 
+  async function addShopifyLeadToCRM(lead: ShopifyLead) {
+    setShopifyAdding(lead.domain);
+    try {
+      const storeName = lead.name || lead.domain.split(".")[0];
+      // Check for duplicate before adding
+      const check = await api.get<{ exists: boolean; name: string }>(
+        `/customers/duplicate-check?email=${encodeURIComponent(lead.email || "")}&domain=${encodeURIComponent(lead.domain)}`
+      );
+      if (check.exists) {
+        toast.info(`${check.name || storeName} is already in your CRM`);
+        setShopifyAdded(prev => new Set(prev).add(lead.domain));
+        return;
+      }
+      const payload: any = {
+        name: storeName,
+        email: lead.email || undefined,
+        phone_number: lead.phone || undefined,
+        notes: [
+          `Shopify store: https://${lead.domain}`,
+          lead.description ? `About: ${lead.description}` : "",
+          lead.niche ? `Niche: ${lead.niche}` : "",
+          lead.instagram ? `Instagram: ${lead.instagram}` : "",
+          lead.facebook ? `Facebook: ${lead.facebook}` : "",
+          lead.tiktok ? `TikTok: ${lead.tiktok}` : "",
+        ].filter(Boolean).join("\n"),
+        tags: ["Shopify", "Ecommerce", lead.niche].filter(Boolean),
+      };
+      if (!payload.phone_number && !payload.email) {
+        const seed = lead.domain.replace(/[^0-9]/g, "").slice(0, 7).padEnd(7, "0");
+        payload.phone_number = `+1555${seed}`;
+      }
+      await api.post("/customers", payload);
+      setShopifyAdded(prev => new Set(prev).add(lead.domain));
+      toast.success(`${storeName} added to CRM`);
+    } catch {
+      toast.error("Failed to add to CRM");
+    } finally {
+      setShopifyAdding(null);
+    }
+  }
+
+  async function searchShopifyLeads() {
+    if (!shopifyNiche.trim()) { toast.error("Enter a niche or product category"); return; }
+    setShopifySearching(true);
+    setShopifyLeads([]);
+    setShopifySearched(false);
+    try {
+      const res = await api.post<{ leads: ShopifyLead[] }>("/action-mode/shopify-leads/search", {
+        niche: shopifyNiche.trim(),
+        country: shopifyCountry.trim(),
+        limit: 12,
+      });
+      setShopifyLeads(res.leads ?? []);
+      setShopifySearched(true);
+      if (!res.leads?.length) toast.info("No stores found — try a broader niche or different keywords");
+    } catch (e: any) {
+      toast.error(e?.message ?? "Search failed");
+    } finally {
+      setShopifySearching(false);
+    }
+  }
+
+  async function searchBusinessLeads() {
+    if (!bizKeyword.trim()) { toast.error("Enter a keyword or business type"); return; }
+    setBizSearching(true);
+    setBizLeads([]);
+    setBizSearched(false);
+    try {
+      const res = await api.post<{ leads: BusinessLead[] }>("/action-mode/business-leads/search", {
+        keyword: bizKeyword.trim(),
+        location: bizLocation.trim(),
+      });
+      setBizLeads(res.leads ?? []);
+      setBizSearched(true);
+      if (!res.leads?.length) toast.info("No businesses found — try a different keyword or location");
+    } catch (e: any) {
+      toast.error(e?.message ?? "Search failed");
+    } finally {
+      setBizSearching(false);
+    }
+  }
+
+  async function addBusinessLeadToCRM(lead: BusinessLead) {
+    const key = lead.domain || lead.name.toLowerCase();
+    setBizAdding(key);
+    try {
+      // Duplicate check
+      const check = await api.get<{ exists: boolean; name: string }>(
+        `/customers/duplicate-check?email=${encodeURIComponent(lead.email || "")}&domain=${encodeURIComponent(lead.domain || "")}`
+      );
+      if (check.exists) {
+        toast.info(`${check.name || lead.name} is already in your CRM`);
+        setBizAdded(prev => new Set(prev).add(key));
+        return;
+      }
+      const notes = [
+        lead.address ? `Address: ${lead.address}` : "",
+        lead.category ? `Category: ${lead.category}` : "",
+        lead.website ? `Website: ${lead.website}` : "",
+        lead.rating ? `Google Rating: ${lead.rating} (${lead.reviews ?? 0} reviews)` : "",
+        lead.place_id ? `Google Maps: https://www.google.com/maps/place/?q=place_id:${lead.place_id}` : "",
+        `Found via: ${lead.keyword}`,
+      ].filter(Boolean).join("\n");
+      const payload: any = {
+        name: lead.name,
+        email: lead.email || undefined,
+        phone_number: lead.phone || undefined,
+        notes,
+        tags: ["Business Lead", lead.category || "Business"].filter(Boolean),
+      };
+      if (!payload.phone_number && !payload.email) {
+        const seed = lead.name.replace(/[^0-9]/g, "").slice(0, 7).padEnd(7, "0");
+        payload.phone_number = `+1555${seed}`;
+      }
+      await api.post("/customers", payload);
+      setBizAdded(prev => new Set(prev).add(key));
+      toast.success(`${lead.name} added to CRM`);
+    } catch {
+      toast.error("Failed to add to CRM");
+    } finally {
+      setBizAdding(null);
+    }
+  }
+
+  async function loadCredits() {
+    try {
+      const res = await api.get<typeof creditInfo>("/action-mode/lead-credits");
+      setCreditInfo(res);
+    } catch { /* silent */ }
+  }
+
+  async function loadLeadScouts() {
+    setLeadScoutsLoading(true);
+    try {
+      const res = await api.get<{ scouts: LeadScout[] }>("/action-mode/lead-scouts");
+      setLeadScouts(res.scouts ?? []);
+    } catch { /* silent */ } finally { setLeadScoutsLoading(false); }
+  }
+
+  async function loadInbox(reset = true, statusOverride?: "new"|"saved"|"dismissed"|"with_contacts", scoutIdOverride?: string) {
+    if (reset) { setInboxLoading(true); setInboxPage(0); }
+    else setLoadingMoreInbox(true);
+    const status = statusOverride ?? inboxStatus;
+    const scoutFilter = scoutIdOverride !== undefined ? scoutIdOverride : inboxFilterScoutId;
+    // "with_contacts" is a virtual status — map to backend status=new + contacts=both
+    const backendStatus = status === "with_contacts" ? "new" : status;
+    const contactsParam = status === "with_contacts" ? "&contacts=both" : "";
+    try {
+      const page = reset ? 0 : inboxPage + 1;
+      const scoutParam = scoutFilter ? `&scout_id=${encodeURIComponent(scoutFilter)}` : "";
+      const res = await api.get<{ leads: InboxLead[]; total: number; has_more: boolean; counts: {new: number; saved: number; dismissed: number; with_contacts: number} }>(
+        `/action-mode/lead-scouts/inbox?page=${page}&per_page=15&status=${backendStatus}${contactsParam}${scoutParam}`
+      );
+      const unlockedAt = new Date().toISOString();
+      const tagged = (res.leads ?? []).map(l => ({ ...l, _batch_index: page, _batch_unlocked_at: unlockedAt }));
+      if (reset) {
+        setInboxLeads(tagged);
+      } else {
+        setInboxLeads(prev => [...prev, ...tagged]);
+        setInboxPage(page);
+        if (status === "new" || status === "with_contacts") {
+          toast.success("Unlocked next 15 leads · 1 credit");
+          void loadCredits();
+        }
+      }
+      setInboxTotal(res.total ?? 0);
+      setInboxHasMore(res.has_more ?? false);
+      if (res.counts) setInboxCounts(res.counts);
+    } catch (e) {
+      const msg = (e as Error)?.message || "";
+      if (msg.includes("402") || msg.toLowerCase().includes("insufficient credits")) {
+        toast.error("Not enough credits — top up to unlock more leads");
+      } else if (!reset) {
+        toast.error("Failed to load more leads");
+      }
+    } finally { setInboxLoading(false); setLoadingMoreInbox(false); }
+  }
+
+  async function restoreInboxLead(id: string) {
+    try {
+      await api.post(`/action-mode/lead-scouts/inbox/${id}/restore`, {});
+      setInboxLeads(prev => prev.filter(l => l._id !== id));
+      setInboxCounts(prev => ({ ...prev, [inboxStatus]: Math.max(0, prev[inboxStatus] - 1), new: prev.new + 1 }));
+      toast.success("Lead restored to inbox");
+    } catch { toast.error("Failed to restore"); }
+  }
+
+  async function bulkAddToCRM() {
+    const subject = inboxStatus === "with_contacts" ? "leads with email + phone" : "currently visible leads";
+    if (!confirm(`Add all ${subject} to your CRM as ${addAsType}?`)) return;
+    setBulkSavingInbox(true);
+    try {
+      const res = await api.post<{ saved: number; skipped: number; total: number }>(
+        "/action-mode/lead-scouts/inbox/bulk-save",
+        {
+          scout_id:     inboxFilterScoutId || undefined,
+          contacts:     inboxStatus === "with_contacts" ? "both" : "any",
+          contact_type: addAsType,
+          require_email: false,
+        },
+      );
+      toast.success(`Added ${res.saved} ${addAsType.toLowerCase()}${res.saved !== 1 ? "s" : ""} to CRM${res.skipped > 0 ? ` (${res.skipped} skipped — no contact info)` : ""}`);
+      await loadInbox(true);
+    } catch (e) {
+      toast.error("Bulk save failed — " + ((e as Error)?.message || ""));
+    } finally { setBulkSavingInbox(false); }
+  }
+
+  async function createLeadScout() {
+    if (!leadScoutForm.keyword.trim()) { toast.error("Keyword is required"); return; }
+    try {
+      await api.post("/action-mode/lead-scouts", {
+        ...leadScoutForm,
+        name: leadScoutForm.name.trim() || leadScoutForm.keyword.trim(),
+      });
+      toast.success("Scout created");
+      setShowLeadScoutForm(false);
+      setLeadScoutForm({ name: "", keyword: "", location: "", frequency: "weekly", require_phone: false, require_email: false });
+      await loadLeadScouts();
+    } catch { toast.error("Failed to create scout"); }
+  }
+
+  async function deleteLeadScout(id: string) {
+    try {
+      await api.delete(`/action-mode/lead-scouts/${id}`);
+      setLeadScouts(prev => prev.filter(s => s._id !== id));
+      toast.success("Scout deleted");
+    } catch { toast.error("Failed"); }
+  }
+
+  async function toggleLeadScout(scout: LeadScout) {
+    try {
+      await api.put(`/action-mode/lead-scouts/${scout._id}`, { enabled: !scout.enabled });
+      setLeadScouts(prev => prev.map(s => s._id === scout._id ? { ...s, enabled: !s.enabled } : s));
+    } catch { toast.error("Failed"); }
+  }
+
+  async function removeExpandedKeyword(scout: LeadScout, kw: string) {
+    const remaining = (scout.expanded_keywords ?? []).filter(k => k !== kw);
+    setLeadScouts(prev => prev.map(s => s._id === scout._id ? { ...s, expanded_keywords: remaining } : s));
+    try {
+      await api.put(`/action-mode/lead-scouts/${scout._id}`, { expanded_keywords: remaining });
+    } catch {
+      toast.error("Failed to remove keyword");
+      setLeadScouts(prev => prev.map(s => s._id === scout._id ? { ...s, expanded_keywords: scout.expanded_keywords } : s));
+    }
+  }
+
+  async function runLeadScout(id: string) {
+    setRunningLeadScout(id);
+    try {
+      const res = await api.post<{ new_leads: number }>(`/action-mode/lead-scouts/${id}/run`, {});
+      toast.success(`Found ${res.new_leads} new lead${res.new_leads !== 1 ? "s" : ""}`);
+      await Promise.all([loadLeadScouts(), loadInbox(), loadCredits()]);
+    } catch { toast.error("Run failed"); } finally { setRunningLeadScout(null); }
+  }
+
+  async function runAllLeadScouts() {
+    setRunningAllLeadScouts(true);
+    try {
+      const res = await api.post<{ new_leads: number; scouts_run: number }>("/action-mode/lead-scouts/run-all", {});
+      toast.success(`${res.scouts_run} scouts ran — ${res.new_leads} new leads found`);
+      await Promise.all([loadLeadScouts(), loadInbox(), loadCredits()]);
+      setScoutTab("inbox");
+    } catch { toast.error("Run failed"); } finally { setRunningAllLeadScouts(false); }
+  }
+
+  async function saveInboxLead(lead: InboxLead) {
+    setSavingInboxLead(lead._id);
+    try {
+      await api.post(`/action-mode/lead-scouts/inbox/${lead._id}/save`, { contact_type: addAsType });
+      setInboxLeads(prev => prev.filter(l => l._id !== lead._id));
+      toast.success(`${lead.name} added to CRM as ${addAsType}`);
+    } catch { toast.error("Failed to add to CRM"); } finally { setSavingInboxLead(null); }
+  }
+
+  async function dismissInboxLead(id: string) {
+    try {
+      await api.delete(`/action-mode/lead-scouts/inbox/${id}`);
+      setInboxLeads(prev => prev.filter(l => l._id !== id));
+    } catch { setInboxLeads(prev => prev.filter(l => l._id !== id)); }
+  }
+
   async function runRecon() {
     setRunningRecon(true);
     try {
@@ -674,6 +1097,9 @@ export default function ActionModePage() {
       }
 
       await api.post("/customers", payload);
+      // Remove opportunity from list so already-saved leads don't keep showing
+      setOpportunities(prev => prev.filter(o => o._id !== opp._id));
+      try { await api.delete(`/action-mode/opportunities/${opp._id}`); } catch { /* best-effort */ }
       toast.success("Added to CRM");
     } catch {
       toast.error("Failed to add to CRM");
@@ -734,6 +1160,9 @@ export default function ActionModePage() {
         icon: (props: any) => <span className="w-4 h-4 flex items-center justify-center text-sm select-none pr-0.5">{a.emoji || "🤖"}</span>,
         badge: opportunities.filter(o => o.agent_name === a.name).length || undefined,
       })),
+    { id: "shopify_leads", label: "Shopify Leads", icon: ShoppingBag },
+    { id: "business_leads", label: "Business Leads", icon: Building2 },
+    { id: "lead_scouts", label: "Lead Scouts", icon: Antenna, badge: inboxLeads.length || undefined },
     { id: "radar", label: "Market Radar", icon: BarChart3, badge: radarCount || undefined },
     { id: "setup", label: "Scouts Setup", icon: Settings2 },
     { id: "autopilot", label: "Autopilot", icon: Zap, badge: (pendingQueue + pendingInstant) || undefined },
@@ -1478,6 +1907,942 @@ export default function ActionModePage() {
                   })
                 )}
               </div>
+            </div>
+          )}
+
+          {/* ────────────────── SHOPIFY LEADS ────────────────── */}
+          {section === "shopify_leads" && (
+            <div className="p-5">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-800">Find Shopify Leads</h1>
+                  <p className="text-sm text-slate-500 mt-1">Search for Shopify store owners in any niche — get their email, phone and socials</p>
+                </div>
+              </div>
+
+              {/* Search bar */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-6 shadow-sm">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="flex-1">
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Niche / Product category *</label>
+                    <input
+                      value={shopifyNiche}
+                      onChange={e => setShopifyNiche(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !shopifySearching && searchShopifyLeads()}
+                      placeholder="e.g. fitness supplements, pet accessories, home décor…"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
+                    />
+                  </div>
+                  <div className="w-full sm:w-48">
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Country (optional)</label>
+                    <input
+                      value={shopifyCountry}
+                      onChange={e => setShopifyCountry(e.target.value)}
+                      placeholder="e.g. United States, Canada…"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={searchShopifyLeads}
+                      disabled={shopifySearching || !shopifyNiche.trim()}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-all shadow-sm whitespace-nowrap"
+                    >
+                      {shopifySearching
+                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
+                        : <><Search className="w-4 h-4" /> Find stores</>}
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-400 mt-3 flex items-center gap-1.5">
+                  <ShoppingBag className="w-3 h-3" />
+                  Searches the web for active Shopify stores matching your niche, then enriches each with contact details.
+                  {shopifySearching && <span className="text-amber-600 font-medium"> This takes 20–40 seconds while we enrich each store…</span>}
+                </p>
+              </div>
+
+              {/* Loading skeleton */}
+              {shopifySearching && (
+                <div className="space-y-3">
+                  {[1,2,3,4].map(i => (
+                    <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse">
+                      <div className="flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-xl bg-slate-200 shrink-0" />
+                        <div className="flex-1 space-y-2">
+                          <div className="h-4 bg-slate-200 rounded w-1/3" />
+                          <div className="h-3 bg-slate-100 rounded w-1/2" />
+                          <div className="flex gap-2 mt-1">
+                            <div className="h-3 bg-slate-100 rounded w-24" />
+                            <div className="h-3 bg-slate-100 rounded w-20" />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="h-8 w-24 bg-slate-200 rounded-xl" />
+                          <div className="h-8 w-24 bg-slate-100 rounded-xl" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Results */}
+              {!shopifySearching && shopifySearched && shopifyLeads.length === 0 && (
+                <div className="bg-white rounded-xl border border-slate-100 p-10 text-center">
+                  <div className="text-3xl mb-3">🔍</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-1">No stores found</p>
+                  <p className="text-xs text-slate-400">Try a different niche or broader keywords — e.g. &quot;fitness&quot; instead of &quot;protein powder for women&quot;</p>
+                </div>
+              )}
+
+              {!shopifySearching && shopifyLeads.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-500 font-medium">{shopifyLeads.length} stores found for <span className="text-brand font-semibold">{shopifyNiche}</span> — {shopifyLeads.filter(l => l.email).length} with email</p>
+                  {shopifyLeads.map((lead, idx) => {
+                    const hasContact = !!(lead.email || lead.phone);
+                    const storeName = lead.name || lead.domain.split(".")[0];
+                    const priceRange = lead.price_min != null && lead.price_max != null
+                      ? lead.price_min === lead.price_max
+                        ? `${lead.currency || "$"}${lead.price_min.toFixed(0)}`
+                        : `${lead.currency || "$"}${lead.price_min.toFixed(0)} – ${lead.currency || "$"}${lead.price_max.toFixed(0)}`
+                      : null;
+                    const topCats = (lead.categories ?? []).slice(0, 3);
+                    const topProds = (lead.top_products ?? []).slice(0, 3);
+                    return (
+                      <div key={idx} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-start gap-4">
+                          {/* Icon */}
+                          <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0">
+                            <ShoppingBag className="w-5 h-5 text-emerald-600" />
+                          </div>
+
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            {/* Name + domain + badges */}
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                              <span className="font-bold text-slate-800 text-sm">{storeName}</span>
+                              <a href={`https://${lead.domain}`} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] text-brand hover:underline font-mono">{lead.domain}</a>
+                              {hasContact && (
+                                <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded-full font-semibold">Has contact</span>
+                              )}
+                              {lead.has_free_shipping && (
+                                <span className="text-[10px] bg-sky-50 text-sky-700 border border-sky-100 px-2 py-0.5 rounded-full font-semibold">Free shipping</span>
+                              )}
+                            </div>
+
+                            {lead.description && (
+                              <p className="text-xs text-slate-500 leading-relaxed line-clamp-1 mb-1.5">{lead.description}</p>
+                            )}
+
+                            {/* Store stats row */}
+                            {(lead.product_count != null || priceRange || topCats.length > 0) && (
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-1.5">
+                                {lead.product_count != null && (
+                                  <span className="text-[11px] text-slate-500 flex items-center gap-1">
+                                    <span className="font-semibold text-slate-700">{lead.product_count}</span> products
+                                  </span>
+                                )}
+                                {priceRange && (
+                                  <span className="text-[11px] text-slate-500">
+                                    <span className="font-semibold text-slate-700">{priceRange}</span> range
+                                  </span>
+                                )}
+                                {topCats.map(cat => (
+                                  <span key={cat} className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md font-medium">{cat}</span>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Top products */}
+                            {topProds.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mb-1.5">
+                                {topProds.map((p, pi) => (
+                                  <span key={pi} className="text-[10px] bg-amber-50 border border-amber-100 text-amber-800 px-2 py-0.5 rounded-md font-medium">
+                                    {p.title} {p.price > 0 ? `· ${lead.currency || "$"}${p.price.toFixed(0)}` : ""}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Contact + socials */}
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                              {lead.email && (
+                                <span className="flex items-center gap-1 text-xs text-slate-600">
+                                  <Mail className="w-3 h-3 text-slate-400" />
+                                  <button onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
+                                    className="hover:text-brand transition-colors">{lead.email}</button>
+                                </span>
+                              )}
+                              {lead.phone && (
+                                <span className="flex items-center gap-1 text-xs text-slate-600">
+                                  <Phone className="w-3 h-3 text-slate-400" />
+                                  {lead.phone}
+                                </span>
+                              )}
+                              {lead.instagram && (
+                                <a href={lead.instagram} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-pink-600 hover:text-pink-700">
+                                  <span className="text-[10px] font-bold">IG</span> Instagram
+                                </a>
+                              )}
+                              {lead.facebook && (
+                                <a href={lead.facebook} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-[#1877F2] hover:text-[#1565c0]">
+                                  <span className="text-[10px] font-bold">FB</span> Facebook
+                                </a>
+                              )}
+                              {lead.tiktok && (
+                                <a href={lead.tiktok} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-600">
+                                  <span className="text-[10px] font-bold">TT</span> TikTok
+                                </a>
+                              )}
+                              {lead.twitter && (
+                                <a href={lead.twitter} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-sky-500 hover:text-sky-600">
+                                  <span className="text-[10px] font-bold">𝕏</span> Twitter
+                                </a>
+                              )}
+                              {lead.youtube && (
+                                <a href={lead.youtube} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-red-600 hover:text-red-700">
+                                  <span className="text-[10px] font-bold">▶</span> YouTube
+                                </a>
+                              )}
+                              {lead.pinterest && (
+                                <a href={lead.pinterest} target="_blank" rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-xs text-red-500 hover:text-red-600">
+                                  <span className="text-[10px] font-bold">P</span> Pinterest
+                                </a>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Actions */}
+                          <div className="flex flex-col gap-1.5 shrink-0">
+                            {shopifyAdded.has(lead.domain) ? (
+                              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg">
+                                <CheckCircle2 className="w-3 h-3" /> In CRM
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => addShopifyLeadToCRM(lead)}
+                                disabled={shopifyAdding === lead.domain}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all"
+                              >
+                                {shopifyAdding === lead.domain
+                                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Adding…</>
+                                  : <><Users className="w-3 h-3" /> Add to CRM</>}
+                              </button>
+                            )}
+                            {lead.email && (
+                              <button
+                                onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
+                              >
+                                <Copy className="w-3 h-3" /> Copy email
+                              </button>
+                            )}
+                            <a
+                              href={`https://${lead.domain}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
+                            >
+                              <ShoppingBag className="w-3 h-3" /> Visit store
+                            </a>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Empty initial state */}
+              {!shopifySearching && !shopifySearched && (
+                <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center">
+                  <div className="text-4xl mb-4">🏪</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-2">Find Shopify store owners as leads</p>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+                    Enter a niche above — we&apos;ll search the web for active Shopify stores and pull their email, phone, and social media handles so you can reach out directly.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ────────────────── BUSINESS LEADS ────────────────── */}
+          {section === "business_leads" && (
+            <div className="p-5">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-800">Business Leads</h1>
+                  <p className="text-sm text-slate-500 mt-1">Find any type of business by keyword and location — get phone, email, address and website from Google Maps data</p>
+                </div>
+              </div>
+
+              {/* Search bar */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-6 shadow-sm">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="flex-1">
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Business type / keyword *</label>
+                    <input
+                      value={bizKeyword}
+                      onChange={e => setBizKeyword(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !bizSearching && searchBusinessLeads()}
+                      placeholder="e.g. dental clinic, fitness gym, coffee roaster…"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
+                    />
+                  </div>
+                  <div className="w-full sm:w-56">
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">City / Location (optional)</label>
+                    <input
+                      value={bizLocation}
+                      onChange={e => setBizLocation(e.target.value)}
+                      placeholder="e.g. New York, Toronto, London…"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={searchBusinessLeads}
+                      disabled={bizSearching || !bizKeyword.trim()}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-all shadow-sm whitespace-nowrap"
+                    >
+                      {bizSearching
+                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
+                        : <><Search className="w-4 h-4" /> Find businesses</>}
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mt-3 flex items-center gap-1.5">
+                  <Building2 className="w-3 h-3" />
+                  Pulls real listings from Google Maps — includes verified phone numbers and business addresses.
+                  {bizSearching && <span className="text-amber-600 font-medium"> Scraping websites for emails… this takes 15–30 seconds.</span>}
+                </p>
+              </div>
+
+              {/* Loading skeleton */}
+              {bizSearching && (
+                <div className="space-y-3">
+                  {[1,2,3,4,5].map(i => (
+                    <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse">
+                      <div className="flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-xl bg-slate-200 shrink-0" />
+                        <div className="flex-1 space-y-2">
+                          <div className="h-4 bg-slate-200 rounded w-1/3" />
+                          <div className="h-3 bg-slate-100 rounded w-2/3" />
+                          <div className="flex gap-3 mt-1">
+                            <div className="h-3 bg-slate-100 rounded w-28" />
+                            <div className="h-3 bg-slate-100 rounded w-20" />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="h-8 w-24 bg-slate-200 rounded-xl" />
+                          <div className="h-8 w-20 bg-slate-100 rounded-xl" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* No results */}
+              {!bizSearching && bizSearched && bizLeads.length === 0 && (
+                <div className="bg-white rounded-xl border border-slate-100 p-10 text-center">
+                  <div className="text-3xl mb-3">🔍</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-1">No businesses found</p>
+                  <p className="text-xs text-slate-400">Try a broader keyword or add a different city</p>
+                </div>
+              )}
+
+              {/* Results */}
+              {!bizSearching && bizLeads.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-500 font-medium">
+                    {bizLeads.length} businesses found for <span className="text-brand font-semibold">{bizKeyword}</span>
+                    {bizLocation && <> in <span className="text-brand font-semibold">{bizLocation}</span></>}
+                    {" — "}{bizLeads.filter(l => l.phone).length} with phone · {bizLeads.filter(l => l.email).length} with email
+                  </p>
+                  {bizLeads.map((lead, idx) => {
+                    const key = lead.domain || lead.name.toLowerCase();
+                    const mapsUrl = lead.place_id
+                      ? `https://www.google.com/maps/place/?q=place_id:${lead.place_id}`
+                      : lead.website;
+                    return (
+                      <div key={idx} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                        <div className="flex items-start gap-4">
+                          {/* Icon + rating */}
+                          <div className="flex flex-col items-center gap-1 shrink-0">
+                            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
+                              <Building2 className="w-5 h-5 text-blue-600" />
+                            </div>
+                            {lead.rating && (
+                              <span className="text-[10px] font-bold text-amber-600">
+                                ★ {lead.rating.toFixed(1)}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            {/* Name + badges */}
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                              <span className="font-bold text-slate-800 text-sm">{lead.name}</span>
+                              {lead.category && (
+                                <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-2 py-0.5 rounded-full font-semibold">{lead.category}</span>
+                              )}
+                              {(lead.email || lead.phone) && (
+                                <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded-full font-semibold">Has contact</span>
+                              )}
+                              {lead.reviews && lead.reviews > 0 && (
+                                <span className="text-[10px] text-slate-400">{lead.reviews.toLocaleString()} reviews</span>
+                              )}
+                            </div>
+
+                            {/* Address */}
+                            {lead.address && (
+                              <p className="text-xs text-slate-500 flex items-center gap-1 mb-1.5">
+                                <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                                {lead.address}
+                              </p>
+                            )}
+
+                            {/* Contact row */}
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                              {lead.phone && (
+                                <span className="flex items-center gap-1 text-xs text-slate-600">
+                                  <Phone className="w-3 h-3 text-slate-400" />
+                                  <button
+                                    onClick={() => { navigator.clipboard.writeText(lead.phone!); toast.success("Phone copied"); }}
+                                    className="hover:text-brand transition-colors font-medium"
+                                  >{lead.phone}</button>
+                                </span>
+                              )}
+                              {lead.email && (
+                                <span className="flex items-center gap-1 text-xs text-slate-600">
+                                  <Mail className="w-3 h-3 text-slate-400" />
+                                  <button
+                                    onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
+                                    className="hover:text-brand transition-colors"
+                                  >{lead.email}</button>
+                                </span>
+                              )}
+                              {lead.website && (
+                                <a href={lead.website} target="_blank" rel="noopener noreferrer"
+                                  className="text-xs text-brand hover:underline font-mono">
+                                  {lead.domain || lead.website.replace(/^https?:\/\//, "").split("/")[0]}
+                                </a>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Actions */}
+                          <div className="flex flex-col gap-1.5 shrink-0">
+                            {bizAdded.has(key) ? (
+                              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg">
+                                <CheckCircle2 className="w-3 h-3" /> In CRM
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => addBusinessLeadToCRM(lead)}
+                                disabled={bizAdding === key}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all"
+                              >
+                                {bizAdding === key
+                                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Adding…</>
+                                  : <><Users className="w-3 h-3" /> Add to CRM</>}
+                              </button>
+                            )}
+                            {lead.phone && (
+                              <button
+                                onClick={() => { navigator.clipboard.writeText(lead.phone!); toast.success("Phone copied"); }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
+                              >
+                                <Copy className="w-3 h-3" /> Copy phone
+                              </button>
+                            )}
+                            {mapsUrl && (
+                              <a
+                                href={mapsUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
+                              >
+                                <Globe className="w-3 h-3" /> View on Maps
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Empty initial state */}
+              {!bizSearching && !bizSearched && (
+                <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center">
+                  <div className="text-4xl mb-4">🏢</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-2">Find any business as a lead</p>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+                    Search by business type and city — we pull real Google Maps listings with verified phone numbers, then scrape each website for email addresses.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2 mt-4">
+                    {["dental clinic", "fitness gym", "coffee roaster", "marketing agency", "law firm"].map(ex => (
+                      <button key={ex} onClick={() => { setBizKeyword(ex); }}
+                        className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition-all font-medium">
+                        {ex}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ────────────────── LEAD SCOUTS ────────────────── */}
+          {section === "lead_scouts" && (
+            <div className="p-5">
+              {/* Header */}
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-800">Lead Scouts</h1>
+                  <p className="text-sm text-slate-500 mt-0.5">Set searches once — scouts run automatically and bring new leads to your inbox</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={runAllLeadScouts}
+                    disabled={runningAllLeadScouts || leadScouts.filter(s => s.enabled).length === 0}
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all"
+                  >
+                    {runningAllLeadScouts ? <><Loader2 className="w-4 h-4 animate-spin" /> Running…</> : <><Play className="w-4 h-4" /> Run All</>}
+                  </button>
+                  <button
+                    onClick={() => setShowLeadScoutForm(v => !v)}
+                    className="flex items-center gap-2 px-4 py-2 bg-brand-dark hover:bg-brand text-white text-sm font-semibold rounded-xl transition-all"
+                  >
+                    <Plus className="w-4 h-4" /> New Scout
+                  </button>
+                </div>
+              </div>
+
+              {/* Credit balance dashboard */}
+              {creditInfo && (
+                <div className={`rounded-2xl border p-4 mb-5 ${creditInfo.balance <= 2 ? "bg-red-50 border-red-200" : creditInfo.balance <= 5 ? "bg-amber-50 border-amber-200" : "bg-slate-50 border-slate-100"}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    {/* Balance */}
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${creditInfo.balance <= 2 ? "bg-red-100" : creditInfo.balance <= 5 ? "bg-amber-100" : "bg-emerald-100"}`}>
+                        <DollarSign className={`w-5 h-5 ${creditInfo.balance <= 2 ? "text-red-600" : creditInfo.balance <= 5 ? "text-amber-600" : "text-emerald-600"}`} />
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500 font-medium">Your credit balance</p>
+                        <p className={`text-2xl font-bold ${creditInfo.balance <= 2 ? "text-red-600" : creditInfo.balance <= 5 ? "text-amber-600" : "text-slate-800"}`}>
+                          {creditInfo.balance.toFixed(0)} <span className="text-sm font-normal text-slate-400">credits</span>
+                        </p>
+                        {creditInfo.balance <= 2 && (
+                          <p className="text-[10px] text-red-600 font-semibold mt-0.5">Contact Zilo to top up</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Pricing breakdown */}
+                    <div className="flex gap-6 text-center">
+                      <div>
+                        <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Cost per run</p>
+                        <p className="text-lg font-bold text-slate-800">${creditInfo.credit_price_usd.toFixed(2)}</p>
+                        <p className="text-[10px] text-slate-400">1 credit</p>
+                      </div>
+                      <div className="border-l border-slate-200 pl-6">
+                        <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Total runs</p>
+                        <p className="text-lg font-bold text-slate-800">{creditInfo.total_runs}</p>
+                        <p className="text-[10px] text-slate-400">{creditInfo.total_runs} credits used</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Create Scout Form */}
+              {showLeadScoutForm && (
+                <div className="bg-white rounded-2xl border border-brand/30 p-5 mb-5 shadow-sm">
+                  <h3 className="font-bold text-slate-800 text-sm mb-4">New Lead Scout</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1 block">Scout name (optional)</label>
+                      <input value={leadScoutForm.name} onChange={e => setLeadScoutForm(p => ({...p, name: e.target.value}))}
+                        placeholder="e.g. Maryland Dentists"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1 block">Keyword / Business type *</label>
+                      <input value={leadScoutForm.keyword} onChange={e => setLeadScoutForm(p => ({...p, keyword: e.target.value}))}
+                        placeholder="e.g. dental clinic, marketing agency"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1 block">Location</label>
+                      <input value={leadScoutForm.location} onChange={e => setLeadScoutForm(p => ({...p, location: e.target.value}))}
+                        placeholder="e.g. Maryland, Toronto, Nairobi"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1 block">Run frequency</label>
+                      <select value={leadScoutForm.frequency} onChange={e => setLeadScoutForm(p => ({...p, frequency: e.target.value as any}))}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand">
+                        <option value="manual">Manual only</option>
+                        <option value="weekly">Weekly (every 7 days)</option>
+                        <option value="daily">Daily (every 24 hours)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 mb-4">
+                    <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                      <input type="checkbox" checked={leadScoutForm.require_phone} onChange={e => setLeadScoutForm(p => ({...p, require_phone: e.target.checked}))} className="rounded" />
+                      Only with phone
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                      <input type="checkbox" checked={leadScoutForm.require_email} onChange={e => setLeadScoutForm(p => ({...p, require_email: e.target.checked}))} className="rounded" />
+                      Only with email
+                    </label>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={createLeadScout}
+                      className="px-5 py-2 bg-brand-dark hover:bg-brand text-white text-sm font-semibold rounded-xl transition-all">
+                      Save Scout
+                    </button>
+                    <button onClick={() => setShowLeadScoutForm(false)}
+                      className="px-4 py-2 border border-slate-200 text-slate-500 text-sm rounded-xl hover:bg-slate-50">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Tabs */}
+              <div className="flex gap-1 bg-slate-100 rounded-xl p-1 mb-5 w-fit">
+                {(["inbox", "scouts"] as const).map(tab => (
+                  <button key={tab} onClick={() => setScoutTab(tab)}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all capitalize ${scoutTab === tab ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                    {tab === "inbox" ? `Lead Inbox${inboxLeads.length > 0 ? ` (${inboxLeads.length})` : ""}` : `My Scouts${leadScouts.length > 0 ? ` (${leadScouts.length})` : ""}`}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── INBOX TAB ── */}
+              {scoutTab === "inbox" && (
+                <div>
+                  {/* Cold-start skeleton only (when nothing is loaded yet) */}
+                  {inboxLoading && inboxLeads.length === 0 && (
+                    <div className="space-y-3">
+                      {[1,2,3].map(i => (
+                        <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse h-20" />
+                      ))}
+                    </div>
+                  )}
+                  {/* Scout filter banner — shown when filtering to a specific scout */}
+                  {inboxFilterScoutId && (() => {
+                    const filteredScout = leadScouts.find(s => s._id === inboxFilterScoutId);
+                    return (
+                      <div className="flex items-center justify-between gap-3 mb-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-xl">
+                        <div className="flex items-center gap-2 text-xs">
+                          <Filter className="w-3.5 h-3.5 text-blue-600" />
+                          <span className="text-blue-900 font-medium">
+                            Showing leads from <span className="font-bold">{filteredScout?.name || "scout"}</span>
+                            {filteredScout?.keyword && <span className="text-blue-600"> · {filteredScout.keyword}</span>}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => { setInboxFilterScoutId(""); void loadInbox(true, inboxStatus, ""); }}
+                          className="text-xs font-semibold text-blue-700 hover:text-blue-900 hover:underline">
+                          Show all scouts
+                        </button>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Status filter pills + bulk action */}
+                  <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {(["new","with_contacts","saved","dismissed"] as const).map(s => {
+                        const labels = { new: "New", with_contacts: "✓ With contacts", saved: "Saved", dismissed: "Dismissed" };
+                        const isActive = inboxStatus === s;
+                        const activeColor = s === "with_contacts" ? "bg-emerald-600 text-white border-emerald-600" : "bg-brand-dark text-white border-brand-dark";
+                        const styles = isActive ? activeColor : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50";
+                        return (
+                          <button key={s}
+                            onClick={() => { setInboxStatus(s); void loadInbox(true, s, inboxFilterScoutId); }}
+                            title={s === "with_contacts" ? "Only show leads with BOTH email and phone — your highest-quality contacts" : ""}
+                            className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all ${styles}`}>
+                            {labels[s]} <span className={`ml-1 ${isActive ? "opacity-80" : "text-slate-400"}`}>({inboxCounts[s] ?? 0})</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Type selector + bulk add — only shows when there are new leads */}
+                    {(inboxStatus === "new" || inboxStatus === "with_contacts") && inboxLeads.length > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Add as:</label>
+                        <select
+                          value={addAsType}
+                          onChange={e => setAddAsType(e.target.value as typeof addAsType)}
+                          className="text-xs font-semibold border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 cursor-pointer hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand/30">
+                          <option value="Customer">Customer</option>
+                          <option value="Lead">Lead</option>
+                          <option value="Investor">Investor</option>
+                          <option value="Partner">Partner</option>
+                          <option value="Supplier">Supplier</option>
+                          <option value="Other">Other</option>
+                        </select>
+                        <button
+                          onClick={bulkAddToCRM}
+                          disabled={bulkSavingInbox}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg transition-all shadow-sm">
+                          {bulkSavingInbox ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Adding…</> : <><Users className="w-3.5 h-3.5" />Add all to CRM</>}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {!inboxLoading && inboxLeads.length === 0 && inboxTotal === 0 && (
+                    <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center">
+                      <div className="text-4xl mb-3">{inboxStatus === "new" ? "📥" : inboxStatus === "with_contacts" ? "✨" : inboxStatus === "saved" ? "✅" : "🗑️"}</div>
+                      <p className="text-sm font-semibold text-slate-600 mb-1">
+                        {inboxStatus === "new" ? "Inbox is empty"
+                          : inboxStatus === "with_contacts" ? "No leads with email + phone"
+                          : inboxStatus === "saved" ? "No saved leads yet"
+                          : "No dismissed leads"}
+                      </p>
+                      <p className="text-xs text-slate-400 mb-4">
+                        {inboxStatus === "new"
+                          ? "Create a scout and run it — new leads land here, filtered to exclude anyone already in your CRM."
+                          : inboxStatus === "with_contacts"
+                            ? "No new leads currently have both email AND phone. Check the 'New' tab for partial-contact leads."
+                            : inboxStatus === "saved"
+                              ? "Leads you've added to your CRM will appear here for reference."
+                              : "Leads you dismiss will appear here. Click Restore to bring them back."}
+                      </p>
+                      {(inboxStatus === "new" || inboxStatus === "with_contacts") && (
+                        <button onClick={() => { setScoutTab("scouts"); setShowLeadScoutForm(true); }}
+                          className="px-4 py-2 bg-brand-dark text-white text-xs font-semibold rounded-xl hover:bg-brand transition-all">
+                          + Create your first scout
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {inboxLeads.length > 0 && (
+                    <div className={`space-y-2 transition-opacity duration-150 ${inboxLoading ? "opacity-40 pointer-events-none" : "opacity-100"}`}>
+                      <p className="text-xs text-slate-500 font-medium mb-3">
+                        {inboxStatus === "new" && <>Showing {inboxLeads.length} new leads — none of these are in your CRM yet</>}
+                        {inboxStatus === "with_contacts" && <>Showing {inboxLeads.length} leads with BOTH email + phone — your highest-quality contacts</>}
+                        {inboxStatus === "saved" && <>Showing {inboxLeads.length} leads you've added to your CRM</>}
+                        {inboxStatus === "dismissed" && <>Showing {inboxLeads.length} dismissed leads — click Restore to bring them back to your inbox</>}
+                      </p>
+                      {inboxLeads.map((lead, i) => {
+                        const mapsUrl = lead.place_id ? `https://www.google.com/maps/place/?q=place_id:${lead.place_id}` : lead.website;
+                        const batchIdx = lead._batch_index ?? 0;
+                        const prevBatchIdx = i > 0 ? (inboxLeads[i-1]._batch_index ?? 0) : -1;
+                        const isFirstInBatch = batchIdx !== prevBatchIdx;
+                        // Color palette: batch 0 = emerald (free), then amber, blue, purple, pink rotating
+                        const palette = [
+                          { border: "border-l-emerald-400", chip: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: "text-emerald-600" },
+                          { border: "border-l-amber-400",   chip: "bg-amber-50 text-amber-800 border-amber-200",       icon: "text-amber-600" },
+                          { border: "border-l-blue-400",    chip: "bg-blue-50 text-blue-700 border-blue-200",          icon: "text-blue-600" },
+                          { border: "border-l-purple-400",  chip: "bg-purple-50 text-purple-700 border-purple-200",    icon: "text-purple-600" },
+                          { border: "border-l-pink-400",    chip: "bg-pink-50 text-pink-700 border-pink-200",          icon: "text-pink-600" },
+                        ];
+                        const c = palette[batchIdx % palette.length];
+                        const batchLabel = batchIdx === 0 ? "Free batch · included with scout run" : `Batch ${batchIdx + 1} · unlocked for 1 credit`;
+                        return (
+                          <div key={lead._id}>
+                            {isFirstInBatch && (
+                              <div className="flex items-center gap-2 my-3 first:mt-0">
+                                <div className={`h-px flex-1 ${batchIdx === 0 ? "bg-emerald-200" : "bg-amber-200"}`} />
+                                <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${c.chip}`}>
+                                  {batchLabel}
+                                </span>
+                                <div className={`h-px flex-1 ${batchIdx === 0 ? "bg-emerald-200" : "bg-amber-200"}`} />
+                              </div>
+                            )}
+                          <div className={`bg-white rounded-xl border border-slate-100 border-l-4 ${c.border} p-4 hover:border-slate-200 transition-all`}>
+                            <div className="flex items-start gap-3">
+                              <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
+                                <Building2 className={`w-4 h-4 ${c.icon}`} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                                  <span className="font-bold text-slate-800 text-sm">{lead.name}</span>
+                                  {lead.category && <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-2 py-0.5 rounded-full font-semibold">{lead.category}</span>}
+                                  {lead.rating && <span className="text-[10px] text-amber-600 font-bold">★ {lead.rating.toFixed(1)}</span>}
+                                  <span className="text-[10px] text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100">via {lead.scout_name}</span>
+                                </div>
+                                {lead.address && <p className="text-xs text-slate-500 flex items-center gap-1 mb-1"><MapPin className="w-3 h-3 shrink-0 text-slate-400" />{lead.address}</p>}
+                                <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                                  {lead.phone && (
+                                    <button onClick={() => { navigator.clipboard.writeText(lead.phone!); toast.success("Phone copied"); }}
+                                      className="flex items-center gap-1 text-xs text-slate-600 hover:text-brand transition-colors">
+                                      <Phone className="w-3 h-3 text-slate-400" />{lead.phone}
+                                    </button>
+                                  )}
+                                  {lead.email && (
+                                    <button onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
+                                      className="flex items-center gap-1 text-xs text-slate-600 hover:text-brand transition-colors">
+                                      <Mail className="w-3 h-3 text-slate-400" />{lead.email}
+                                    </button>
+                                  )}
+                                  {lead.website && <a href={lead.website} target="_blank" rel="noopener noreferrer" className="text-xs text-brand hover:underline font-mono">{lead.domain || lead.website.replace(/^https?:\/\//,"").split("/")[0]}</a>}
+                                </div>
+                              </div>
+                              <div className="flex flex-col gap-1.5 shrink-0">
+                                {(inboxStatus === "new" || inboxStatus === "with_contacts") && (
+                                  <button onClick={() => saveInboxLead(lead)} disabled={savingInboxLead === lead._id}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all">
+                                    {savingInboxLead === lead._id ? <><Loader2 className="w-3 h-3 animate-spin" />Saving…</> : <><Users className="w-3 h-3" />Add to CRM</>}
+                                  </button>
+                                )}
+                                {inboxStatus === "saved" && (
+                                  <span className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg">
+                                    <CheckCircle2 className="w-3 h-3" />In CRM
+                                  </span>
+                                )}
+                                {inboxStatus === "dismissed" && (
+                                  <button onClick={() => restoreInboxLead(lead._id)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold rounded-lg transition-all">
+                                    <RefreshCw className="w-3 h-3" />Restore
+                                  </button>
+                                )}
+                                {mapsUrl && (
+                                  <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all">
+                                    <Globe className="w-3 h-3" />Maps
+                                  </a>
+                                )}
+                                {(inboxStatus === "new" || inboxStatus === "with_contacts") && (
+                                  <button onClick={() => dismissInboxLead(lead._id)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-500 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all">
+                                    <X className="w-3 h-3" />Dismiss
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          </div>
+                        );
+                      })}
+                      {inboxHasMore && (
+                        <button
+                          onClick={() => loadInbox(false)}
+                          disabled={loadingMoreInbox}
+                          className={`w-full mt-3 py-2.5 rounded-xl border text-xs font-semibold disabled:opacity-50 transition-all flex items-center justify-center gap-2 ${(inboxStatus === "new" || inboxStatus === "with_contacts") ? "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                          {loadingMoreInbox ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Loading…</>
+                            : (inboxStatus === "new" || inboxStatus === "with_contacts")
+                              ? <><DollarSign className="w-3.5 h-3.5" />Unlock next 15 leads · 1 credit</>
+                              : <>Load 15 more</>}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── SCOUTS TAB ── */}
+              {scoutTab === "scouts" && (
+                <div>
+                  {leadScoutsLoading && <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse h-16" />)}</div>}
+                  {!leadScoutsLoading && leadScouts.length === 0 && (
+                    <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center">
+                      <div className="text-4xl mb-3">🔭</div>
+                      <p className="text-sm font-semibold text-slate-600 mb-1">No scouts yet</p>
+                      <p className="text-xs text-slate-400 mb-4">Create a scout with a keyword + location. It will automatically find new businesses and drop them into your inbox.</p>
+                      <button onClick={() => setShowLeadScoutForm(true)}
+                        className="px-4 py-2 bg-brand-dark text-white text-xs font-semibold rounded-xl hover:bg-brand transition-all">
+                        + Create first scout
+                      </button>
+                    </div>
+                  )}
+                  {!leadScoutsLoading && leadScouts.length > 0 && (
+                    <div className="space-y-2">
+                      {leadScouts.map(scout => (
+                        <div key={scout._id} className={`bg-white rounded-xl border p-4 transition-all ${scout.enabled ? "border-slate-100 hover:border-slate-200" : "border-slate-100 opacity-60"}`}>
+                          <div className="flex items-center gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                                <span className="font-bold text-slate-800 text-sm">{scout.name}</span>
+                                <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium">{scout.keyword}</span>
+                                {scout.location && <span className="text-[10px] text-slate-400 flex items-center gap-0.5"><MapPin className="w-2.5 h-2.5" />{scout.location}</span>}
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${scout.frequency === "daily" ? "bg-amber-50 text-amber-700 border-amber-100" : scout.frequency === "weekly" ? "bg-blue-50 text-blue-700 border-blue-100" : "bg-slate-50 text-slate-500 border-slate-100"}`}>
+                                  {scout.frequency === "manual" ? "Manual" : scout.frequency === "daily" ? "Daily" : "Weekly"}
+                                </span>
+                                {scout.inbox_count > 0 && (
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded-full font-bold">{scout.inbox_count} new</span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-400">
+                                {scout.last_run ? `Last run ${new Date(scout.last_run).toLocaleDateString()}` : "Never run"}
+                                {scout.frequency !== "manual" && scout.next_run && ` · Next: ${new Date(scout.next_run).toLocaleDateString()}`}
+                                {" · "}Cost: <span className="font-medium text-slate-500">1 credit (${(creditInfo?.credit_price_usd ?? 0.01).toFixed(2)})</span>
+                              </p>
+                              {scout.expanded_keywords?.length ? (
+                                <div className="flex flex-wrap gap-1 mt-1.5 items-center">
+                                  <span className="text-[9px] text-slate-400 font-semibold uppercase tracking-wider mr-1">AI added:</span>
+                                  {scout.expanded_keywords.map((kw, i) => (
+                                    <span key={i} className={`group inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full font-medium ${i === 0 ? "bg-brand/10 text-brand-dark" : "bg-slate-100 text-slate-600 hover:bg-red-50 hover:text-red-600"}`}>
+                                      {kw}
+                                      {i > 0 && (
+                                        <button onClick={() => removeExpandedKeyword(scout, kw)}
+                                          title="Remove this keyword"
+                                          className="opacity-40 hover:opacity-100 transition-opacity ml-0.5">
+                                          <X className="w-2 h-2" />
+                                        </button>
+                                      )}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-[10px] text-slate-300 mt-1 italic">AI expanding keywords…</p>
+                              )}
+                              {scout.last_error && <p className="text-[10px] text-red-500 mt-0.5">{scout.last_error}</p>}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                onClick={() => {
+                                  setInboxFilterScoutId(scout._id);
+                                  setScoutTab("inbox");
+                                  setInboxStatus("new");
+                                  void loadInbox(true, "new", scout._id);
+                                }}
+                                title={`View this scout's leads in the inbox`}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold rounded-lg border border-blue-200 transition-all">
+                                <Eye className="w-3 h-3" />View leads
+                              </button>
+                              <button onClick={() => toggleLeadScout(scout)}
+                                className={`text-[10px] px-2.5 py-1 rounded-lg font-semibold border transition-all ${scout.enabled ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" : "bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100"}`}>
+                                {scout.enabled ? "ON" : "OFF"}
+                              </button>
+                              <button onClick={() => runLeadScout(scout._id)} disabled={runningLeadScout === scout._id}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all">
+                                {runningLeadScout === scout._id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                                Run
+                              </button>
+                              <button onClick={() => deleteLeadScout(scout._id)}
+                                className="p-1.5 border border-slate-200 text-slate-400 hover:text-red-500 hover:border-red-200 rounded-lg transition-all">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

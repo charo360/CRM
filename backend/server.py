@@ -493,6 +493,15 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 @app.on_event("startup")
+async def start_lead_scout_worker():
+    try:
+        from lead_scout_worker import background_loop
+        asyncio.create_task(background_loop(db))
+        logging.info("[lead_scout] background worker started")
+    except Exception as e:
+        logging.warning("[lead_scout] could not start background worker: %s", e)
+
+@app.on_event("startup")
 async def fix_team_members_index():
     try:
         await db.team_members.drop_index("business_id_1_email_1")
@@ -4305,6 +4314,21 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
 async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
     """Alias for get_cold_customers to support frontend with reasons included"""
     return await get_cold_customers(days, user)
+
+@api_router.get("/customers/duplicate-check")
+async def customer_duplicate_check(email: str = "", domain: str = "", user = Depends(get_current_user)):
+    """Check if a customer already exists by email or Shopify domain (stored in notes)."""
+    business_id = user.get("business_id", user["_id"])
+    q: dict = {"user_id": business_id}
+    if email:
+        match = await db.customers.find_one({**q, "email": email.strip().lower()})
+        if match:
+            return {"exists": True, "name": match.get("name", "")}
+    if domain:
+        match = await db.customers.find_one({**q, "notes": {"$regex": _re.escape(domain), "$options": "i"}})
+        if match:
+            return {"exists": True, "name": match.get("name", "")}
+    return {"exists": False, "name": ""}
 
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse)
 async def get_customer(customer_id: str, user = Depends(get_current_user)):
@@ -8208,6 +8232,56 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
         logging.error(f"Error sending message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============ COMPOSIO WEBHOOK ============
+
+COMPOSIO_WEBHOOK_SECRET = (os.environ.get("COMPOSIO_WEBHOOK_SECRET") or "").strip()
+
+
+@api_router.post("/webhooks/composio")
+async def composio_webhook(request: Request):
+    """Receive Composio trigger webhooks (e.g. Gmail new message)."""
+    raw_body = await request.body()
+    signature = request.headers.get("X-Composio-Signature", "")
+
+    if COMPOSIO_WEBHOOK_SECRET:
+        from composio_webhooks import verify_composio_webhook
+
+        if not verify_composio_webhook(raw_body, signature, COMPOSIO_WEBHOOK_SECRET):
+            logging.warning("[composio-webhook] Invalid signature")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+    else:
+        logging.debug(
+            "[composio-webhook] COMPOSIO_WEBHOOK_SECRET not configured; skipping signature verification"
+        )
+
+    if not raw_body:
+        payload = {}
+    else:
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            logging.warning("[composio-webhook] Invalid JSON payload")
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    trigger_name = payload.get("trigger_name")
+    logging.info("[composio-webhook] Received: %s", trigger_name)
+
+    from composio_webhooks import handle_composio_webhook
+
+    try:
+        result = await handle_composio_webhook(payload, db)
+    except Exception as exc:
+        logging.error("[composio-webhook] Handler error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Webhook processing error")
+
+    if not isinstance(result, dict):
+        result = {"status": "ok"}
+    else:
+        result.setdefault("status", "error" if "error" in result else "ok")
+
+    return result
+
+
 # ============ EVOLUTION API WEBHOOK ============
 
 async def _apply_inbound_routing_bg(
@@ -10073,7 +10147,43 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
         except Exception as _e:
             logging.warning(f"[qdrant] knowledge re-index failed: {_e}")
 
+    # Regenerate auto-scout queries in background when business profile changes
+    if update_data:
+        try:
+            from scout_service import get_biz_context, _default_scout_templates, SCOUTS_COLLECTION
+            asyncio.create_task(_regenerate_auto_scouts(user["_id"]))
+        except Exception as _se:
+            logging.debug("[scouts] regenerate task skipped: %s", _se)
+
     return {"status": "success", "message": "Business knowledge updated"}
+
+
+async def _regenerate_auto_scouts(uid: str) -> None:
+    """Refresh search queries on auto-generated scouts after profile update."""
+    try:
+        from scout_service import get_biz_context, _default_scout_templates, SCOUTS_COLLECTION
+        ctx = await get_biz_context(db, uid)
+        templates = {t["scout_type"]: t for t in _default_scout_templates(ctx)}
+        scouts = await db[SCOUTS_COLLECTION].find({
+            "user_id": uid,
+            "auto_generated": True,
+        }).to_list(10)
+        for scout in scouts:
+            tpl = templates.get(scout.get("scout_type"))
+            if not tpl:
+                continue
+            await db[SCOUTS_COLLECTION].update_one(
+                {"_id": scout["_id"]},
+                {"$set": {
+                    "search_queries": tpl["search_queries"],
+                    "goal": tpl["goal"],
+                    "updated_at": datetime.utcnow(),
+                }},
+            )
+        logging.info("[scouts] refreshed queries for %d auto-scouts user=%s", len(scouts), uid)
+    except Exception as e:
+        logging.warning("[scouts] regenerate failed uid=%s: %s", uid, e)
+
 
 @api_router.post("/ai/draft-message")
 async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
