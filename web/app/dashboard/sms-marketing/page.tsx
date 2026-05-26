@@ -101,6 +101,7 @@ type SmsCapabilities = {
 type Application = {
   status: "none" | "pending" | "approved" | "active" | "rejected";
   business_name?: string;
+  business_country?: string;
   sender_name?: string;
   from_number?: string;
   profile_status?: string;

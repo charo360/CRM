@@ -202,9 +202,9 @@ function TaskRow({ task, onEdit, onDelete, onCheckIn, onCheckOut }: {
             {overdue && <AlertTriangle size={12} className="text-red-500 shrink-0" />}
           </p>
           {task.customer_name && <p className="text-xs text-slate-400 mt-0.5">{task.customer_name}</p>}
-          {(task as Record<string, unknown>).location && (
+          {typeof (task as Record<string, unknown>).location === "string" && (
             <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
-              <MapPin size={10} />{(task as Record<string, unknown>).location as string}
+              <MapPin size={10} />{(task as Record<string, string>).location}
             </p>
           )}
         </div>
@@ -588,7 +588,8 @@ export default function FieldAgentsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   {agents.map(a => (
                     <AgentCard key={a.id} agent={a} selected={selectedAgent === a.id}
-                      onSelect={() => { setSelectedAgent(a.id === selectedAgent ? "" : a.id); setTab("tasks"); }} />
+                      onSelect={() => { setSelectedAgent(a.id === selectedAgent ? "" : a.id); setTab("tasks"); }}
+                      onSetCommission={a => { setCommModal(a); setCommForm({ commission_type: a.commission_type || "none", commission_rate: a.commission_rate ? String(a.commission_rate) : "" }); }} />
                   ))}
                 </div>
               )}
