@@ -71,10 +71,13 @@ async def _search_brave(
     if not key:
         return []
     try:
+        params = {"q": query, "count": max_results, "search_lang": "en"}
+        if country and country.lower() != "xx":
+            params["country"] = country
         r = await client.get(
             "https://api.search.brave.com/res/v1/web/search",
             headers={"Accept": "application/json", "X-Subscription-Token": key},
-            params={"q": query, "count": max_results, "country": country, "search_lang": "en"},
+            params=params,
             timeout=12.0,
         )
         r.raise_for_status()
@@ -140,7 +143,7 @@ async def _search_reddit(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NewsAPI — surface grant announcements, funding news, RFPs, tenders
+# Currents News API — surface grant announcements, funding news, RFPs, tenders
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _search_news(
@@ -153,26 +156,25 @@ async def _search_news(
         return []
     try:
         r = await client.get(
-            "https://newsapi.org/v2/everything",
+            "https://api.currentsapi.services/v1/search",
             params={
-                "q":        query,
-                "sortBy":   "publishedAt",
-                "pageSize": max_results,
+                "keywords": query,
+                "limit":    max_results,
                 "language": "en",
+                "apiKey":   key,
             },
-            headers={"X-Api-Key": key},
             timeout=10.0,
         )
         r.raise_for_status()
         data = r.json()
         results = []
-        for art in (data.get("articles") or []):
+        for art in (data.get("news") or []):
             url = art.get("url", "")
-            if url and "removed.com" not in url:
+            if url:
                 results.append({
                     "title":   art.get("title", ""),
                     "url":     url,
-                    "snippet": (art.get("description") or art.get("content") or "")[:400],
+                    "snippet": (art.get("description") or "")[:400],
                 })
         return results
     except Exception as e:

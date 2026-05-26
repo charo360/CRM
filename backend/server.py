@@ -1085,6 +1085,13 @@ class CustomerCreate(BaseModel):
     tags: List[str] = []
     is_personal: bool = False
 
+class ContactCreate(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    notes: Optional[str] = None
+    source: Optional[str] = None
+    source_url: Optional[str] = None
+
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
@@ -3892,6 +3899,57 @@ async def get_all_contacts(user = Depends(get_current_user)):
                           or (not c.get("classification_type") and "Supplier" not in c.get("tags", [])),
         })
     return result
+
+@api_router.post("/contacts", response_model=CustomerResponse)
+async def create_contact_as_customer_endpoint(contact: ContactCreate, user = Depends(get_current_user)):
+    """Create or promote a contact as a customer from AI Scout (Hunt)"""
+    business_id = user.get("business_id", user["_id"])
+    clean_name = sanitize_string(contact.name, 200)
+    clean_phone = sanitize_phone(contact.phone) if contact.phone else ""
+    clean_notes = sanitize_string(contact.notes, 2000) if contact.notes else ""
+    
+    if clean_phone:
+        existing = await db.customers.find_one({"user_id": business_id, "phone_number": clean_phone})
+        if existing:
+            if not existing.get("is_customer"):
+                await db.customers.update_one({"_id": existing["_id"]}, {"$set": {"is_customer": True}})
+                existing["is_customer"] = True
+            return CustomerResponse(
+                id=existing["_id"], user_id=business_id, name=existing.get("name", clean_name),
+                phone_number=existing.get("phone_number", clean_phone), notes=existing.get("notes") or clean_notes,
+                tags=existing.get("tags") or ["New"], purchase_count=existing.get("purchase_count", 0),
+                total_spent=existing.get("total_spent", 0.0), last_message=existing.get("last_message"),
+                last_contacted=existing.get("last_contacted"), created_at=existing.get("created_at", datetime.utcnow())
+            )
+
+    customer_id = str(uuid.uuid4())
+    customer_doc = {
+        "_id": customer_id,
+        "user_id": business_id,
+        "name": clean_name,
+        "phone_number": clean_phone,
+        "notes": clean_notes,
+        "tags": ["New", "AI Scout"] if contact.source == "ai_scout" else ["New"],
+        "purchase_count": 0,
+        "total_spent": 0.0,
+        "last_message": None,
+        "last_contacted": None,
+        "created_at": datetime.utcnow(),
+        "is_customer": True,
+    }
+    
+    if contact.source:
+        customer_doc["source"] = contact.source
+    if contact.source_url:
+        customer_doc["source_url"] = contact.source_url
+
+    await db.customers.insert_one(customer_doc)
+    return CustomerResponse(
+        id=customer_id, user_id=business_id, name=clean_name,
+        phone_number=clean_phone, notes=clean_notes, tags=customer_doc["tags"],
+        purchase_count=0, total_spent=0.0, last_message=None,
+        last_contacted=None, created_at=customer_doc["created_at"]
+    )
 
 @api_router.get("/contacts")
 async def get_contacts(search: str = "", user = Depends(get_current_user)):
@@ -11007,6 +11065,115 @@ def _shopify_frontend_url() -> str:
     return os.environ.get("SHOPIFY_FRONTEND_URL") or os.environ.get("NEXT_PUBLIC_APP_URL") or "http://localhost:3000"
 
 
+# ── Shopify Partner: create development store ─────────────────────────────────
+@api_router.post("/shopify/partner/create-store")
+async def shopify_partner_create_store(request: Request, user=Depends(get_current_user)):
+    """
+    Create a Shopify development store via the Shopify Partners GraphQL API.
+    Requires SHOPIFY_PARTNER_ID and SHOPIFY_PARTNER_ACCESS_TOKEN in env.
+    When the merchant later upgrades to a paid plan, Zilo earns the recurring
+    20% Partner revenue share from Shopify automatically.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+
+    store_name   = str(body.get("store_name",   "")).strip().lower()
+    first_name   = str(body.get("first_name",   "")).strip()
+    last_name    = str(body.get("last_name",    "")).strip()
+    email        = str(body.get("email",        "")).strip()
+    country_code = str(body.get("country_code", "US")).strip().upper()
+
+    if not store_name or not first_name or not email:
+        raise HTTPException(422, "store_name, first_name and email are required")
+
+    # Sanitise store name — only lowercase letters, numbers, hyphens
+    import re as _re
+    store_name = _re.sub(r"[^a-z0-9-]", "-", store_name).strip("-")
+    if not store_name:
+        raise HTTPException(422, "store_name must contain letters or numbers")
+
+    partner_id    = os.environ.get("SHOPIFY_PARTNER_ID",           "").strip()
+    partner_token = os.environ.get("SHOPIFY_PARTNER_ACCESS_TOKEN", "").strip()
+    if not partner_id or not partner_token:
+        raise HTTPException(503,
+            "Shopify Partner credentials not configured. "
+            "Add SHOPIFY_PARTNER_ID and SHOPIFY_PARTNER_ACCESS_TOKEN to your .env file."
+        )
+
+    mutation = """
+    mutation CreateDevStore($input: ShopifyDevStoreInput!) {
+      shopifyDevStoreCreate(input: $input) {
+        shop {
+          id
+          myshopifyDomain
+          name
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    variables = {
+        "input": {
+            "storeName":   store_name,
+            "storeType":   "DEVELOPMENT",
+            "login":       email,
+            "firstName":   first_name,
+            "lastName":    last_name or first_name,
+            "countryCode": country_code,
+        }
+    }
+
+    import httpx as _httpx
+    gql_url = f"https://partners.shopify.com/{partner_id}/api/2024-10/graphql.json"
+    try:
+        async with _httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.post(
+                gql_url,
+                json={"query": mutation, "variables": variables},
+                headers={
+                    "X-Shopify-Access-Token": partner_token,
+                    "Content-Type": "application/json",
+                },
+            )
+    except Exception as exc:
+        logging.error("[partner/create-store] network error: %s", exc)
+        raise HTTPException(502, f"Could not reach Shopify Partners API: {exc}")
+
+    if r.status_code == 401:
+        raise HTTPException(401, "Invalid SHOPIFY_PARTNER_ACCESS_TOKEN")
+    if r.status_code >= 400:
+        raise HTTPException(502, f"Shopify Partners API returned {r.status_code}: {r.text[:300]}")
+
+    try:
+        data = r.json()
+    except Exception:
+        raise HTTPException(502, f"Non-JSON response from Shopify: {r.text[:300]}")
+
+    result = data.get("data", {}).get("shopifyDevStoreCreate", {})
+    user_errors = result.get("userErrors", [])
+    if user_errors:
+        msg = "; ".join(f"{e.get('field','')}: {e.get('message','')}" for e in user_errors)
+        raise HTTPException(422, f"Shopify error: {msg}")
+
+    shop = result.get("shop")
+    if not shop:
+        raise HTTPException(502, f"Unexpected response from Shopify Partners API: {data}")
+
+    domain = shop.get("myshopifyDomain", f"{store_name}.myshopify.com")
+    logging.info("[partner/create-store] created store=%s user=%s", domain, user.get("_id"))
+
+    return {
+        "ok":     True,
+        "domain": domain,
+        "name":   shop.get("name", store_name),
+    }
+
+
 @api_router.get("/shopify/install")
 async def shopify_install(
     request: Request,
@@ -15142,13 +15309,34 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
 
 
 # ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
+
+def _parse_cj_products(data: dict) -> list[dict]:
+    raw = data.get("list", []) if isinstance(data, dict) else []
+    out = []
+    for p in raw:
+        cost = _cj_price(p.get("sellPrice"))
+        out.append({
+            "cj_pid":           p.get("pid", ""),
+            "title":            p.get("productNameEn") or p.get("productName", ""),
+            "category":         p.get("categoryName", ""),
+            "cost_price":       cost,
+            "suggested_price":  round(cost * 2.5, 2),
+            "image_url":        p.get("productImage", ""),
+            "is_free_shipping": bool(p.get("isFreeShipping", False)),
+            "supplier":         p.get("supplierName", "") or "",
+            "listed_count":     int(p.get("listedNum", 0) or 0),
+            "source":           "cj",
+        })
+    return out
+
+
 @api_router.get("/cj/products")
 async def cj_search_products(
     keyword: str = "",
     category_id: str = "",
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
-    page_size: int = 20,
+    page_size: int = 50,
     hot: bool = False,
     user=Depends(get_current_user),
 ):
@@ -15160,45 +15348,44 @@ async def cj_search_products(
     business_id = user.get("business_id") or str(user["_id"])
     cj_creds = await _get_supplier_creds(business_id, "cj")
 
-    params: dict = {"pageNum": 1, "pageSize": min(page_size, 50)}
-    if keyword:
-        params["productNameEn"] = keyword
-    if category_id:
-        params["categoryId"] = category_id
-    if min_price is not None:
-        params["minPrice"] = min_price
-    if max_price is not None:
-        params["maxPrice"] = max_price
+    # Expand keyword into variants for broader coverage
+    variants = await _ae_expand_keywords(keyword) if keyword else [keyword]
+
+    async def _search_one(kw: str) -> list[dict]:
+        params: dict = {"pageNum": 1, "pageSize": 50}
+        if kw:
+            params["productNameEn"] = kw
+        if category_id:
+            params["categoryId"] = category_id
+        if min_price is not None:
+            params["minPrice"] = min_price
+        if max_price is not None:
+            params["maxPrice"] = max_price
+        try:
+            data = await cj_get("/product/list", params, creds=cj_creds)
+            return _parse_cj_products(data)
+        except Exception as e:
+            logging.warning("[cj/products] variant '%s' failed: %s", kw, e)
+            return []
 
     try:
-        data = await cj_get("/product/list", params, creds=cj_creds)
+        results_per_variant = await asyncio.gather(*[_search_one(kw) for kw in variants])
     except Exception as e:
-        logging.error("[cj/products] cj_get error: %s", e, exc_info=True)
+        logging.error("[cj/products] error: %s", e, exc_info=True)
         raise HTTPException(502, f"CJ API error: {e}")
 
-    try:
-        raw = data.get("list", []) if isinstance(data, dict) else []
-        if hot:
-            raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+    # Deduplicate by cj_pid, sort by listed_count (most popular first)
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for batch in results_per_variant:
+        for p in batch:
+            pid = p["cj_pid"]
+            if pid and pid not in seen:
+                seen.add(pid)
+                merged.append(p)
 
-        products = []
-        for p in raw:
-            cost = _cj_price(p.get("sellPrice"))
-            products.append({
-                "cj_pid":           p.get("pid", ""),
-                "title":            p.get("productNameEn") or p.get("productName", ""),
-                "category":         p.get("categoryName", ""),
-                "cost_price":       cost,
-                "suggested_price":  round(cost * 2.5, 2),
-                "image_url":        p.get("productImage", ""),
-                "is_free_shipping": bool(p.get("isFreeShipping", False)),
-                "supplier":         p.get("supplierName", "") or "",
-                "listed_count":     int(p.get("listedNum", 0) or 0),
-            })
-        return {"products": products, "total": data.get("total", len(products)) if isinstance(data, dict) else len(products)}
-    except Exception as e:
-        logging.error("[cj/products] serialisation error: %s", e, exc_info=True)
-        raise HTTPException(500, f"Response processing error: {e}")
+    merged.sort(key=lambda p: p["listed_count"], reverse=True)
+    return {"products": merged[:200], "total": len(merged)}
 
 
 @api_router.get("/cj/categories")
@@ -15222,13 +15409,65 @@ async def cj_get_categories(user=Depends(get_current_user)):
 
 
 # ── AliExpress REST endpoints (used by Shopify Products tab UI) ──────────────
+
+async def _ae_expand_keywords(keyword: str) -> list[str]:
+    """Use AI to generate 3 search variants for broader, smarter results."""
+    try:
+        import openai as _oai
+        client = _oai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Generate 3 AliExpress search keyword variants for: \"{keyword}\". "
+                    "Include the original plus 2 alternatives (synonyms, related terms, or broader product names). "
+                    "Return ONLY a JSON array of 3 strings, no explanation."
+                ),
+            }],
+            max_tokens=80,
+            temperature=0.3,
+        )
+        import json as _json
+        variants = _json.loads(resp.choices[0].message.content.strip())
+        if isinstance(variants, list):
+            return [str(v) for v in variants[:3]]
+    except Exception:
+        pass
+    return [keyword]
+
+
+def _parse_ae_products(data: dict) -> list[dict]:
+    raw = (
+        data.get("products", {}).get("product", [])
+        or data.get("result", {}).get("products", {}).get("product", [])
+        or []
+    )
+    out = []
+    for p in raw:
+        cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
+        out.append({
+            "ae_pid":          str(p.get("product_id", "")),
+            "title":           p.get("product_title", ""),
+            "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("product_main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "source":          "aliexpress",
+        })
+    return out
+
+
 @api_router.get("/ae/products")
 async def ae_search_products(
     keyword: str = "",
     category_id: str = "",
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
-    page_size: int = 20,
+    page_size: int = 50,
     sort: str = "LAST_VOLUME_DESC",
     user=Depends(get_current_user),
 ):
@@ -15242,45 +15481,121 @@ async def ae_search_products(
     business_id = user.get("business_id") or str(user["_id"])
     ae_creds = await _get_supplier_creds(business_id, "aliexpress")
 
+    # Expand keyword into variants for broader coverage
+    variants = await _ae_expand_keywords(keyword) if keyword else [keyword]
+
+    async def _search_one(kw: str) -> list[dict]:
+        try:
+            data = await ae_ds_search(
+                keyword=kw or "bestseller",
+                category_id=category_id or None,
+                min_price=min_price,
+                max_price=max_price,
+                page_size=50,
+                sort=sort,
+                creds=ae_creds,
+            )
+            return _parse_ae_products(data)
+        except Exception as e:
+            logging.warning("[ae/products] variant '%s' failed: %s", kw, e)
+            return []
+
     try:
-        data = await ae_ds_search(
-            keyword=keyword or "bestseller",
-            category_id=category_id or None,
-            min_price=min_price,
-            max_price=max_price,
-            page_size=min(page_size, 50),
-            sort=sort,
-            creds=ae_creds,
-        )
+        results_per_variant = await asyncio.gather(*[_search_one(kw) for kw in variants])
     except Exception as e:
         logging.error("[ae/products] error: %s", e, exc_info=True)
         raise HTTPException(502, f"AliExpress API error: {e}")
 
+    # Deduplicate by ae_pid, keeping first occurrence, then sort by order volume
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for batch in results_per_variant:
+        for p in batch:
+            pid = p["ae_pid"]
+            if pid and pid not in seen:
+                seen.add(pid)
+                merged.append(p)
+
+    merged.sort(key=lambda p: p["orders_count"], reverse=True)
+    return {"products": merged[:200], "total": len(merged)}
+
+
+# ── Unified compare endpoint (AE + CJ in one call) ───────────────────────────
+@api_router.get("/products/compare")
+async def compare_products(
+    keyword: str,
+    max_price: Optional[float] = None,
+    sort: str = "price_asc",
+    user=Depends(get_current_user),
+):
+    """Search both AliExpress and CJ simultaneously and return a unified list."""
     try:
-        products_raw = (
-            data.get("products", {}).get("product", [])
-            or data.get("result", {}).get("products", {}).get("product", [])
-            or []
-        )
-        products = []
-        for p in products_raw:
-            cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
-            products.append({
-                "ae_pid":          str(p.get("product_id", "")),
-                "title":           p.get("product_title", ""),
-                "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
-                "cost_price":      cost,
-                "suggested_price": round(cost * 2.5, 2),
-                "image_url":       p.get("product_main_image_url", ""),
-                "orders_count":    int(p.get("lastest_volume", 0) or 0),
-                "shipping_time":   p.get("shipping_lead_time", ""),
-                "store_name":      p.get("shop_name", ""),
-                "source":          "aliexpress",
+        from aliexpress.client import ae_ds_search
+        from cj_dropship.client import cj_get
+    except ImportError as exc:
+        raise HTTPException(503, f"Supplier module not available: {exc}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    variants = await _ae_expand_keywords(keyword)
+
+    async def _ae_one(kw: str) -> list[dict]:
+        try:
+            data = await ae_ds_search(keyword=kw, max_price=max_price, page_size=50,
+                                       sort="LAST_VOLUME_DESC", creds=ae_creds)
+            return _parse_ae_products(data)
+        except Exception as e:
+            logging.warning("[compare/ae] '%s': %s", kw, e)
+            return []
+
+    async def _cj_one(kw: str) -> list[dict]:
+        params: dict = {"pageNum": 1, "pageSize": 50, "productNameEn": kw}
+        if max_price is not None:
+            params["maxPrice"] = max_price
+        try:
+            data = await cj_get("/product/list", params, creds=cj_creds)
+            return _parse_cj_products(data)
+        except Exception as e:
+            logging.warning("[compare/cj] '%s': %s", kw, e)
+            return []
+
+    all_tasks = [_ae_one(kw) for kw in variants] + [_cj_one(kw) for kw in variants]
+    batches = await asyncio.gather(*all_tasks)
+
+    # Normalise to a unified schema and deduplicate
+    seen: set[str] = set()
+    unified: list[dict] = []
+    for batch in batches:
+        for p in batch:
+            source = p.get("source", "ae")
+            uid = f"{source}:{p.get('ae_pid') or p.get('cj_pid', '')}"
+            if uid in seen:
+                continue
+            seen.add(uid)
+            unified.append({
+                "source":           source,
+                "id":               p.get("ae_pid") or p.get("cj_pid", ""),
+                "title":            p.get("title", ""),
+                "image_url":        p.get("image_url", ""),
+                "category":         p.get("category", ""),
+                "cost_price":       p.get("cost_price", 0),
+                "suggested_price":  p.get("suggested_price", 0),
+                "popularity":       p.get("orders_count") or p.get("listed_count") or 0,
+                "is_free_shipping": p.get("is_free_shipping", False),
+                "shipping_time":    p.get("shipping_time", ""),
+                "store_name":       p.get("store_name", "") or p.get("supplier", ""),
             })
-        return {"products": products, "total": int(data.get("total_record_count", len(products)))}
-    except Exception as e:
-        logging.error("[ae/products] serialisation error: %s", e, exc_info=True)
-        raise HTTPException(500, f"Response processing error: {e}")
+
+    if sort == "price_asc":
+        unified.sort(key=lambda p: p["cost_price"])
+    elif sort == "price_desc":
+        unified.sort(key=lambda p: p["cost_price"], reverse=True)
+    elif sort == "popular":
+        unified.sort(key=lambda p: p["popularity"], reverse=True)
+
+    return {"products": unified[:300], "total": len(unified)}
 
 
 @api_router.get("/ae/categories")

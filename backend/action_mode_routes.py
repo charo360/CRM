@@ -285,6 +285,23 @@ def make_action_mode_router(db, user_dep):
             i["_id"] = str(i["_id"])
         return {"opportunities": items}
 
+    @router.delete("/opportunities/{opp_id}")
+    async def dismiss_opportunity(opp_id: str, user=Depends(user_dep)):
+        uid = _uid(user)
+        result = await db.action_mode_opportunities.delete_one({"_id": opp_id, "user_id": uid})
+        if result.deleted_count == 0:
+            raise HTTPException(404, "Opportunity not found")
+        return {"status": "dismissed"}
+
+    @router.post("/enrich-shopify")
+    async def enrich_shopify_store(body: Dict[str, str], user=Depends(user_dep)):
+        domain = body.get("domain")
+        if not domain:
+            raise HTTPException(400, "Domain or URL is required")
+        from rapidapi_shopify import get_shopify_store_info
+        info = await get_shopify_store_info(domain)
+        return info
+
     # ─────────────────────────────────────────────────────────────────────────
     # Custom Agents — users build their own agents in plain English
     # ─────────────────────────────────────────────────────────────────────────
@@ -986,6 +1003,7 @@ async def _ai_score_results(
     """
     if not results:
         return results
+    results = results[:20]
     try:
         import json as _json, os as _os, httpx as _httpx
 
@@ -1021,13 +1039,23 @@ async def _ai_score_results(
                             "model": model,
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.1,
-                            "max_tokens": 800,
+                            "max_tokens": 2000,
                         },
                     )
                     resp.raise_for_status()
                     raw = resp.json()["choices"][0]["message"]["content"].strip()
-                    raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
-                    scores = _json.loads(raw)
+                    
+                    # Robustly extract JSON array from raw response
+                    start_idx = raw.find("[")
+                    end_idx = raw.rfind("]")
+                    if start_idx != -1 and end_idx != -1:
+                        raw_json = raw[start_idx:end_idx + 1]
+                        scores = _json.loads(raw_json)
+                    else:
+                        # Fallback
+                        raw_stripped = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
+                        scores = _json.loads(raw_stripped)
+                        
                     scored = []
                     for item in scores:
                         idx = item.get("idx", 0) - 1

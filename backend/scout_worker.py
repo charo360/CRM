@@ -33,32 +33,31 @@ async def run_scout_worker(db) -> None:
     """Main loop — runs forever."""
     logger.info("[scout_worker] Started. Checking every %ds.", CHECK_INTERVAL_SEC)
     while True:
-        await asyncio.sleep(CHECK_INTERVAL_SEC)
         try:
             due = await find_due_scouts(db, limit=20)
-            if not due:
-                continue
+            if due:
+                logger.info("[scout_worker] %d scouts due", len(due))
 
-            logger.info("[scout_worker] %d scouts due", len(due))
+                for scout in due:
+                    uid = scout.get("user_id", "")
+                    scout_id = scout.get("_id", "")
 
-            for scout in due:
-                uid = scout.get("user_id", "")
-                scout_id = scout.get("_id", "")
+                    if not uid or not scout_id:
+                        continue
 
-                if not uid or not scout_id:
-                    continue
+                    if not await is_user_scouts_enabled(db, uid):
+                        continue
 
-                if not await is_user_scouts_enabled(db, uid):
-                    continue
+                    if await _scout_already_running(db, scout_id):
+                        logger.debug("[scout_worker] skip scout=%s already running", scout_id)
+                        continue
 
-                if await _scout_already_running(db, scout_id):
-                    logger.debug("[scout_worker] skip scout=%s already running", scout_id)
-                    continue
-
-                try:
-                    await execute_scout(db, scout)
-                except Exception as e:
-                    logger.error("[scout_worker] scout=%s failed: %s", scout_id, e)
+                    try:
+                        await execute_scout(db, scout)
+                    except Exception as e:
+                        logger.error("[scout_worker] scout=%s failed: %s", scout_id, e)
 
         except Exception as e:
             logger.exception("[scout_worker] loop error: %s", e)
+            
+        await asyncio.sleep(CHECK_INTERVAL_SEC)

@@ -9,41 +9,36 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from quart import Blueprint, request, jsonify
-from quart_cors import cors
+from fastapi import APIRouter, Query, Body
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
-gmail_filter_bp = Blueprint("gmail_filters", __name__, url_prefix="/api/gmail/filters")
-gmail_filter_bp = cors(gmail_filter_bp, allow_origin="*")
 
-
-def init_gmail_filter_routes(db: Any) -> Blueprint:
+def init_gmail_filter_routes(db: Any) -> APIRouter:
     """Initialize Gmail filter routes with database connection."""
     
-    @gmail_filter_bp.route("/list", methods=["GET"])
-    async def list_filters():
+    router = APIRouter(prefix="/api/gmail/filters", tags=["gmail-filters"])
+    
+    @router.get("/list")
+    async def list_filters(user_id: str = Query(..., description="User ID")):
         """List all Gmail filters for the authenticated user."""
         try:
-            user_id = request.args.get("user_id")
-            if not user_id:
-                return jsonify({"error": "user_id required"}), 400
-            
             from gmail_filter_service import list_gmail_filters
             result = await list_gmail_filters(user_id)
             
             if result.get("error"):
-                return jsonify(result), 400
+                return JSONResponse(content=result, status_code=400)
             
-            return jsonify(result), 200
+            return JSONResponse(content=result, status_code=200)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] list_filters error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    @gmail_filter_bp.route("/create", methods=["POST"])
-    async def create_filter():
+    @router.post("/create")
+    async def create_filter(data: Dict[str, Any] = Body(...)):
         """
         Create a new Gmail filter.
         
@@ -63,22 +58,21 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
         }
         """
         try:
-            data = await request.get_json()
             user_id = data.get("user_id")
             criteria = data.get("criteria", {})
             action = data.get("action", {})
             
             if not user_id:
-                return jsonify({"error": "user_id required"}), 400
+                return JSONResponse(content={"error": "user_id required"}, status_code=400)
             
             if not criteria or not action:
-                return jsonify({"error": "Both criteria and action required"}), 400
+                return JSONResponse(content={"error": "Both criteria and action required"}, status_code=400)
             
             from gmail_filter_service import create_gmail_filter, save_filter_to_db
             result = await create_gmail_filter(user_id, criteria, action)
             
             if result.get("error"):
-                return jsonify(result), 400
+                return JSONResponse(content=result, status_code=400)
             
             # Save to DB for tracking
             if result.get("filter_id"):
@@ -91,26 +85,23 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
                     filter_type="custom",
                 )
             
-            return jsonify(result), 201
+            return JSONResponse(content=result, status_code=201)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] create_filter error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    @gmail_filter_bp.route("/delete/<filter_id>", methods=["DELETE"])
-    async def delete_filter(filter_id: str):
+    @router.delete("/delete/{filter_id}")
+    async def delete_filter(filter_id: str, user_id: str = Query(...)):
         """Delete a Gmail filter by ID."""
         try:
-            user_id = request.args.get("user_id")
-            if not user_id:
-                return jsonify({"error": "user_id required"}), 400
             
             from gmail_filter_service import delete_gmail_filter
             result = await delete_gmail_filter(user_id, filter_id)
             
             if result.get("error"):
-                return jsonify(result), 400
+                return JSONResponse(content=result, status_code=400)
             
             # Remove from DB
             await db.gmail_filters.delete_one({
@@ -118,15 +109,15 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
                 "filter_id": filter_id,
             })
             
-            return jsonify(result), 200
+            return JSONResponse(content=result, status_code=200)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] delete_filter error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    @gmail_filter_bp.route("/smart-create", methods=["POST"])
-    async def smart_create_filter():
+    @router.post("/smart-create")
+    async def smart_create_filter(data: Dict[str, Any] = Body(...)):
         """
         Create a smart filter using predefined templates.
         
@@ -150,19 +141,18 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
         - archive_unsubscribe: Archive emails with unsubscribe
         """
         try:
-            data = await request.get_json()
             user_id = data.get("user_id")
             filter_type = data.get("filter_type")
             params = data.get("params", {})
             
             if not user_id or not filter_type:
-                return jsonify({"error": "user_id and filter_type required"}), 400
+                return JSONResponse(content={"error": "user_id and filter_type required"}, status_code=400)
             
             from gmail_filter_service import create_smart_filter, save_filter_to_db
             result = await create_smart_filter(user_id, filter_type, params)
             
             if result.get("error"):
-                return jsonify(result), 400
+                return JSONResponse(content=result, status_code=400)
             
             # Save to DB
             if result.get("filter_id"):
@@ -175,15 +165,15 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
                     filter_type=filter_type,
                 )
             
-            return jsonify(result), 201
+            return JSONResponse(content=result, status_code=201)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] smart_create_filter error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    @gmail_filter_bp.route("/batch/newsletters", methods=["POST"])
-    async def batch_setup_newsletters():
+    @router.post("/batch/newsletters")
+    async def batch_setup_newsletters(data: Dict[str, Any] = Body(...)):
         """
         Batch create filters for all predefined newsletter senders.
         
@@ -194,12 +184,11 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
         }
         """
         try:
-            data = await request.get_json()
             user_id = data.get("user_id")
             custom_senders = data.get("custom_senders", [])
             
             if not user_id:
-                return jsonify({"error": "user_id required"}), 400
+                return JSONResponse(content={"error": "user_id required"}, status_code=400)
             
             from gmail_filter_service import setup_newsletter_filters
             result = await setup_newsletter_filters(user_id, custom_senders)
@@ -217,15 +206,18 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
                         filter_type="newsletter_archive",
                     )
             
-            return jsonify(result), 201
+            return JSONResponse(content=result, status_code=201)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] batch_setup_newsletters error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    @gmail_filter_bp.route("/suggestions", methods=["GET"])
-    async def get_filter_suggestions():
+    @router.get("/suggestions")
+    async def get_filter_suggestions(
+        user_id: str = Query(...),
+        min_count: int = Query(3)
+    ):
         """
         Analyze inbox and suggest filters for frequent senders.
         
@@ -234,11 +226,6 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
         - min_count: minimum emails from sender (default: 3)
         """
         try:
-            user_id = request.args.get("user_id")
-            min_count = int(request.args.get("min_count", 3))
-            
-            if not user_id:
-                return jsonify({"error": "user_id required"}), 400
             
             from gmail_filter_service import analyze_inbox_for_filter_suggestions
             result = await analyze_inbox_for_filter_suggestions(
@@ -248,17 +235,17 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
             )
             
             if result.get("error"):
-                return jsonify(result), 400
+                return JSONResponse(content=result, status_code=400)
             
-            return jsonify(result), 200
+            return JSONResponse(content=result, status_code=200)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] get_filter_suggestions error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    @gmail_filter_bp.route("/archive-sender", methods=["POST"])
-    async def archive_sender():
+    @router.post("/archive-sender")
+    async def archive_sender(data: Dict[str, Any] = Body(...)):
         """
         Quick endpoint to archive a specific sender.
         
@@ -270,19 +257,18 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
         }
         """
         try:
-            data = await request.get_json()
             user_id = data.get("user_id")
             sender = data.get("sender")
             also_mark_read = data.get("also_mark_read", False)
             
             if not user_id or not sender:
-                return jsonify({"error": "user_id and sender required"}), 400
+                return JSONResponse(content={"error": "user_id and sender required"}, status_code=400)
             
             from gmail_filter_service import create_sender_archive_filter, save_filter_to_db
             result = await create_sender_archive_filter(user_id, sender, also_mark_read)
             
             if result.get("error"):
-                return jsonify(result), 400
+                return JSONResponse(content=result, status_code=400)
             
             # Save to DB
             if result.get("filter_id"):
@@ -299,20 +285,17 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
                     filter_type="archive_sender",
                 )
             
-            return jsonify(result), 201
+            return JSONResponse(content=result, status_code=201)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] archive_sender error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    @gmail_filter_bp.route("/my-filters", methods=["GET"])
-    async def get_my_filters():
+    @router.get("/my-filters")
+    async def get_my_filters(user_id: str = Query(...)):
         """Get all filters for user from local DB (faster than Gmail API)."""
         try:
-            user_id = request.args.get("user_id")
-            if not user_id:
-                return jsonify({"error": "user_id required"}), 400
             
             from gmail_filter_service import get_user_filters_from_db
             filters = await get_user_filters_from_db(user_id, db)
@@ -328,15 +311,15 @@ def init_gmail_filter_routes(db: Any) -> Blueprint:
                     "created_at": f.get("created_at", "").isoformat() if hasattr(f.get("created_at"), "isoformat") else str(f.get("created_at", "")),
                 })
             
-            return jsonify({
+            return JSONResponse(content={
                 "success": True,
                 "filters": formatted,
                 "count": len(formatted),
-            }), 200
+            }, status_code=200)
             
         except Exception as e:
             logger.error(f"[gmail_filter_routes] get_my_filters error: {e}")
-            return jsonify({"error": str(e)}), 500
+            return JSONResponse(content={"error": str(e)}, status_code=500)
     
     
-    return gmail_filter_bp
+    return router
