@@ -24,7 +24,7 @@ import logging
 
 import os
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 
@@ -1029,19 +1029,52 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str, extra_d
 
 
 
-async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
-
-    """Return {"connected": bool, "connection_id": str|None}.
+_OK_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "INITIATED", "SUCCESS", "ENABLED", ""}
 
 
+def _normalize_app(s: str) -> str:
+    import re
+    return re.sub(r"[_\-\s]+", "", (s or "").lower())
 
-    Always verifies the returned connection's userUuid matches user_id so that
 
-    if the Composio API ignores the filter and returns all accounts, we do not
+async def _v3_list_user_accounts(user_id: str) -> List[Dict[str, Any]]:
+    """Fetch all Composio connected accounts for a given user_id (v3, paginated).
 
-    incorrectly mark a new user as connected with someone else's account.
-
+    The v1 endpoint /api/v1/connectedAccounts was deprecated and now returns
+    HTTP 410 Gone, so this is the only working list endpoint.
     """
+    items: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        while True:
+            params: Dict[str, Any] = {"user_ids": user_id, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            resp = await client.get(
+                f"{_BASE}/v3/connected_accounts",
+                headers=_headers(),
+                params=params,
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "[composio] v3 connected_accounts list failed: %s %s",
+                    resp.status_code, resp.text[:200],
+                )
+                return items
+            data = resp.json() if resp.content else {}
+            page = data.get("items") or []
+            for it in page:
+                # Defensive: ignore items that don't belong to this user
+                if isinstance(it, dict) and str(it.get("user_id") or "") == user_id:
+                    items.append(it)
+            cursor = data.get("next_cursor")
+            if not cursor or not page:
+                break
+    return items
+
+
+async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
+    """Return {"connected": bool, "connection_id": str|None} for one toolkit."""
 
     # Shopify uses direct credentials stored in DB — bypass Composio entirely
     if toolkit.lower() == "shopify":
@@ -1049,185 +1082,64 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
         return {"connected": bool(creds), "connection_id": None}
 
     if not _get_key():
-
         return {"connected": False, "error": "COMPOSIO_API_KEY not configured"}
 
-
-
-    app_name = _APP_NAMES.get(toolkit.lower(), toolkit.lower())
-
-
-
     try:
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-
-            resp = await client.get(
-
-                f"{_BASE}/v1/connectedAccounts",
-
-                headers=_headers(),
-
-                params={"userUuid": user_id},
-
-            )
-
-            if resp.status_code != 200:
-
-                return {"connected": False}
-
-            data = resp.json()
-
-            items = data.get("items") or data.get("data") or data.get("connectedAccounts") or []
-
-            logger.info("[composio] get_connection_status(%s) → %d accounts", toolkit, len(items))
-
-            import re as _re_norm
-            def _norm(s: str) -> str:
-                return _re_norm.sub(r"[_\-\s]+", "", s.lower())
-
-            app_name_norm = _norm(app_name)
-            toolkit_norm  = _norm(toolkit.lower())
-
-            # Statuses that indicate a usable connection
-            _OK_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "INITIATED", "SUCCESS", "ENABLED", ""}
-
-            for item in items:
-
-                if not isinstance(item, dict):
-                    continue
-
-                item_user = str(
-                    item.get("userUuid") or item.get("clientUniqueUserId") or item.get("entityId") or ""
-                ).strip()
-
-                if item_user and item_user != user_id:
-                    logger.debug(
-                        "[composio] skipping account %s: belongs to %s, not %s",
-                        item.get("id"), item_user, user_id,
-                    )
-                    continue
-
-                item_app = str(item.get("appName") or item.get("appUniqueId") or "").lower()
-                item_status = str(item.get("status") or "").upper()
-
-                logger.info(
-                    "[composio] account id=%s app=%s status=%s user=%s",
-                    item.get("id"), item_app, item_status, item_user or "(no uuid)"
-                )
-
-                item_app_norm = _norm(item_app)
-
-                if (
-                    app_name_norm not in item_app_norm
-                    and item_app_norm not in app_name_norm
-                    and toolkit_norm not in item_app_norm
-                ):
-                    continue
-
-                if item_status in _OK_STATUSES:
-                    return {"connected": True, "connection_id": item.get("id")}
-
-            return {"connected": False}
-
+        items = await _v3_list_user_accounts(user_id)
     except Exception as e:
-
         logger.warning("[composio] get_connection_status error: %s", e)
-
         return {"connected": False, "error": str(e)}
 
+    app_name_norm = _normalize_app(_APP_NAMES.get(toolkit.lower(), toolkit.lower()))
+    toolkit_norm = _normalize_app(toolkit)
 
+    for item in items:
+        slug = (item.get("toolkit") or {}).get("slug", "") if isinstance(item.get("toolkit"), dict) else ""
+        slug_norm = _normalize_app(slug)
+        if not slug_norm:
+            continue
+        if (
+            app_name_norm not in slug_norm
+            and slug_norm not in app_name_norm
+            and toolkit_norm not in slug_norm
+        ):
+            continue
+        status = str(item.get("status") or "").upper()
+        if status in _OK_STATUSES:
+            return {"connected": True, "connection_id": item.get("id")}
+
+    return {"connected": False}
 
 
 
 async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
-
     """Return connection status for all Zilo-supported toolkits (all apps)."""
 
     if not _get_key():
-
         return {t: False for t in ALL_TOOLKITS}
-
-    # Fetch connected accounts once and check each toolkit
 
     try:
-
-        async with httpx.AsyncClient(timeout=12.0) as client:
-
-            resp = await client.get(
-
-                f"{_BASE}/v1/connectedAccounts",
-
-                headers=_headers(),
-
-                params={"userUuid": user_id},
-
-            )
-
-            if resp.status_code != 200:
-
-                return {t: False for t in ALL_TOOLKITS}
-
-            data = resp.json()
-
-            items = data.get("items") or data.get("data") or data.get("connectedAccounts") or []
-
+        items = await _v3_list_user_accounts(user_id)
     except Exception as e:
-
         logger.warning("[composio] get_all_connection_statuses error: %s", e)
-
         return {t: False for t in ALL_TOOLKITS}
 
-    _OK = {"ACTIVE", "CONNECTED", "VALID", "INITIATED", "SUCCESS", "ENABLED", ""}
-
-    # Build set of connected app names (validated by userUuid)
-
-    connected_apps: set = set()
-
+    connected_slugs: set = set()
     for item in items:
-
-        if not isinstance(item, dict):
-
+        status = str(item.get("status") or "").upper()
+        if status not in _OK_STATUSES:
             continue
-
-        item_user = str(
-
-            item.get("userUuid") or item.get("clientUniqueUserId") or item.get("entityId") or ""
-
-        ).strip()
-
-        if item_user and item_user != user_id:
-
-            continue
-
-        item_status = str(item.get("status") or "").upper()
-
-        if item_status not in _OK:
-
-            continue
-
-        app = str(item.get("appName") or item.get("appUniqueId") or "").lower()
-
-        if app:
-
-            connected_apps.add(app)
-
-
-
-    import re as _re2
-    def _norm2(s: str) -> str:
-        return _re2.sub(r"[_\-\s]+", "", s.lower())
-
-    connected_norm = {_norm2(a) for a in connected_apps}
+        slug = (item.get("toolkit") or {}).get("slug", "") if isinstance(item.get("toolkit"), dict) else ""
+        if slug:
+            connected_slugs.add(_normalize_app(slug))
 
     results: Dict[str, bool] = {}
-
     for toolkit, app_name in _APP_NAMES.items():
-        an = _norm2(app_name)
-        tk = _norm2(toolkit)
+        an = _normalize_app(app_name)
+        tk = _normalize_app(toolkit)
         results[toolkit] = any(
             an in cn or cn in an or tk in cn
-            for cn in connected_norm
+            for cn in connected_slugs
         )
 
     # Overlay direct Shopify credential status (DB-backed, no Composio account needed)
@@ -1265,29 +1177,17 @@ async def disconnect(user_id: str, toolkit: str) -> Dict[str, Any]:
 
 
     try:
-
         async with httpx.AsyncClient(timeout=10.0) as client:
-
             resp = await client.delete(
-
-                f"{_BASE}/v1/connectedAccounts/{conn_id}",
-
+                f"{_BASE}/v3/connected_accounts/{conn_id}",
                 headers=_headers(),
-
             )
-
             if resp.status_code in (200, 204):
-
                 return {"disconnected": True}
-
             data = resp.json() if resp.content else {}
-
             return {"error": data.get("message") or f"HTTP {resp.status_code}"}
-
     except Exception as e:
-
         logger.error("[composio] disconnect error: %s", e)
-
         return {"error": str(e)}
 
 
