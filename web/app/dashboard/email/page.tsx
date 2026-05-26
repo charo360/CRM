@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Inbox, RefreshCw, Search, Send, Sparkles, X, ChevronLeft,
@@ -799,6 +799,14 @@ function ComposeModal({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function EmailPage() {
+  return (
+    <Suspense fallback={<div className="flex-1 flex items-center justify-center"><span className="text-slate-400 text-sm">Loading…</span></div>}>
+      <EmailPageInner />
+    </Suspense>
+  );
+}
+
+function EmailPageInner() {
   const searchParams = useSearchParams();
   const [threads, setThreads] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import {
@@ -83,6 +83,14 @@ function newField(): FormField {
 }
 
 export default function FormBuilderPage() {
+  return (
+    <Suspense fallback={<div className="flex-1 flex items-center justify-center"><span className="text-slate-400 text-sm">Loading…</span></div>}>
+      <FormBuilderPageInner />
+    </Suspense>
+  );
+}
+
+function FormBuilderPageInner() {
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
   const router = useRouter();
