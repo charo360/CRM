@@ -8657,6 +8657,99 @@ def _email_trunc(text: str, n: int = 3000) -> str:
 
 
 # ── Gmail tools ───────────────────────────────────────────────────────────────
+# All Gmail tools use Composio's dedicated action slugs via execute_action,
+# NOT /api/v2/actions/proxy (which Composio retired in 2026; v3 proxy is gated
+# behind an org-level entitlement we don't currently have).
+
+
+async def _composio_upload_file(
+    toolkit_slug: str, tool_slug: str, filename: str, data: bytes, mimetype: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Upload bytes to Composio's file storage so they can be referenced as
+    an attachment in a tool call. Returns (attachment_dict, error)."""
+    import hashlib
+    key = _os.getenv("COMPOSIO_API_KEY", "").strip()
+    if not key:
+        return None, "COMPOSIO_API_KEY not configured"
+    md5 = hashlib.md5(data).hexdigest()
+    async with _httpx_email.AsyncClient(timeout=60.0) as client:
+        try:
+            presign = await client.post(
+                "https://backend.composio.dev/api/v3/files/upload/request",
+                headers={"X-API-Key": key, "Content-Type": "application/json"},
+                json={
+                    "md5": md5,
+                    "toolkit_slug": toolkit_slug,
+                    "tool_slug": tool_slug,
+                    "filename": filename,
+                    "mimetype": mimetype,
+                },
+            )
+        except Exception as e:
+            return None, f"presign request failed: {e}"
+        if presign.status_code != 200:
+            return None, f"presign failed: HTTP {presign.status_code} {presign.text[:200]}"
+        pdata = presign.json()
+        s3key = pdata.get("key")
+        upload_url = pdata.get("new_presigned_url") or pdata.get("url")
+        if not s3key or not upload_url:
+            return None, f"presign missing fields: {pdata}"
+        # If Composio already has the file (same md5), skip upload
+        if not pdata.get("exists"):
+            try:
+                put = await client.put(
+                    upload_url,
+                    content=data,
+                    headers={"Content-Type": mimetype},
+                )
+            except Exception as e:
+                return None, f"s3 upload failed: {e}"
+            if put.status_code not in (200, 201, 204):
+                return None, f"s3 upload failed: HTTP {put.status_code}"
+    return {"name": filename, "mimetype": mimetype, "s3key": s3key}, None
+
+
+async def _prepare_single_attachment(
+    attachment: Optional[Dict[str, Any]], tool_slug: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Fetch a single {url, filename} attachment from its URL and upload to
+    Composio. Returns (attachment_dict_for_action, error)."""
+    if not attachment:
+        return None, None
+    url = (attachment.get("url") or "").strip()
+    filename = (attachment.get("filename") or "").strip() or "attachment"
+    if not url:
+        return None, "attachment is missing 'url'"
+    async with _httpx_email.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(url)
+        except Exception as e:
+            return None, f"attachment fetch failed: {e}"
+    if resp.status_code != 200:
+        return None, f"attachment fetch failed: HTTP {resp.status_code}"
+    data = resp.content
+    if len(data) > _GMAIL_PER_FILE_BYTES:
+        return None, f"attachment '{filename}' is {len(data)} bytes; per-file limit is {_GMAIL_PER_FILE_BYTES}"
+    ctype = resp.headers.get("content-type", "").split(";")[0].strip()
+    if not ctype or ctype == "application/octet-stream":
+        guessed, _ = mimetypes.guess_type(filename)
+        if guessed:
+            ctype = guessed
+    return await _composio_upload_file(_GMAIL_KEY, tool_slug, filename, data, ctype or "application/octet-stream")
+
+
+def _gmail_response_data(execute_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Composio actions wrap responses inconsistently — some put the payload
+    directly under `data`, others nest it under `data.response_data`. Return
+    the actual payload regardless."""
+    inner = execute_result.get("data") or {}
+    if isinstance(inner, dict):
+        rd = inner.get("response_data")
+        if isinstance(rd, dict):
+            return rd
+        return inner
+    return {}
+
 
 @tool(
     name="gmail_list_threads",
@@ -8675,43 +8768,36 @@ def _email_trunc(text: str, n: int = 3000) -> str:
     },
 )
 async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     q = (args.get("query") or "in:inbox").strip()
     if args.get("unread_only"):
         q = "is:unread " + q
     limit = min(int(args.get("max_results") or 15), 50)
-    try:
-        data = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "GET",
-            "gmail/v1/users/me/threads",
-            params={"q": q, "maxResults": limit},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    threads = []
-    for t in (data.get("threads") or [])[:limit]:
-        try:
-            td = await nango_proxy(
-                ctx.business_id, _GMAIL_KEY, "GET",
-                f"gmail/v1/users/me/threads/{t['id']}",
-                params={"format": "metadata", "metadataHeaders": ["Subject", "From", "Date"]},
-            )
-            msgs = td.get("messages") or []
-            if not msgs:
-                continue
-            first = msgs[0]
-            hdrs = (first.get("payload") or {}).get("headers") or []
-            threads.append({
-                "thread_id":     t["id"],
-                "message_count": len(msgs),
-                "subject":       _gmail_header(hdrs, "Subject") or "(no subject)",
-                "from":          _gmail_header(hdrs, "From"),
-                "date":          _gmail_header(hdrs, "Date"),
-                "snippet":       _email_trunc(td.get("snippet") or "", 200),
-                "unread":        "UNREAD" in (first.get("labelIds") or []),
-            })
-        except Exception:
+    r = await execute_action(ctx.business_id, "GMAIL_LIST_THREADS", {
+        "user_id": "me", "query": q, "max_results": limit, "verbose": True,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    raw_threads = (inner.get("threads") or inner.get("data") or [])
+    threads: list[Dict[str, Any]] = []
+    for t in raw_threads[:limit]:
+        if not isinstance(t, dict):
             continue
+        # Composio's verbose response shape varies — be defensive
+        msgs = t.get("messages") or []
+        first = msgs[0] if msgs else t
+        hdrs = (first.get("payload") or {}).get("headers") or []
+        thread_id = t.get("id") or t.get("threadId") or first.get("threadId") or ""
+        threads.append({
+            "thread_id":     thread_id,
+            "message_count": len(msgs) or 1,
+            "subject":       _gmail_header(hdrs, "Subject") or t.get("subject") or "(no subject)",
+            "from":          _gmail_header(hdrs, "From") or t.get("sender") or "",
+            "date":          _gmail_header(hdrs, "Date") or t.get("date") or "",
+            "snippet":       _email_trunc(first.get("snippet") or t.get("snippet") or "", 200),
+            "unread":        "UNREAD" in ((first.get("labelIds") or t.get("labelIds")) or []),
+        })
     return {"threads": threads, "total": len(threads), "query": q}
 
 
@@ -8730,102 +8816,114 @@ async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     thread_id = (args.get("thread_id") or "").strip()
     if not thread_id:
         return {"error": "thread_id is required"}
-    try:
-        data = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "GET",
-            f"gmail/v1/users/me/threads/{thread_id}",
-            params={"format": "full"},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+    r = await execute_action(ctx.business_id, "GMAIL_FETCH_MESSAGE_BY_THREAD_ID", {
+        "user_id": "me", "thread_id": thread_id,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    raw_msgs = inner.get("messages") or inner.get("data") or []
     messages = []
-    for msg in data.get("messages") or []:
+    for msg in raw_msgs:
+        if not isinstance(msg, dict):
+            continue
         payload = msg.get("payload") or {}
         hdrs = payload.get("headers") or []
         messages.append({
-            "message_id":         msg["id"],
-            "from":               _gmail_header(hdrs, "From"),
+            "message_id":         msg.get("id") or msg.get("messageId"),
+            "from":               _gmail_header(hdrs, "From") or msg.get("sender", ""),
             "to":                 _gmail_header(hdrs, "To"),
-            "subject":            _gmail_header(hdrs, "Subject"),
+            "subject":            _gmail_header(hdrs, "Subject") or msg.get("subject", ""),
             "date":               _gmail_header(hdrs, "Date"),
             "message_id_header":  _gmail_header(hdrs, "Message-ID"),
             "references":         _gmail_header(hdrs, "References"),
-            "body":               _email_trunc(_gmail_decode_part(payload), 4000),
+            "body":               _email_trunc(_gmail_decode_part(payload) or msg.get("messageText", "") or msg.get("snippet", ""), 4000),
             "unread":             "UNREAD" in (msg.get("labelIds") or []),
         })
     return {"thread_id": thread_id, "message_count": len(messages), "messages": messages}
 
 
 _ATTACHMENT_SCHEMA = {
-    "type": "array",
+    "type": "object",
     "description": (
-        "Optional file attachments. Each item must have a public 'url' the server can fetch "
-        "and a 'filename' to display in the email. Up to 20MB per file and 24MB total. "
+        "Optional single file attachment. Provide a public 'url' the server can fetch "
+        "and a 'filename' to display in the email. Up to 20MB. Composio's current API "
+        "supports one attachment per email — to send multiple files, send multiple emails. "
         "Pass URLs returned by other tools (e.g. generate_document's download_url) here."
     ),
-    "items": {
-        "type": "object",
-        "properties": {
-            "url":      {"type": "string", "description": "Direct download URL"},
-            "filename": {"type": "string", "description": "Filename shown in the email, e.g. 'invoice.pdf'"},
-        },
-        "required": ["url", "filename"],
+    "properties": {
+        "url":      {"type": "string", "description": "Direct download URL"},
+        "filename": {"type": "string", "description": "Filename shown in the email, e.g. 'invoice.pdf'"},
     },
+    "required": ["url", "filename"],
 }
+
+
+def _split_csv(s: Any) -> list[str]:
+    if not s:
+        return []
+    if isinstance(s, list):
+        return [str(x).strip() for x in s if str(x).strip()]
+    return [p.strip() for p in str(s).split(",") if p.strip()]
 
 
 @tool(
     name="gmail_send",
     description=(
         "Send a new email via Gmail. Requires to, subject, and body. "
-        "cc and bcc are optional. Pass 'attachments' (array of {url, filename}) to attach files."
+        "cc and bcc are optional. Pass a single 'attachment' ({url, filename}) to attach a file."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "to":          {"type": "string", "description": "Recipient email address"},
-            "subject":     {"type": "string", "description": "Subject line"},
-            "body":        {"type": "string", "description": "Plain text email body"},
-            "cc":          {"type": "string"},
-            "bcc":         {"type": "string"},
-            "attachments": _ATTACHMENT_SCHEMA,
+            "to":         {"type": "string", "description": "Recipient email address"},
+            "subject":    {"type": "string", "description": "Subject line"},
+            "body":       {"type": "string", "description": "Plain text email body"},
+            "cc":         {"type": "string", "description": "Comma-separated CC addresses"},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses"},
+            "attachment": _ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
     destructive=True,
 )
 async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
     if not to or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    parts, err = await _fetch_attachments(args.get("attachments"))
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "GMAIL_SEND_EMAIL")
     if err:
         return {"error": err}
-    raw = _gmail_build_raw(
-        to, subject, body,
-        cc=args.get("cc") or "", bcc=args.get("bcc") or "",
-        attachments=parts,
-    )
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            "gmail/v1/users/me/messages/send",
-            json={"raw": raw},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "recipient_email": to,
+        "subject": subject,
+        "body": body,
+        "is_html": False,
+    }
+    if args.get("cc"):
+        action_args["cc"] = _split_csv(args.get("cc"))
+    if args.get("bcc"):
+        action_args["bcc"] = _split_csv(args.get("bcc"))
+    if att_dict:
+        action_args["attachment"] = att_dict
+    r = await execute_action(ctx.business_id, "GMAIL_SEND_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    msg = inner.get("message") if isinstance(inner.get("message"), dict) else inner
     return {
         "status": "sent",
-        "message_id": result.get("id"),
-        "thread_id": result.get("threadId"),
-        "attachment_count": len(parts),
+        "message_id": msg.get("id") or inner.get("id") or inner.get("messageId"),
+        "thread_id": msg.get("threadId") or inner.get("threadId"),
+        "attached": bool(att_dict),
     }
 
 
@@ -8834,71 +8932,69 @@ async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
     description=(
         "Reply to an existing Gmail thread. Automatically threads correctly. "
         "Set reply_all=true to include all original recipients. "
-        "Pass 'attachments' (array of {url, filename}) to include files."
+        "Pass 'attachment' ({url, filename}) to include a file."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "thread_id":   {"type": "string", "description": "Gmail thread ID to reply to"},
-            "body":        {"type": "string", "description": "Reply body text"},
-            "reply_all":   {"type": "boolean", "description": "Reply all. Default false."},
-            "attachments": _ATTACHMENT_SCHEMA,
+            "thread_id":  {"type": "string", "description": "Gmail thread ID to reply to"},
+            "body":       {"type": "string", "description": "Reply body text"},
+            "reply_all":  {"type": "boolean", "description": "Reply all. Default false."},
+            "attachment": _ATTACHMENT_SCHEMA,
         },
         "required": ["thread_id", "body"],
     },
     destructive=True,
 )
 async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     thread_id = (args.get("thread_id") or "").strip()
     body = (args.get("body") or "").strip()
     if not thread_id or not body:
         return {"error": "thread_id and body are required"}
-    try:
-        td = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "GET",
-            f"gmail/v1/users/me/threads/{thread_id}",
-            params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Message-ID", "References"]},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    msgs = td.get("messages") or []
+
+    # Need recipient email; fetch the thread to extract original 'From'
+    fetch = await execute_action(ctx.business_id, "GMAIL_FETCH_MESSAGE_BY_THREAD_ID", {
+        "user_id": "me", "thread_id": thread_id,
+    })
+    if "error" in fetch and not fetch.get("success"):
+        return {"error": fetch["error"]}
+    msgs = _gmail_response_data(fetch).get("messages") or []
     if not msgs:
         return {"error": "Thread not found or empty"}
     last = msgs[-1]
     hdrs = (last.get("payload") or {}).get("headers") or []
-    orig_from   = _gmail_header(hdrs, "From")
-    orig_to     = _gmail_header(hdrs, "To")
-    subject     = _gmail_header(hdrs, "Subject")
-    msg_id_hdr  = _gmail_header(hdrs, "Message-ID")
-    existing_refs = _gmail_header(hdrs, "References")
-    reply_to = orig_from
-    if args.get("reply_all") and orig_to:
-        reply_to = f"{orig_from}, {orig_to}"
-    if not subject.lower().startswith("re:"):
-        subject = "Re: " + subject
-    refs = (existing_refs + " " + msg_id_hdr).strip() if existing_refs else msg_id_hdr
-    parts, err = await _fetch_attachments(args.get("attachments"))
+    orig_from = _gmail_header(hdrs, "From") or last.get("sender", "")
+    orig_to = _gmail_header(hdrs, "To")
+    if not orig_from:
+        return {"error": "Could not determine recipient from thread"}
+
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "GMAIL_REPLY_TO_THREAD")
     if err:
         return {"error": err}
-    raw = _gmail_build_raw(
-        reply_to, subject, body,
-        in_reply_to=msg_id_hdr, references=refs,
-        attachments=parts,
-    )
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            "gmail/v1/users/me/messages/send",
-            json={"raw": raw, "threadId": thread_id},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "thread_id": thread_id,
+        "recipient_email": orig_from,
+        "message_body": body,
+        "is_html": False,
+    }
+    if args.get("reply_all") and orig_to:
+        action_args["extra_recipients"] = _split_csv(orig_to)
+    if att_dict:
+        action_args["attachment"] = att_dict
+
+    r = await execute_action(ctx.business_id, "GMAIL_REPLY_TO_THREAD", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    msg = inner.get("message") if isinstance(inner.get("message"), dict) else inner
     return {
         "status": "sent",
-        "message_id": result.get("id"),
-        "thread_id": result.get("threadId"),
-        "attachment_count": len(parts),
+        "message_id": msg.get("id") or inner.get("id") or inner.get("messageId"),
+        "thread_id": msg.get("threadId") or inner.get("threadId") or thread_id,
+        "attached": bool(att_dict),
     }
 
 
@@ -8906,45 +9002,53 @@ async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
     name="gmail_draft",
     description=(
         "Save a Gmail draft without sending. Returns the draft ID. "
-        "Pass 'attachments' (array of {url, filename}) to include files."
+        "Pass 'attachment' ({url, filename}) to include a file."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "to":          {"type": "string"},
-            "subject":     {"type": "string"},
-            "body":        {"type": "string"},
-            "cc":          {"type": "string"},
-            "bcc":         {"type": "string"},
-            "attachments": _ATTACHMENT_SCHEMA,
+            "to":         {"type": "string"},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string"},
+            "cc":         {"type": "string", "description": "Comma-separated CC addresses"},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses"},
+            "attachment": _ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
 )
 async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
     if not to or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    parts, err = await _fetch_attachments(args.get("attachments"))
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "GMAIL_CREATE_EMAIL_DRAFT")
     if err:
         return {"error": err}
-    raw = _gmail_build_raw(
-        to, subject, body,
-        cc=args.get("cc") or "", bcc=args.get("bcc") or "",
-        attachments=parts,
-    )
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            "gmail/v1/users/me/drafts",
-            json={"message": {"raw": raw}},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "draft_saved", "draft_id": result.get("id"), "attachment_count": len(parts)}
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "recipient_email": to,
+        "subject": subject,
+        "body": body,
+        "is_html": False,
+    }
+    if args.get("cc"):
+        action_args["cc"] = _split_csv(args.get("cc"))
+    if args.get("bcc"):
+        action_args["bcc"] = _split_csv(args.get("bcc"))
+    if att_dict:
+        action_args["attachment"] = att_dict
+    r = await execute_action(ctx.business_id, "GMAIL_CREATE_EMAIL_DRAFT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    return {
+        "status": "draft_saved",
+        "draft_id": inner.get("id") or inner.get("draftId"),
+        "attached": bool(att_dict),
+    }
 
 
 @tool(
@@ -8963,18 +9067,41 @@ async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     thread_id = (args.get("thread_id") or "").strip()
     if not thread_id:
         return {"error": "thread_id is required"}
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            f"gmail/v1/users/me/threads/{thread_id}/trash",
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "trashed", "thread_id": result.get("id") or thread_id}
+    # Composio's GMAIL_MOVE_TO_TRASH only takes message_id, so we list the
+    # thread's messages and trash each one to mimic a thread-level trash.
+    fetch = await execute_action(ctx.business_id, "GMAIL_FETCH_MESSAGE_BY_THREAD_ID", {
+        "user_id": "me", "thread_id": thread_id,
+    })
+    if "error" in fetch and not fetch.get("success"):
+        return {"error": fetch["error"]}
+    msgs = _gmail_response_data(fetch).get("messages") or []
+    if not msgs:
+        return {"error": "Thread not found or empty"}
+    trashed: list[str] = []
+    failed: list[Dict[str, str]] = []
+    for m in msgs:
+        mid = (m.get("id") or m.get("messageId") or "").strip() if isinstance(m, dict) else ""
+        if not mid:
+            continue
+        r = await execute_action(ctx.business_id, "GMAIL_MOVE_TO_TRASH", {
+            "user_id": "me", "message_id": mid,
+        })
+        if "error" in r and not r.get("success"):
+            failed.append({"message_id": mid, "error": r["error"]})
+        else:
+            trashed.append(mid)
+    if failed and not trashed:
+        return {"error": f"Failed to trash any messages in thread: {failed[0]['error']}"}
+    return {
+        "status": "trashed",
+        "thread_id": thread_id,
+        "trashed_count": len(trashed),
+        "failed": failed or None,
+    }
 
 
 @tool(
@@ -8993,18 +9120,17 @@ async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
     destructive=True,
 )
 async def gmail_trash_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     message_id = (args.get("message_id") or "").strip()
     if not message_id:
         return {"error": "message_id is required"}
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            f"gmail/v1/users/me/messages/{message_id}/trash",
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "trashed", "message_id": result.get("id") or message_id}
+    r = await execute_action(ctx.business_id, "GMAIL_MOVE_TO_TRASH", {
+        "user_id": "me", "message_id": message_id,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    return {"status": "trashed", "message_id": inner.get("id") or message_id}
 
 
 # ── Slack tools (Composio packaged actions, Slack Web API proxy fallback) ────
