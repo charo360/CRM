@@ -48,7 +48,7 @@ from rex.tests.fakes import FakeExecutor, FakeProducer, make_action
 # ===========================================================================
 
 def _standing(rank: Rank, on_probation: bool = False, category: str = "outreach") -> Standing:
-    return Standing(actor_name="Rex", category=category, rank=rank, on_probation=on_probation)
+    return Standing(actor_name="Zilo", category=category, rank=rank, on_probation=on_probation)
 
 
 class TestRouting:
@@ -143,7 +143,7 @@ class TestOvernight:
         orch.engine = RankEngine.from_events(orch.event_store)
 
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.DRAFTER, confidence=0.99)],
         )
@@ -157,7 +157,7 @@ class TestOvernight:
         # Rex is OBSERVER on outreach (default) → action drops.
         orch = Orchestrator()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.OBSERVER, confidence=1.0)],
         )
@@ -169,7 +169,7 @@ class TestOvernight:
     def test_sender_high_conf_sends_via_executor(self):
         orch = self._orch_with_sender_rex()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -184,7 +184,7 @@ class TestOvernight:
     def test_sender_low_conf_stages_instead(self):
         orch = self._orch_with_sender_rex()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.55)],
         )
@@ -212,10 +212,10 @@ class TestOvernight:
             from_rank=Rank.DRAFTER, to_rank=Rank.SENDER,
         ))
         orch.engine = RankEngine.from_events(orch.event_store)
-        assert orch.engine.standing("Rex", "outreach").on_probation
+        assert orch.engine.standing("Zilo", "outreach").on_probation
 
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.99)],
         )
@@ -228,7 +228,7 @@ class TestOvernight:
     def test_auto_dispatch_false_leaves_approved(self):
         orch = self._orch_with_sender_rex()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -254,7 +254,7 @@ class TestUserVerbs:
         ))
         orch.engine = RankEngine.from_events(orch.event_store)
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.DRAFTER, confidence=0.9)],
         )
@@ -271,7 +271,7 @@ class TestUserVerbs:
         assert result.final_state is ActionState.SENT
         # TrustEvent appeared in store AND was applied to engine.
         types = [e.type for e in orch.event_store.all_events()
-                 if e.actor_name == "Rex" and e.category == "outreach"]
+                 if e.actor_name == "Zilo" and e.category == "outreach"]
         assert EventType.ACTION_APPROVED in types
 
     def test_reject_emits_action_rejected(self):
@@ -316,7 +316,7 @@ class TestExecutorFailures:
     def test_executor_clean_failure_marks_failed(self):
         orch = self._orch_with_sender()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -334,7 +334,7 @@ class TestExecutorFailures:
     def test_executor_exception_marks_failed(self):
         orch = self._orch_with_sender()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -351,7 +351,7 @@ class TestExecutorFailures:
     def test_no_executor_leaves_approved(self):
         orch = self._orch_with_sender()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -365,7 +365,7 @@ class TestExecutorFailures:
     def test_no_executor_then_register_then_dispatch(self):
         orch = self._orch_with_sender()
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -391,7 +391,7 @@ class TestSweep:
         ))
         orch.engine = RankEngine.from_events(orch.event_store)
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -413,7 +413,7 @@ class TestSweep:
         ))
         orch.engine = RankEngine.from_events(orch.event_store)
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )
@@ -435,7 +435,7 @@ class TestSweep:
         ))
         orch.engine = RankEngine.from_events(orch.event_store)
         producer = FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[make_action(rank=Rank.SENDER, confidence=0.95)],
         )

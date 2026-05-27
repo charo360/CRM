@@ -222,7 +222,7 @@ class TestBuildSystemPrompt:
         ctx = PromptContext(mode=Mode.BRIEFING, relationship_day=47)
         prompt = build_system_prompt(ctx)
         assert "Three things maximum" in prompt
-        assert "— Rex" in prompt
+        assert "— Zilo" in prompt
 
     def test_journal_prompt_embeds_correct_phase(self):
         ctx = PromptContext(mode=Mode.JOURNAL, relationship_day=47)

@@ -15,7 +15,10 @@ export default function AssistantLauncher() {
 
   useEffect(() => {
     try {
-      setConvId(localStorage.getItem(LS_KEY));
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw && raw !== "null" && raw !== "undefined" && raw.length > 8) {
+        setConvId(raw);
+      }
     } catch {}
   }, []);
 

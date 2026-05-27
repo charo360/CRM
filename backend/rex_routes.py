@@ -1,51 +1,141 @@
 """
-Rex HTTP routes.
+Zilo Chief-of-Staff HTTP routes (API prefix /api/rex/* — rename to /api/zilo later).
 
-Currently exposes Phase 11 Day 0 Onboarding. More Rex surfaces
-(Briefing, Notebook, Journal, Ledger) will mount here as later
-phases get wired up.
-
-Session storage is in-memory keyed by user_id — fine for the
-Improved_AI test branch. Restart-safe persistence is a later concern.
+Persists ledger, trust events, and notebook in Mongo when `db` is provided.
 """
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import os
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from rex.api_serializers import serialize_journal, serialize_ledger, serialize_notebook
+from rex.crm.adapters import make_live_scanner
+from rex.crm.sync import sync_from_crm
+from rex.actions.stub_executor import ensure_stub_executor
+from rex.demo_seed import build_demo_orchestrator, serialize_home
+from rex.integrations.action_mode_bridge import wire_action_mode_executor
+from rex.integrations.briefing_refresh import light_briefing_refresh
+from rex.integrations.platform_sweep import run_platform_sweep
+from rex.team_api import serialize_team
+from rex.loop import Orchestrator
 from rex.onboarding import (
     OnboardingEngine,
     OnboardingState,
     CommunicationChannel,
     DirectnessLevel,
-    MockDataScanner,
+    HonestDemoScanner,
 )
+from rex.persistence.session import ZiloSessionStore
 
 logger = logging.getLogger(__name__)
 
 
-# ── Session store ─────────────────────────────────────────────────────────
+def _uid(user: dict) -> str:
+    return str(user.get("_id") or user.get("id") or "anonymous")
+
+
+def _business_id(user: dict) -> str:
+    return str(user.get("business_id") or user.get("_id") or "anonymous")
+
+
+async def _persist_edited_draft(
+    db: Any,
+    orch: Orchestrator,
+    action_id: str,
+    draft_body: str,
+    uid: str,
+) -> None:
+    """Save user-edited draft on the Action Mode queue item before send."""
+    action = orch.ledger.get(action_id)
+    if not action or not draft_body:
+        return
+    qid = (action.payload or {}).get("queue_id")
+    if not qid:
+        return
+    await db.action_mode_queue.update_one(
+        {"_id": qid, "user_id": uid},
+        {"$set": {"draft_content": draft_body, "user_edited": True}},
+    )
+
+
+# ── In-memory fallback (no db) ────────────────────────────────────────────
 
 _ENGINES: dict[str, OnboardingEngine] = {}
+_ORCHESTRATORS: dict[str, Orchestrator] = {}
+_SESSION: ZiloSessionStore | None = None
 
 
-def _get_engine(user_id: str) -> OnboardingEngine:
+def _use_live_db(db: Any | None) -> bool:
+    if db is None:
+        return False
+    if os.environ.get("ZILO_DEMO_ONLY", "").lower() in ("1", "true", "yes"):
+        return False
+    return True
+
+
+def _get_engine(user: dict, db: Any | None = None) -> OnboardingEngine:
+    user_id = _uid(user)
     engine = _ENGINES.get(user_id)
     if engine is None:
-        # MockDataScanner produces realistic placeholder findings so the
-        # "I see it" moment lands even before real CRM data is wired in.
-        engine = OnboardingEngine(scanner=MockDataScanner())
+        scanner = make_live_scanner(db, user) if _use_live_db(db) else HonestDemoScanner()
+        engine = OnboardingEngine(scanner=scanner)
         _ENGINES[user_id] = engine
     return engine
 
 
-def _reset_engine(user_id: str) -> OnboardingEngine:
-    engine = OnboardingEngine(scanner=MockDataScanner())
+def _reset_engine(user: dict, db: Any | None = None) -> OnboardingEngine:
+    user_id = _uid(user)
+    scanner = make_live_scanner(db, user) if _use_live_db(db) else HonestDemoScanner()
+    engine = OnboardingEngine(scanner=scanner)
     _ENGINES[user_id] = engine
     return engine
+
+
+async def _get_orchestrator(
+    user: dict,
+    db: Any | None,
+    *,
+    light: bool = True,
+) -> Orchestrator:
+    """Load persisted state. Heavy CRM/email/scout work only when light=False."""
+    uid = _uid(user)
+    bid = _business_id(user)
+
+    if not _use_live_db(db):
+        orch = _ORCHESTRATORS.get(uid)
+        if orch is None:
+            orch = build_demo_orchestrator()
+            _ORCHESTRATORS[uid] = orch
+        return orch
+
+    store = ZiloSessionStore(db)
+    global _SESSION
+    _SESSION = store
+    await store.ensure_indexes()
+    orch = await store.load(uid, business_id=bid)
+    wire_action_mode_executor(orch, db, uid)
+
+    if light:
+        if _use_live_db(db):
+            await light_briefing_refresh(db, user, orch)
+            await store.save(uid, business_id=bid, orch=orch)
+        return orch
+
+    await run_platform_sweep(db, user, orch, force=True)
+    await store.save(uid, business_id=bid, orch=orch)
+    return orch
+
+
+async def _persist(user: dict, db: Any | None, orch: Orchestrator) -> None:
+    if not _use_live_db(db):
+        _ORCHESTRATORS[_uid(user)] = orch
+        return
+    if _SESSION:
+        await _SESSION.save(_uid(user), business_id=_business_id(user), orch=orch)
 
 
 # ── Request/response models ───────────────────────────────────────────────
@@ -78,15 +168,166 @@ class PreferencesResponse(BaseModel):
     preferences: dict
 
 
+class ActionVerbRequest(BaseModel):
+    reason: Optional[str] = None
+    draft_body: Optional[str] = None
+
+
+class HomeResetRequest(BaseModel):
+    demo: bool = False
+
+
 # ── Router factory ────────────────────────────────────────────────────────
 
-def init_rex_routes(get_current_user) -> APIRouter:
+def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     """Build the Rex router with the host app's auth dependency."""
     router = APIRouter(prefix="/api/rex", tags=["rex"])
 
+    async def _session_store() -> ZiloSessionStore:
+        global _SESSION
+        if _SESSION is None and _use_live_db(db):
+            _SESSION = ZiloSessionStore(db)
+            await _SESSION.ensure_indexes()
+        if _SESSION is None:
+            raise HTTPException(status_code=501, detail="Database not configured")
+        return _SESSION
+
+    # ── Zilo Briefing (live CRM feed) ────────────────────────────────────
+
+    @router.get("/home")
+    async def rex_home(
+        user=Depends(get_current_user),
+        refresh: bool = Query(False, description="Full platform sweep (slow)"),
+        live: bool = Query(True, description="Pull latest email/messages/queue into briefing"),
+    ):
+        try:
+            if refresh and _use_live_db(db):
+                orch = await _get_orchestrator(user, db, light=False)
+            elif live and _use_live_db(db):
+                orch = await _get_orchestrator(user, db, light=True)
+            else:
+                store = await _session_store() if _use_live_db(db) else None
+                uid = _uid(user)
+                bid = _business_id(user)
+                if store:
+                    orch = await store.load(uid, business_id=bid)
+                    wire_action_mode_executor(orch, db, bid)
+                else:
+                    orch = _ORCHESTRATORS.get(uid) or build_demo_orchestrator()
+                    _ORCHESTRATORS[uid] = orch
+            return serialize_home(orch)
+        except Exception as e:
+            logger.exception("[zilo] /home failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e)[:500])
+
+    @router.post("/home/reset")
+    async def rex_home_reset(body: HomeResetRequest, user=Depends(get_current_user)):
+        uid = _uid(user)
+        bid = _business_id(user)
+        if _use_live_db(db):
+            store = await _session_store()
+            orch = await store.reset(uid, business_id=bid, demo=body.demo)
+            if not body.demo:
+                wire_action_mode_executor(orch, db, uid)
+                await run_platform_sweep(db, user, orch, force=True)
+                await store.save(uid, business_id=bid, orch=orch)
+            return {"ok": True, "demo": body.demo}
+        if body.demo:
+            _ORCHESTRATORS[uid] = build_demo_orchestrator()
+        else:
+            o = Orchestrator()
+            ensure_stub_executor(o)
+            _ORCHESTRATORS[uid] = o
+        return {"ok": True, "demo": body.demo}
+
+    @router.post("/actions/{action_id}/approve")
+    async def rex_approve(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db)
+        if body.draft_body and db is not None:
+            await _persist_edited_draft(db, orch, action_id, body.draft_body.strip(), _uid(user))
+        try:
+            result = orch.approve(action_id, reason=body.reason)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Action not found")
+        except Exception as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        await _persist(user, db, orch)
+        return {
+            "ok": True,
+            "action_id": result.action_id,
+            "final_state": result.final_state.value,
+            "home": serialize_home(orch),
+        }
+
+    @router.post("/actions/{action_id}/dismiss")
+    async def rex_dismiss(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db)
+        try:
+            orch.dismiss(action_id, reason=body.reason)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Action not found")
+        except Exception as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        await _persist(user, db, orch)
+        return {"ok": True, "home": serialize_home(orch)}
+
+    @router.post("/actions/{action_id}/reject")
+    async def rex_reject(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db)
+        try:
+            orch.reject(action_id, reason=body.reason)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Action not found")
+        except Exception as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        await _persist(user, db, orch)
+        return {"ok": True, "home": serialize_home(orch)}
+
+    # ── Memory surfaces (persisted) ─────────────────────────────────────
+
+    @router.get("/notebook")
+    async def rex_notebook(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db)
+        return serialize_notebook(orch)
+
+    @router.get("/ledger")
+    async def rex_ledger(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db)
+        return serialize_ledger(orch)
+
+    @router.get("/journal")
+    async def rex_journal(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db)
+        return serialize_journal(orch)
+
+    @router.get("/team")
+    async def rex_team(user=Depends(get_current_user)):
+        """All AI agents — Zilo Chat specialists, deputies, and Action Mode runners."""
+        try:
+            orch = await _get_orchestrator(user, db, light=True) if _use_live_db(db) else None
+            return serialize_team(orch)
+        except Exception as e:
+            logger.exception("[zilo] /team failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e)[:500])
+
+    @router.post("/sync")
+    async def rex_sync(user=Depends(get_current_user)):
+        """Email pull, scouts, Action Mode agents, queue import, metrics."""
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="CRM sync requires database")
+        uid = _uid(user)
+        store = await _session_store()
+        orch = await store.load(uid, business_id=_business_id(user))
+        wire_action_mode_executor(orch, db, uid)
+        report = await run_platform_sweep(db, user, orch, force=True)
+        await _persist(user, db, orch)
+        return {"ok": True, "report": report, "home": serialize_home(orch)}
+
+    # ── Onboarding ───────────────────────────────────────────────────────
+
     @router.post("/onboarding/start", response_model=StartResponse)
     async def onboarding_start(user=Depends(get_current_user)):
-        engine = _reset_engine(str(user.get("_id") or user.get("id")))
+        engine = _reset_engine(user, db)
         welcome = engine.start()
         return StartResponse(
             welcome=welcome,
@@ -96,7 +337,7 @@ def init_rex_routes(get_current_user) -> APIRouter:
 
     @router.get("/onboarding/state", response_model=StateResponse)
     async def onboarding_state(user=Depends(get_current_user)):
-        engine = _get_engine(str(user.get("_id") or user.get("id")))
+        engine = _get_engine(user, db)
         return StateResponse(
             state=engine.state.value,
             question=engine.get_current_question(),
@@ -105,7 +346,7 @@ def init_rex_routes(get_current_user) -> APIRouter:
 
     @router.post("/onboarding/answer/{question_num}", response_model=AnswerResponse)
     async def onboarding_answer(question_num: int, body: AnswerRequest, user=Depends(get_current_user)):
-        engine = _get_engine(str(user.get("_id") or user.get("id")))
+        engine = _get_engine(user, db)
         value = (body.value or "").strip()
 
         try:
@@ -149,14 +390,14 @@ def init_rex_routes(get_current_user) -> APIRouter:
 
     @router.get("/onboarding/preferences", response_model=PreferencesResponse)
     async def onboarding_preferences(user=Depends(get_current_user)):
-        engine = _get_engine(str(user.get("_id") or user.get("id")))
+        engine = _get_engine(user, db)
         if engine.state not in (OnboardingState.I_SEE_IT, OnboardingState.COMPLETE):
             raise HTTPException(status_code=409, detail="Onboarding not complete yet")
         return PreferencesResponse(preferences=engine.get_preferences())
 
     @router.post("/onboarding/reset")
     async def onboarding_reset(user=Depends(get_current_user)):
-        engine = _reset_engine(str(user.get("_id") or user.get("id")))
+        engine = _reset_engine(user, db)
         return {"ok": True, "state": engine.state.value}
 
     return router

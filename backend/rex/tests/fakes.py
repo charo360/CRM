@@ -111,7 +111,7 @@ class FakeExecutor:
 
 def make_action(
     *,
-    actor: str = "Rex",
+    actor: str = "Zilo",
     rank: Rank = Rank.DRAFTER,
     category: str = "outreach",
     kind: ActionKind = ActionKind.OUTREACH,

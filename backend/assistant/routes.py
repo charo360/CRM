@@ -121,8 +121,12 @@ def _mk_router(db, get_current_user):
     """Factory — binds db + auth dep into the router. Call this from server.py."""
 
     async def _load_accessible_conv(conv_id: str, user) -> Dict[str, Any]:
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        from assistant.conversation_access import tenant_user_ids
+
+        row = await db.assistant_conversations.find_one({
+            "_id": conv_id,
+            "user_id": {"$in": tenant_user_ids(user)},
+        })
         if not row or not can_access_conversation_row(row, user):
             raise HTTPException(404, "Conversation not found")
         return row
@@ -299,11 +303,18 @@ def _mk_router(db, get_current_user):
 
     @router.delete("/conversations/{conv_id}")
     async def delete_conversation(conv_id: str, user=Depends(get_current_user)):
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        from assistant.conversation_access import tenant_user_ids
+
+        row = await db.assistant_conversations.find_one({
+            "_id": conv_id,
+            "user_id": {"$in": tenant_user_ids(user)},
+        })
         if not row or not can_access_conversation_row(row, user):
             raise HTTPException(404, "Conversation not found")
-        await db.assistant_conversations.delete_one({"_id": conv_id, "user_id": bid})
+        await db.assistant_conversations.delete_one({
+            "_id": conv_id,
+            "user_id": row.get("user_id"),
+        })
         return {"status": "deleted"}
 
     @router.post("/chat")
@@ -973,10 +984,7 @@ def _mk_router(db, get_current_user):
             raise HTTPException(400, "visibility must be 'team' or 'private'")
         if title is None and visibility is None:
             raise HTTPException(400, "Provide title and/or visibility")
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
-        if not row or not can_access_conversation_row(row, user):
-            raise HTTPException(404, "Conversation not found")
+        row = await _load_accessible_conv(conv_id, user)
         updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
         if title is not None:
             updates["title"] = title
@@ -985,7 +993,7 @@ def _mk_router(db, get_current_user):
             if visibility == "team":
                 updates["shared_with"] = []
         res = await db.assistant_conversations.update_one(
-            {"_id": conv_id, "user_id": bid},
+            {"_id": conv_id, "user_id": row.get("user_id")},
             {"$set": updates},
         )
         if res.matched_count == 0:
@@ -999,17 +1007,14 @@ def _mk_router(db, get_current_user):
         raw_ids = body.get("user_ids") or []
         if not isinstance(raw_ids, list) or not raw_ids:
             raise HTTPException(400, "user_ids array is required")
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
-        if not row or not can_access_conversation_row(row, user):
-            raise HTTPException(404, "Conversation not found")
+        row = await _load_accessible_conv(conv_id, user)
         creator = str(row.get("created_by") or user["_id"])
         shared = {creator, str(user["_id"])}
         for x in raw_ids:
             if x:
                 shared.add(str(x))
         await db.assistant_conversations.update_one(
-            {"_id": conv_id, "user_id": bid},
+            {"_id": conv_id, "user_id": row.get("user_id")},
             {
                 "$set": {
                     "visibility": "private",

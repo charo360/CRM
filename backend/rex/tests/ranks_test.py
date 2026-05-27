@@ -68,8 +68,8 @@ class TestCategoryCatalog:
 class TestActorRegistry:
     def test_rex_is_singleton(self):
         assert REX.kind is ActorKind.REX
-        assert REX.name == "Rex"
-        assert actor_by_name("Rex") is REX
+        assert REX.name == "Zilo"
+        assert actor_by_name("Zilo") is REX
 
     def test_subagent_names_unique(self):
         names = [s.name for s in SUB_AGENTS]
@@ -162,7 +162,7 @@ class TestInMemoryEventStore:
 class TestEngineRexAxis:
     def test_default_standing_is_observer(self):
         engine = RankEngine.empty()
-        s = engine.standing("Rex", "outreach")
+        s = engine.standing("Zilo", "outreach")
         assert s.rank is Rank.OBSERVER
         assert not s.on_probation
 
@@ -171,7 +171,7 @@ class TestEngineRexAxis:
         engine.apply(TrustEvent.user_promoted_rex(
             category="outreach", from_rank=Rank.OBSERVER, to_rank=Rank.DRAFTER,
         ))
-        assert engine.standing("Rex", "outreach").rank is Rank.DRAFTER
+        assert engine.standing("Zilo", "outreach").rank is Rank.DRAFTER
 
     def test_user_demotes_rex_sets_probation(self):
         engine = RankEngine.empty()
@@ -184,7 +184,7 @@ class TestEngineRexAxis:
             category="outreach", from_rank=Rank.SENDER, to_rank=Rank.DRAFTER,
             reason="too aggressive on cold outreach",
         ))
-        s = engine.standing("Rex", "outreach")
+        s = engine.standing("Zilo", "outreach")
         assert s.rank is Rank.DRAFTER
         assert s.on_probation
 
@@ -294,9 +294,9 @@ class TestEngineSubAgentAxis:
         engine.apply(TrustEvent.user_promoted_rex(
             category="outreach", from_rank=Rank.OBSERVER, to_rank=Rank.SENDER,
         ))
-        with pytest.raises(ProbationViolation, match="cannot target Rex"):
+        with pytest.raises(ProbationViolation, match="cannot target Zilo"):
             engine.apply(TrustEvent.rex_demoted_subagent(
-                subagent="Rex", category="outreach",
+                subagent="Zilo", category="outreach",
                 from_rank=Rank.SENDER, to_rank=Rank.DRAFTER,
                 reason="self-doubt",
             ))

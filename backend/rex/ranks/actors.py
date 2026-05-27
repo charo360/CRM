@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from rex.identity import CHIEF_OF_STAFF_DISPLAY, CHIEF_OF_STAFF_NAME
+
 
 class ActorKind(str, Enum):
     REX = "rex"
@@ -30,7 +32,7 @@ class Actor:
     Equality is by (kind, name) — `display` is presentation only.
     """
     kind: ActorKind
-    name: str               # canonical name; "Rex" for the singleton
+    name: str               # canonical name; Zilo for the Chief of Staff singleton
     display: str            # user-facing label
     backend_module: str | None = None  # Phase 4 hint, never imported here
 
@@ -39,13 +41,13 @@ class Actor:
 
 
 # ---------------------------------------------------------------------------
-# Rex — the singleton
+# Zilo — Chief of Staff singleton (REX actor kind in code)
 # ---------------------------------------------------------------------------
 
 REX: Actor = Actor(
     kind=ActorKind.REX,
-    name="Rex",
-    display="Rex",
+    name=CHIEF_OF_STAFF_NAME,
+    display=CHIEF_OF_STAFF_DISPLAY,
     backend_module=None,
 )
 

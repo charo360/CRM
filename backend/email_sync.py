@@ -261,6 +261,14 @@ async def sync_emails_for_user(
     result = {"synced_threads": total_threads, "synced_messages": total_messages}
     logger.info("[email_sync] quick sync user=%s → %s", user_id, result)
 
+    if total_messages > 0:
+        try:
+            import asyncio as _asyncio
+            from rex.integrations.briefing_refresh import ingest_crm_signals_for_user_id
+            _asyncio.create_task(ingest_crm_signals_for_user_id(db, user_id))
+        except Exception as e:
+            logger.warning("[zilo] schedule briefing ingest after sync: %s", e)
+
     # Auto-classify new email contacts after sync
     if total_messages > 0:
         try:

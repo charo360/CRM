@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Iterable
 
+from rex.identity import CHIEF_OF_STAFF_NAME
 from rex.ranks.events import (
     EventType,
     OPERATIONAL_EVENTS,
@@ -160,14 +161,14 @@ class RankEngine:
     # ------------------------------------------------------------------
 
     def _apply_rex_rank_change(self, e: TrustEvent, *, direction: str) -> None:
-        if e.actor_name != "Rex":
+        if e.actor_name != CHIEF_OF_STAFF_NAME:
             raise ProbationViolation(
-                f"{e.type} must target Rex, got actor={e.actor_name!r}"
+                f"{e.type} must target {CHIEF_OF_STAFF_NAME}, got actor={e.actor_name!r}"
             )
         if e.to_rank is None or e.from_rank is None:
             raise ProbationViolation(f"{e.type} requires to_rank and from_rank")
 
-        current = self.standing("Rex", e.category)
+        current = self.standing(CHIEF_OF_STAFF_NAME, e.category)
         if current.rank != e.from_rank:
             raise ProbationViolation(
                 f"{e.type}: declared from_rank={e.from_rank} does not match "
@@ -186,17 +187,17 @@ class RankEngine:
         on_probation = (direction == "down") or current.on_probation
         # Promotion does NOT auto-lift probation — Rex has to do that explicitly.
 
-        self.state[("Rex", e.category)] = Standing(
-            actor_name="Rex",
+        self.state[(CHIEF_OF_STAFF_NAME, e.category)] = Standing(
+            actor_name=CHIEF_OF_STAFF_NAME,
             category=e.category,
             rank=e.to_rank,
             on_probation=on_probation,
         )
 
     def _apply_recommend(self, e: TrustEvent) -> None:
-        if e.actor_name == "Rex":
+        if e.actor_name == CHIEF_OF_STAFF_NAME:
             raise ProbationViolation(
-                "Recommendation must target a Sub-Agent, not Rex"
+                f"Recommendation must target a Sub-Agent, not {CHIEF_OF_STAFF_NAME}"
             )
         if e.to_rank is None or e.from_rank is None:
             raise ProbationViolation("Recommendation requires to_rank and from_rank")
@@ -248,9 +249,9 @@ class RankEngine:
         self.pending_recommendations.pop(e.recommendation_id, None)
 
     def _apply_rex_demotes_subagent(self, e: TrustEvent) -> None:
-        if e.actor_name == "Rex":
+        if e.actor_name == CHIEF_OF_STAFF_NAME:
             raise ProbationViolation(
-                "REX_DEMOTED_SUBAGENT cannot target Rex"
+                f"REX_DEMOTED_SUBAGENT cannot target {CHIEF_OF_STAFF_NAME}"
             )
         if e.to_rank is None or e.from_rank is None:
             raise ProbationViolation("Demotion requires to_rank and from_rank")

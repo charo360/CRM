@@ -22,6 +22,7 @@ from rex.actions.primitives import ActionState
 from rex.briefing.letter import Letter, compose_letter
 from rex.briefing.opener import opener_for
 from rex.briefing.selector import pick_top_actions
+from rex.identity import CHIEF_OF_STAFF_NAME
 from rex.loop.orchestrator import Orchestrator
 from rex.ranks.categories import Tier, all_categories
 from rex.ranks.engine import Standing
@@ -117,9 +118,9 @@ def _rex_tier1_standings(orch: Orchestrator, principal: Principal) -> tuple[Stan
             continue
         if not principal.can_access_category(cat.name):
             continue
-        s: Standing = orch.engine.standing("Rex", cat.name)
+        s: Standing = orch.engine.standing(CHIEF_OF_STAFF_NAME, cat.name)
         out.append(StandingSummary(
-            actor_name="Rex",
+            actor_name=CHIEF_OF_STAFF_NAME,
             category=cat.name,
             rank=s.rank.display,
             on_probation=s.on_probation,

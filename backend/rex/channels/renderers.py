@@ -43,7 +43,7 @@ def _render_whatsapp_or_telegram(letter: Letter, *, is_telegram: bool) -> str:
     divider = "─────────────────────────────"
 
     if letter.quiet_night:
-        return f"{header}\n{divider}\n{letter.opener}\n\nQuiet night. Nothing needs you. — Rex\n{divider}"
+        return f"{header}\n{divider}\n{letter.opener}\n\nQuiet night. Nothing needs you. — Zilo\n{divider}"
 
     lines = [
         f"{header}",

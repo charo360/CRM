@@ -68,8 +68,9 @@ class OnboardingEngine:
         """
         self.state = OnboardingState.QUESTION_1
         return (
-            "Before I start, I need to understand how you work.\n\n"
-            "Five quick questions. Shouldn't take long."
+            "Before I start — give me a minute.\n\n"
+            "Six quick questions. I'm not building a profile. "
+            "I'm trying to figure out what you actually need from me."
         )
     
     def get_current_question(self) -> Optional[str]:
@@ -191,25 +192,28 @@ class OnboardingEngine:
     def _generate_i_see_it_moment(self) -> str:
         """
         Generate the "I see it" moment by connecting
-        what they said in Q2 to what Rex found in their data.
+        what they said in Q3 to what Rex found in their data.
         """
         if not self.scan:
-            # No scan data — just complete onboarding
+            # No scan at all — shouldn't happen in practice, but handle it.
             self.state = OnboardingState.COMPLETE
-            return "Got it.\n\nI'm in. We begin."
-        
+            return f"You said {self.answers.pain_point}. That's enough to start. Briefing at 7."
+
         self.i_see_it = ISeeItMoment.generate(
             pain_point=self.answers.pain_point,
-            scan=self.scan
+            scan=self.scan,
         )
-        
+
         self.state = OnboardingState.I_SEE_IT
-        
+
         if self.i_see_it:
             return self.i_see_it.rex_response
-        else:
-            # No connection found — generic completion
-            return "Got it.\n\nI'm in. We begin."
+
+        # Scan ran but found nothing. Don't fake it — be honest.
+        return (
+            f"Haven't been let into your data yet. So no magic trick today.\n\n"
+            f"You said {self.answers.pain_point}. That's enough to start. Briefing at 7."
+        )
     
     def complete(self) -> None:
         """Mark onboarding as complete."""

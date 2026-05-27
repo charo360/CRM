@@ -113,6 +113,13 @@ async def process_gmail_trigger(event: Dict[str, Any], db: Any) -> Dict[str, Any
                 # Trigger email classification
                 from email_classifier import get_email_classifier
                 await get_email_classifier(db).classify_new_emails(user_id)
+
+                # Draft reply + push to Zilo Briefing immediately
+                try:
+                    from rex.integrations.briefing_refresh import ingest_crm_signals_into_briefing
+                    await ingest_crm_signals_into_briefing(db, user)
+                except Exception as zilo_err:
+                    logger.warning("[zilo] post-email briefing ingest: %s", zilo_err)
                 
                 return {
                     "success": True,

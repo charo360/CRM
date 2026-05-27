@@ -114,55 +114,85 @@ class ISeeItMoment:
     @staticmethod
     def generate(pain_point: str, scan: BackgroundScan) -> Optional["ISeeItMoment"]:
         """
-        Generate the "I see it" moment by connecting the founder's
-        pain point to what Rex found in their data.
+        Generate the "I see it" moment.
+
+        Voice rules:
+        - Lead with what's REAL (website scrape, the pain they named).
+        - Never invent numbers. If a count is zero, don't mention it.
+        - End with a single line of commitment, not a settings dump.
         """
-        if not scan.has_findings():
-            return None
-        
-        # Match pain point keywords to scan findings
         pain_lower = pain_point.lower()
-        
+        site = scan.website_insights
+
+        # ─ CRM signal matched the pain point ──────────────────────────────
         if scan.overdue_invoices > 0 and any(kw in pain_lower for kw in ["payment", "invoice", "money", "cash", "paid"]):
+            n = scan.overdue_invoices
             return ISeeItMoment(
                 pain_point_mentioned=pain_point,
-                data_found=f"{scan.overdue_invoices} overdue invoice{'s' if scan.overdue_invoices > 1 else ''}",
-                rex_response=f"You mentioned {pain_point}. I see it.\n\n"
-                            f"You've got {scan.overdue_invoices} overdue invoice{'s' if scan.overdue_invoices > 1 else ''}. "
-                            f"I'll handle it tonight. You'll see it in tomorrow's briefing."
+                data_found=f"{n} overdue invoice{'s' if n > 1 else ''}",
+                rex_response=(
+                    f"You said {pain_point}. I see it.\n\n"
+                    f"{n} overdue invoice{'s' if n > 1 else ''} sitting there. "
+                    f"I'll draft the chase tonight. Briefing at 7."
+                ),
             )
-        
+
         if scan.cold_conversations > 0 and any(kw in pain_lower for kw in ["follow", "reply", "respond", "conversation", "client", "customer"]):
-            base_response = (
-                f"You mentioned {pain_point}. I see it.\n\n"
-                f"{scan.cold_conversations} conversation{'s' if scan.cold_conversations > 1 else ''} "
-                f"{'have' if scan.cold_conversations > 1 else 'has'} gone quiet in the last 14 days."
+            n = scan.cold_conversations
+            body = (
+                f"You said {pain_point}. I see it.\n\n"
+                f"{n} conversation{'s' if n > 1 else ''} gone quiet."
             )
-            
-            # Add website insight if available
-            if scan.website_insights and scan.website_insights.business_model:
-                if "B2B" in scan.website_insights.business_model or "enterprise" in scan.website_insights.target_market.lower():
-                    base_response += f" I checked your site — you're targeting {scan.website_insights.target_market or 'enterprise clients'}. Those deals need 3-5 touchpoints."
-            
-            base_response += " I'll draft follow-ups tonight."
-            
+            if site and site.target_market and ("B2B" in (site.business_model or "") or "enterprise" in site.target_market.lower()):
+                body += f" Your site says {site.target_market} — that's 3–5 touchpoints, minimum."
+            body += " I'll draft tonight. Briefing at 7."
             return ISeeItMoment(
                 pain_point_mentioned=pain_point,
-                data_found=f"{scan.cold_conversations} conversation{'s' if scan.cold_conversations > 1 else ''} gone cold",
-                rex_response=base_response
+                data_found=f"{n} conversation{'s' if n > 1 else ''} gone cold",
+                rex_response=body,
             )
-        
+
         if scan.stalled_deals > 0 and any(kw in pain_lower for kw in ["deal", "sale", "pipeline", "closing", "revenue"]):
+            n = scan.stalled_deals
             return ISeeItMoment(
                 pain_point_mentioned=pain_point,
-                data_found=f"{scan.stalled_deals} stalled deal{'s' if scan.stalled_deals > 1 else ''}",
-                rex_response=f"You mentioned {pain_point}. I see it.\n\n"
-                            f"{scan.stalled_deals} deal{'s' if scan.stalled_deals > 1 else ''} "
-                            f"{'have' if scan.stalled_deals > 1 else 'has'} been sitting for over a week. "
-                            f"I'll flag them in your first briefing."
+                data_found=f"{n} stalled deal{'s' if n > 1 else ''}",
+                rex_response=(
+                    f"You said {pain_point}. I see it.\n\n"
+                    f"{n} deal{'s' if n > 1 else ''} sitting over a week. "
+                    f"I'll flag them in tomorrow's briefing."
+                ),
             )
-        
-        # Fallback: just show what Rex found
+
+        # ─ Website-only path (no CRM signal, or it didn't match the pain) ─
+        if site and site.has_insights():
+            bits = []
+            if site.tech_stack:
+                bits.append(site.tech_stack)
+            if site.has_blog is False:
+                bits.append("no blog yet")
+            if site.social_links:
+                domains = []
+                for url in site.social_links[:2]:
+                    for d in ("instagram", "facebook", "linkedin", "twitter", "x.com", "tiktok", "youtube"):
+                        if d in url.lower():
+                            domains.append(d.split(".")[0].capitalize())
+                            break
+                if domains:
+                    bits.append("on " + " and ".join(domains))
+            site_line = ". ".join(b.capitalize() if i == 0 else b for i, b in enumerate(bits)) if bits else "got the gist."
+
+            return ISeeItMoment(
+                pain_point_mentioned=pain_point,
+                data_found=f"website: {site.company_name or site.tech_stack or 'scanned'}",
+                rex_response=(
+                    f"Looked at your site. {site_line}.\n\n"
+                    f"You said {pain_point}. That's where we start. "
+                    f"Briefing at 7 — I'll have a first move ready."
+                ),
+            )
+
+        # ─ Fallback: nothing connected yet. Be honest. ────────────────────
         findings = []
         if scan.overdue_invoices > 0:
             findings.append(f"{scan.overdue_invoices} overdue invoice{'s' if scan.overdue_invoices > 1 else ''}")
@@ -170,50 +200,53 @@ class ISeeItMoment:
             findings.append(f"{scan.cold_conversations} cold conversation{'s' if scan.cold_conversations > 1 else ''}")
         if scan.stalled_deals > 0:
             findings.append(f"{scan.stalled_deals} stalled deal{'s' if scan.stalled_deals > 1 else ''}")
-        
+
         if findings:
             return ISeeItMoment(
                 pain_point_mentioned=pain_point,
                 data_found=", ".join(findings),
-                rex_response=f"Got it.\n\nOne more thing —\n\n"
-                            f"I see {findings[0]}. "
-                            f"I'll handle it tonight. You'll see it in tomorrow's briefing.\n\n"
-                            f"I'm in. We begin."
+                rex_response=(
+                    f"While we talked I found {findings[0]}.\n\n"
+                    f"I'll handle it tonight. Briefing at 7."
+                ),
             )
-        
+
+        # Truly nothing — no fake numbers, no fake authority.
+        # Engine handles the closing line in this case.
         return None
 
 
-# The 6 questions Rex asks
+# The 6 questions Rex asks. Voice rule: terse, direct, like a person — never a wizard.
+# See REX.md §3.12 and the soul sentence.
 ONBOARDING_QUESTIONS = [
     OnboardingQuestion(
         state=OnboardingState.QUESTION_1,
-        text="What kind of business are you running?",
-        placeholder="e.g., Marketing agency, e-commerce store, consulting..."
+        text="Tell me about the operation.",
+        placeholder="What you build, who you sell to. Keep it short."
     ),
     OnboardingQuestion(
         state=OnboardingState.QUESTION_2,
-        text="Do you have a website or online presence I should check?",
-        placeholder="e.g., mycompany.com or leave blank if none"
+        text="Got a website I should look at?",
+        placeholder="URL — or skip"
     ),
     OnboardingQuestion(
         state=OnboardingState.QUESTION_3,
-        text="What's the one thing falling through the cracks right now? The thing that keeps you up?",
-        placeholder="Be specific — this is where Rex learns what matters most"
+        text="What's the one thing falling through right now? The thing keeping you up.",
+        placeholder="Be specific. Don't generalize."
     ),
     OnboardingQuestion(
         state=OnboardingState.QUESTION_4,
-        text="How do you prefer I communicate with you — WhatsApp, email, or inside the app?",
-        placeholder=None  # This will be buttons, not text input
+        text="Where should I reach you when it matters? Pick a channel I can use to communicate.",
+        placeholder=None
     ),
     OnboardingQuestion(
         state=OnboardingState.QUESTION_5,
-        text="How direct do you want me to be when something's at risk?",
-        placeholder=None  # This will be buttons, not text input
+        text="When something's at risk — how direct do you want me?",
+        placeholder=None
     ),
     OnboardingQuestion(
         state=OnboardingState.QUESTION_6,
-        text="What does a good week look like for you?",
-        placeholder="e.g., 3 new deals closed, inbox at zero, no fires..."
+        text="Paint me a good week.",
+        placeholder="The week where you sleep well."
     ),
 ]

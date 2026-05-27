@@ -53,6 +53,7 @@ from rex.ranks.engine import RankEngine
 from rex.ranks.events import EventType, Rank, TrustEvent
 from rex.ranks.store import EventStore, InMemoryEventStore
 from rex.principals import Principal, PrincipalRegistry, Role
+from rex.onboarding import OnboardingEngine, DataScanner
 
 
 # ---------------------------------------------------------------------------
@@ -105,12 +106,16 @@ class Orchestrator:
         event_store: EventStore | None = None,
         notebook: Notebook | None = None,
         policy: RoutingPolicy = DEFAULT_ROUTING_POLICY,
+        onboarding_scanner: DataScanner | None = None,
     ) -> None:
         self.ledger: Ledger = ledger if ledger is not None else Ledger()
         self.event_store: EventStore = event_store if event_store is not None else InMemoryEventStore()
         self.notebook: Notebook = notebook if notebook is not None else Notebook()
         self.engine: RankEngine = RankEngine.from_events(self.event_store)
         self.policy: RoutingPolicy = policy
+
+        # Phase 11: Onboarding engine
+        self.onboarding: OnboardingEngine = OnboardingEngine(scanner=onboarding_scanner)
 
         # Rebuild principal registry from EventStore replay (event-sourced truth)
         self.registry = PrincipalRegistry()
@@ -225,7 +230,7 @@ class Orchestrator:
                     self.ledger.transition(
                         action_id=action.id,
                         to_state=ActionState.STAGED,
-                        actor_name="Rex",
+                        actor_name="Zilo",
                         reason=decision.reason,
                     )
                     staged += 1

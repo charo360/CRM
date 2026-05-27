@@ -66,8 +66,31 @@ class Letter:
 # Composition helpers
 # ---------------------------------------------------------------------------
 
+# Stay under voice_rules sentence_length hard cap (40 words).
+_LETTER_SENTENCE_WORDS = 36
+
+
 def _format_hhmm(dt: datetime) -> str:
     return f"{dt.hour:02d}:{dt.minute:02d}"
+
+
+def _letter_safe_prose(text: str) -> str:
+    """
+    CRM / Action Mode reasoning can be long snippets. The Letter must pass
+    Rex voice validation — split into short sentences for the raw letter body.
+    Full reasoning stays on the Action for the structured UI.
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    words = text.split()
+    if len(words) <= _LETTER_SENTENCE_WORDS:
+        return text
+    parts: list[str] = []
+    for i in range(0, len(words), _LETTER_SENTENCE_WORDS):
+        parts.append(" ".join(words[i : i + _LETTER_SENTENCE_WORDS]))
+    joined = ". ".join(parts)
+    return joined if joined.endswith((".", "!", "?")) else joined + "."
 
 
 def _summary_line(action: Action) -> str:
@@ -106,7 +129,7 @@ def _render_action_block(
     lines = [_summary_line(action)]
 
     if action.reasoning:
-        lines.append(f"      {action.reasoning}")
+        lines.append(f"      {_letter_safe_prose(action.reasoning)}")
 
     citation = _resolve_citation(action, notebook)
     if citation is not None:

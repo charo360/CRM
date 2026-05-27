@@ -95,6 +95,15 @@ class InMemoryLedgerStore:
     def __len__(self) -> int:
         return len(self._actions)
 
+    def load_snapshot(
+        self,
+        actions: Iterable[Action],
+        changes: Iterable[ActionStateChange],
+    ) -> None:
+        """Replace store contents (used when restoring from persistence)."""
+        self._actions = {a.id: a for a in actions}
+        self._changes = list(changes)
+
 
 # ---------------------------------------------------------------------------
 # The Ledger — orchestrates Action storage + state-change append

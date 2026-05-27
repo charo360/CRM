@@ -387,6 +387,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
 
   const loadConversation = useCallback(async (id: string) => {
     setLoadingConv(true);
+    setError(null);
     try {
       const conv: AssistantConversation = await assistantApi.getConversation(id);
       const msgs = conv.messages || [];
@@ -398,12 +399,21 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       else setActiveAgent("general");
       const docs = await assistantApi.listDocuments(id).catch(() => ({ documents: [] }));
       setDocuments(docs.documents || []);
-    } catch {
-      setError("Could not load that conversation");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      const gone = /404|not found/i.test(msg);
+      if (gone) {
+        setConvId(null);
+        setMessages([]);
+        setDocuments([]);
+        onConversationChange?.(null);
+      } else {
+        setError(msg || "Could not load that conversation");
+      }
     } finally {
       setLoadingConv(false);
     }
-  }, []);
+  }, [onConversationChange]);
 
   useEffect(() => {
     if (!shareOpen) return;

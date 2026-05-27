@@ -68,7 +68,7 @@ ACTION_TOKEN_HANDLE_MANUALLY = "[Handle manually]"
 ACTION_TOKEN_APPROVE = "[Approve]"
 ACTION_TOKEN_UNDO = "[Undo]"
 
-BRIEFING_SIGN_OFF = "— Rex"
+BRIEFING_SIGN_OFF = "— Zilo"
 
 # Canonical "nothing happened" letter (used when overnight produced no items).
 QUIET_NIGHT_LETTER_TEMPLATE = (

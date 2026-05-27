@@ -26,10 +26,10 @@ class TestOnboardingFlow:
         """Test starting the onboarding interview."""
         engine = OnboardingEngine()
         welcome = engine.start()
-        
+
         assert engine.state == OnboardingState.QUESTION_1
         assert "Before I start" in welcome
-        assert "Five quick questions" in welcome
+        assert "Six quick questions" in welcome
     
     def test_question_1_business_type(self):
         """Test answering Q1: What kind of business?"""
@@ -52,7 +52,7 @@ class TestOnboardingFlow:
         
         assert engine.state == OnboardingState.QUESTION_3
         assert engine.answers.website_url == "mystore.com"
-        assert "falling through" in q3.lower()
+        assert "falling through" in q3.lower() or "keeping you up" in q3.lower()
     
     def test_question_3_pain_point(self):
         """Test answering Q3: What's falling through?"""
@@ -107,10 +107,16 @@ class TestOnboardingFlow:
         engine.answer_question_5(DirectnessLevel.CONTEXT_FIRST)
         
         response = engine.answer_question_6("3 deals closed, inbox clear")
-        
+
         assert engine.state in [OnboardingState.I_SEE_IT, OnboardingState.COMPLETE]
         assert engine.answers.good_week == "3 deals closed, inbox clear"
-        assert "I'm in" in response or "Got it" in response
+        # New voice: Rex either lands the "I see it" moment, or — when no data is
+        # connected yet — is honest about it ("Haven't been let into your data").
+        assert (
+            "I see it" in response
+            or "Briefing at 7" in response
+            or "Haven't been let into" in response
+        )
 
 
 class TestBackgroundScanning:
@@ -274,7 +280,7 @@ class TestFullOnboardingFlow:
         
         # Start
         welcome = engine.start()
-        assert "Five quick questions" in welcome
+        assert "Six quick questions" in welcome
         
         # Q1
         q2 = engine.answer_question_1("Marketing agency")
@@ -323,8 +329,9 @@ class TestFullOnboardingFlow:
         engine.answer_question_4(CommunicationChannel.EMAIL)
         engine.answer_question_5(DirectnessLevel.CONTEXT_FIRST)
         final = engine.answer_question_6("10 orders shipped")
-        
-        assert "I'm in" in final or "Got it" in final
+
+        # No scanner + empty scan = honest closing, no fabricated "I see it"
+        assert "Haven't been let into" in final or "Briefing at 7" in final
         assert engine.scan is not None  # Empty scan created
         assert engine.i_see_it is None  # No moment without findings
     
@@ -393,12 +400,12 @@ class TestOnboardingStateValidation:
         
         engine.start()
         q1 = engine.get_current_question()
-        assert "kind of business" in q1.lower()
-        
+        assert "operation" in q1.lower() or "business" in q1.lower()
+
         engine.answer_question_1("Agency")
         q2 = engine.get_current_question()
         assert "website" in q2.lower()
-        
+
         engine.answer_question_2("agency.com")
         q3 = engine.get_current_question()
-        assert "falling through" in q3.lower()
+        assert "falling through" in q3.lower() or "keeping you up" in q3.lower()

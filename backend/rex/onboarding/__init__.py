@@ -47,6 +47,7 @@ from .engine import OnboardingEngine, DataScanner
 from .scanner import (
     LiveDataScanner,
     MockDataScanner,
+    HonestDemoScanner,
     InvoiceStore,
     ConversationStore,
     DealStore,
@@ -73,6 +74,7 @@ __all__ = [
     # Scanner
     "LiveDataScanner",
     "MockDataScanner",
+    "HonestDemoScanner",
     "InvoiceStore",
     "ConversationStore",
     "DealStore",

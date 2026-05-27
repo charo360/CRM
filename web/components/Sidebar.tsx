@@ -1,12 +1,15 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import {
-  LayoutDashboard,
+  Sun,
+  BookOpen,
+  ListChecks,
   ShoppingCart,
   Users,
   CreditCard,
@@ -63,11 +66,18 @@ import { useRouter } from "next/navigation";
 import { useBusiness } from "@/contexts/BusinessContext";
 import { isSidebarHrefEnabled } from "@/lib/sidebarFeatures";
 
-/** Always visible for every account — channels & connections included for everyone. */
-function coreNavItems(overviewLabel: string) {
+const ZILO_NAV = [
+  { href: "/dashboard", label: "Zilo Briefing", icon: Sun, exact: true as const },
+  { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
+  { href: "/dashboard/rex/journal", label: "Journal", icon: BookOpen },
+  { href: "/dashboard/rex/notebook", label: "Notebook", icon: NotebookPen },
+  { href: "/dashboard/rex/ledger", label: "Action Log", icon: ListChecks },
+  { href: "/dashboard/rex/team", label: "Zilo's team", icon: Users },
+] as const;
+
+/** Workspace links (Overview replaced by Zilo Briefing above). */
+function coreNavItems() {
   return [
-    { href: "/dashboard", label: overviewLabel, icon: LayoutDashboard, exact: true as const },
-    { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
     { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
@@ -100,8 +110,15 @@ const DISPLAY_NAV = [{ href: "/dashboard/kds", label: "KDS Display", icon: Monit
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const [ziloStagedCount, setZiloStagedCount] = useState(0);
   const { showBookingsNav, bookingsNavLabel, bookingsNavHref, ui, sidebarFeatures } = useBusiness();
-  const workspaceNav = coreNavItems(ui.overviewTitle);
+  const workspaceNav = coreNavItems();
+
+  useEffect(() => {
+    api.get<{ counts?: { staged?: number } }>("/rex/home?live=0")
+      .then((d) => setZiloStagedCount(d.counts?.staged ?? 0))
+      .catch(() => setZiloStagedCount(0));
+  }, [pathname]);
 
   const mainNav = MAIN_NAV.map((item) =>
     item.href === "/dashboard/customers" ? { ...item, label: ui.customersNavLabel } : item
@@ -166,6 +183,7 @@ export default function Sidebar() {
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const NAV_GROUPS = [
+    { label: "Zilo", items: [...ZILO_NAV] },
     { label: "Workspace", items: [...workspaceNav] },
     ...(mainNavFiltered.length
       ? [{ label: "Main", items: mainNavFiltered }]
@@ -203,6 +221,16 @@ export default function Sidebar() {
         <span className="font-semibold text-sm tracking-tight">Zilo</span>
       </div>
 
+      {ziloStagedCount > 0 && (
+        <div className="mx-3 mt-3 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2.5">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">Zilo</p>
+          <p className="mt-1 text-xs leading-snug text-slate-200">
+            <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-400 align-middle" />
+            {ziloStagedCount} item{ziloStagedCount === 1 ? "" : "s"} in briefing
+          </p>
+        </div>
+      )}
+
       {/* Nav groups - Scrollable */}
       <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
         {NAV_GROUPS.map((group) => (
@@ -214,6 +242,7 @@ export default function Sidebar() {
               {group.items.map((item: { href: string; label: string; icon: React.ElementType; exact?: boolean }) => {
                 const { href, label, icon: Icon } = item;
                 const exact = "exact" in item ? item.exact : undefined;
+                const badge = group.label === "Zilo" && href === "/dashboard" ? ziloStagedCount : 0;
                 return (
                 <Link
                   key={href}
@@ -226,7 +255,12 @@ export default function Sidebar() {
                   )}
                 >
                   <Icon size={15} />
-                  {label}
+                  <span className="flex-1">{label}</span>
+                  {badge > 0 && (
+                    <span className="rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-brand-ink">
+                      {badge}
+                    </span>
+                  )}
                 </Link>
                 );
               })}

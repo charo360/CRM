@@ -154,7 +154,7 @@ class TestJournalWriterOperationalEvents:
     def test_action_approved(self):
         event = TrustEvent.operational(
             type=EventType.ACTION_APPROVED,
-            actor_name="Rex",
+            actor_name="Zilo",
             category="outreach",
             confidence=0.88,
         )
@@ -171,7 +171,7 @@ class TestJournalWriterOperationalEvents:
     def test_action_clean_send_with_reply_hours(self):
         event = TrustEvent.operational(
             type=EventType.ACTION_CLEAN_SEND,
-            actor_name="Rex",
+            actor_name="Zilo",
             category="outreach",
             confidence=0.93,
         )
@@ -188,7 +188,7 @@ class TestJournalWriterOperationalEvents:
     def test_action_rejected(self):
         event = TrustEvent.operational(
             type=EventType.ACTION_REJECTED,
-            actor_name="Rex",
+            actor_name="Zilo",
             category="outreach",
             confidence=0.55,
         )
@@ -205,7 +205,7 @@ class TestJournalWriterOperationalEvents:
     def test_action_undone(self):
         event = TrustEvent.operational(
             type=EventType.ACTION_UNDONE,
-            actor_name="Rex",
+            actor_name="Zilo",
             category="outreach",
             confidence=0.77,
         )
@@ -221,7 +221,7 @@ class TestJournalWriterOperationalEvents:
     def test_action_flagged_mistake(self):
         event = TrustEvent.operational(
             type=EventType.ACTION_FLAGGED_MISTAKE,
-            actor_name="Rex",
+            actor_name="Zilo",
             category="invoices",
             confidence=0.64,
             reason="Flagged Henderson when I meant Henson",
@@ -247,7 +247,7 @@ class TestJournalWriterBatchAndValidation:
             ),
             TrustEvent.operational(
                 type=EventType.ACTION_CLEAN_SEND,
-                actor_name="Rex",
+                actor_name="Zilo",
                 category="outreach",
                 confidence=0.9,
             ),
@@ -300,7 +300,7 @@ class TestJournalWriterBatchAndValidation:
             ),
             TrustEvent.operational(
                 type=EventType.ACTION_FLAGGED_MISTAKE,
-                actor_name="Rex",
+                actor_name="Zilo",
                 category="invoices",
                 reason="Wrong vendor",
             ),

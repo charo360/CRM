@@ -41,14 +41,14 @@ from rex.ranks.events import EventType, Rank, TrustEvent
 class TestActionPropose:
     def test_basic_propose(self):
         a = Action.propose(
-            actor_name="Rex",
+            actor_name="Zilo",
             rank_at_time=Rank.DRAFTER,
             category="outreach",
             kind=ActionKind.OUTREACH,
             summary="Follow up with Patel.",
             confidence=0.85,
         )
-        assert a.actor_name == "Rex"
+        assert a.actor_name == "Zilo"
         assert a.kind is ActionKind.OUTREACH
         assert a.confidence == 0.85
         assert a.proposed_at is not None
@@ -56,7 +56,7 @@ class TestActionPropose:
 
     def test_summary_is_stripped(self):
         a = Action.propose(
-            actor_name="Rex", rank_at_time=Rank.OBSERVER,
+            actor_name="Zilo", rank_at_time=Rank.OBSERVER,
             category="outreach", kind=ActionKind.OUTREACH,
             summary="   leading + trailing   ",
         )
@@ -65,20 +65,20 @@ class TestActionPropose:
     def test_invalid_confidence_raises(self):
         with pytest.raises(ValueError):
             Action.propose(
-                actor_name="Rex", rank_at_time=Rank.DRAFTER,
+                actor_name="Zilo", rank_at_time=Rank.DRAFTER,
                 category="outreach", kind=ActionKind.OUTREACH,
                 summary="x", confidence=1.5,
             )
         with pytest.raises(ValueError):
             Action.propose(
-                actor_name="Rex", rank_at_time=Rank.DRAFTER,
+                actor_name="Zilo", rank_at_time=Rank.DRAFTER,
                 category="outreach", kind=ActionKind.OUTREACH,
                 summary="x", confidence=-0.1,
             )
 
     def test_payload_defaults_to_empty(self):
         a = Action.propose(
-            actor_name="Rex", rank_at_time=Rank.OBSERVER,
+            actor_name="Zilo", rank_at_time=Rank.OBSERVER,
             category="outreach", kind=ActionKind.OUTREACH,
             summary="x",
         )
@@ -89,7 +89,7 @@ class TestActionPropose:
         # mutating their dict afterward must not leak into the Action.
         d = {"to": "patel@example.com"}
         a = Action.propose(
-            actor_name="Rex", rank_at_time=Rank.SENDER,
+            actor_name="Zilo", rank_at_time=Rank.SENDER,
             category="outreach", kind=ActionKind.OUTREACH,
             summary="x", payload=d,
         )
@@ -136,7 +136,7 @@ class TestDeriveCurrentState:
         changes = [
             ActionStateChange.make(
                 action_id="a1", from_state=None,
-                to_state=ActionState.PROPOSED, actor_name="Rex",
+                to_state=ActionState.PROPOSED, actor_name="Zilo",
             ),
         ]
         assert derive_current_state(changes) is ActionState.PROPOSED
@@ -145,11 +145,11 @@ class TestDeriveCurrentState:
         changes = [
             ActionStateChange.make(
                 action_id="a1", from_state=None,
-                to_state=ActionState.PROPOSED, actor_name="Rex",
+                to_state=ActionState.PROPOSED, actor_name="Zilo",
             ),
             ActionStateChange.make(
                 action_id="a1", from_state=ActionState.PROPOSED,
-                to_state=ActionState.STAGED, actor_name="Rex",
+                to_state=ActionState.STAGED, actor_name="Zilo",
             ),
             ActionStateChange.make(
                 action_id="a1", from_state=ActionState.STAGED,
@@ -157,7 +157,7 @@ class TestDeriveCurrentState:
             ),
             ActionStateChange.make(
                 action_id="a1", from_state=ActionState.APPROVED,
-                to_state=ActionState.SENT, actor_name="Rex",
+                to_state=ActionState.SENT, actor_name="Zilo",
             ),
         ]
         assert derive_current_state(changes) is ActionState.SENT
@@ -166,7 +166,7 @@ class TestDeriveCurrentState:
         changes = [
             ActionStateChange.make(
                 action_id="a1", from_state=None,
-                to_state=ActionState.PROPOSED, actor_name="Rex",
+                to_state=ActionState.PROPOSED, actor_name="Zilo",
             ),
             ActionStateChange.make(
                 action_id="a1",
@@ -186,7 +186,7 @@ class TestDeriveCurrentState:
 # Ledger
 # ===========================================================================
 
-def _propose_outreach(*, actor="Rex", rank=Rank.DRAFTER, conf=0.9) -> Action:
+def _propose_outreach(*, actor="Zilo", rank=Rank.DRAFTER, conf=0.9) -> Action:
     return Action.propose(
         actor_name=actor, rank_at_time=rank,
         category="outreach", kind=ActionKind.OUTREACH,
@@ -232,7 +232,7 @@ class TestLedgerTransitions:
         a = _propose_outreach()
         ledger.record_proposal(a)
         change, events = ledger.transition(
-            action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex",
+            action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo",
         )
         assert change.to_state is ActionState.STAGED
         assert events == ()  # no trust event from queuing
@@ -242,7 +242,7 @@ class TestLedgerTransitions:
         a = _propose_outreach()
         ledger.record_proposal(a)
         ledger.transition(
-            action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex",
+            action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo",
         )
         change, events = ledger.transition(
             action_id=a.id, to_state=ActionState.APPROVED,
@@ -251,14 +251,14 @@ class TestLedgerTransitions:
         assert change.to_state is ActionState.APPROVED
         assert len(events) == 1
         assert events[0].type is EventType.ACTION_APPROVED
-        assert events[0].actor_name == "Rex"           # action belongs to Rex
+        assert events[0].actor_name == "Zilo"
         assert events[0].category == "outreach"
 
     def test_user_reject_emits_action_rejected(self):
         ledger = Ledger()
         a = _propose_outreach()
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo")
         _, events = ledger.transition(
             action_id=a.id, to_state=ActionState.REJECTED, actor_name="User",
         )
@@ -268,7 +268,7 @@ class TestLedgerTransitions:
         ledger = Ledger()
         a = _propose_outreach(rank=Rank.SENDER)
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.SENT, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.SENT, actor_name="Zilo")
         _, events = ledger.transition(
             action_id=a.id, to_state=ActionState.UNDONE, actor_name="User",
         )
@@ -278,10 +278,10 @@ class TestLedgerTransitions:
         ledger = Ledger()
         a = _propose_outreach()
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo")
         ledger.transition(action_id=a.id, to_state=ActionState.APPROVED, actor_name="User")
         _, events = ledger.transition(
-            action_id=a.id, to_state=ActionState.FAILED, actor_name="Rex",
+            action_id=a.id, to_state=ActionState.FAILED, actor_name="Zilo",
             outcome=Outcome(error_class="SMTPError", error_message="timeout"),
         )
         assert events[0].type is EventType.ACTION_FLAGGED_MISTAKE
@@ -290,7 +290,7 @@ class TestLedgerTransitions:
         ledger = Ledger()
         a = _propose_outreach()
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo")
         _, events = ledger.transition(
             action_id=a.id, to_state=ActionState.DISMISSED, actor_name="User",
         )
@@ -300,7 +300,7 @@ class TestLedgerTransitions:
         ledger = Ledger()
         a = _propose_outreach()
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo")
         ledger.transition(action_id=a.id, to_state=ActionState.REJECTED, actor_name="User")
         with pytest.raises(InvalidTransition):
             ledger.transition(
@@ -325,7 +325,7 @@ class TestLedgerQueries:
         a2 = _propose_outreach()
         ledger.record_proposal(a1)
         ledger.record_proposal(a2)
-        ledger.transition(action_id=a1.id, to_state=ActionState.STAGED, actor_name="Rex")
+        ledger.transition(action_id=a1.id, to_state=ActionState.STAGED, actor_name="Zilo")
         staged = ledger.staged_actions()
         assert len(staged) == 1
         assert staged[0].id == a1.id
@@ -334,7 +334,7 @@ class TestLedgerQueries:
         ledger = Ledger()
         a = _propose_outreach(rank=Rank.SENDER)
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.SENT, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.SENT, actor_name="Zilo")
         sent = ledger.actions_in_state(ActionState.SENT)
         assert len(sent) == 1
 
@@ -348,7 +348,7 @@ class TestCleanSendEvent:
         a = _propose_outreach(rank=Rank.SENDER)
         evt = clean_send_event(action=a)
         assert evt.type is EventType.ACTION_CLEAN_SEND
-        assert evt.actor_name == "Rex"
+        assert evt.actor_name == "Zilo"
         assert evt.category == "outreach"
 
 
@@ -364,7 +364,7 @@ class TestStoryRender:
         ledger = Ledger()
         a = _propose_outreach()
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo")
         rendered = story_render_action(ledger, a)
         assert "[Review → Send / Dismiss]" in rendered
         assert "Staged for you" in rendered
@@ -374,7 +374,7 @@ class TestStoryRender:
         ledger = Ledger()
         a = _propose_outreach(rank=Rank.SENDER)
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.SENT, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.SENT, actor_name="Zilo")
         rendered = story_render_action(ledger, a)
         assert "[Undo]" in rendered
         assert "Sent" in rendered
@@ -392,7 +392,7 @@ class TestStoryRender:
     def test_no_reasoning_no_why_line(self):
         ledger = Ledger()
         a = Action.propose(
-            actor_name="Rex", rank_at_time=Rank.DRAFTER,
+            actor_name="Zilo", rank_at_time=Rank.DRAFTER,
             category="outreach", kind=ActionKind.OUTREACH,
             summary="x", reasoning="", confidence=0.0,
         )
@@ -411,12 +411,12 @@ class TestInspectRender:
         ledger = Ledger()
         a = _propose_outreach()
         ledger.record_proposal(a)
-        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Rex")
+        ledger.transition(action_id=a.id, to_state=ActionState.STAGED, actor_name="Zilo")
         rows = inspect_rows(ledger)
         assert len(rows) == 1
         r = rows[0]
         assert isinstance(r, InspectRow)
-        assert r.actor == "Rex"
+        assert r.actor == "Zilo"
         assert r.category == "outreach"
         assert r.kind == "outreach"
         assert r.state == "staged"
@@ -456,7 +456,7 @@ class TestEndToEnd:
 
         # Rex stages.
         _, e1 = ledger.transition(
-            action_id=action.id, to_state=ActionState.STAGED, actor_name="Rex",
+            action_id=action.id, to_state=ActionState.STAGED, actor_name="Zilo",
         )
         assert e1 == ()
 

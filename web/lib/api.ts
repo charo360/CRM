@@ -15,7 +15,10 @@ export function normalizeCrmApiBase(raw: string): string {
   return t;
 }
 
-export const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
+/** Local default uses Next `/proxy` rewrite (see web/next.config.ts). */
+export const API_BASE = normalizeCrmApiBase(
+  process.env.NEXT_PUBLIC_API_URL || (typeof window !== "undefined" ? "/proxy" : "http://127.0.0.1:8000/api"),
+);
 
 function formatErrorBody(res: Response, rawText: string): string {
   let err: { detail?: unknown; error?: unknown; message?: unknown; details?: unknown } = {};

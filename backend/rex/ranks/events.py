@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, IntEnum
 
+from rex.identity import CHIEF_OF_STAFF_NAME
+
 
 # ---------------------------------------------------------------------------
 # Rank enum (IntEnum so we can compare with < and >)
@@ -173,7 +175,7 @@ class TrustEvent:
         return cls(
             id=new_event_id(), timestamp=_utc_now(),
             type=EventType.USER_PROMOTED_REX,
-            actor_name="Rex", category=category,
+            actor_name=CHIEF_OF_STAFF_NAME, category=category,
             to_rank=to_rank, from_rank=from_rank, reason=reason,
         )
 
@@ -183,7 +185,7 @@ class TrustEvent:
         return cls(
             id=new_event_id(), timestamp=_utc_now(),
             type=EventType.USER_DEMOTED_REX,
-            actor_name="Rex", category=category,
+            actor_name=CHIEF_OF_STAFF_NAME, category=category,
             to_rank=to_rank, from_rank=from_rank, reason=reason,
         )
 

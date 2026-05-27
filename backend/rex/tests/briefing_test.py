@@ -216,6 +216,12 @@ class TestLetterWithActions:
         letter = compose_letter(opener="x.", staged_actions=(a,))
         assert "9 days silent" in letter.body
 
+    def test_long_imported_reasoning_passes_voice(self):
+        long_reasoning = " ".join(["snippet"] * 81)
+        a = make_action(reasoning=long_reasoning)
+        letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=(a,))
+        assert "snippet" in letter.body
+
     def test_voice_violation_raises(self):
         # Action with sycophantic summary should be caught by voice gate.
         a = make_action(summary="Absolutely! I'd love to help!", confidence=0.9)
@@ -264,7 +270,7 @@ class TestHomeScreen:
         ))
         orch.engine = RankEngine.from_events(orch.event_store)
         orch.register_producer(FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[
                 make_action(rank=Rank.DRAFTER, confidence=0.9, summary="A."),

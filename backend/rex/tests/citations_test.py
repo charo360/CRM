@@ -110,7 +110,7 @@ class TestOrchestratorAutoCitations:
 
         # Produce a raw invoice proposal with NO pre-filled citations
         a = make_action(
-            actor="Rex",
+            actor="Zilo",
             rank=Rank.DRAFTER,
             category="invoices",
             kind=ActionKind.INVOICE,
@@ -120,7 +120,7 @@ class TestOrchestratorAutoCitations:
         assert len(a.memory_citation_ids) == 0
 
         orch.register_producer(FakeProducer(
-            actor_name_value="Rex",
+            actor_name_value="Zilo",
             categories_value=("invoices",),
             actions=[a],
         ))

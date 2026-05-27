@@ -164,6 +164,39 @@ class LiveDataScanner:
         )
 
 
+class HonestDemoScanner:
+    """
+    Demo scanner used by the live onboarding flow before real CRM
+    adapters are wired in. Returns zero for every CRM count (because
+    nothing IS connected yet) and runs the real website scraper.
+
+    Rule: never invent numbers. The "I see it" moment will lean on
+    website findings + the founder's own pain-point answer.
+    """
+
+    def scan_invoices(self) -> int:
+        return 0
+
+    def scan_conversations(self) -> int:
+        return 0
+
+    def scan_deals(self) -> int:
+        return 0
+
+    def scan_emails(self) -> int:
+        return 0
+
+    def scan_opportunities(self) -> int:
+        return 0
+
+    def scan_website(self, url: str) -> Optional[WebsiteInsights]:
+        # Reuse LiveDataScanner.scan_website by constructing a minimal one.
+        # The CRM stores are never touched by scan_website, so passing None
+        # for the protocols is safe — we only need the website path.
+        live = LiveDataScanner.__new__(LiveDataScanner)
+        return LiveDataScanner.scan_website(live, url)
+
+
 class MockDataScanner:
     """
     Mock scanner for testing and demo environments.

@@ -117,13 +117,13 @@ class TestScopedHomeScreen:
 
         # Staged Action 1: Outreach (Sales allowed)
         a1 = make_action(
-            actor="Rex",
+            actor="Zilo",
             category="outreach",
             summary="Nudge Meridian",
             confidence=0.9,
         )
         a1 = a1.propose(
-            actor_name="Rex",
+            actor_name="Zilo",
             rank_at_time=Rank.DRAFTER,
             category="outreach",
             kind=ActionKind.OUTREACH,
@@ -132,17 +132,17 @@ class TestScopedHomeScreen:
             visibility=visibility_team_shared,
         )
         orch.ledger.record_proposal(a1)
-        orch.ledger.transition(action_id=a1.id, to_state=ActionState.STAGED, actor_name="Rex")
+        orch.ledger.transition(action_id=a1.id, to_state=ActionState.STAGED, actor_name="Zilo")
 
         # Staged Action 2: Invoices (Finance/Founder only, Sales cannot see)
         a2 = make_action(
-            actor="Rex",
+            actor="Zilo",
             category="invoices",
             summary="Chasing unpaid invoice",
             confidence=0.85,
         )
         a2 = a2.propose(
-            actor_name="Rex",
+            actor_name="Zilo",
             rank_at_time=Rank.DRAFTER,
             category="invoices",
             kind=ActionKind.INVOICE,
@@ -151,7 +151,7 @@ class TestScopedHomeScreen:
             visibility=visibility_founder_only,
         )
         orch.ledger.record_proposal(a2)
-        orch.ledger.transition(action_id=a2.id, to_state=ActionState.STAGED, actor_name="Rex")
+        orch.ledger.transition(action_id=a2.id, to_state=ActionState.STAGED, actor_name="Zilo")
 
         # Build screen for Tom (Sales)
         tom_p = orch.registry.get("tom-1")
