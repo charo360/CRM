@@ -35,7 +35,9 @@ _LEGAL: dict[ActionState | None, frozenset[ActionState]] = {
     None: frozenset({ActionState.PROPOSED}),
     ActionState.PROPOSED: frozenset({
         ActionState.STAGED,         # Rex stages for user review
-        ActionState.SENT,           # Rex's rank allows autonomous send
+        ActionState.APPROVED,       # Rex's rank allows autonomous send;
+                                    # APPROVED here = "decision made, awaiting executor"
+        ActionState.SENT,           # rare fast path: skipped APPROVED queueing
     }),
     ActionState.STAGED: frozenset({
         ActionState.APPROVED,       # user clicked approve
@@ -130,7 +132,12 @@ def state_change_trust_events(
     reason = change.reason
 
     # User approved a staged action — positive for the actor whose work it was.
+    # Autonomous "approvals" (Rex deciding to send without user involvement)
+    # are silent — no trust event fires until the SEND succeeds (CLEAN_SEND
+    # is emitted later by the undo-window sweep) or fails (FAILED below).
     if to is ActionState.APPROVED:
+        if change.actor_name != "User":
+            return ()
         return (TrustEvent.operational(
             type=EventType.ACTION_APPROVED,
             actor_name=actor, category=cat,

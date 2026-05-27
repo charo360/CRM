@@ -105,6 +105,7 @@ class TestTransitions:
     @pytest.mark.parametrize("frm,to,ok", [
         (None, ActionState.PROPOSED, True),
         (ActionState.PROPOSED, ActionState.STAGED, True),
+        (ActionState.PROPOSED, ActionState.APPROVED, True),  # autonomous queue
         (ActionState.PROPOSED, ActionState.SENT, True),
         (ActionState.STAGED, ActionState.APPROVED, True),
         (ActionState.STAGED, ActionState.REJECTED, True),
@@ -114,7 +115,8 @@ class TestTransitions:
         (ActionState.SENT, ActionState.UNDONE, True),
         # Illegal:
         (None, ActionState.STAGED, False),
-        (ActionState.PROPOSED, ActionState.APPROVED, False),
+        (ActionState.STAGED, ActionState.SENT, False),  # must go via APPROVED
+        (ActionState.PROPOSED, ActionState.UNDONE, False),
         (ActionState.SENT, ActionState.STAGED, False),
         (ActionState.REJECTED, ActionState.SENT, False),
         (ActionState.UNDONE, ActionState.SENT, False),
@@ -309,10 +311,10 @@ class TestLedgerTransitions:
         ledger = Ledger()
         a = _propose_outreach()
         ledger.record_proposal(a)
-        # PROPOSED → APPROVED is illegal (must go through STAGED).
+        # PROPOSED → UNDONE is illegal (must go through SENT first).
         with pytest.raises(InvalidTransition):
             ledger.transition(
-                action_id=a.id, to_state=ActionState.APPROVED, actor_name="User",
+                action_id=a.id, to_state=ActionState.UNDONE, actor_name="User",
             )
 
 
