@@ -9400,58 +9400,148 @@ def _ms_addr_list(val: str) -> list:
     return [{"emailAddress": {"address": a.strip()}} for a in (val or "").split(",") if a.strip()]
 
 
+# ── Outlook tools (Microsoft 365 mail + calendar via Composio action slugs) ──
+# All Outlook tools use Composio's dedicated action slugs via execute_action,
+# NOT the v2 actions/proxy (retired) or v3 proxy (gated).
+
+_OUTLOOK_ATTACHMENT_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional single file attachment. Provide a public 'url' the server can fetch "
+        "and a 'filename' to display in the email. Up to 20MB. Composio currently supports "
+        "one attachment per email — to send multiple files, send multiple emails."
+    ),
+    "properties": {
+        "url":      {"type": "string", "description": "Direct download URL"},
+        "filename": {"type": "string", "description": "Filename shown in the email, e.g. 'invoice.pdf'"},
+    },
+    "required": ["url", "filename"],
+}
+
+
+def _outlook_response_data(execute_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Outlook actions wrap responses much like Gmail: usually under
+    `data.response_data`, sometimes flat. Return the payload either way."""
+    inner = execute_result.get("data") or {}
+    if isinstance(inner, dict):
+        rd = inner.get("response_data")
+        if isinstance(rd, dict):
+            return rd
+        return inner
+    return {}
+
+
 @tool(
     name="outlook_list_messages",
     description=(
-        "List Outlook / Microsoft 365 inbox messages. "
-        "Filter by folder, unread status, or search term. "
+        "List Outlook / Microsoft 365 inbox messages. Filter by folder, unread, or sender. "
+        "For full-text search across body, use outlook_search instead. "
         "Returns: id, subject, from, preview, date, read status."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "folder":      {"type": "string", "description": "inbox (default), sentItems, drafts, deletedItems"},
-            "search":      {"type": "string", "description": "Search subject or body"},
-            "unread_only": {"type": "boolean"},
-            "max_results": {"type": "integer", "description": "1-50, default 15"},
+            "folder":      {"type": "string", "description": "Well-known folder name. Default 'inbox'. Other: 'sentitems', 'drafts', 'deleteditems'."},
+            "unread_only": {"type": "boolean", "description": "Only unread messages."},
+            "from_email":  {"type": "string", "description": "Filter to messages from this exact sender address."},
+            "max_results": {"type": "integer", "description": "1-100, default 15"},
         },
     },
 )
 async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     folder = (args.get("folder") or "inbox").strip()
-    limit  = min(int(args.get("max_results") or 15), 50)
-    params: Dict[str, Any] = {
-        "$top":     limit,
-        "$select":  _OUTLOOK_SELECT,
-        "$orderby": "receivedDateTime desc",
+    limit  = min(max(int(args.get("max_results") or 15), 1), 100)
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "folder":  folder,
+        "top":     limit,
+        "orderby": ["receivedDateTime desc"],
     }
     if args.get("unread_only"):
-        params["$filter"] = "isRead eq false"
-    if args.get("search"):
-        params["$search"] = f'"{args["search"]}"'
-    try:
-        data = await nango_proxy(
-            ctx.business_id, _MICROSOFT_KEY, "GET",
-            f"v1.0/me/mailFolders/{folder}/messages",
-            params=params,
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+        action_args["is_read"] = False
+    if args.get("from_email"):
+        action_args["from_address"] = args["from_email"].strip()
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_MESSAGES", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("messages") or inner.get("items") or []
     messages = []
-    for m in (data.get("value") or []):
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
         sender = (m.get("from") or {}).get("emailAddress") or {}
         messages.append({
-            "message_id":    m.get("id"),
-            "subject":       m.get("subject") or "(no subject)",
+            "message_id":      m.get("id"),
+            "subject":         m.get("subject") or "(no subject)",
+            "from_name":       sender.get("name"),
+            "from_email":      sender.get("address"),
+            "preview":         _email_trunc(m.get("bodyPreview") or "", 200),
+            "date":            m.get("receivedDateTime"),
+            "is_read":         m.get("isRead", True),
+            "conversation_id": m.get("conversationId"),
+            "has_attachments": m.get("hasAttachments", False),
+        })
+    return {"messages": messages, "total": len(messages), "folder": folder}
+
+
+@tool(
+    name="outlook_search",
+    description=(
+        "Full-text search across Outlook messages (body, subject, attachments). "
+        "Use this when the user describes content rather than a sender/folder filter."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query":            {"type": "string", "description": "Free-text search string."},
+            "from_email":       {"type": "string", "description": "Optional: only this sender."},
+            "subject":          {"type": "string", "description": "Optional: only matches in subject."},
+            "has_attachments":  {"type": "boolean", "description": "Optional: filter messages with attachments."},
+            "max_results":      {"type": "integer", "description": "1-100, default 20."},
+        },
+        "required": ["query"],
+    },
+)
+async def outlook_search(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    action_args: Dict[str, Any] = {
+        "query": q,
+        "size":  min(max(int(args.get("max_results") or 20), 1), 100),
+        "enable_top_results": True,
+    }
+    if args.get("from_email"):
+        action_args["fromEmail"] = args["from_email"].strip()
+    if args.get("subject"):
+        action_args["subject"] = args["subject"]
+    if "has_attachments" in args:
+        action_args["hasAttachments"] = bool(args["has_attachments"])
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_SEARCH_MESSAGES", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("hits") or inner.get("results") or inner.get("messages") or []
+    messages = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        # Search hits may wrap the message inside a 'resource' or 'hit' field
+        msg = m.get("resource") or m.get("hit") or m.get("message") or m
+        sender = (msg.get("from") or {}).get("emailAddress") or {}
+        messages.append({
+            "message_id":    msg.get("id"),
+            "subject":       msg.get("subject") or "(no subject)",
             "from_name":     sender.get("name"),
             "from_email":    sender.get("address"),
-            "preview":       _email_trunc(m.get("bodyPreview") or "", 200),
-            "date":          m.get("receivedDateTime"),
-            "is_read":       m.get("isRead", True),
-            "conversation_id": m.get("conversationId"),
+            "preview":       _email_trunc(msg.get("bodyPreview") or "", 200),
+            "date":          msg.get("receivedDateTime"),
+            "has_attachments": msg.get("hasAttachments", False),
         })
-    return {"messages": messages, "total": len(messages)}
+    return {"query": q, "count": len(messages), "messages": messages}
 
 
 @tool(
@@ -9466,104 +9556,563 @@ async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     msg_id = (args.get("message_id") or "").strip()
     if not msg_id:
         return {"error": "message_id is required"}
-    try:
-        m = await nango_proxy(
-            ctx.business_id, _MICROSOFT_KEY, "GET",
-            f"v1.0/me/messages/{msg_id}",
-            params={"$select": _OUTLOOK_FULL_SELECT},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_MESSAGE", {
+        "user_id": "me", "message_id": msg_id,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    m = _outlook_response_data(r)
     sender = (m.get("from") or {}).get("emailAddress") or {}
-    to_list = [(r.get("emailAddress") or {}).get("address") for r in (m.get("toRecipients") or [])]
+    to_list = [(rcp.get("emailAddress") or {}).get("address") for rcp in (m.get("toRecipients") or [])]
     body_content = _email_trunc((m.get("body") or {}).get("content") or m.get("bodyPreview") or "", 4000)
     return {
-        "message_id":    m.get("id"),
-        "subject":       m.get("subject") or "(no subject)",
-        "from_name":     sender.get("name"),
-        "from_email":    sender.get("address"),
-        "to":            ", ".join(filter(None, to_list)),
-        "date":          m.get("receivedDateTime"),
-        "is_read":       m.get("isRead", True),
-        "body":          body_content,
+        "message_id":          m.get("id") or msg_id,
+        "subject":             m.get("subject") or "(no subject)",
+        "from_name":           sender.get("name"),
+        "from_email":          sender.get("address"),
+        "to":                  ", ".join(filter(None, to_list)),
+        "date":                m.get("receivedDateTime"),
+        "is_read":             m.get("isRead", True),
+        "body":                body_content,
         "internet_message_id": m.get("internetMessageId"),
-        "conversation_id": m.get("conversationId"),
+        "conversation_id":     m.get("conversationId"),
+        "has_attachments":     m.get("hasAttachments", False),
     }
 
 
 @tool(
     name="outlook_send",
-    description="Send a new email via Outlook / Microsoft 365. to, subject, body required. cc and bcc optional.",
+    description=(
+        "Send a new email via Outlook / Microsoft 365. The primary recipient goes in 'to'; "
+        "extra to-addresses go in 'cc' or 'bcc'. Pass 'attachment' ({url, filename}) for a single file."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "to":      {"type": "string", "description": "Recipient(s), comma-separated"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string", "description": "Plain text body"},
-            "cc":      {"type": "string"},
-            "bcc":     {"type": "string"},
+            "to":         {"type": "string", "description": "Primary recipient email address."},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string", "description": "Plain text body (HTML if is_html=true)."},
+            "is_html":    {"type": "boolean", "description": "Body is HTML. Default false."},
+            "cc":         {"type": "string", "description": "Comma-separated CC addresses."},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses."},
+            "attachment": _OUTLOOK_ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
     destructive=True,
 )
 async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    to = (args.get("to") or "").strip()
+    from composio_service import execute_action
+    to_raw = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
-    if not to or not subject or not body:
+    if not to_raw or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    payload: Dict[str, Any] = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "Text", "content": body},
-            "toRecipients": _ms_addr_list(to),
-        },
-        "saveToSentItems": True,
+    # to_email is a single string; if user passed CSV, take the first
+    to_emails = [e.strip() for e in to_raw.split(",") if e.strip()]
+    primary = to_emails[0]
+    extra_to = to_emails[1:]
+
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "OUTLOOK_OUTLOOK_SEND_EMAIL")
+    if err:
+        return {"error": err}
+
+    action_args: Dict[str, Any] = {
+        "user_id":  "me",
+        "to_email": primary,
+        "subject":  subject,
+        "body":     body,
+        "is_html":  bool(args.get("is_html", False)),
+        "save_to_sent_items": True,
     }
-    if args.get("cc"):
-        payload["message"]["ccRecipients"] = _ms_addr_list(args["cc"])
+    cc = _split_csv(args.get("cc")) + extra_to  # roll extra primary-to into CC
+    if cc:
+        action_args["cc_emails"] = cc
     if args.get("bcc"):
-        payload["message"]["bccRecipients"] = _ms_addr_list(args["bcc"])
-    try:
-        await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", "v1.0/me/sendMail", json=payload)
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "sent"}
+        action_args["bcc_emails"] = _split_csv(args["bcc"])
+    if att_dict:
+        action_args["attachment"] = att_dict
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_SEND_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "sent", "attached": bool(att_dict)}
 
 
 @tool(
     name="outlook_reply",
-    description="Reply to an Outlook message. Set reply_all=true to reply to all recipients.",
+    description=(
+        "Reply to an Outlook message. Pass extra recipients via 'cc' (Composio's "
+        "OUTLOOK_REPLY_EMAIL doesn't have a native reply-all flag, so reply-all "
+        "is approximated by listing the original To/CC recipients in 'cc')."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "message_id": {"type": "string", "description": "Outlook message ID to reply to"},
-            "body":       {"type": "string", "description": "Reply body text"},
-            "reply_all":  {"type": "boolean", "description": "Reply all. Default false."},
+            "body":       {"type": "string", "description": "Reply body (plain text)"},
+            "cc":         {"type": "string", "description": "Comma-separated extra recipients (use for reply-all)."},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses."},
         },
         "required": ["message_id", "body"],
     },
     destructive=True,
 )
 async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    msg_id    = (args.get("message_id") or "").strip()
-    body      = (args.get("body") or "").strip()
-    reply_all = bool(args.get("reply_all"))
+    from composio_service import execute_action
+    msg_id = (args.get("message_id") or "").strip()
+    body   = (args.get("body") or "").strip()
     if not msg_id or not body:
         return {"error": "message_id and body are required"}
-    endpoint = f"v1.0/me/messages/{msg_id}/{'replyAll' if reply_all else 'reply'}"
-    try:
-        await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", endpoint, json={"comment": body})
-    except RuntimeError as e:
-        return {"error": str(e)}
+    action_args: Dict[str, Any] = {
+        "user_id":    "me",
+        "message_id": msg_id,
+        "comment":    body,
+    }
+    if args.get("cc"):
+        action_args["cc_emails"] = _split_csv(args["cc"])
+    if args.get("bcc"):
+        action_args["bcc_emails"] = _split_csv(args["bcc"])
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_REPLY_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
     return {"status": "replied"}
+
+
+@tool(
+    name="outlook_draft",
+    description=(
+        "Save a draft email in Outlook without sending. Returns the draft message_id. "
+        "Pass 'attachment' ({url, filename}) for a single file."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "to":         {"type": "string", "description": "Comma-separated recipient addresses (To)."},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string"},
+            "is_html":    {"type": "boolean", "description": "Body is HTML. Default false."},
+            "cc":         {"type": "string"},
+            "bcc":        {"type": "string"},
+            "attachment": _OUTLOOK_ATTACHMENT_SCHEMA,
+        },
+        "required": ["to", "subject", "body"],
+    },
+)
+async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    to = (args.get("to") or "").strip()
+    subject = (args.get("subject") or "").strip()
+    body = (args.get("body") or "").strip()
+    if not to or not subject or not body:
+        return {"error": "to, subject, and body are required"}
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "OUTLOOK_OUTLOOK_CREATE_DRAFT")
+    if err:
+        return {"error": err}
+    action_args: Dict[str, Any] = {
+        "subject":       subject,
+        "body":          body,
+        "is_html":       bool(args.get("is_html", False)),
+        "to_recipients": _split_csv(to),
+    }
+    if args.get("cc"):
+        action_args["cc_recipients"] = _split_csv(args["cc"])
+    if args.get("bcc"):
+        action_args["bcc_recipients"] = _split_csv(args["bcc"])
+    if att_dict:
+        action_args["attachment"] = att_dict
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_CREATE_DRAFT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    return {"status": "draft_saved", "message_id": inner.get("id"), "attached": bool(att_dict)}
+
+
+@tool(
+    name="outlook_trash_message",
+    description=(
+        "Move an Outlook message to the Deleted Items folder. Recoverable from there. "
+        "Use this when the user asks to delete an email — Composio doesn't expose a "
+        "permanent-delete to agents."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "message_id": {"type": "string", "description": "Outlook message ID to trash."},
+        },
+        "required": ["message_id"],
+    },
+    destructive=True,
+)
+async def outlook_trash_message(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    msg_id = (args.get("message_id") or "").strip()
+    if not msg_id:
+        return {"error": "message_id is required"}
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_MOVE_MESSAGE", {
+        "user_id":        "me",
+        "message_id":     msg_id,
+        "destination_id": "deleteditems",
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "trashed", "message_id": msg_id}
+
+
+# ── Outlook Calendar tools ─────────────────────────────────────────────────────
+
+@tool(
+    name="list_outlook_calendars",
+    description="List the user's Outlook calendars (primary + secondary + shared).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "description": "Max calendars (default 50)."},
+        },
+    },
+)
+async def list_outlook_calendars(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    r = await execute_action(ctx.business_id, "OUTLOOK_LIST_CALENDARS", {
+        "user_id": "me",
+        "top": min(int(args.get("max_results") or 50), 200),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    items = inner.get("value") or inner.get("calendars") or inner.get("items") or []
+    cals = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        cals.append({
+            "calendar_id": c.get("id"),
+            "name":        c.get("name"),
+            "owner_email": ((c.get("owner") or {}).get("address")),
+            "color":       c.get("color"),
+            "is_default":  c.get("isDefaultCalendar", False),
+        })
+    return {"count": len(cals), "calendars": cals}
+
+
+@tool(
+    name="list_outlook_calendar_events",
+    description="List upcoming Outlook calendar events. Use time_min/time_max to constrain the window.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "time_min":    {"type": "string", "description": "Start of window in ISO 8601 (UTC), e.g. '2026-06-01T00:00:00Z'."},
+            "time_max":    {"type": "string", "description": "End of window in ISO 8601 (UTC)."},
+            "timezone":    {"type": "string", "description": "Preferred IANA timezone for displaying times, e.g. 'America/New_York'."},
+            "max_results": {"type": "integer", "description": "Max events (default 25)."},
+        },
+    },
+)
+async def list_outlook_calendar_events(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "top":     min(int(args.get("max_results") or 25), 100),
+        "orderby": ["start/dateTime asc"],
+        "expand_recurring_events": True,
+    }
+    if args.get("timezone"):
+        action_args["timezone"] = args["timezone"]
+    # OData filter for date range
+    filters = []
+    if args.get("time_min"):
+        filters.append(f"start/dateTime ge '{args['time_min']}'")
+    if args.get("time_max"):
+        filters.append(f"end/dateTime le '{args['time_max']}'")
+    if filters:
+        action_args["filter"] = " and ".join(filters)
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("events") or inner.get("items") or []
+    events = []
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        events.append({
+            "event_id":  e.get("id"),
+            "subject":   e.get("subject"),
+            "start":     (e.get("start") or {}).get("dateTime"),
+            "end":       (e.get("end") or {}).get("dateTime"),
+            "timezone":  (e.get("start") or {}).get("timeZone"),
+            "location":  (e.get("location") or {}).get("displayName"),
+            "is_online": e.get("isOnlineMeeting", False),
+            "teams_url": (e.get("onlineMeeting") or {}).get("joinUrl"),
+            "attendees": [(a.get("emailAddress") or {}).get("address") for a in (e.get("attendees") or [])],
+            "organizer": ((e.get("organizer") or {}).get("emailAddress") or {}).get("address"),
+            "web_link":  e.get("webLink"),
+        })
+    return {"count": len(events), "events": events}
+
+
+@tool(
+    name="create_outlook_calendar_event",
+    description=(
+        "Create an Outlook / Microsoft 365 calendar event. Set is_online_meeting=true to "
+        "attach a Microsoft Teams meeting link automatically. Datetimes are ISO 8601 (UTC) "
+        "or local time with explicit timezone."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "start_datetime", "end_datetime"],
+        "properties": {
+            "title":             {"type": "string", "description": "Event subject."},
+            "start_datetime":    {"type": "string", "description": "ISO 8601 start, e.g. '2026-06-01T14:00:00'."},
+            "end_datetime":      {"type": "string", "description": "ISO 8601 end."},
+            "timezone":          {"type": "string", "description": "IANA timezone for start/end (e.g. 'America/New_York'). Default UTC."},
+            "body":              {"type": "string", "description": "Event description / agenda."},
+            "is_html":           {"type": "boolean", "description": "Body is HTML. Default false."},
+            "location":          {"type": "string", "description": "Free-form location text."},
+            "attendees":         {"type": "string", "description": "Comma-separated attendee email addresses."},
+            "is_online_meeting": {"type": "boolean", "description": "If true, attach a Microsoft Teams meeting link."},
+            "show_as":           {"type": "string", "description": "'free' | 'tentative' | 'busy' | 'oof' | 'workingElsewhere'. Default 'busy'."},
+        },
+    },
+    destructive=True,
+)
+async def create_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    tz = (args.get("timezone") or "UTC").strip()
+    # Strip trailing Z (Composio's Outlook action expects naive ISO + timezone field)
+    start = args["start_datetime"].rstrip("Z")
+    end = args["end_datetime"].rstrip("Z")
+    action_args: Dict[str, Any] = {
+        "user_id":        "me",
+        "subject":        args["title"],
+        "start_datetime": start,
+        "end_datetime":   end,
+        "time_zone":      tz,
+        "body":           args.get("body") or "",
+        "is_html":        bool(args.get("is_html", False)),
+    }
+    if args.get("location"):
+        action_args["location"] = args["location"]
+    if args.get("show_as"):
+        action_args["show_as"] = args["show_as"]
+    if args.get("attendees"):
+        emails = _split_csv(args["attendees"])
+        action_args["attendees_info"] = [{"email": e, "type": "required"} for e in emails]
+    if args.get("is_online_meeting"):
+        action_args["is_online_meeting"] = True
+        action_args["online_meeting_provider"] = "teamsForBusiness"
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_CALENDAR_CREATE_EVENT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    evt = _outlook_response_data(r)
+    return {
+        "status":    "created",
+        "event_id":  evt.get("id"),
+        "web_link":  evt.get("webLink"),
+        "teams_url": (evt.get("onlineMeeting") or {}).get("joinUrl"),
+    }
+
+
+@tool(
+    name="update_outlook_calendar_event",
+    description=(
+        "Update / reschedule an Outlook calendar event by event_id. Only pass fields to change. "
+        "Reusing attendees replaces the existing list — pass the FULL set, not a delta."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["event_id"],
+        "properties": {
+            "event_id":       {"type": "string"},
+            "title":          {"type": "string"},
+            "start_datetime": {"type": "string", "description": "New ISO 8601 start."},
+            "end_datetime":   {"type": "string", "description": "New ISO 8601 end."},
+            "timezone":       {"type": "string", "description": "IANA timezone (required if changing datetimes)."},
+            "body":           {"type": "string"},
+            "is_html":        {"type": "boolean"},
+            "location":       {"type": "string"},
+            "attendees":      {"type": "string", "description": "Comma-separated; replaces existing attendees."},
+            "show_as":        {"type": "string"},
+        },
+    },
+    destructive=True,
+)
+async def update_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    action_args: Dict[str, Any] = {
+        "user_id":  "me",
+        "event_id": args["event_id"],
+    }
+    if args.get("title"):
+        action_args["subject"] = args["title"]
+    if args.get("start_datetime"):
+        action_args["start_datetime"] = args["start_datetime"].rstrip("Z")
+    if args.get("end_datetime"):
+        action_args["end_datetime"] = args["end_datetime"].rstrip("Z")
+    if args.get("timezone"):
+        action_args["time_zone"] = args["timezone"]
+    if args.get("body") is not None:
+        action_args["body"] = {
+            "contentType": "HTML" if args.get("is_html") else "Text",
+            "content": args["body"],
+        }
+    if args.get("location"):
+        action_args["location"] = {"displayName": args["location"]}
+    if args.get("attendees") is not None:
+        emails = _split_csv(args["attendees"])
+        action_args["attendees"] = [
+            {"emailAddress": {"address": e}, "type": "required"} for e in emails
+        ]
+    if args.get("show_as"):
+        action_args["show_as"] = args["show_as"]
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_UPDATE_CALENDAR_EVENT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    evt = _outlook_response_data(r)
+    return {
+        "status":   "updated",
+        "event_id": evt.get("id") or args["event_id"],
+        "web_link": evt.get("webLink"),
+    }
+
+
+@tool(
+    name="delete_outlook_calendar_event",
+    description="Delete an Outlook calendar event by event_id. Set send_notifications=true to email attendees.",
+    parameters={
+        "type": "object",
+        "required": ["event_id"],
+        "properties": {
+            "event_id":           {"type": "string"},
+            "send_notifications": {"type": "boolean", "description": "Email attendees about the cancellation. Default false."},
+        },
+    },
+    destructive=True,
+)
+async def delete_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_DELETE_EVENT", {
+        "user_id": "me",
+        "event_id": args["event_id"],
+        "send_notifications": bool(args.get("send_notifications", False)),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "deleted", "event_id": args["event_id"]}
+
+
+@tool(
+    name="find_outlook_free_slots",
+    description=(
+        "Get busy intervals for one or more people via Microsoft 365's GetSchedule API. "
+        "The agent can use the returned busy intervals to propose free meeting times."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["time_min", "time_max", "schedules"],
+        "properties": {
+            "time_min":  {"type": "string", "description": "Start of window (ISO 8601)."},
+            "time_max":  {"type": "string", "description": "End of window (ISO 8601)."},
+            "timezone":  {"type": "string", "description": "IANA timezone, default UTC."},
+            "schedules": {"type": "string", "description": "Comma-separated email addresses (use 'me' for the user)."},
+            "interval":  {"type": "integer", "description": "Slot granularity in minutes (default 30, max 1440)."},
+        },
+    },
+)
+async def find_outlook_free_slots(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    tz = (args.get("timezone") or "UTC").strip()
+    emails = _split_csv(args["schedules"]) or ["me"]
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_SCHEDULE", {
+        "user_id":   "me",
+        "Schedules": emails,
+        "StartTime": {"dateTime": args["time_min"].rstrip("Z"), "timeZone": tz},
+        "EndTime":   {"dateTime": args["time_max"].rstrip("Z"), "timeZone": tz},
+        "availabilityViewInterval": str(min(max(int(args.get("interval") or 30), 5), 1440)),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    schedules = inner.get("value") or inner.get("schedules") or []
+    out = {}
+    for s in schedules:
+        if not isinstance(s, dict):
+            continue
+        email = s.get("scheduleId") or s.get("email")
+        busy = []
+        for b in (s.get("scheduleItems") or []):
+            if not isinstance(b, dict):
+                continue
+            busy.append({
+                "start":  (b.get("start") or {}).get("dateTime"),
+                "end":    (b.get("end") or {}).get("dateTime"),
+                "status": b.get("status"),
+            })
+        if email:
+            out[email] = busy
+    return {"time_min": args["time_min"], "time_max": args["time_max"], "busy_by_email": out}
+
+
+@tool(
+    name="find_outlook_calendar_event",
+    description=(
+        "Find an Outlook calendar event by subject keywords + optional time window. "
+        "Use this before update/delete when the user describes an event rather than giving event_id."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query":       {"type": "string", "description": "Words to match in the subject."},
+            "time_min":    {"type": "string"},
+            "time_max":    {"type": "string"},
+            "max_results": {"type": "integer", "description": "Default 10."},
+        },
+    },
+)
+async def find_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    # Compose OData filter: contains(subject, 'q') + optional date bounds
+    parts = [f"contains(tolower(subject), '{q.lower().replace(chr(39), chr(39)+chr(39))}')"]
+    if args.get("time_min"):
+        parts.append(f"start/dateTime ge '{args['time_min']}'")
+    if args.get("time_max"):
+        parts.append(f"end/dateTime le '{args['time_max']}'")
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", {
+        "user_id": "me",
+        "top": min(int(args.get("max_results") or 10), 50),
+        "filter": " and ".join(parts),
+        "orderby": ["start/dateTime asc"],
+        "expand_recurring_events": True,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("events") or []
+    events = []
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        events.append({
+            "event_id":  e.get("id"),
+            "subject":   e.get("subject"),
+            "start":     (e.get("start") or {}).get("dateTime"),
+            "end":       (e.get("end") or {}).get("dateTime"),
+            "location":  (e.get("location") or {}).get("displayName"),
+            "attendees": [(a.get("emailAddress") or {}).get("address") for a in (e.get("attendees") or [])],
+            "web_link":  e.get("webLink"),
+        })
+    return {"query": q, "count": len(events), "events": events}
 
 
 @tool(
@@ -9913,39 +10462,7 @@ async def save_document_style(ctx: ToolContext, args: Dict[str, Any]):
     return {"status": "saved", "saved_fields": saved_fields, "profile": updated}
 
 
-@tool(
-    name="outlook_draft",
-    description="Save a draft email in Outlook without sending. Returns the draft message_id.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "to":      {"type": "string"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string"},
-            "cc":      {"type": "string"},
-        },
-        "required": ["to", "subject", "body"],
-    },
-)
-async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    to = (args.get("to") or "").strip()
-    subject = (args.get("subject") or "").strip()
-    body = (args.get("body") or "").strip()
-    if not to or not subject or not body:
-        return {"error": "to, subject, and body are required"}
-    payload: Dict[str, Any] = {
-        "subject": subject,
-        "body": {"contentType": "Text", "content": body},
-        "toRecipients": _ms_addr_list(to),
-    }
-    if args.get("cc"):
-        payload["ccRecipients"] = _ms_addr_list(args["cc"])
-    try:
-        result = await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", "v1.0/me/messages", json=payload)
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "draft_saved", "message_id": result.get("id")}
+# outlook_draft has been moved into the main Outlook section above.
 
 
 

@@ -37,138 +37,48 @@ NEWSLETTER_SENDERS = [
 
 # ── Core Filter Operations ─────────────────────────────────────────────────
 
+# Gmail filter management is currently UNAVAILABLE in this project's Composio
+# access tier. Two paths are both blocked:
+#   1. composio_proxy → /gmail/v1/.../settings/filters: v2 proxy returns HTTP 410.
+#      v3 proxy (/api/v3/tools/execute/proxy) returns 403 "Proxy execute is not
+#      enabled for this organization."
+#   2. Dedicated action slugs GMAIL_CREATE_FILTER / GMAIL_DELETE_FILTER /
+#      GMAIL_LIST_FILTERS appear in the Composio dashboard but are NOT exposed
+#      in the v3 API (each returns "Tool not found").
+#
+# Until Composio enables one of those paths, these functions return a clear
+# error so callers can surface a useful message instead of a cryptic 410.
+# When access is restored, swap the bodies for execute_action calls against
+# the GMAIL_*_FILTER slugs (preferred) or composio_proxy (fallback).
+
+_FILTERS_UNAVAILABLE = {
+    "error": (
+        "Gmail filter management isn't available on this Composio tier. "
+        "For bulk inbox cleanup, use the gmail_bulk_trash tool instead. "
+        "To set up an actual recurring filter rule, the user must currently "
+        "create it manually in the Gmail web UI (Settings → Filters)."
+    ),
+    "unavailable": True,
+}
+
+
 async def create_gmail_filter(
     user_id: str,
     criteria: Dict[str, Any],
     action: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Create a Gmail filter using Composio's Gmail API integration.
-    
-    Args:
-        user_id: The user's business_id
-        criteria: Filter criteria dict with keys:
-            - from: sender email address
-            - to: recipient email address
-            - subject: subject line text
-            - query: Gmail search query (advanced syntax)
-            - negatedQuery: exclude messages matching this
-            - hasAttachment: bool
-            - size: size in bytes
-            - sizeComparison: 'larger' or 'smaller'
-        action: Filter action dict with keys:
-            - addLabelIds: list of label IDs to add (e.g., ['IMPORTANT'])
-            - removeLabelIds: list of label IDs to remove (e.g., ['INBOX', 'UNREAD'])
-            - forward: email address to forward to
-    
-    Returns:
-        {"success": True, "filter_id": "...", "filter": {...}} or {"error": "..."}
-    """
-    try:
-        from composio_service import composio_proxy, TOOLKIT_GMAIL
-    except ImportError:
-        return {"error": "Composio service not available"}
-    
-    # Build filter body for Gmail API
-    filter_body = {}
-    
-    if criteria:
-        filter_body["criteria"] = criteria
-    
-    if action:
-        filter_body["action"] = action
-    
-    if not filter_body.get("criteria") or not filter_body.get("action"):
-        return {"error": "Both criteria and action are required"}
-    
-    try:
-        # Use Composio proxy to call Gmail API
-        result = await composio_proxy(
-            user_id,
-            TOOLKIT_GMAIL,
-            "POST",
-            "/gmail/v1/users/me/settings/filters",
-            json=filter_body,
-            timeout=15.0,
-        )
-        
-        if "id" in result:
-            logger.info(f"[gmail_filter] Created filter {result['id']} for user {user_id}")
-            return {
-                "success": True,
-                "filter_id": result["id"],
-                "filter": result,
-            }
-        
-        return {"error": f"Failed to create filter: {result}"}
-        
-    except Exception as e:
-        logger.error(f"[gmail_filter] create_gmail_filter error: {e}")
-        return {"error": str(e)}
+    logger.info("[gmail_filter] create_gmail_filter called but feature is unavailable")
+    return dict(_FILTERS_UNAVAILABLE)
 
 
 async def list_gmail_filters(user_id: str) -> Dict[str, Any]:
-    """
-    List all Gmail filters for a user.
-    
-    Returns:
-        {"success": True, "filters": [...]} or {"error": "..."}
-    """
-    try:
-        from composio_service import composio_proxy, TOOLKIT_GMAIL
-    except ImportError:
-        return {"error": "Composio service not available"}
-    
-    try:
-        result = await composio_proxy(
-            user_id,
-            TOOLKIT_GMAIL,
-            "GET",
-            "/gmail/v1/users/me/settings/filters",
-            timeout=15.0,
-        )
-        
-        filters = result.get("filter", [])
-        logger.info(f"[gmail_filter] Listed {len(filters)} filters for user {user_id}")
-        
-        return {
-            "success": True,
-            "filters": filters,
-            "count": len(filters),
-        }
-        
-    except Exception as e:
-        logger.error(f"[gmail_filter] list_gmail_filters error: {e}")
-        return {"error": str(e)}
+    logger.info("[gmail_filter] list_gmail_filters called but feature is unavailable")
+    return dict(_FILTERS_UNAVAILABLE)
 
 
 async def delete_gmail_filter(user_id: str, filter_id: str) -> Dict[str, Any]:
-    """
-    Delete a Gmail filter by ID.
-    
-    Returns:
-        {"success": True} or {"error": "..."}
-    """
-    try:
-        from composio_service import composio_proxy, TOOLKIT_GMAIL
-    except ImportError:
-        return {"error": "Composio service not available"}
-    
-    try:
-        await composio_proxy(
-            user_id,
-            TOOLKIT_GMAIL,
-            "DELETE",
-            f"/gmail/v1/users/me/settings/filters/{filter_id}",
-            timeout=15.0,
-        )
-        
-        logger.info(f"[gmail_filter] Deleted filter {filter_id} for user {user_id}")
-        return {"success": True}
-        
-    except Exception as e:
-        logger.error(f"[gmail_filter] delete_gmail_filter error: {e}")
-        return {"error": str(e)}
+    logger.info("[gmail_filter] delete_gmail_filter called but feature is unavailable")
+    return dict(_FILTERS_UNAVAILABLE)
 
 
 # ── Batch Operations ───────────────────────────────────────────────────────
