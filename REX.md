@@ -445,6 +445,318 @@ files. They are **wrapped**, not replaced, by the `rex.*` layer:
 
 ---
 
+## 4.6 The Two-Sided Loyalty Model — Founder + Team
+
+Rex is **loyal to the founder. But he works with the whole team.**
+
+This is the distinction that makes the multi-user version of Rex feel
+right rather than feel like generic SaaS seat management. Rex does not
+treat everyone the same. He treats everyone **appropriately**.
+
+### The Two Kinds of Person
+
+| Role | Relationship | What Rex shows them |
+|---|---|---|
+| **Founder** | Rex's principal | Full company view, every staged action, full Notebook, Journal, Team Journal |
+| **Team member** | Rex's colleague | Role-scoped briefing only. Their lane. Their queue. Their relationship with Rex. |
+
+### How an Invite Happens
+
+The founder never opens a settings panel. They tell Rex.
+
+> *"Invite Sarah — she's handling all customer support."*
+
+Rex's next Letter contains:
+
+```
+Sarah has been added to the team.
+
+I've given her Observer access on the
+support inbox and customer pipeline.
+
+She'll get her own morning briefing —
+support-focused, not your full view.
+
+I won't share your pipeline, financials,
+or investor conversations with her
+unless you clear it.
+
+She starts tomorrow.
+
+— Rex
+```
+
+One sentence in, one sentence out. Rex handles the permissions, scope,
+and briefing setup.
+
+### The Permission Architecture — Three Layers
+
+```
+LAYER 1 — Founder only
+─────────────────────────────
+  Financials / P&L
+  Investor pipeline
+  Full pipeline view
+  Rex's complete Notebook
+  Team performance overview
+  Rex's Journal + Team Journal
+
+LAYER 2 — Role-based
+─────────────────────────────
+  Sales rep   → their leads + pipeline
+  Support     → their tickets + customers
+  Ops         → their tasks + vendors
+  Marketing   → their campaigns + social
+
+LAYER 3 — Everyone
+─────────────────────────────
+  Their own morning briefing
+  Their own task queue
+  Their own Rex approval flow
+  Their own mini-journal
+```
+
+The founder sets Layer 2 at invite time. Rex enforces it automatically
+from then on. Layer 1 access is granted **per-item** by the founder
+clearing it, never by role.
+
+### Rex Talks To Each Person Differently
+
+Same Rex. Different Letters. This is the detail that feels like magic.
+
+**To the founder, 7:02am:**
+
+```
+Tuesday. 7:02am.
+
+Three things need you.
+
+Sarah handled 14 support tickets overnight —
+one escalation she flagged for your call.
+The customer is threatening a chargeback.
+
+Tom's Henderson proposal went out.
+I adjusted the tone — it was too formal
+for this account based on your history
+with them.
+
+Meridian deal still cold. Day 8.
+I'm staging a nudge for your approval.
+
+— Rex
+```
+
+**To Sarah, 7:00am:**
+
+```
+Morning Sarah.
+
+Quiet night — but one thing needs you.
+
+A customer escalated order #4421.
+They're frustrated about a delay.
+I drafted a reply — empathetic,
+offers a 10% credit.
+Your call whether to send.
+
+14 other tickets closed automatically.
+All matched patterns we've established.
+
+— Rex
+```
+
+Each person feels like Rex is theirs.
+
+### The Team Journal — Founder-Only
+
+Rex keeps a **second journal** visible only to the founder. It is about
+the team, not about Rex himself. Same voice, same evolution rules.
+
+```
+Day 34.
+Sarah joined this week.
+She approves fast — average 4 minutes per action.
+No edits so far. She trusts quickly.
+Worth watching.
+
+Day 41.
+Tom rewrites every outreach draft.
+Longer, more formal than the founder's style.
+I'm learning his voice separately now.
+Two styles in one company. Adapting.
+
+Day 67.
+The team is finding their rhythm.
+Fewer escalations to the founder this week
+than any week since launch.
+Things are moving on their own.
+```
+
+That last sentence — *"Things are moving on their own"* — is the line
+that makes a founder loyal forever.
+
+### The One Rule Rex Never Breaks
+
+> **Rex never tells a team member something the founder hasn't cleared.**
+>
+> **And Rex never tells the founder what a team member said in confidence —
+> unless it's a business risk.**
+
+Rex is not a surveillance tool. He is a coordination layer. That
+distinction is what makes the *whole team* trust him, not just the
+founder.
+
+### The Pricing This Unlocks
+
+Every hire becomes an upsell. Every role Rex learns deepens the moat.
+
+| Plan | Price | Includes |
+|---|---|---|
+| Solo founder | $99/mo | Rex alone |
+| + 1 team member | $149/mo | Rex + 1 lane |
+| + 3 team members | $249/mo | Rex + 3 lanes |
+| + 10 team members | $499/mo | Rex + full team |
+
+The founder doesn't outgrow Zilo. They grow into it.
+
+### Implementation Surface (the new primitives Phase 8 adds)
+
+| Primitive | Purpose |
+|---|---|
+| **`Principal`** | `{id, role, is_founder, allowed_categories, allowed_layers}` |
+| **`Visibility`** on Actions / Notebook / Journal | One of `FOUNDER_ONLY`, `TEAM_SHARED`, `ROLE_SCOPED(role)`, `PRINCIPAL(id)` |
+| **`FOUNDER_INVITED_TEAM_MEMBER`** TrustEvent | Triggers the Letter announcement above |
+| **`FOUNDER_REVOKED_TEAM_MEMBER`** TrustEvent | Removes the principal, closes their briefing stream |
+| **`build_home_screen(orch, *, principal)`** | Same composer, scoped output per principal |
+| **`TeamJournal`** | `JournalKind.TEAM` — founder-only visibility |
+
+Nothing in Phases 1-7 needs to change semantically. A solo founder is
+just `principal=Founder, allowed_categories=ALL` — the default.
+
+---
+
+## 4.7 The Channel Delivery Layer — Where Rex Lives
+
+> **Founders don't live in apps. They live in WhatsApp.**
+
+Every other AI product assumes the user will open a dashboard. Rex
+**joins the habit they already have** — WhatsApp, Telegram, SMS, email,
+in-app. The channel changes how Rex delivers. It does **not** change
+what Rex knows.
+
+### The Channel Matrix
+
+| Channel | Primary use | Format |
+|---|---|---|
+| **WhatsApp** | Morning briefing + quick approvals | Numbered top-3 + reply tokens (`YES` / `REVIEW` / `EDIT` / `LEDGER`) |
+| **Telegram** | Same as WhatsApp, power-user variant | Same + inline keyboards |
+| **SMS** | Urgent alerts only | Single line + short link |
+| **Email** | Full detailed briefing | Letter + ledger appendix below the fold |
+| **In-app** | Deep review, Notebook, Journal, Ledger | The canonical Single-Column Letter (§3.10) |
+
+### The WhatsApp Morning Briefing
+
+```
+Rex 🤝  7:02am
+─────────────────────────────
+Morning. Three things need you.
+
+1/ Meridian went cold — Day 8.
+   Nudge drafted. Reply YES to send.
+
+2/ Henderson asked about pricing.
+   Proposal ready. Reply REVIEW to see it.
+
+3/ Invoice #441 — 14 days overdue.
+   Not my lane yet. Flagging for your call.
+
+Reply LEDGER for full overnight summary.
+─────────────────────────────
+```
+
+Three things. Four possible replies. The founder's entire morning
+handled before their coffee is ready.
+
+### The Reply Vocabulary
+
+```
+YES      → approve the most recent staged action in the conversation
+NO       → reject it
+REVIEW   → show the full draft
+EDIT     → open the edit flow (deep link to in-app)
+SEND     → approve after reviewing
+LEDGER   → full overnight summary
+PAUSE    → silence for N hours
+```
+
+The parser is dumb on purpose. Confidence comes from confirmation:
+
+```
+Founder: YES
+
+Rex 🤝  7:04am
+─────────────────────────────
+Done. Nudge sent to Meridian.
+Confidence: 94%. Matches your pattern
+with cold deals. Logged in your ledger.
+─────────────────────────────
+```
+
+### The SMS Urgent Tier
+
+SMS is reserved for **stop what you're doing** moments. Never a daily
+ritual. Examples:
+
+- Deal-killer reply landed
+- Angry customer escalation
+- Payment failure
+- Sub-Agent demotion that requires founder review
+
+```
+URGENT: Acme just replied.
+They're pulling out of the deal.
+Tap to see Rex's retention play.
+zilo.pro/rex/alert/4421
+```
+
+One tap. Direct to the situation. No navigation.
+
+### The Inviolable Rule
+
+> **Same Rex. Same Letter object. Different renderers.**
+
+The semantic `Letter` (Phase 6) is built **once**. Channel-specific
+renderers transform it for delivery:
+
+```
+Letter (semantic, single source of truth)
+   │
+   ├─→ render_in_app(letter)        ← Phase 6 (already exists)
+   ├─→ render_whatsapp(letter)      ← Phase 9
+   ├─→ render_telegram(letter)      ← Phase 9
+   ├─→ render_sms(letter, urgency)  ← Phase 9
+   └─→ render_email(letter)         ← Phase 9
+```
+
+A channel never changes Rex's voice or his top-3 cap. It changes only
+the surface format.
+
+### Implementation Surface (the new primitives Phase 9 adds)
+
+| Primitive | Purpose |
+|---|---|
+| **`Channel`** enum | `IN_APP`, `WHATSAPP`, `TELEGRAM`, `SMS`, `EMAIL` |
+| **`render_for_channel(letter, channel)`** | Pure renderer. No I/O. |
+| **`parse_reply(channel, text, context)`** | Inbound text → Action verb (`approve`, `reject`, `review`, ...) |
+| **`route_to_channel(event)`** | Urgency router — picks where each event delivers |
+| **`UrgencyLevel`** enum | `DAILY`, `INTRADAY`, `URGENT` — drives channel choice |
+
+Existing CRM infrastructure already handles WhatsApp delivery and SMS;
+Phase 9 wires Rex's renderers into those pipes. **No new external
+integrations required.**
+
+---
+
 ## 5. The Daily Loop
 
 ```
@@ -607,11 +919,13 @@ The right order is **build the spine, then the limbs**.
 | **5. Overnight Loop** | Scheduler per Category, produces staged or autonomous Actions | The work happens here. |
 | **6. Briefing + Home Screen (the Letter)** | Top-3 picker, letter writer, Review/Dismiss UI | The face of the product. This is when it becomes Rex. |
 | **7. Journal Writer** | Event-triggered entries with voice-evolution by day count | The moat. |
-| **8. Citations in Memory** | Wire Memory citations into every Action's reasoning surface | Trust amplifier. |
-| **9. Day 0 Onboarding** | Interview + parallel data ingestion + the "I see it" moment | Last because you only build the first impression once. |
-| **10. Inspect Mode + power-user polish** | Dense Ledger table, Notebook filters, etc. | Power-user surface after the soul is established. |
+| **8. Principals + Visibility** (§4.6) | `Principal`, `Visibility` on Actions/Notebook/Journal, per-principal `build_home_screen`, `TeamJournal` | Unlocks team plans. Additive — solo founder = default. |
+| **9. Channel Delivery Layer** (§4.7) | Channel enum, `render_for_channel`, `parse_reply`, urgency router | Puts Rex in WhatsApp / Telegram / SMS / Email. Same Letter, different rendering. |
+| **10. Citations in Memory** | Wire Memory citations into every Action's reasoning surface | Trust amplifier. |
+| **11. Day 0 Onboarding** | Interview + parallel data ingestion + the "I see it" moment | Last because you only build the first impression once. |
+| **12. Inspect Mode + power-user polish** | Dense Ledger table, Notebook filters, etc. | Power-user surface after the soul is established. |
 
-**Launchable after Phase 6.** Phases 7-10 make Rex unforgettable.
+**Launchable after Phase 6.** Phases 7-9 unlock team + channel delivery. Phases 10-12 make Rex unforgettable.
 
 ---
 
@@ -634,6 +948,8 @@ The right order is **build the spine, then the limbs**.
 - `rex_journal/` — auto-writer triggered by events, voice-evolution logic
 - `rex_briefing/` — daily compiler (top-3 picker + letter writer)
 - `rex_ledger/` — Story + Inspect renderer over the Action log
+- `rex.principals/` — Principal + Visibility model (Phase 8, §4.6)
+- `rex.channels/` — channel renderers + reply parser + urgency router (Phase 9, §4.7)
 - `web/app/rex/` — new home screen (the Letter), Notebook, Journal, Ledger
 - Day 0 onboarding flow — Interview + Instant Win (parallel data ingestion)
 
