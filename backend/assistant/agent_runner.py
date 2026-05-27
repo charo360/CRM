@@ -120,6 +120,43 @@ def _extract_text_from_steps(steps: List[Dict[str, Any]]) -> str:
     return ""
 
 
+def _summarize_last_step(last_step: Dict[str, Any]) -> str:
+    """Honest fallback summary when the LLM didn't emit a final reply but at
+    least one tool ran successfully. Tries to surface concrete counts/IDs from
+    the result instead of fabricating a generic apology."""
+    tool = last_step.get("tool") or "the action"
+    result = last_step.get("result") or {}
+    if not isinstance(result, dict):
+        return f"Done — `{tool}` completed."
+
+    # Specific shapes we recognise (extend as more tools surface this issue).
+    if "trashed_count" in result:
+        n = result.get("trashed_count") or 0
+        q = result.get("query")
+        if q:
+            return f"Done — moved **{n}** thread(s) matching `{q}` to Trash."
+        return f"Done — moved **{n}** thread(s) to Trash."
+    if result.get("status") == "sent" and result.get("message_id"):
+        return "Done — email sent."
+    if result.get("status") == "trashed":
+        return "Done — moved to Trash."
+    if result.get("status") == "created" and result.get("event_id"):
+        return "Done — calendar event created."
+    if result.get("status") == "updated" and result.get("event_id"):
+        return "Done — calendar event updated."
+    if result.get("status") == "deleted":
+        return "Done — deleted."
+    if result.get("status") == "draft_saved":
+        return "Done — draft saved."
+    if "count" in result and isinstance(result.get("count"), int):
+        return f"Done — found {result['count']} item(s)."
+
+    # Generic fall-through: name the tool and signal success.
+    if result.get("success") or result.get("status"):
+        return f"Done — `{tool}` completed."
+    return f"`{tool}` finished but produced no message to show."
+
+
 def _needs_continuation(steps: List[Dict[str, Any]], *, agent_id: str) -> bool:
     if not steps:
         return False
@@ -382,14 +419,21 @@ async def run_agent_stream(
                 logger.warning("[agent_runner] document auto-plan failed: %s", exc)
     if not result_text:
         if steps:
-            last_result = steps[-1].get("result") or {}
+            last_step = steps[-1]
+            last_result = last_step.get("result") or {}
             if isinstance(last_result, dict) and last_result.get("error"):
                 result_text = f"I ran into an issue: {last_result['error']}"
-            else:
+            elif agent_id == "document":
+                # Document-agent-specific recovery: it really might be mid-draft.
                 result_text = (
                     "I pulled your business data but didn't finish the document yet. "
                     "Say **continue** and I'll draft and export it now."
                 )
+            else:
+                # Generic fallback for other agents: don't fabricate a
+                # document-related message. Summarise the last tool's result
+                # honestly so the user knows what actually happened.
+                result_text = _summarize_last_step(last_step)
         else:
             result_text = "I couldn't complete that request — please try again or rephrase."
 
