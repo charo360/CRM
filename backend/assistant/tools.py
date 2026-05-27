@@ -9813,38 +9813,46 @@ async def list_outlook_calendars(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_outlook_calendar_events(ctx: ToolContext, args: Dict[str, Any]):
+    """Microsoft Graph rejects most OData filters on event start/end (works
+    only via the separate calendarView endpoint, which Composio doesn't
+    expose). We fetch a sorted batch and filter client-side."""
     from composio_service import execute_action
+    # Fetch more than asked so we have room to filter
+    requested = min(int(args.get("max_results") or 25), 100)
+    fetch_n = min(requested * 3, 250) if (args.get("time_min") or args.get("time_max")) else requested
     action_args: Dict[str, Any] = {
         "user_id": "me",
-        "top":     min(int(args.get("max_results") or 25), 100),
+        "top":     fetch_n,
         "orderby": ["start/dateTime asc"],
         "expand_recurring_events": True,
     }
     if args.get("timezone"):
         action_args["timezone"] = args["timezone"]
-    # OData filter for date range
-    filters = []
-    if args.get("time_min"):
-        filters.append(f"start/dateTime ge '{args['time_min']}'")
-    if args.get("time_max"):
-        filters.append(f"end/dateTime le '{args['time_max']}'")
-    if filters:
-        action_args["filter"] = " and ".join(filters)
 
     r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", action_args)
     if "error" in r and not r.get("success"):
         return {"error": r["error"]}
     inner = _outlook_response_data(r)
     raw = inner.get("value") or inner.get("events") or inner.get("items") or []
+
+    # Client-side date filtering (strip Z for naive compare)
+    tmin = (args.get("time_min") or "").rstrip("Z") or None
+    tmax = (args.get("time_max") or "").rstrip("Z") or None
     events = []
     for e in raw:
         if not isinstance(e, dict):
             continue
+        start_dt = ((e.get("start") or {}).get("dateTime") or "").rstrip("Z")
+        end_dt = ((e.get("end") or {}).get("dateTime") or "").rstrip("Z")
+        if tmin and end_dt and end_dt < tmin:
+            continue
+        if tmax and start_dt and start_dt > tmax:
+            continue
         events.append({
             "event_id":  e.get("id"),
             "subject":   e.get("subject"),
-            "start":     (e.get("start") or {}).get("dateTime"),
-            "end":       (e.get("end") or {}).get("dateTime"),
+            "start":     start_dt,
+            "end":       end_dt,
             "timezone":  (e.get("start") or {}).get("timeZone"),
             "location":  (e.get("location") or {}).get("displayName"),
             "is_online": e.get("isOnlineMeeting", False),
@@ -9853,6 +9861,8 @@ async def list_outlook_calendar_events(ctx: ToolContext, args: Dict[str, Any]):
             "organizer": ((e.get("organizer") or {}).get("emailAddress") or {}).get("address"),
             "web_link":  e.get("webLink"),
         })
+        if len(events) >= requested:
+            break
     return {"count": len(events), "events": events}
 
 
@@ -9860,7 +9870,10 @@ async def list_outlook_calendar_events(ctx: ToolContext, args: Dict[str, Any]):
     name="create_outlook_calendar_event",
     description=(
         "Create an Outlook / Microsoft 365 calendar event. Set is_online_meeting=true to "
-        "attach a Microsoft Teams meeting link automatically. Datetimes are ISO 8601 (UTC) "
+        "attach a Microsoft Teams meeting link automatically. "
+        "NOTE: Teams meetings only work on Microsoft 365 Business / Enterprise accounts — "
+        "consumer outlook.com / hotmail.com / live.com accounts silently ignore "
+        "is_online_meeting (no Teams license). Datetimes are ISO 8601 (UTC) "
         "or local time with explicit timezone."
     ),
     parameters={
@@ -10030,6 +10043,17 @@ async def find_outlook_free_slots(ctx: ToolContext, args: Dict[str, Any]):
     from composio_service import execute_action
     tz = (args.get("timezone") or "UTC").strip()
     emails = _split_csv(args["schedules"]) or ["me"]
+    # Microsoft Graph GetSchedule needs actual email addresses, NOT 'me'.
+    # If the caller passed 'me' (or it's the default), resolve it via the profile.
+    if any(e.lower() == "me" for e in emails):
+        prof = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_PROFILE", {"user_id": "me"})
+        if not (prof.get("success") and prof.get("data")):
+            return {"error": "Could not resolve 'me' to a real email. Pass schedules='actual@email.com'."}
+        prof_inner = prof["data"].get("response_data") or prof["data"]
+        my_email = prof_inner.get("mail") or prof_inner.get("userPrincipalName")
+        if not my_email:
+            return {"error": "Profile lookup returned no email. Pass schedules='actual@email.com'."}
+        emails = [my_email if e.lower() == "me" else e for e in emails]
     r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_SCHEDULE", {
         "user_id":   "me",
         "Schedules": emails,
@@ -10039,13 +10063,25 @@ async def find_outlook_free_slots(ctx: ToolContext, args: Dict[str, Any]):
     })
     if "error" in r and not r.get("success"):
         return {"error": r["error"]}
+    # GetSchedule has an extra layer of wrapping vs other Outlook actions:
+    # {data: {data: {value: [...]}}}
     inner = _outlook_response_data(r)
+    if isinstance(inner.get("data"), dict):
+        inner = inner["data"]
     schedules = inner.get("value") or inner.get("schedules") or []
-    out = {}
+    out: Dict[str, Any] = {}
+    unavailable: Dict[str, str] = {}
     for s in schedules:
         if not isinstance(s, dict):
             continue
         email = s.get("scheduleId") or s.get("email")
+        if not email:
+            continue
+        # Per-schedule error (common for consumer outlook.com addresses
+        # that don't support free/busy lookup)
+        if isinstance(s.get("error"), dict):
+            unavailable[email] = s["error"].get("message", "unknown")
+            continue
         busy = []
         for b in (s.get("scheduleItems") or []):
             if not isinstance(b, dict):
@@ -10055,9 +10091,15 @@ async def find_outlook_free_slots(ctx: ToolContext, args: Dict[str, Any]):
                 "end":    (b.get("end") or {}).get("dateTime"),
                 "status": b.get("status"),
             })
-        if email:
-            out[email] = busy
-    return {"time_min": args["time_min"], "time_max": args["time_max"], "busy_by_email": out}
+        out[email] = busy
+    result: Dict[str, Any] = {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "busy_by_email": out,
+    }
+    if unavailable:
+        result["unavailable"] = unavailable
+    return result
 
 
 @tool(
@@ -10078,40 +10120,54 @@ async def find_outlook_free_slots(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def find_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    """Microsoft Graph's OData contains() on subject isn't reliably supported
+    via this Composio action, so we fetch a sorted batch and substring-match
+    subjects client-side."""
     from composio_service import execute_action
     q = (args.get("query") or "").strip()
     if not q:
         return {"error": "query is required"}
-    # Compose OData filter: contains(subject, 'q') + optional date bounds
-    parts = [f"contains(tolower(subject), '{q.lower().replace(chr(39), chr(39)+chr(39))}')"]
-    if args.get("time_min"):
-        parts.append(f"start/dateTime ge '{args['time_min']}'")
-    if args.get("time_max"):
-        parts.append(f"end/dateTime le '{args['time_max']}'")
+    q_lower = q.lower()
+    requested = min(int(args.get("max_results") or 10), 50)
+    # Pull a wider window so client-side filter has something to find
     r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", {
         "user_id": "me",
-        "top": min(int(args.get("max_results") or 10), 50),
-        "filter": " and ".join(parts),
-        "orderby": ["start/dateTime asc"],
+        "top": 100,
+        "orderby": ["start/dateTime desc"],  # bias toward recent
         "expand_recurring_events": True,
     })
     if "error" in r and not r.get("success"):
         return {"error": r["error"]}
     inner = _outlook_response_data(r)
     raw = inner.get("value") or inner.get("events") or []
+
+    tmin = (args.get("time_min") or "").rstrip("Z") or None
+    tmax = (args.get("time_max") or "").rstrip("Z") or None
+
     events = []
     for e in raw:
         if not isinstance(e, dict):
             continue
+        subject = e.get("subject") or ""
+        if q_lower not in subject.lower():
+            continue
+        start_dt = ((e.get("start") or {}).get("dateTime") or "").rstrip("Z")
+        end_dt = ((e.get("end") or {}).get("dateTime") or "").rstrip("Z")
+        if tmin and end_dt and end_dt < tmin:
+            continue
+        if tmax and start_dt and start_dt > tmax:
+            continue
         events.append({
             "event_id":  e.get("id"),
-            "subject":   e.get("subject"),
-            "start":     (e.get("start") or {}).get("dateTime"),
-            "end":       (e.get("end") or {}).get("dateTime"),
+            "subject":   subject,
+            "start":     start_dt,
+            "end":       end_dt,
             "location":  (e.get("location") or {}).get("displayName"),
             "attendees": [(a.get("emailAddress") or {}).get("address") for a in (e.get("attendees") or [])],
             "web_link":  e.get("webLink"),
         })
+        if len(events) >= requested:
+            break
     return {"query": q, "count": len(events), "events": events}
 
 
