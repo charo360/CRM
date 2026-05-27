@@ -16,6 +16,14 @@ If a decision conflicts with this doc, this doc wins — or the doc gets updated
 Not a CRM. Not a chat assistant. Not a copilot.
 **A teammate with a name, memory, and a job.**
 
+### The One-Line Product Explainer
+
+> **"You trust Rex. Rex trusts his team. Nothing moves without that chain."**
+
+This is the onboarding screen, the investor pitch, and the answer to
+*"how is this different from every other AI agent platform?"* — all in one
+sentence. The full mechanics are in §4.5.
+
 ---
 
 ## 2. The Soul Sentence
@@ -280,18 +288,74 @@ user never picks an agent. Rex picks for them.
 | **Operations Team** | Scout, Pulse, Radar, Funding-watch, Ad-watch, Daily Analyzer, Smart Notes | Watch, hunt, monitor on the user's behalf overnight and during the day | `backend/scout_service.py`, `funding_finder.py`, `ad_health_monitor.py`, `daily_analyzer.py`, `lead_scout_worker.py`, etc. |
 | **Customer Service Team** | Sales, Orders, Payments, Bookings, Complaints, Support, Personal, Gmail-Filter, Chat | Talk to the user's customers (DMs, sales convos, payment confirmations, support) | `backend/agents/` (with `router.py` + `intent_analyzer.py`) |
 
-### The Ranks Apply to Sub-Agents Too
+### The Trust Chain Is Two Levels — Never Three
 
-Every Sub-Agent has its own Rank in its Category, on the same five-level
-ladder Rex uses. Scout might be `Sender` on `Leads`. Pulse might be
-`Operator` on `Pipeline`. Payments might be `Drafter` on `Order Payments`
-forever, because money is sacred.
+**The user does not touch Sub-Agent ranks directly. That is the entire point.**
 
-The user can promote or demote any Sub-Agent individually, but the action
-is framed in Rex's voice:
+```
+USER
+  │  promotes / demotes Rex per Category
+  │  approves Rex's recommendations for his team
+  ▼
+REX
+  │  promotes his team WITH user approval
+  │  demotes his team UNILATERALLY (safety move)
+  ▼
+SUB-AGENTS  (Scout, Pulse, Sales, Orders, ...)
+```
 
-> *"Rex promoted Scout to Operator on Leads."*
-> *"Rex pulled Payments back to Drafter after the Henderson flag. Rebuilding."*
+**The one-line product explainer:**
+> *"You trust Rex. Rex trusts his team. Nothing moves without that chain."*
+
+### The Promotion / Demotion Asymmetry
+
+Rex has different power in each direction, by design:
+
+| Direction | Who decides | Why |
+|---|---|---|
+| **Promote a Sub-Agent ↑** | User must approve Rex's recommendation. | Expanding autonomy carries risk to the user — they sign off. |
+| **Demote a Sub-Agent ↓** | Rex alone, then reports it to the user. | Tightening safety must always be available without latency. |
+
+A real Chief of Staff can sideline a teammate at noon. They cannot give
+them a raise without the founder. The system mirrors that exactly.
+
+**Fail-safe property:** when something goes wrong the safety move is always
+one event away. When something is going right the user is always in the
+loop before autonomy grows.
+
+### How Rex Recommends a Promotion
+
+Each Sub-Agent has a trust score (computed internally from outcomes,
+approval rates, edit distance, and error count — see Phase 2 spec). When
+that score crosses a threshold for the next rank, Rex compiles a
+*recommendation* and adds it to the user's pending-approval slot on the
+Team page. Phrased in Rex's voice:
+
+> *"Scout has found 14 leads this month. You acted on 11. I'd like to give Scout direct send access on outreach. Your call."*
+
+The user has three responses: `[Approve]`, `[Defer]`, `[Ask Rex why]`.
+
+### How Rex Demotes One of His Own
+
+Rex emits the demotion as a Trust Event, applies it immediately, and
+reports it in the next briefing or journal entry. The user does not
+need to be asked first — they can always ask Rex to reverse it, but the
+demotion stands until they do.
+
+**Example journal entries** (Phase 7 will generate these automatically):
+
+> *Day 34.*
+> *Recommended Scout for Sender on outreach.*
+> *They approved in 4 minutes.*
+> *That's trust moving in the right direction.*
+
+> *Day 47.*
+> *Pulled Payments back to Drafter on order payments.*
+> *Misclassified two invoices this week. My judgment, not theirs.*
+> *Rebuilding from here.*
+
+The second entry is the move. Rex taking responsibility for his team's
+mistakes is what makes the user feel they hired the right person.
 
 ### The One Rule: Rex Always Speaks for Them
 
@@ -313,37 +377,49 @@ operation feel bigger, not more confusing:
 The word `my` is the move. It implies team without listing teammates.
 Use sparingly — once a week, not once a day.
 
-### The Rex's Team Page (Tucked, Not Featured)
+### The Rex's Team Page (Status + Approval Inbox)
 
 There is **one** screen in the product where Sub-Agents become visible.
 It is not the home screen. It lives behind a "Rex's Team" or "Settings →
 Rex" link, intentionally low-traffic. Visiting it should feel like seeing
 the org chart of a company you already trust — not like managing a tool.
 
+Under the two-level trust chain, this page has **no toggles, no settings,
+no per-agent management**. It has exactly two things: status, and Rex's
+pending recommendations.
+
 ```
-────────────────────────────────────────────────
+────────────────────────────────────────────────────────────
   REX'S TEAM
   Deployed on your behalf.
 
   Operations
-  ─────────────────────────────────
-  Scout        Sender    · Leads
-  Pulse        Operator  · Pipeline
-  Radar        Observer  · Competitors
-  Funding      Observer  · Investors
-  Ad-watch     Drafter   · Meta Ads
+  ─────────────────────────────────────────────────────
+  Scout       Sender · Leads          [ all clean ]
+  Pulse       Operator · Pipeline     [ all clean ]
+  Radar       Observer · Competitors  [ all clean ]
+  Funding     Observer · Investors    [ all clean ]
+  Ad-watch    Drafter · Meta Ads      ⚑ Rex recommends Sender
 
   Customer Service
-  ─────────────────────────────────
-  Sales        Drafter   · Outreach
-  Orders       Sender    · Order Confirmations
-  Payments     Drafter   · Order Payments  (on probation)
-  Bookings     Operator  · Reservations
-  Support      Sender    · Customer Replies
+  ─────────────────────────────────────────────────────
+  Sales       Drafter · Outreach        [ all clean ]
+  Orders      Sender · Order Confirms   [ all clean ]
+  Payments    Drafter · Payments        ⚐ On probation (Day 47)
+  Bookings    Operator · Reservations   [ all clean ]
+  Support     Sender · Customer Replies [ all clean ]
 
-  Click any agent to see their work.
-────────────────────────────────────────────────
+  Rex's recommendations:
+  ─────────────────────────────────────────────────────
+  ⚑ Promote Ad-watch to Sender on Meta Ads.
+    Reason: 14 alerts surfaced this month, all approved.
+    Edit distance on suggested actions: 3%.
+    [Approve] · [Defer] · [Ask Rex why]
+────────────────────────────────────────────────────────────
 ```
+
+The only interactive elements on this page are the buttons in the
+*Rex's recommendations* section. Everything else is read-only status.
 
 ### Why This Matters
 
