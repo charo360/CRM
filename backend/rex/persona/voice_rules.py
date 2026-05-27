@@ -65,8 +65,10 @@ _HEDGING_PHRASES: tuple[str, ...] = (
     "it seems like",
     "it appears that",
     "i'm not sure",
-    "if you'd like",
-    "if you want",
+    # "if you'd like" / "if you want" intentionally NOT in this list:
+    # they false-positive on legitimate offers ("Full ledger below if you
+    # want it." per REX.md §3.10). Real hedging is caught by "i'd suggest",
+    # "perhaps you could", "maybe we could", etc.
     "perhaps you could",
     "maybe we could",
     "kind of",
