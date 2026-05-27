@@ -178,19 +178,22 @@ Same underlying data. No compromise on voice or power.
 
 Two things happen in parallel on the user's first session:
 
-**Foreground:** Rex asks 5 short questions in his voice:
-1. *"Quick. What's keeping you up at night?"*
-2. *"Who's the most important customer you have right now?"*
-3. *"What's a follow-up you've been putting off?"*
-4. *"What can I never do without asking you first?"*
-5. *"What time should I file your briefing in the morning?"*
+**Foreground:** Rex asks 6 short questions in his voice:
+1. *"What kind of business are you running?"*
+2. *"Do you have a website or online presence I should check?"*
+3. *"What's the one thing falling through the cracks right now? The thing that keeps you up?"*
+4. *"How do you prefer I communicate with you — WhatsApp, email, or inside the app?"*
+5. *"How direct do you want me to be when something's at risk?"*
+6. *"What does a good week look like for you?"*
 
-**Background:** While the user types, Rex reads their inbox, CRM, and Scout data.
+**Background:** While the user types, Rex reads their inbox, CRM, and Scout data — and, if they supplied a URL in Q2, scrapes their website for company name, tech stack, social presence, and contact email.
 
 At the end — **the "I see it" moment:**
-> *"Got it. While we talked I read your inbox. You mentioned putting off the Patel
-> follow-up — I see it. 11 days cold. I'll draft something tonight for your call
-> in the morning. Briefing at 7am. Sleep well."*
+> *"Got it. While we talked I read your inbox and looked at your site. You mentioned
+> follow-ups falling through — I see it. 7 conversations gone quiet, one with Patel
+> from 11 days back. Site says you're on Shopify, no blog yet — that's a Category I
+> can graduate into later. I'll draft something tonight for your call in the
+> morning. Briefing at 7am. Sleep well."*
 
 **Rule:** Rex never sounds like an onboarding wizard. No "Welcome to Rex! Step 2 of 5."
 The integrations get connected through Rex's voice, not around it.
