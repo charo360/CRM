@@ -48,6 +48,7 @@ from rex.loop.routing import (
     decide_route,
 )
 from rex.memory.notebook import Notebook
+from rex.memory.citations import scan_and_attach_citations
 from rex.ranks.engine import RankEngine
 from rex.ranks.events import EventType, Rank, TrustEvent
 from rex.ranks.store import EventStore, InMemoryEventStore
@@ -190,6 +191,20 @@ class Orchestrator:
 
         for producer in self._producers:
             for action in producer.produce(context=context):
+                # Phase 10: Auto-Citation Scanning on Proposal
+                # If the proposed action doesn't already have manually specified citation IDs,
+                # we run the auto-citation scanner and attach matching entries dynamically.
+                if not action.memory_citation_ids:
+                    from dataclasses import replace
+                    matching_ids = scan_and_attach_citations(
+                        summary=action.summary,
+                        category=action.category,
+                        target_subject=action.target_subject,
+                        notebook=self.notebook,
+                    )
+                    if matching_ids:
+                        action = replace(action, memory_citation_ids=matching_ids)
+
                 proposed += 1
                 by_actor[action.actor_name] = by_actor.get(action.actor_name, 0) + 1
                 self.ledger.record_proposal(action)
