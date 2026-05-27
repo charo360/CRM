@@ -355,13 +355,25 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
     ],
     "gmail": [
         "gmail", "google mail", "my email", "email inbox",
-        "send email", "email campaign", "email thread",
-        "gmail draft", "gmail label",
+        "send email", "email thread", "gmail draft", "gmail label",
+        # Inbox cleanup — disambiguates from broadcasts/email-marketing,
+        # which kept stealing requests like "delete my promotions"
+        "delete email", "delete emails", "trash email", "trash emails",
+        "clean inbox", "clean up inbox", "clean my inbox", "empty inbox",
+        "delete promotions", "delete promotional emails", "trash promotions",
+        "delete newsletters", "trash newsletters", "unsubscribe newsletter",
+        "remove emails from", "delete emails from", "bulk delete email",
+        "delete spam", "trash spam", "my gmail",
     ],
     "microsoft": [
         "microsoft", "outlook", "office 365", "microsoft teams",
         "onedrive", "sharepoint", "microsoft calendar",
         "outlook email", "outlook calendar", "ms teams",
+        # Outlook inbox cleanup (mirrors Gmail to keep parity)
+        "delete outlook email", "delete outlook emails", "trash outlook email",
+        "clean outlook inbox", "clean up outlook", "empty outlook inbox",
+        "delete outlook promotions", "delete outlook newsletters",
+        "my outlook", "outlook inbox", "ms 365 inbox",
     ],
     "google_calendar": [
         "google calendar", "calendar event", "my calendar",

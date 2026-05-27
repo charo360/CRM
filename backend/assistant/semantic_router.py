@@ -389,6 +389,17 @@ AGENT_PHRASES: Dict[str, List[str]] = {
         "send email via Gmail",
         "Gmail draft",
         "email inbox Google",
+        # Inbox cleanup — without these, requests like "delete my promotions"
+        # got routed to broadcasts/email-marketing instead of Gmail
+        "delete promotional emails from Gmail",
+        "trash all newsletters in Gmail",
+        "clean up my Gmail inbox",
+        "delete emails from a sender",
+        "bulk delete Gmail messages",
+        "empty Gmail promotions tab",
+        "unsubscribe and trash newsletter emails",
+        "remove old emails from Gmail",
+        "Gmail trash thread or message",
     ],
     "google_calendar": [
         "Google Calendar event",
@@ -396,6 +407,20 @@ AGENT_PHRASES: Dict[str, List[str]] = {
         "create calendar event",
         "Google Calendar invite",
         "upcoming meetings calendar",
+    ],
+    "microsoft": [
+        "Outlook inbox",
+        "Microsoft 365 email",
+        "send email via Outlook",
+        "Outlook draft",
+        "Outlook calendar event",
+        "schedule meeting Outlook calendar",
+        "Microsoft Teams meeting",
+        "delete Outlook promotional emails",
+        "clean up Outlook inbox",
+        "bulk delete Outlook messages",
+        "trash newsletters in Outlook",
+        "Outlook free busy availability",
     ],
     "slack": [
         "Slack notification",
