@@ -49,8 +49,9 @@ from rex.loop.routing import (
 )
 from rex.memory.notebook import Notebook
 from rex.ranks.engine import RankEngine
-from rex.ranks.events import TrustEvent
+from rex.ranks.events import EventType, Rank, TrustEvent
 from rex.ranks.store import EventStore, InMemoryEventStore
+from rex.principals import Principal, PrincipalRegistry, Role
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,10 @@ class Orchestrator:
         self.engine: RankEngine = RankEngine.from_events(self.event_store)
         self.policy: RoutingPolicy = policy
 
+        # Rebuild principal registry from EventStore replay (event-sourced truth)
+        self.registry = PrincipalRegistry()
+        self._replay_registry_events()
+
         self._producers: list[ActionProducer] = []
         self._executors: list[ActionExecutor] = []
         # Track which SENT actions have already had a CLEAN_SEND emitted —
@@ -134,6 +139,32 @@ class Orchestrator:
         for e in events:
             self.event_store.append(e)
             self.engine.apply(e)
+            self._apply_registry_event(e)
+
+    def _replay_registry_events(self) -> None:
+        for e in self.event_store.all_events():
+            self._apply_registry_event(e)
+
+    def _apply_registry_event(self, e: TrustEvent) -> None:
+        if e.type is EventType.FOUNDER_INVITED_TEAM_MEMBER:
+            # Parse reason format e.g. "role:sales;cats:outreach,replies;id:sarah-1"
+            parts = dict(pair.split(":", 1) for pair in e.reason.split(";"))
+            role_str = parts.get("role", "sales").upper()
+            role = Role[role_str]
+            cats = [c.strip() for c in parts.get("cats", "").split(",") if c.strip()]
+            pid = parts.get("id", "team-id")
+            p = Principal.team_member(
+                id=pid,
+                name=e.actor_name,
+                role=role,
+                allowed_categories=cats,
+            )
+            self.registry.register(p)
+        elif e.type is EventType.FOUNDER_REVOKED_TEAM_MEMBER:
+            parts = dict(pair.split(":", 1) for pair in e.reason.split(";"))
+            pid = parts.get("id")
+            if pid:
+                self.registry.remove(pid)
 
     # ------------------------------------------------------------------
     # The overnight loop

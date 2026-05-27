@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from rex.ranks.events import Rank
+from rex.principals.visibility import Visibility, visibility_founder_only
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +159,9 @@ class Action:
     memory_citation_ids: tuple[str, ...] = ()    # NotebookEntry ids
     source_event_ids: tuple[str, ...] = ()       # TrustEvents that triggered
 
+    # Phase 8: Two-Sided Loyalty
+    visibility: Visibility = field(default_factory=lambda: visibility_founder_only)
+
     @classmethod
     def propose(
         cls,
@@ -173,6 +177,7 @@ class Action:
         target_subject: str | None = None,
         memory_citation_ids: tuple[str, ...] = (),
         source_event_ids: tuple[str, ...] = (),
+        visibility: Visibility | None = None,
     ) -> "Action":
         if not (0.0 <= confidence <= 1.0):
             raise ValueError(f"confidence must be 0.0–1.0, got {confidence}")
@@ -190,6 +195,7 @@ class Action:
             target_subject=target_subject,
             memory_citation_ids=tuple(memory_citation_ids),
             source_event_ids=tuple(source_event_ids),
+            visibility=visibility if visibility is not None else visibility_founder_only,
         )
 
 

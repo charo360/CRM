@@ -26,6 +26,7 @@ from rex.loop.orchestrator import Orchestrator
 from rex.ranks.categories import Tier, all_categories
 from rex.ranks.engine import Standing
 from rex.ranks.events import Rank
+from rex.principals import Principal, can_see
 
 
 # ---------------------------------------------------------------------------
@@ -108,11 +109,13 @@ def _pending_promotions(orch: Orchestrator) -> tuple[PendingPromotion, ...]:
     return tuple(out)
 
 
-def _rex_tier1_standings(orch: Orchestrator) -> tuple[StandingSummary, ...]:
-    """Rex's current Standing in every Tier-1 category."""
+def _rex_tier1_standings(orch: Orchestrator, principal: Principal) -> tuple[StandingSummary, ...]:
+    """Rex's current Standing in every Tier-1 category that the principal can access."""
     out: list[StandingSummary] = []
     for cat in all_categories():
         if cat.tier is not Tier.CORE:
+            continue
+        if not principal.can_access_category(cat.name):
             continue
         s: Standing = orch.engine.standing("Rex", cat.name)
         out.append(StandingSummary(
@@ -133,18 +136,25 @@ def build_home_screen(
     *,
     now: datetime | None = None,
     relationship_day: int = 1,
+    principal: Principal | None = None,
 ) -> HomeScreen:
     """
     Build a full home-screen snapshot from the orchestrator's current state.
 
-    Pure: doesn't mutate the orchestrator. Same inputs → same outputs.
+    If no principal is passed, defaults to the registered founder (preserving single-principal mode).
     """
     moment = now or datetime.now(timezone.utc)
     if relationship_day < 1:
         raise ValueError("relationship_day must be >= 1")
 
-    # 1) Letter
-    staged = list(orchestrator.ledger.staged_actions())
+    p = principal if principal is not None else orchestrator.registry.founder
+
+    # 1) Letter (filtered by what this principal is allowed to see)
+    staged = [
+        a for a in orchestrator.ledger.staged_actions()
+        if can_see(a.visibility, principal_id=p.id, role=p.role, is_founder=p.is_founder)
+        and p.can_access_category(a.category)
+    ]
     top = pick_top_actions(staged, limit=3, now=moment)
     opener = opener_for(now=moment, relationship_day=relationship_day)
     letter = compose_letter(
@@ -153,20 +163,28 @@ def build_home_screen(
         notebook=orchestrator.notebook,
     )
 
-    # 2) Counts
+    # 2) Counts (filtered by principal scope)
     day_start = _today_window(moment)
+    
+    # Simple visibility checker helper
+    def _is_visible(action_id: str) -> bool:
+        act = orchestrator.ledger.get(action_id)
+        if not act:
+            return False
+        return can_see(act.visibility, principal_id=p.id, role=p.role, is_founder=p.is_founder) and p.can_access_category(act.category)
+
     counts = LedgerCounts(
         staged=len(staged),
-        sent_today=_count_in_state_today(orchestrator, ActionState.SENT, day_start),
-        undone_today=_count_in_state_today(orchestrator, ActionState.UNDONE, day_start),
-        failed_today=_count_in_state_today(orchestrator, ActionState.FAILED, day_start),
+        sent_today=sum(1 for a in orchestrator.ledger.actions_in_state(ActionState.SENT) if _is_visible(a.id)),
+        undone_today=sum(1 for a in orchestrator.ledger.actions_in_state(ActionState.UNDONE) if _is_visible(a.id)),
+        failed_today=sum(1 for a in orchestrator.ledger.actions_in_state(ActionState.FAILED) if _is_visible(a.id)),
     )
 
-    # 3) Pending promotion recommendations
-    pending = _pending_promotions(orchestrator)
+    # 3) Pending promotion recommendations (Founder Layer 1 only!)
+    pending = _pending_promotions(orchestrator) if p.is_founder else ()
 
-    # 4) Rex's Tier-1 standings
-    standings = _rex_tier1_standings(orchestrator)
+    # 4) Rex's Tier-1 standings (scopable)
+    standings = _rex_tier1_standings(orchestrator, p)
 
     return HomeScreen(
         letter=letter,

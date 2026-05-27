@@ -95,6 +95,10 @@ class EventType(str, Enum):
     ACTION_CLEAN_SEND = "action_clean_send"
     ACTION_FLAGGED_MISTAKE = "action_flagged_mistake"
 
+    # Phase 8: Two-Sided Loyalty Team events
+    FOUNDER_INVITED_TEAM_MEMBER = "founder_invited_team_member"
+    FOUNDER_REVOKED_TEAM_MEMBER = "founder_revoked_team_member"
+
 
 # Convenience sets used by the engine + tests.
 RANK_CHANGING_EVENTS: frozenset[EventType] = frozenset({
@@ -261,4 +265,48 @@ class TrustEvent:
             id=new_event_id(), timestamp=_utc_now(), type=type,
             actor_name=actor_name, category=category,
             confidence=confidence, reason=reason,
+        )
+
+    # Team Events --------------------------------------------------------
+
+    @classmethod
+    def founder_invited_team_member(
+        cls,
+        *,
+        principal_id: str,
+        name: str,
+        role: str,
+        allowed_categories: tuple[str, ...] = (),
+    ) -> "TrustEvent":
+        """
+        An event indicating the founder invited a new team member with specific permissions.
+        We package the invited details inside the reason string or other fields.
+        """
+        cats_str = ",".join(allowed_categories)
+        return cls(
+            id=new_event_id(),
+            timestamp=_utc_now(),
+            type=EventType.FOUNDER_INVITED_TEAM_MEMBER,
+            actor_name=name,
+            category="team",
+            reason=f"role:{role.lower()};cats:{cats_str};id:{principal_id}",
+        )
+
+    @classmethod
+    def founder_revoked_team_member(
+        cls,
+        *,
+        principal_id: str,
+        name: str,
+    ) -> "TrustEvent":
+        """
+        An event indicating the founder revoked access for a team member.
+        """
+        return cls(
+            id=new_event_id(),
+            timestamp=_utc_now(),
+            type=EventType.FOUNDER_REVOKED_TEAM_MEMBER,
+            actor_name=name,
+            category="team",
+            reason=f"id:{principal_id}",
         )

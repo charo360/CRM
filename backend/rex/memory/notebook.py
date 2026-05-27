@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from rex.memory.buckets import Bucket
 from rex.memory.entries import NotebookEntry
 from rex.memory.store import NotebookStore, InMemoryNotebookStore
+from rex.principals.visibility import Visibility
 from rex.memory.voice_check import (
     NotebookVoiceReport,
     validate_notebook_entry,
@@ -59,6 +60,7 @@ class Notebook:
         source_event_ids: tuple[str, ...] = (),
         tags: tuple[str, ...] = (),
         strict_voice: bool = True,
+        visibility: Visibility | None = None,
     ) -> NotebookEntry:
         """
         Add a new entry. Voice-validates first.
@@ -79,6 +81,7 @@ class Notebook:
             subject=_normalize_subject(subject),
             source_event_ids=source_event_ids,
             tags=tags,
+            visibility=visibility,
         )
         self._store.put(entry)
         return entry

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from rex.memory.buckets import Bucket
+from rex.principals.visibility import Visibility, visibility_founder_only
 
 
 def new_entry_id() -> str:
@@ -55,6 +56,9 @@ class NotebookEntry:
     source_event_ids: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
 
+    # Phase 8: Two-Sided Loyalty
+    visibility: Visibility = field(default_factory=lambda: visibility_founder_only)
+
     # --- factories ------------------------------------------------------
 
     @classmethod
@@ -66,6 +70,7 @@ class NotebookEntry:
         subject: str | None = None,
         source_event_ids: tuple[str, ...] = (),
         tags: tuple[str, ...] = (),
+        visibility: Visibility | None = None,
     ) -> "NotebookEntry":
         """Create a fresh entry with auto id and timestamps."""
         now = _utc_now()
@@ -82,6 +87,7 @@ class NotebookEntry:
             updated_at=now,
             source_event_ids=tuple(source_event_ids),
             tags=tuple(tags),
+            visibility=visibility if visibility is not None else visibility_founder_only,
         )
 
     # --- immutable updates ---------------------------------------------

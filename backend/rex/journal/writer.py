@@ -16,6 +16,7 @@ from rex.persona.templates import journal_day_anchor
 from rex.persona.voice_evolution import JournalPhase, voice_for_day
 from rex.persona.voice_rules import validate_voice
 from rex.ranks.events import EventType, Rank, TrustEvent
+from rex.principals.visibility import Visibility, visibility_founder_only
 
 
 class JournalEventKind(str, Enum):
@@ -26,6 +27,7 @@ class JournalEventKind(str, Enum):
     OPERATIONAL_WIN = "operational_win"
     OPERATIONAL_SETBACK = "operational_setback"
     PROBATION = "probation"
+    TEAM = "team"  # Phase 8: Team Journal for founder (REX.md §4.6)
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ class JournalEntry:
     category: str
     phase: JournalPhase
     word_count: int
+    visibility: Visibility = visibility_founder_only
 
 
 class JournalWriter:
@@ -105,6 +108,9 @@ def write_entry_for_trust_event(
     body = f"{journal_day_anchor(relationship_day)}\n{text}"
     _validate(body, calibration.target_word_ceiling)
 
+    # By default journal entries are founder-only, EXCEPT role-based subagent actions
+    # and recommendations which can have custom visibility mapped later if needed.
+    # We keep everything founder_only by default as per REX.md §4.6.
     return JournalEntry(
         id=f"journal-{event.id}",
         relationship_day=relationship_day,
@@ -115,6 +121,7 @@ def write_entry_for_trust_event(
         category=event.category,
         phase=calibration.phase,
         word_count=_word_count(body),
+        visibility=visibility_founder_only,
     )
 
 
@@ -133,6 +140,8 @@ def _kind_for(event_type: EventType) -> JournalEventKind | None:
         return JournalEventKind.RECOMMENDATION_RESOLVED
     if event_type is EventType.REX_LIFTED_PROBATION:
         return JournalEventKind.PROBATION
+    if event_type in {EventType.FOUNDER_INVITED_TEAM_MEMBER, EventType.FOUNDER_REVOKED_TEAM_MEMBER}:
+        return JournalEventKind.TEAM
     if event_type in {EventType.ACTION_APPROVED, EventType.ACTION_CLEAN_SEND}:
         return JournalEventKind.OPERATIONAL_WIN
     if event_type in {
@@ -167,6 +176,10 @@ def _body_for(
         return _subagent_demoted(event, phase)
     if event.type is EventType.REX_LIFTED_PROBATION:
         return _probation_lifted(event, phase)
+    if event.type is EventType.FOUNDER_INVITED_TEAM_MEMBER:
+        return _team_invited(event, phase)
+    if event.type is EventType.FOUNDER_REVOKED_TEAM_MEMBER:
+        return _team_revoked(event, phase)
     if event.type is EventType.ACTION_APPROVED:
         return _action_approved(event, phase, context)
     if event.type is EventType.ACTION_CLEAN_SEND:
@@ -243,6 +256,18 @@ def _recommendation_approved(event: TrustEvent, phase: JournalPhase) -> str:
     if phase is JournalPhase.BLENDED:
         return f"{first} You approved it. Trust moved one step down the chain."
     return f"{first} You approved it. That's trust moving in the right direction."
+
+
+def _team_invited(event: TrustEvent, phase: JournalPhase) -> str:
+    # event.actor_name is the invitee name.
+    # event.reason has the metadata: "role:sales;cats:outreach,replies;id:sarah-1"
+    parts = dict(pair.split(":", 1) for pair in event.reason.split(";"))
+    role_str = parts.get("role", "sales").capitalize()
+    return f"Added {event.actor_name} to the team as {role_str}. Set up their briefing."
+
+
+def _team_revoked(event: TrustEvent, phase: JournalPhase) -> str:
+    return f"Revoked access for {event.actor_name}. Closed their briefing stream."
 
 
 def _recommendation_denied(event: TrustEvent, phase: JournalPhase) -> str:

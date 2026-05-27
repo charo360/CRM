@@ -131,6 +131,10 @@ class RankEngine:
             return
 
         t = event.type
+        if t in {EventType.FOUNDER_INVITED_TEAM_MEMBER, EventType.FOUNDER_REVOKED_TEAM_MEMBER}:
+            # Handled by Orchestrator / Registry replay, no rank-ladder impact on Rex.
+            return
+
         if t is EventType.USER_PROMOTED_REX:
             self._apply_rex_rank_change(event, direction="up")
         elif t is EventType.USER_DEMOTED_REX:
