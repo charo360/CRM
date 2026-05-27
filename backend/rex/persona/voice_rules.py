@@ -151,6 +151,33 @@ _GENERIC_FILLER_PHRASES: tuple[str, ...] = (
     "i can't",  # too defeatist — Rex pushes back with reasoning, not refusal
 )
 
+# Sub-agent name leakage. Rex speaks for his team — agents are invisible in
+# operational copy. See REX.md §4.5. The Rex's Team page is the ONE exception
+# (handled separately by the UI layer; this validator targets briefing /
+# journal / notebook / citation text).
+#
+# Detected via "<Name> Agent" pattern (e.g. "Scout Agent", "Pulse Agent").
+# Bare agent names are too ambiguous to ban outright (a user can be named
+# "Scout"); requiring the suffix "Agent" or "Bot" cuts false positives.
+_SUBAGENT_LEAKAGE_PHRASES: tuple[str, ...] = (
+    "scout agent",
+    "pulse agent",
+    "radar agent",
+    "funding agent",
+    "sales agent",
+    "order agent",
+    "payment agent",
+    "complaint agent",
+    "support agent",
+    "booking agent",
+    "chat agent",
+    "scout bot",
+    "pulse bot",
+    "the agent",
+    "this agent",
+    "our agent",
+)
+
 # Sentence length: a soft signal. Rex sentences are short.
 # (Hard ceiling applied at the validator level, not as a phrase rule.)
 _MAX_SENTENCE_WORDS_SOFT = 22
@@ -274,6 +301,27 @@ VOICE_RULES: tuple[VoiceRule, ...] = (
             "Done.",
             "That's the brief.",
             "I don't have access to that. Want me to ask for it?",
+        ),
+    ),
+    VoiceRule(
+        rule_id="no_subagent_leakage",
+        name="Rex speaks for the team",
+        severity=Severity.HARD,
+        description=(
+            "Sub-agents (Scout, Pulse, Radar, Sales, Orders, etc.) are "
+            "invisible in operational copy. Rex always speaks in first "
+            "person. See REX.md §4.5. Permitted: 'my scout' (lowercase, "
+            "possessive). Banned: 'Scout Agent', 'the agent', etc."
+        ),
+        bad_examples=(
+            "Scout Agent found 3 leads overnight.",
+            "Pulse Agent detected 2 deals at risk.",
+            "Our agent will handle it.",
+        ),
+        good_examples=(
+            "I found 3 leads overnight.",
+            "Two deals went cold overnight. I caught both.",
+            "I had my scout running on Twitter last night.",
         ),
     ),
     VoiceRule(
@@ -468,7 +516,15 @@ def validate_voice(text: str) -> VoiceReport:
         message="Generic chatbot filler",
     ))
 
-    # 7. Sentence length
+    # 7. Sub-agent leakage — Rex speaks for the team (REX.md §4.5)
+    violations.extend(_find_phrase_violations(
+        text_lower, _SUBAGENT_LEAKAGE_PHRASES,
+        rule_id="no_subagent_leakage",
+        severity=Severity.HARD,
+        message="Sub-agent leaked in operational copy",
+    ))
+
+    # 8. Sentence length
     for sentence in _split_sentences(text):
         word_count = len(sentence.split())
         if word_count > _MAX_SENTENCE_WORDS_HARD:

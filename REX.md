@@ -249,6 +249,7 @@ Rex is built from exactly ten primitives. Every feature is some combination of t
 | 8 | **Journal Entry** | A narrative reflection by Rex. |
 | 9 | **Briefing** | The compiled daily letter. |
 | 10 | **Ledger** | Append-only record of every Action. |
+| 11 | **Sub-Agent** | A specialized worker Rex deploys (Scout, Pulse, Funding, Sales, Orders, etc.). Has its own Rank per Category. Invisible to the user — Rex always speaks for it. |
 
 ### Key Architecture Insight: Event-Sourced Trust
 
@@ -263,6 +264,108 @@ Trust Event. Rank, Journal entries, Memory updates, and briefing tone are all
 - Time travel works ("show me Rex on Day 23")
 - The Journal writes itself from significant events
 - The Ledger is just the event log made readable
+
+---
+
+## 4.5 Rex's Team — How Sub-Agents Fit
+
+Rex does not work alone. The existing platform already contains a substantial
+set of specialized agents that Rex **dispatches on the user's behalf**. The
+user never picks an agent. Rex picks for them.
+
+### The Two Teams
+
+| Team | Members | Job | Lives in |
+|---|---|---|---|
+| **Operations Team** | Scout, Pulse, Radar, Funding-watch, Ad-watch, Daily Analyzer, Smart Notes | Watch, hunt, monitor on the user's behalf overnight and during the day | `backend/scout_service.py`, `funding_finder.py`, `ad_health_monitor.py`, `daily_analyzer.py`, `lead_scout_worker.py`, etc. |
+| **Customer Service Team** | Sales, Orders, Payments, Bookings, Complaints, Support, Personal, Gmail-Filter, Chat | Talk to the user's customers (DMs, sales convos, payment confirmations, support) | `backend/agents/` (with `router.py` + `intent_analyzer.py`) |
+
+### The Ranks Apply to Sub-Agents Too
+
+Every Sub-Agent has its own Rank in its Category, on the same five-level
+ladder Rex uses. Scout might be `Sender` on `Leads`. Pulse might be
+`Operator` on `Pipeline`. Payments might be `Drafter` on `Order Payments`
+forever, because money is sacred.
+
+The user can promote or demote any Sub-Agent individually, but the action
+is framed in Rex's voice:
+
+> *"Rex promoted Scout to Operator on Leads."*
+> *"Rex pulled Payments back to Drafter after the Henderson flag. Rebuilding."*
+
+### The One Rule: Rex Always Speaks for Them
+
+The user never sees an agent name in operational copy (briefing, journal,
+notebook, citations). Rex always speaks in **first person plural-implicit**:
+
+| ❌ Wrong | ✅ Right |
+|---|---|
+| "Scout Agent found 3 leads overnight." | "I found 3 leads overnight." |
+| "Pulse Agent detected 2 deals at risk." | "Two deals went cold overnight. I caught both." |
+| "Payment Agent flagged this invoice." | "I flagged this invoice." |
+
+**Permitted exception:** Rex may occasionally surface his team in a way
+that builds depth without breaking the relationship — when it makes the
+operation feel bigger, not more confusing:
+
+> *"I had my scout running on Twitter last night. Two founders complained about your competitor. I flagged both."*
+
+The word `my` is the move. It implies team without listing teammates.
+Use sparingly — once a week, not once a day.
+
+### The Rex's Team Page (Tucked, Not Featured)
+
+There is **one** screen in the product where Sub-Agents become visible.
+It is not the home screen. It lives behind a "Rex's Team" or "Settings →
+Rex" link, intentionally low-traffic. Visiting it should feel like seeing
+the org chart of a company you already trust — not like managing a tool.
+
+```
+────────────────────────────────────────────────
+  REX'S TEAM
+  Deployed on your behalf.
+
+  Operations
+  ─────────────────────────────────
+  Scout        Sender    · Leads
+  Pulse        Operator  · Pipeline
+  Radar        Observer  · Competitors
+  Funding      Observer  · Investors
+  Ad-watch     Drafter   · Meta Ads
+
+  Customer Service
+  ─────────────────────────────────
+  Sales        Drafter   · Outreach
+  Orders       Sender    · Order Confirmations
+  Payments     Drafter   · Order Payments  (on probation)
+  Bookings     Operator  · Reservations
+  Support      Sender    · Customer Replies
+
+  Click any agent to see their work.
+────────────────────────────────────────────────
+```
+
+### Why This Matters
+
+- The user feels they are **running an operation**, not using software.
+- The platform's existing 11+ agents go from "feature list to memorize"
+  to "team Rex deploys silently" — same code, transformed brand.
+- Competitors cannot copy this — they would have to build all the agents
+  AND the persona layer AND the rank model. Years of work.
+- The phrase **"my scout"** is the single most powerful brand line in
+  the product after the soul sentence.
+
+### Implementation Note
+
+Sub-Agents continue to live in `backend/agents/` and the various worker
+files. They are **wrapped**, not replaced, by the `rex.*` layer:
+
+1. Their outputs are normalized into `Action` primitives (Phase 4).
+2. Their writing passes through `rex.persona.system_prompt` so the
+   *user-facing* surface stays in Rex's voice (Phase 4-5).
+3. Their permissions are governed by `rex.ranks` (Phase 2).
+4. Their existence is invisible in the Briefing and Journal. Visible
+   only on the Rex's Team page.
 
 ---
 

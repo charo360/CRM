@@ -136,6 +136,22 @@ class TestVoiceValidator:
         ids = {v.rule_id for v in report.violations}
         assert "sentence_length" in ids
 
+    def test_subagent_name_leakage_is_hard_violation(self):
+        # REX.md §4.5 — Rex always speaks in first person for his team.
+        report = validate_voice("Scout Agent found 3 leads overnight.")
+        ids = {v.rule_id for v in report.violations}
+        assert "no_subagent_leakage" in ids
+        assert not report.passed
+
+    def test_my_scout_phrasing_is_allowed(self):
+        # The one permitted way to gesture at the team.
+        report = validate_voice(
+            "I had my scout running on Twitter last night. Flagged two."
+        )
+        # No sub-agent leakage; "my scout" is fine.
+        ids = {v.rule_id for v in report.violations}
+        assert "no_subagent_leakage" not in ids
+
     def test_score_decreases_with_more_violations(self):
         clean = validate_voice("Done.")
         one_bad = validate_voice("Done 👍")
