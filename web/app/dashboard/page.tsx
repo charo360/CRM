@@ -117,9 +117,9 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 max-w-6xl mx-auto space-y-5 sm:space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900">{ui.overviewTitle}</h1>
+        <h1 className="text-xl sm:text-2xl font-bold text-slate-900">{ui.overviewTitle}</h1>
         <p className="text-slate-500 text-sm mt-1">{ui.overviewSubtitle}</p>
         {accountMode === "individual" && (
           <p className="text-xs text-brand-dark/90 mt-2">
@@ -129,16 +129,16 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {stats.map(({ label, value, icon: Icon, color, bg }) => (
-          <div key={label} className="bg-white rounded-xl border border-slate-200 p-5">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-sm text-slate-500 font-medium">{label}</span>
+          <div key={label} className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
+            <div className="flex items-center justify-between mb-2 sm:mb-3">
+              <span className="text-xs sm:text-sm text-slate-500 font-medium leading-tight">{label}</span>
               <div className={`w-9 h-9 rounded-lg ${bg} flex items-center justify-center`}>
                 <Icon size={18} className={color} />
               </div>
             </div>
-            <p className="text-2xl font-bold text-slate-900">
+            <p className="text-xl sm:text-2xl font-bold text-slate-900">
               {loading ? <span className="text-slate-300">—</span> : value}
             </p>
           </div>
@@ -192,7 +192,7 @@ export default function DashboardPage() {
       )}
 
       {/* Sales & growth — links pipeline to campaigns (Zilo = sell + reach) */}
-      <section className="rounded-2xl border border-[#009B3A]/20 bg-gradient-to-br from-emerald-50/70 via-white to-sky-50/50 p-5 shadow-sm">
+      <section className="rounded-2xl border border-[#009B3A]/20 bg-gradient-to-br from-emerald-50/70 via-white to-sky-50/50 p-4 sm:p-5 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-900">Sales &amp; growth</h2>
         <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-600">
           Turn attention into revenue: work your pipeline here, then launch or refine campaigns and creative with Zilo
@@ -247,7 +247,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {/* Recent orders */}
         <div className="bg-white rounded-xl border border-slate-200">
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
@@ -293,7 +293,7 @@ export default function DashboardPage() {
           <div className="px-5 py-4 border-b border-slate-100">
             <h2 className="font-semibold text-slate-900">Quick Actions</h2>
           </div>
-          <div className="p-5 grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="p-4 sm:p-5 grid grid-cols-2 gap-2 sm:gap-3">
             {[
               ...(ui.showKdsNav
                 ? [{ href: "/kds", label: "Open KDS", icon: "🖥️", desc: "Kitchen display" as const }]
@@ -321,8 +321,8 @@ export default function DashboardPage() {
       </div>
 
       {/* Daily Pulse */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center justify-between mb-3">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-3">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-brand/10 flex items-center justify-center">
               <Zap size={16} className="text-brand-dark" />
@@ -332,7 +332,7 @@ export default function DashboardPage() {
               <p className="text-[11px] text-slate-500 mt-0.5">AI snapshot — useful before a broadcast or follow-up push</p>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button onClick={loadPulse} disabled={pulseLoading}
               className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 disabled:opacity-50">
               {pulseLoading ? "Loading…" : "Refresh"}

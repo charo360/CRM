@@ -14,3 +14,10 @@ export function buildServerCrmApiUrl(req: NextRequest, path: string): string {
   const rel = (base.startsWith("/") ? base : `/${base}`).replace(/\/$/, "");
   return `${req.nextUrl.origin}${rel}${suffix}`;
 }
+
+/** Direct FastAPI URL for server-to-server calls (avoids /proxy self-fetch issues). */
+export function buildInternalCrmApiUrl(path: string): string {
+  const origin = (process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${origin}/api${suffix}`;
+}

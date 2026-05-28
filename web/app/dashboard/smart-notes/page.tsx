@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ArrowLeft } from "lucide-react";
 import { smartNotesApi } from "@/lib/api";
 import { useMeetingRecorder } from "@/hooks/useMeetingRecorder";
+import { cn } from "@/lib/utils";
 
 interface Note {
   id: string;
@@ -94,11 +96,23 @@ export default function SmartNotesPage() {
 
   const { recordState, elapsed, liveTranscript, interimText, statusMsg, segments, speakerTags, setSpeakerTags, error: recError } = rec;
 
+  const showDetailPanel =
+    detailLoading ||
+    recordState === "recording" ||
+    recordState === "tagging" ||
+    recordState === "processing" ||
+    selected !== null;
+
   return (
-    <div className="flex h-full min-h-screen bg-gray-50">
+    <div className="flex h-[calc(100dvh-3.5rem)] min-h-0 overflow-hidden bg-gray-50 md:min-h-screen md:h-full">
       {/* ── Left panel ── */}
-      <div className="w-full max-w-sm border-r border-gray-200 bg-white flex flex-col">
-        <div className="px-5 py-4 border-b border-gray-100">
+      <div
+        className={cn(
+          "flex w-full max-w-sm flex-col border-r border-gray-200 bg-white",
+          showDetailPanel ? "hidden md:flex" : "flex"
+        )}
+      >
+        <div className="border-b border-gray-100 px-4 py-4 sm:px-5">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-lg font-bold text-gray-900">Smart Notes</h1>
@@ -202,14 +216,19 @@ export default function SmartNotesPage() {
       </div>
 
       {/* ── Right panel ── */}
-      <div className="flex-1 overflow-y-auto">
+      <div
+        className={cn(
+          "min-w-0 flex-1 overflow-y-auto",
+          !showDetailPanel && "hidden md:block"
+        )}
+      >
         {detailLoading ? (
           <div className="flex items-center justify-center h-64">
             <div className="w-6 h-6 border-2 border-brand-dark border-t-transparent rounded-full animate-spin" />
           </div>
 
         ) : recordState === "recording" ? (
-          <div className="max-w-3xl mx-auto px-6 py-8">
+          <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
             <div className="flex items-center gap-3 mb-6">
               <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
               <h2 className="text-lg font-bold text-gray-900">Recording · {elapsed}</h2>
@@ -242,7 +261,7 @@ export default function SmartNotesPage() {
           </div>
 
         ) : recordState === "tagging" ? (
-          <div className="max-w-lg mx-auto px-6 py-10">
+          <div className="mx-auto max-w-lg px-4 py-8 sm:px-6 sm:py-10">
             <div className="flex items-center gap-3 mb-2">
               <div className="w-10 h-10 rounded-full bg-brand/20 flex items-center justify-center">
                 <span className="text-brand-dark text-lg">🎙️</span>
@@ -285,16 +304,16 @@ export default function SmartNotesPage() {
               })}
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row">
               <button
                 onClick={rec.generateWithSpeakers}
-                className="flex-1 py-3 rounded-xl bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors"
+                className="flex-1 rounded-xl bg-brand-dark py-3 text-sm font-semibold text-white transition-colors hover:opacity-90"
               >
                 Generate with Speakers
               </button>
               <button
                 onClick={rec.generateWithPlainTranscript}
-                className="px-5 py-3 rounded-xl border border-gray-200 text-gray-500 text-sm hover:bg-gray-50 transition-colors"
+                className="rounded-xl border border-gray-200 px-5 py-3 text-sm text-gray-500 transition-colors hover:bg-gray-50"
               >
                 Skip
               </button>
@@ -308,7 +327,7 @@ export default function SmartNotesPage() {
           </div>
 
         ) : !selected ? (
-          <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-12">
+          <div className="hidden h-full flex-col items-center justify-center gap-4 px-12 text-center md:flex">
             <div className="w-16 h-16 rounded-full bg-brand/10 flex items-center justify-center text-3xl">🎙️</div>
             <h2 className="text-lg font-semibold text-gray-700">Select a note</h2>
             <p className="text-sm text-gray-400 max-w-xs">
@@ -318,10 +337,21 @@ export default function SmartNotesPage() {
           </div>
 
         ) : (
-          <div className="max-w-3xl mx-auto px-6 py-8">
-            <div className="flex items-start justify-between gap-4 mb-6">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">{selected.title}</h2>
+          <div className="mx-auto max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="mb-2 flex items-center gap-2 md:hidden">
+                  <button
+                    type="button"
+                    onClick={() => setSelected(null)}
+                    className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
+                    aria-label="Back to notes"
+                  >
+                    <ArrowLeft size={18} />
+                  </button>
+                  <span className="text-sm font-medium text-gray-500">Notes</span>
+                </div>
+                <h2 className="text-xl font-bold text-gray-900 sm:text-2xl">{selected.title}</h2>
                 <p className="text-sm text-gray-500 mt-1">
                   {fmtDate(selected.meeting_start)}
                   {selected.meeting_end && ` · ${fmtDuration(selected.meeting_start, selected.meeting_end)}`}

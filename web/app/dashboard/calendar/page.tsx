@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 import {
   CalendarDays, ChevronLeft, ChevronRight, Plus, RefreshCw,
   Sparkles, X, Loader2, Clock, MapPin, Users, Trash2, Edit3,
   Zap, LayoutList, Grid3x3, Calendar, Search, Star,
-  CheckCircle2, Circle, ArrowRight, Mic,
+  CheckCircle2, Circle, ArrowRight, ArrowLeft, Mic,
 } from "lucide-react";
 import { getToken } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -55,7 +55,16 @@ async function apiFetch(path: string, opts: RequestInit = {}) {
     ...opts,
     headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts.headers as Record<string, string> ?? {}) } as HeadersInit,
   });
-  if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+  if (!res.ok) {
+    const text = await res.text().catch(() => `HTTP ${res.status}`);
+    try {
+      const data = JSON.parse(text) as { error?: string; detail?: string };
+      throw new Error(data.error || data.detail || text);
+    } catch (e) {
+      if (e instanceof Error && e.message !== text) throw e;
+      throw new Error(text);
+    }
+  }
   if (res.status === 204) return {};
   return res.json();
 }
@@ -74,7 +83,16 @@ function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
 function isoDay(d: Date) { return d.toISOString().slice(0, 10); }
-function eventDay(e: CalEvent) { return (e.start || "").slice(0, 10); }
+function eventDay(e: CalEvent) {
+  const raw = (e.start || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : "";
+}
+function parseDayString(day: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const [y, m, d] = day.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 function formatTime(iso: string) {
   if (!iso) return "";
@@ -107,7 +125,7 @@ const KEYWORD_COLORS: [string, string][] = [
 
 const ALL_EVENT_COLORS = [
   { label: "Indigo", value: "bg-brand" },
-  { label: "Violet", value: "bg-brand" },
+  { label: "Violet", value: "bg-violet-500" },
   { label: "Emerald", value: "bg-emerald-500" },
   { label: "Rose", value: "bg-rose-500" },
   { label: "Amber", value: "bg-amber-500" },
@@ -127,9 +145,31 @@ function smartColor(title: string, override?: string) {
   return ALL_EVENT_COLORS[Math.abs(h) % ALL_EVENT_COLORS.length].value;
 }
 
+function toApiDateTime(value: string, allDay: boolean): string {
+  const day = value.slice(0, 10);
+  if (allDay || !value.includes("T")) return `${day}T00:00:00`;
+  return new Date(value).toISOString();
+}
+
+function defaultQuickTime(): string {
+  const d = new Date();
+  d.setHours(d.getHours() + 1, 0, 0, 0);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** Today + next N days, merged with any days that already have events. */
+function agendaDayList(eventDays: string[], span = 14): string[] {
+  const today = parseDayString(isoDay(new Date()));
+  if (!today) return [...eventDays].sort();
+  const keys = new Set(eventDays);
+  for (let i = 0; i < span; i++) keys.add(isoDay(addDays(today, i)));
+  return [...keys].sort();
+}
+
 function defaultForm(prefillDate?: string): EventFormData {
-  const base = prefillDate ? new Date(prefillDate) : new Date();
-  base.setMinutes(0, 0, 0);
+  const base = prefillDate ? (parseDayString(prefillDate) ?? new Date()) : new Date();
+  if (!prefillDate) base.setMinutes(0, 0, 0);
+  else base.setHours(new Date().getHours() + 1, 0, 0, 0);
   const end = new Date(base.getTime() + 3600000);
   return {
     title: "", description: "", location: "",
@@ -145,14 +185,14 @@ function defaultForm(prefillDate?: string): EventFormData {
 function NoConnection() {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8">
-      <div className="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center">
-        <CalendarDays size={26} className="text-slate-400" />
+      <div className="w-14 h-14 rounded-2xl bg-brand/10 flex items-center justify-center">
+        <CalendarDays size={26} className="text-brand-dark" />
       </div>
       <div>
-        <p className="font-semibold text-slate-200">No calendar connected</p>
+        <p className="font-semibold text-slate-800">No calendar connected</p>
         <p className="text-sm text-slate-500 mt-1 leading-relaxed">
           Go to{" "}
-          <a href="/dashboard/integrations" className="text-brand underline underline-offset-2">Integrations</a>
+          <a href="/dashboard/integrations" className="text-brand-dark underline underline-offset-2">Integrations</a>
           {" "}and connect Google Calendar or Outlook.
         </p>
       </div>
@@ -233,33 +273,33 @@ Input: "${naturalInput}"`,
   const previewColor = smartColor(form.title, form.color === "auto" ? undefined : form.color);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm p-0 sm:items-center sm:p-4">
+      <div className="bg-white border border-slate-200 rounded-t-2xl sm:rounded-2xl w-full max-w-md shadow-xl flex flex-col max-h-[92dvh] sm:max-h-[90vh]">
         {/* Color strip */}
         <div className={cn("h-1 w-full rounded-t-2xl transition-colors", previewColor)} />
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800">
-          <h2 className="font-semibold text-sm">{editEvent ? "Edit event" : "New event"}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-100"><X size={15} /></button>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100">
+          <h2 className="font-semibold text-sm text-slate-900">{editEvent ? "Edit event" : "New event"}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X size={15} /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
           {/* Natural language input */}
           {!editEvent && (
-            <div className="flex items-center gap-2 bg-brand-ink/40 border border-brand-ink/40 rounded-xl px-3 py-2">
-              <Sparkles size={12} className="text-brand shrink-0" />
+            <div className="flex items-center gap-2 bg-brand/5 border border-brand/20 rounded-xl px-3 py-2">
+              <Sparkles size={12} className="text-brand-dark shrink-0" />
               <input
                 value={naturalInput}
                 onChange={(e) => setNaturalInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); parseNatural(); } }}
                 placeholder='Try "Meeting with John tomorrow at 3pm"…'
-                className="flex-1 bg-transparent text-xs text-slate-300 placeholder-slate-600 outline-none"
+                className="flex-1 bg-transparent text-xs text-slate-700 placeholder-slate-400 outline-none"
               />
               <button
                 onClick={parseNatural}
                 disabled={parsing || !naturalInput.trim()}
-                className="text-[10px] text-brand hover:text-brand/50 disabled:opacity-40 flex items-center gap-1 shrink-0"
+                className="text-[10px] text-brand-dark hover:text-brand disabled:opacity-40 flex items-center gap-1 shrink-0"
               >
                 {parsing ? <Loader2 size={10} className="animate-spin" /> : <ArrowRight size={10} />}
                 Fill
@@ -273,7 +313,7 @@ Input: "${naturalInput}"`,
             value={form.title}
             onChange={(e) => set("title", e.target.value)}
             placeholder="Event title"
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-4 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-700 font-medium"
+            className="w-full bg-white text-sm text-slate-900 placeholder-slate-400 rounded-xl px-4 py-2.5 outline-none focus:ring-1 focus:ring-brand border border-slate-200 font-medium"
           />
 
           {/* Color picker */}
@@ -299,7 +339,36 @@ Input: "${naturalInput}"`,
 
           {/* All day */}
           <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={form.allDay} onChange={(e) => set("allDay", e.target.checked)} className="accent-brand" />
+            <input
+              type="checkbox"
+              checked={form.allDay}
+              onChange={(e) => {
+                const allDay = e.target.checked;
+                setForm((p) => {
+                  if (allDay) {
+                    return {
+                      ...p,
+                      allDay: true,
+                      start: p.start.slice(0, 10),
+                      end: p.end.slice(0, 10),
+                    };
+                  }
+                  const startDay = p.start.slice(0, 10);
+                  const endDay = p.end.slice(0, 10);
+                  const startDate = parseDayString(startDay) ?? new Date();
+                  startDate.setHours(9, 0, 0, 0);
+                  const endDate = parseDayString(endDay) ?? new Date(startDate.getTime() + 3600000);
+                  if (endDate <= startDate) endDate.setTime(startDate.getTime() + 3600000);
+                  return {
+                    ...p,
+                    allDay: false,
+                    start: toLocalInput(startDate),
+                    end: toLocalInput(endDate),
+                  };
+                });
+              }}
+              className="accent-brand"
+            />
             <span className="text-xs text-slate-400">All day</span>
           </label>
 
@@ -311,7 +380,7 @@ Input: "${naturalInput}"`,
                 type={form.allDay ? "date" : "datetime-local"}
                 value={form.start}
                 onChange={(e) => set("start", e.target.value)}
-                className="w-full bg-slate-800 text-xs text-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700"
+                className="w-full bg-white text-xs text-slate-900 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
               />
             </div>
             <div>
@@ -320,21 +389,21 @@ Input: "${naturalInput}"`,
                 type={form.allDay ? "date" : "datetime-local"}
                 value={form.end}
                 onChange={(e) => set("end", e.target.value)}
-                className="w-full bg-slate-800 text-xs text-slate-200 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700"
+                className="w-full bg-white text-xs text-slate-900 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
               />
             </div>
           </div>
 
           {/* Location */}
-          <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2">
-            <MapPin size={12} className="text-slate-500 shrink-0" />
-            <input value={form.location} onChange={(e) => set("location", e.target.value)} placeholder="Location or meeting link" className="flex-1 bg-transparent text-xs text-slate-200 placeholder-slate-500 outline-none" />
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+            <MapPin size={12} className="text-slate-400 shrink-0" />
+            <input value={form.location} onChange={(e) => set("location", e.target.value)} placeholder="Location or meeting link" className="flex-1 bg-transparent text-xs text-slate-900 placeholder-slate-400 outline-none" />
           </div>
 
           {/* Attendees */}
-          <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2">
-            <Users size={12} className="text-slate-500 shrink-0" />
-            <input value={form.attendees} onChange={(e) => set("attendees", e.target.value)} placeholder="Attendees (comma-separated emails)" className="flex-1 bg-transparent text-xs text-slate-200 placeholder-slate-500 outline-none" />
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+            <Users size={12} className="text-slate-400 shrink-0" />
+            <input value={form.attendees} onChange={(e) => set("attendees", e.target.value)} placeholder="Attendees (comma-separated emails)" className="flex-1 bg-transparent text-xs text-slate-900 placeholder-slate-400 outline-none" />
           </div>
 
           {/* Description */}
@@ -351,20 +420,20 @@ Input: "${naturalInput}"`,
               onChange={(e) => set("description", e.target.value)}
               placeholder="Agenda, notes, context…"
               rows={3}
-              className="w-full bg-slate-800 text-xs text-slate-200 placeholder-slate-500 rounded-xl border border-slate-700 px-3 py-2 outline-none focus:ring-1 focus:ring-brand resize-none"
+              className="w-full bg-white text-xs text-slate-900 placeholder-slate-400 rounded-xl border border-slate-200 px-3 py-2 outline-none focus:ring-1 focus:ring-brand resize-none"
             />
           </div>
         </div>
 
-        <div className="flex items-center gap-2 px-5 pb-5 pt-2 border-t border-slate-800">
+        <div className="flex items-center gap-2 px-5 pb-5 pt-2 border-t border-slate-100">
           {editEvent && onDelete && (
-            <button onClick={onDelete} disabled={deleting} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs text-rose-400 hover:bg-rose-900/20 border border-rose-800/30 disabled:opacity-50 transition-colors">
+            <button onClick={onDelete} disabled={deleting} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs text-red-600 hover:bg-red-50 border border-red-200 disabled:opacity-50 transition-colors">
               {deleting ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
               Delete
             </button>
           )}
           <div className="flex-1" />
-          <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-100 transition-colors">Cancel</button>
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs text-slate-500 hover:text-slate-800 transition-colors">Cancel</button>
           <button
             onClick={() => onSave(form)}
             disabled={saving || !form.title.trim()}
@@ -402,14 +471,14 @@ function MiniCalendar({ cursor, setCursor, events, onDayClick }: {
     <div className="select-none">
       {/* Month nav */}
       <div className="flex items-center justify-between mb-2">
-        <button onClick={() => setMini(addMonths(mini, -1))} className="p-1 rounded hover:bg-slate-800 text-slate-400"><ChevronLeft size={12} /></button>
+        <button onClick={() => setMini(addMonths(mini, -1))} className="p-1 rounded hover:bg-slate-100 text-slate-500"><ChevronLeft size={12} /></button>
         <button
           onClick={() => { setMini(new Date()); setCursor(new Date()); }}
-          className="text-xs font-semibold text-slate-300 hover:text-brand transition-colors"
+          className="text-xs font-semibold text-slate-700 hover:text-brand-dark transition-colors"
         >
           {MONTHS_SHORT[mini.getMonth()]} {mini.getFullYear()}
         </button>
-        <button onClick={() => setMini(addMonths(mini, 1))} className="p-1 rounded hover:bg-slate-800 text-slate-400"><ChevronRight size={12} /></button>
+        <button onClick={() => setMini(addMonths(mini, 1))} className="p-1 rounded hover:bg-slate-100 text-slate-500"><ChevronRight size={12} /></button>
       </div>
       {/* Day headers */}
       <div className="grid grid-cols-7 mb-1">
@@ -430,9 +499,9 @@ function MiniCalendar({ cursor, setCursor, events, onDayClick }: {
               className={cn(
                 "text-[11px] w-6 h-6 mx-auto rounded-full flex items-center justify-center transition-colors relative",
                 !inMonth && "opacity-30",
-                isToday && !isCursor && "text-brand font-bold",
+                isToday && !isCursor && "text-brand-dark font-bold",
                 isCursor && "bg-brand-dark text-white font-bold",
-                !isToday && !isCursor && "text-slate-400 hover:bg-slate-800"
+                !isToday && !isCursor && "text-slate-600 hover:bg-slate-100"
               )}
             >
               {day.getDate()}
@@ -447,12 +516,94 @@ function MiniCalendar({ cursor, setCursor, events, onDayClick }: {
   );
 }
 
+// ── Agenda quick add ──────────────────────────────────────────────────────────
+
+const AgendaQuickAdd = forwardRef<HTMLInputElement, {
+  saving: boolean;
+  canCreate: boolean;
+  selectedDay: string;
+  onSelectedDayChange: (day: string) => void;
+  onQuickAdd: (title: string, day: string, time: string) => void;
+  onMoreOptions: (day: string) => void;
+}>(function AgendaQuickAdd(
+  { saving, canCreate, selectedDay, onSelectedDayChange, onQuickAdd, onMoreOptions },
+  ref,
+) {
+  const [title, setTitle] = useState("");
+  const [time, setTime] = useState(defaultQuickTime);
+
+  if (!canCreate) return null;
+
+  function submit() {
+    const trimmed = title.trim();
+    if (!trimmed || saving) return;
+    onQuickAdd(trimmed, selectedDay, time);
+    setTitle("");
+    setTime(defaultQuickTime());
+  }
+
+  return (
+    <div className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+      <form
+        onSubmit={(e) => { e.preventDefault(); submit(); }}
+        className="flex flex-col gap-2 sm:flex-row sm:items-center"
+      >
+        <input
+          ref={ref}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Quick add — e.g. Team standup"
+          className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none focus:ring-1 focus:ring-brand"
+        />
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={selectedDay}
+            onChange={(e) => onSelectedDayChange(e.target.value)}
+            className="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-900 outline-none focus:ring-1 focus:ring-brand"
+          />
+          <input
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            className="w-[5.5rem] rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs text-slate-900 outline-none focus:ring-1 focus:ring-brand"
+          />
+          <button
+            type="submit"
+            disabled={saving || !title.trim()}
+            className="inline-flex items-center gap-1 rounded-xl bg-brand-dark px-3 py-2 text-xs font-semibold text-white hover:bg-brand disabled:opacity-40 transition-colors"
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+            Add
+          </button>
+        </div>
+      </form>
+      <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-400">
+        <span>Press Enter to add · defaults to 1 hour</span>
+        <button
+          type="button"
+          onClick={() => onMoreOptions(selectedDay)}
+          className="font-medium text-brand-dark hover:text-brand transition-colors"
+        >
+          More options →
+        </button>
+      </div>
+    </div>
+  );
+});
+
 // ── Agenda view ───────────────────────────────────────────────────────────────
 
-function AgendaView({ events, onEventClick, onDayClick, eventColor: getColor }: {
+function AgendaView({ events, onEventClick, onQuickAdd, saving, canCreate, selectedDay, onSelectedDayChange, onMoreOptions, quickAddRef, eventColor: getColor }: {
   events: CalEvent[];
   onEventClick: (e: CalEvent) => void;
-  onDayClick: (d: Date) => void;
+  onQuickAdd: (title: string, day: string, time: string) => void;
+  onMoreOptions: (day: string) => void;
+  saving: boolean;
+  canCreate: boolean;
+  selectedDay: string;
+  onSelectedDayChange: (day: string) => void;
+  quickAddRef: React.RefObject<HTMLInputElement | null>;
   eventColor: (e: CalEvent) => string;
 }) {
   const todayStr = isoDay(new Date());
@@ -461,38 +612,53 @@ function AgendaView({ events, onEventClick, onDayClick, eventColor: getColor }: 
   const sorted = [...events].sort((a, b) => a.start.localeCompare(b.start));
   for (const ev of sorted) {
     const day = eventDay(ev);
+    if (!day) continue;
     if (!grouped.has(day)) grouped.set(day, []);
     grouped.get(day)!.push(ev);
   }
-  const days = [...grouped.keys()].sort();
-
-  if (days.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-700">
-        <CalendarDays size={32} />
-        <p className="text-sm text-slate-600">No events in this period</p>
-        <button onClick={() => onDayClick(new Date())} className="text-xs text-brand hover:text-brand/50">
-          + Add an event
-        </button>
-      </div>
-    );
-  }
+  const days = agendaDayList([...grouped.keys()]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-6">
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <AgendaQuickAdd
+        ref={quickAddRef}
+        saving={saving}
+        canCreate={canCreate}
+        selectedDay={selectedDay}
+        onSelectedDayChange={onSelectedDayChange}
+        onQuickAdd={onQuickAdd}
+        onMoreOptions={onMoreOptions}
+      />
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+      {days.length === 0 ? (
+      <div className="flex flex-col items-center justify-center gap-3 py-12 text-slate-400">
+        <CalendarDays size={32} />
+        <p className="text-sm text-slate-500">No upcoming days to show</p>
+      </div>
+      ) : (
+      <>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <p className="text-xs text-slate-500">Next {days.length} day{days.length !== 1 ? "s" : ""}</p>
+      </div>
+      <div className="space-y-6">
       {days.map((day) => {
-        const date = new Date(day + "T00:00:00");
+        const date = parseDayString(day);
+        if (!date) return null;
         const isToday = day === todayStr;
         const isPast = day < todayStr;
-        const dayEvents = grouped.get(day)!;
+        const dayEvents = grouped.get(day) ?? [];
         return (
           <div key={day}>
             {/* Day label */}
             <div className="flex items-center gap-3 mb-2">
-              <div className={cn(
-                "flex items-center gap-2 text-xs font-semibold",
-                isToday ? "text-brand" : isPast ? "text-slate-600" : "text-slate-300"
-              )}>
+              <button
+                type="button"
+                onClick={() => { onSelectedDayChange(day); quickAddRef.current?.focus(); }}
+                className={cn(
+                  "flex items-center gap-2 text-xs font-semibold text-left",
+                  isToday ? "text-brand-dark" : isPast ? "text-slate-400" : "text-slate-700"
+                )}
+              >
                 <span className={cn(
                   "w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold",
                   isToday ? "bg-brand-dark text-white" : "text-slate-500"
@@ -501,34 +667,52 @@ function AgendaView({ events, onEventClick, onDayClick, eventColor: getColor }: 
                 </span>
                 <div>
                   <p>{DAYS_SHORT[date.getDay()]}</p>
-                  <p className="text-[10px] font-normal text-slate-500">{MONTHS_SHORT[date.getMonth()]} {date.getFullYear()}</p>
+                  <p className="text-[10px] font-normal text-slate-400">{MONTHS_SHORT[date.getMonth()]} {date.getFullYear()}</p>
                 </div>
-              </div>
-              <div className="flex-1 h-px bg-slate-800" />
-              {isToday && <span className="text-[10px] text-brand font-medium bg-brand-ink/50 px-2 py-0.5 rounded-full">Today</span>}
+              </button>
+              <div className="flex-1 h-px bg-slate-200" />
+              {isToday && <span className="text-[10px] text-brand-dark font-medium bg-brand/10 px-2 py-0.5 rounded-full">Today</span>}
+              {canCreate && !isPast && (
+                <button
+                  type="button"
+                  onClick={() => { onSelectedDayChange(day); quickAddRef.current?.focus(); }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-600 hover:border-brand/30 hover:bg-brand/5 hover:text-brand-dark transition-colors"
+                >
+                  <Plus size={10} /> Add
+                </button>
+              )}
             </div>
             {/* Events */}
             <div className="space-y-2 ml-9">
+              {dayEvents.length === 0 && canCreate && !isPast && (
+                <button
+                  type="button"
+                  onClick={() => { onSelectedDayChange(day); quickAddRef.current?.focus(); }}
+                  className="w-full rounded-xl border border-dashed border-slate-200 px-3 py-2.5 text-left text-xs text-slate-400 transition-colors hover:border-brand/30 hover:bg-brand/5 hover:text-brand-dark"
+                >
+                  Nothing scheduled — click to quick add
+                </button>
+              )}
               {dayEvents.map((ev) => (
                 <button
                   key={ev.id}
                   onClick={() => onEventClick(ev)}
                   className={cn(
-                    "w-full text-left rounded-xl p-3 border transition-all hover:shadow-md group",
-                    isPast ? "border-slate-800 bg-slate-900/50 opacity-70" : "border-slate-700 bg-slate-900 hover:border-slate-600"
+                    "w-full text-left rounded-xl p-3 border transition-all hover:shadow-sm group",
+                    isPast ? "border-slate-100 bg-slate-50 opacity-80" : "border-slate-200 bg-white hover:border-slate-300"
                   )}
                 >
                   <div className="flex items-start gap-3">
                     <div className={cn("w-1 self-stretch rounded-full shrink-0 mt-0.5", getColor(ev))} />
                     <div className="flex-1 min-w-0">
-                      <p className={cn("text-sm font-medium truncate", isPast ? "text-slate-500" : "text-slate-200")}>
+                      <p className={cn("text-sm font-medium truncate", isPast ? "text-slate-500" : "text-slate-800")}>
                         {ev.title}
                       </p>
                       <div className="flex items-center gap-3 mt-1 flex-wrap">
                         {!ev.allDay && (
                           <span className="flex items-center gap-1 text-[11px] text-slate-500">
                             <Clock size={10} /> {formatTime(ev.start)}{ev.end && ` – ${formatTime(ev.end)}`}
-                            {ev.start && ev.end && <span className="text-slate-700">· {formatDuration(ev.start, ev.end)}</span>}
+                            {ev.start && ev.end && <span className="text-slate-400">· {formatDuration(ev.start, ev.end)}</span>}
                           </span>
                         )}
                         {ev.allDay && <span className="text-[11px] text-slate-500">All day</span>}
@@ -544,7 +728,7 @@ function AgendaView({ events, onEventClick, onDayClick, eventColor: getColor }: 
                         )}
                       </div>
                     </div>
-                    <Edit3 size={12} className="text-slate-700 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
+                    <Edit3 size={12} className="text-slate-300 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
                   </div>
                 </button>
               ))}
@@ -552,6 +736,10 @@ function AgendaView({ events, onEventClick, onDayClick, eventColor: getColor }: 
           </div>
         );
       })}
+      </div>
+      </>
+      )}
+      </div>
     </div>
   );
 }
@@ -567,16 +755,16 @@ function MonthGrid({ days, cursor, todayStr, eventsForDay, onDayClick, onEventCl
 }) {
   const curMonth = cursor.getMonth();
   return (
-    <div className="h-full flex flex-col">
-      <div className="grid grid-cols-7 border-b border-slate-800">
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="grid grid-cols-7 border-b border-slate-200 shrink-0">
         {DAYS_SHORT.map((d) => (
-          <div key={d} className="py-2 text-center text-[10px] font-semibold text-slate-600 uppercase tracking-wider">{d}</div>
+          <div key={d} className="py-1.5 lg:py-2 text-center text-[9px] lg:text-[10px] font-semibold text-slate-500 uppercase tracking-wider">{d.slice(0, 1)}</div>
         ))}
       </div>
-      <div className="flex-1 grid grid-rows-6">
+      <div className="flex-1 overflow-y-auto lg:overflow-hidden">
+        <div className="grid grid-cols-7 lg:h-full lg:grid-rows-6">
         {Array.from({ length: 6 }, (_, wi) => (
-          <div key={wi} className="grid grid-cols-7 border-b border-slate-800/40 last:border-0">
-            {days.slice(wi * 7, wi * 7 + 7).map((day) => {
+          days.slice(wi * 7, wi * 7 + 7).map((day) => {
               const ds = isoDay(day);
               const isToday = ds === todayStr;
               const inMonth = day.getMonth() === curMonth;
@@ -586,18 +774,25 @@ function MonthGrid({ days, cursor, todayStr, eventsForDay, onDayClick, onEventCl
                   key={ds}
                   onClick={() => onDayClick(day)}
                   className={cn(
-                    "border-r border-slate-800/40 last:border-0 p-1.5 cursor-pointer hover:bg-slate-800/20 transition-colors min-h-[80px]",
+                    "border-r border-b border-slate-100 p-1 lg:p-1.5 cursor-pointer hover:bg-slate-50 transition-colors min-h-[3.25rem] lg:min-h-[5rem]",
                     !inMonth && "opacity-35",
-                    isToday && "bg-brand-ink/20"
+                    isToday && "bg-brand/5"
                   )}
                 >
                   <div className={cn(
-                    "text-[11px] font-semibold w-6 h-6 flex items-center justify-center rounded-full mb-1",
-                    isToday ? "bg-brand-dark text-white" : "text-slate-500"
+                    "text-[10px] lg:text-[11px] font-semibold w-6 h-6 flex items-center justify-center rounded-full mb-0.5 lg:mb-1",
+                    isToday ? "bg-brand-dark text-white" : "text-slate-600"
                   )}>
                     {day.getDate()}
                   </div>
-                  <div className="space-y-0.5">
+                  {/* Mobile: event dots */}
+                  <div className="flex flex-wrap gap-0.5 px-0.5 lg:hidden">
+                    {dayEvents.slice(0, 4).map((ev) => (
+                      <span key={ev.id} className={cn("h-1.5 w-1.5 rounded-full", getColor(ev))} />
+                    ))}
+                  </div>
+                  {/* Desktop: event chips */}
+                  <div className="hidden lg:block space-y-0.5">
                     {dayEvents.slice(0, 3).map((ev) => (
                       <button
                         key={ev.id}
@@ -613,9 +808,9 @@ function MonthGrid({ days, cursor, todayStr, eventsForDay, onDayClick, onEventCl
                   </div>
                 </div>
               );
-            })}
-          </div>
+            })
         ))}
+        </div>
       </div>
     </div>
   );
@@ -631,17 +826,71 @@ function WeekGrid({ days, todayStr, eventsForDay, onDayClick, onEventClick, even
   eventColor: (e: CalEvent) => string;
 }) {
   return (
-    <div className="h-full flex flex-col">
-      <div className="grid grid-cols-7 border-b border-slate-800">
+    <div className="flex h-full flex-col">
+      {/* Mobile: vertical day list */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 lg:hidden">
+        {days.map((day) => {
+          const ds = isoDay(day);
+          const isToday = ds === todayStr;
+          const dayEvents = eventsForDay(day);
+          return (
+            <div key={ds}>
+              <button
+                type="button"
+                onClick={() => onDayClick(day)}
+                className="mb-2 flex w-full items-center gap-3 text-left"
+              >
+                <span className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold",
+                  isToday ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-700"
+                )}>
+                  {day.getDate()}
+                </span>
+                <div>
+                  <p className={cn("text-sm font-semibold", isToday ? "text-brand-dark" : "text-slate-800")}>
+                    {DAYS_SHORT[day.getDay()]}
+                  </p>
+                  <p className="text-[11px] text-slate-500">{MONTHS_SHORT[day.getMonth()]} {day.getFullYear()}</p>
+                </div>
+                {isToday && <span className="ml-auto rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-medium text-brand-dark">Today</span>}
+              </button>
+              <div className="ml-12 space-y-2">
+                {dayEvents.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => onDayClick(day)}
+                    className="w-full rounded-xl border border-dashed border-slate-200 px-3 py-2 text-left text-xs text-slate-400"
+                  >
+                    No events — tap to add
+                  </button>
+                ) : dayEvents.map((ev) => (
+                  <button
+                    key={ev.id}
+                    onClick={() => onEventClick(ev)}
+                    className={cn("w-full rounded-xl p-3 text-left text-white text-xs hover:brightness-110 transition-all", getColor(ev))}
+                  >
+                    <p className="font-semibold truncate">{ev.title}</p>
+                    {!ev.allDay && <p className="mt-0.5 text-[10px] opacity-80">{formatTime(ev.start)}{ev.end && ` – ${formatTime(ev.end)}`}</p>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Desktop: 7-column grid */}
+      <div className="hidden lg:flex h-full flex-col">
+      <div className="grid grid-cols-7 border-b border-slate-200">
         {days.map((day) => {
           const ds = isoDay(day);
           const isToday = ds === todayStr;
           return (
-            <div key={ds} className="py-2 text-center border-r border-slate-800 last:border-0">
-              <p className="text-[10px] text-slate-600 uppercase">{DAYS_SHORT[day.getDay()]}</p>
+            <div key={ds} className="py-2 text-center border-r border-slate-100 last:border-0">
+              <p className="text-[10px] text-slate-500 uppercase">{DAYS_SHORT[day.getDay()]}</p>
               <div className={cn(
                 "text-sm font-semibold w-8 h-8 mx-auto flex items-center justify-center rounded-full mt-0.5",
-                isToday ? "bg-brand-dark text-white" : "text-slate-400 hover:bg-slate-800 cursor-pointer"
+                isToday ? "bg-brand-dark text-white" : "text-slate-600 hover:bg-slate-100 cursor-pointer"
               )} onClick={() => onDayClick(day)}>
                 {day.getDate()}
               </div>
@@ -658,11 +907,11 @@ function WeekGrid({ days, todayStr, eventsForDay, onDayClick, onEventClick, even
             <div
               key={ds}
               onClick={() => onDayClick(day)}
-              className={cn("border-r border-slate-800 last:border-0 p-2 space-y-1.5 cursor-pointer min-h-[200px] hover:bg-slate-800/10 transition-colors", isToday && "bg-brand-ink/10")}
+              className={cn("border-r border-slate-100 last:border-0 p-2 space-y-1.5 cursor-pointer min-h-[200px] hover:bg-slate-50 transition-colors", isToday && "bg-brand/5")}
             >
               {dayEvents.length === 0 && (
                 <div className="flex items-center justify-center h-16">
-                  <Plus size={14} className="text-slate-800" />
+                  <Plus size={14} className="text-slate-300" />
                 </div>
               )}
               {dayEvents.map((ev) => (
@@ -680,7 +929,113 @@ function WeekGrid({ days, todayStr, eventsForDay, onDayClick, onEventClick, even
           );
         })}
       </div>
+      </div>
     </div>
+  );
+}
+
+// ── Event detail panel ────────────────────────────────────────────────────────
+
+function EventDetailPanel({
+  event, getColor, onClose, onEdit,
+}: {
+  event: CalEvent;
+  getColor: (e: CalEvent) => string;
+  onClose: () => void;
+  onEdit: (e: CalEvent) => void;
+}) {
+  return (
+    <div className={cn(
+      "absolute inset-0 z-50 flex flex-col overflow-y-auto bg-white shrink-0",
+      "lg:static lg:inset-auto lg:w-72 lg:max-h-none lg:border-l lg:border-slate-200",
+    )}>
+        <div className={cn("h-1 w-full shrink-0", getColor(event))} />
+        <div className="flex items-start justify-between gap-2 border-b border-slate-100 px-4 py-3">
+          <div className="flex min-w-0 items-start gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="mt-0.5 rounded-lg p-1 text-slate-500 hover:bg-slate-100 lg:hidden"
+              aria-label="Back"
+            >
+              <ArrowLeft size={16} />
+            </button>
+            <p className="text-sm font-semibold text-slate-800 leading-snug">{event.title}</p>
+          </div>
+          <button onClick={onClose} className="hidden shrink-0 text-slate-400 hover:text-slate-700 lg:block"><X size={14} /></button>
+        </div>
+        <div className="flex-1 space-y-3 px-4 py-4">
+          <div className="flex items-start gap-2.5 text-xs">
+            <Clock size={13} className="text-slate-400 shrink-0 mt-0.5" />
+            <div>
+              {event.allDay ? (
+                <p className="text-slate-800 font-medium">All day · {event.start.slice(0, 10)}</p>
+              ) : (
+                <>
+                  <p className="text-slate-800 font-medium">
+                    {new Date(event.start).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
+                  </p>
+                  <p className="text-slate-500">{formatTime(event.start)} – {formatTime(event.end)}</p>
+                  <p className="text-slate-400 text-[10px]">{formatDuration(event.start, event.end)}</p>
+                </>
+              )}
+            </div>
+          </div>
+
+          {event.location && (
+            <div className="flex items-start gap-2.5 text-xs">
+              <MapPin size={13} className="text-slate-400 shrink-0 mt-0.5" />
+              <span className="text-slate-700">{event.location}</span>
+            </div>
+          )}
+
+          {event.attendees.length > 0 && (
+            <div className="flex items-start gap-2.5 text-xs">
+              <Users size={13} className="text-slate-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                {event.attendees.map((a) => (
+                  <p key={a.email} className="text-slate-700">{a.name || a.email}</p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {event.description && (
+            <div className="text-xs text-slate-600 leading-relaxed bg-slate-50 rounded-xl p-3 border border-slate-100">
+              {event.description}
+            </div>
+          )}
+
+          {event.bookingRef && (
+            <div className="text-xs text-amber-800 font-medium bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+              <span>Booking · {event.bookingRef} · <span className="capitalize">{event.bookingStatus}</span></span>
+            </div>
+          )}
+          {event.link && event.provider !== "booking" && (
+            <a href={event.link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs text-brand-dark hover:text-brand transition-colors">
+              <Zap size={11} /> Open in {event.provider === "google" ? "Google Calendar" : "Outlook"}
+            </a>
+          )}
+        </div>
+        <div className="border-t border-slate-100 px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          {event.provider === "booking" ? (
+            <a
+              href="/dashboard/bookings"
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-xs font-medium text-amber-800 border border-amber-200 transition-colors"
+            >
+              View in Bookings →
+            </a>
+          ) : (
+            <button
+              onClick={() => onEdit(event)}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 transition-colors"
+            >
+              <Edit3 size={12} /> Edit event
+            </button>
+          )}
+        </div>
+      </div>
   );
 }
 
@@ -700,6 +1055,8 @@ export default function CalendarPage() {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalEvent | null>(null);
+  const [agendaQuickDay, setAgendaQuickDay] = useState(() => isoDay(new Date()));
+  const quickAddRef = useRef<HTMLInputElement>(null);
 
   // Local event colors (overrides)
   const [eventColors, setEventColors] = useState<Record<string, string>>({});
@@ -709,6 +1066,12 @@ export default function CalendarPage() {
       const saved = localStorage.getItem("cal_event_colors");
       if (saved) setEventColors(JSON.parse(saved) as Record<string, string>);
     } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (window.matchMedia("(max-width: 1023px)").matches) {
+      setView("agenda");
+    }
   }, []);
 
   function getEventColor(ev: CalEvent) {
@@ -733,14 +1096,31 @@ export default function CalendarPage() {
     setLoading(true);
     try {
       const { timeMin, timeMax } = timeRange();
-      const [calRes, bkRes] = await Promise.allSettled([
+      const [composioRes, calRes, bkRes] = await Promise.allSettled([
+        fetch("/api/composio/connections", { headers: authHeaders() as HeadersInit }),
         apiFetch(`/api/calendar/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`),
         apiFetch("/api/bookings"),
       ]);
 
-      const calData = calRes.status === "fulfilled" ? calRes.value as { events: CalEvent[]; provider: "google" | "microsoft" | null; connected: boolean } : null;
-      setConnected(calData?.connected ?? false);
-      setProvider(calData?.provider ?? null);
+      let composioCalendarConnected = false;
+      let composioProvider: "google" | "microsoft" | null = null;
+      if (composioRes.status === "fulfilled" && composioRes.value.ok) {
+        const composioData = await composioRes.value.json() as { connected?: Record<string, boolean> };
+        if (composioData.connected?.googlecalendar) {
+          composioCalendarConnected = true;
+          composioProvider = "google";
+        } else if (composioData.connected?.outlook) {
+          composioCalendarConnected = true;
+          composioProvider = "microsoft";
+        }
+      }
+
+      const calData = calRes.status === "fulfilled"
+        ? calRes.value as { events: CalEvent[]; provider: "google" | "microsoft" | null; connected: boolean }
+        : null;
+
+      setConnected(Boolean(calData?.connected || composioCalendarConnected));
+      setProvider(calData?.provider ?? composioProvider);
 
       const calEvents: CalEvent[] = calData?.events ?? [];
 
@@ -779,6 +1159,10 @@ export default function CalendarPage() {
       }
 
       setEvents([...calEvents, ...bookingEvents]);
+
+      if (calRes.status === "rejected" && composioCalendarConnected) {
+        toast.error("Connected calendar found, but loading events failed. Try refresh.");
+      }
     } catch {
       toast.error("Failed to load calendar");
     } finally {
@@ -787,6 +1171,19 @@ export default function CalendarPage() {
   }, [timeRange]);
 
   useEffect(() => { loadEvents(); }, [loadEvents]);
+
+  useEffect(() => {
+    if (view !== "agenda" || connected === false) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key.toLowerCase() !== "n" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+      e.preventDefault();
+      quickAddRef.current?.focus();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view, connected]);
 
   async function handleAiSuggest(title: string) {
     const BACKEND = process.env.NEXT_PUBLIC_API_URL || "/api";
@@ -810,8 +1207,8 @@ export default function CalendarPage() {
       const payload = {
         title: form.title, description: form.description,
         location: form.location,
-        start: form.allDay ? form.start.slice(0, 10) : new Date(form.start).toISOString(),
-        end: form.allDay ? form.end.slice(0, 10) : new Date(form.end).toISOString(),
+        start: toApiDateTime(form.start, form.allDay),
+        end: toApiDateTime(form.end, form.allDay),
         allDay: form.allDay, timeZone: form.timeZone, attendees,
         ...(editEvent ? { eventId: editEvent.id } : {}),
       };
@@ -837,6 +1234,24 @@ export default function CalendarPage() {
     } finally { setSaving(false); }
   }
 
+  async function handleQuickAdd(title: string, day: string, time: string) {
+    const base = parseDayString(day) ?? new Date();
+    const [h, m] = time.split(":").map(Number);
+    base.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
+    const end = new Date(base.getTime() + 3600000);
+    await handleSave({
+      title,
+      description: "",
+      location: "",
+      start: toLocalInput(base),
+      end: toLocalInput(end),
+      allDay: false,
+      attendees: "",
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      color: "auto",
+    });
+  }
+
   async function handleDelete() {
     if (!editEvent) return;
     setDeleting(true);
@@ -850,6 +1265,7 @@ export default function CalendarPage() {
   }
 
   function openCreate(date?: string) {
+    if (date) setAgendaQuickDay(date);
     setPrefillDate(date); setEditEvent(null); setShowModal(true);
   }
   function openEdit(event: CalEvent) {
@@ -905,15 +1321,15 @@ export default function CalendarPage() {
     : "Upcoming Events";
 
   return (
-    <div className="flex h-full bg-slate-950 text-slate-100 overflow-hidden">
+    <div className="flex h-[calc(100dvh-3.5rem)] min-h-0 overflow-hidden bg-slate-50 text-slate-900 md:h-full">
 
       {/* ── Left sidebar ─────────────────────────────────────────────────── */}
-      <div className="w-56 border-r border-slate-800 bg-slate-900 flex-col p-4 space-y-5 hidden lg:flex shrink-0">
+      <div className="w-56 border-r border-slate-200 bg-white flex-col p-4 space-y-5 hidden lg:flex shrink-0">
         {/* New event button */}
         <button
           onClick={() => openCreate()}
           disabled={connected === false}
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand-dark hover:bg-brand text-white text-sm font-semibold disabled:opacity-40 transition-colors shadow-lg shadow-brand-ink/30"
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand-dark hover:bg-brand text-white text-sm font-semibold disabled:opacity-40 transition-colors shadow-sm"
         >
           <Plus size={16} /> New Event
         </button>
@@ -944,7 +1360,7 @@ export default function CalendarPage() {
                   <div className="flex items-center gap-2">
                     <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", getEventColor(ev))} />
                     <div className="min-w-0">
-                      <p className="text-[11px] text-slate-300 font-medium truncate group-hover:text-brand transition-colors">{ev.title}</p>
+                      <p className="text-[11px] text-slate-700 font-medium truncate group-hover:text-brand-dark transition-colors">{ev.title}</p>
                       <p className="text-[10px] text-slate-600">{formatTime(ev.start)}</p>
                     </div>
                   </div>
@@ -957,14 +1373,14 @@ export default function CalendarPage() {
         {/* Legend */}
         <div className="mt-auto space-y-1.5">
           {provider && (
-            <div className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-2">
+            <div className="flex items-center gap-2 bg-slate-50 rounded-xl px-3 py-2 border border-slate-100">
               <div className={cn("w-2 h-2 rounded-full shrink-0", provider === "google" ? "bg-emerald-500" : "bg-blue-500")} />
-              <span className="text-[11px] text-slate-400">{provider === "google" ? "Google Calendar" : "Outlook"}</span>
+              <span className="text-[11px] text-slate-600">{provider === "google" ? "Google Calendar" : "Outlook"}</span>
             </div>
           )}
-          <a href="/dashboard/bookings" className="flex items-center gap-2 bg-slate-800 rounded-xl px-3 py-2 hover:bg-slate-700 transition-colors group">
+          <a href="/dashboard/bookings" className="flex items-center gap-2 bg-slate-50 rounded-xl px-3 py-2 border border-slate-100 hover:bg-slate-100 transition-colors group">
             <div className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-            <span className="text-[11px] text-slate-400 group-hover:text-slate-200 transition-colors">
+            <span className="text-[11px] text-slate-600 group-hover:text-slate-800 transition-colors">
               Bookings ({events.filter((e) => e.provider === "booking").length})
             </span>
           </a>
@@ -974,56 +1390,123 @@ export default function CalendarPage() {
       {/* ── Main area ────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Toolbar */}
-        <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/80 flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-1">
-            <button onClick={prev} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors"><ChevronLeft size={15} /></button>
-            <button onClick={goToday} className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors">Today</button>
-            <button onClick={next} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors"><ChevronRight size={15} /></button>
+        <div className="border-b border-slate-200 bg-white px-3 py-2 lg:px-4 lg:py-3">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button onClick={prev} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors"><ChevronLeft size={15} /></button>
+              <button onClick={goToday} className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors lg:px-3">Today</button>
+              <button onClick={next} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors"><ChevronRight size={15} /></button>
+            </div>
+
+            <span className="text-sm font-semibold text-slate-800 flex-1 truncate min-w-0">{headerTitle}</span>
+
+            <button onClick={loadEvents} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 transition-colors shrink-0" title="Refresh">
+              <RefreshCw size={13} />
+            </button>
+
+            <button
+              onClick={() => openCreate()}
+              disabled={connected === false}
+              className="lg:hidden flex shrink-0 items-center gap-1 rounded-xl bg-brand-dark px-2.5 py-1.5 text-white text-xs font-semibold disabled:opacity-40 transition-colors hover:bg-brand"
+            >
+              <Plus size={13} />
+            </button>
           </div>
 
-          <span className="text-sm font-semibold text-slate-200 flex-1 truncate">{headerTitle}</span>
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <div className="flex items-center bg-slate-100 rounded-xl p-0.5 gap-0.5">
+              {([
+                { v: "month" as View, icon: Grid3x3, label: "Month" },
+                { v: "week" as View, icon: Calendar, label: "Week" },
+                { v: "agenda" as View, icon: LayoutList, label: "Agenda" },
+              ]).map(({ v, icon: Icon, label }) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg text-xs font-medium transition-colors",
+                    view === v ? "bg-brand-dark text-white" : "text-slate-500 hover:text-slate-800",
+                    "px-2.5 py-1.5 lg:gap-1.5 lg:px-3",
+                  )}
+                  title={label}
+                >
+                  <Icon size={12} />
+                  <span className="hidden sm:inline">{label}</span>
+                </button>
+              ))}
+            </div>
 
-          {/* View tabs */}
-          <div className="flex items-center bg-slate-800 rounded-xl p-0.5 gap-0.5">
-            {([
-              { v: "month" as View, icon: Grid3x3, label: "Month" },
-              { v: "week" as View, icon: Calendar, label: "Week" },
-              { v: "agenda" as View, icon: LayoutList, label: "Agenda" },
-            ]).map(({ v, icon: Icon, label }) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors", view === v ? "bg-brand-dark text-white" : "text-slate-500 hover:text-slate-100")}
-              >
-                <Icon size={11} /> {label}
-              </button>
-            ))}
+            <button
+              onClick={() => openCreate()}
+              disabled={connected === false}
+              className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-40 transition-colors"
+            >
+              <Plus size={13} /> New Event
+            </button>
           </div>
-
-          <button onClick={loadEvents} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-slate-100 transition-colors" title="Refresh">
-            <RefreshCw size={13} />
-          </button>
-
-          {/* Mobile new event */}
-          <button onClick={() => openCreate()} disabled={connected === false} className="lg:hidden flex items-center gap-1 px-3 py-1.5 rounded-xl bg-brand-dark hover:bg-brand text-white text-xs font-semibold disabled:opacity-40 transition-colors">
-            <Plus size={13} /> New
-          </button>
         </div>
 
+        {/* Mobile today strip — sidebar content on desktop */}
+        <div className="lg:hidden border-b border-slate-100 bg-slate-50 px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Today</p>
+          {loading ? (
+            <Loader2 size={14} className="animate-spin text-slate-400" />
+          ) : todayEvents.length === 0 ? (
+            <p className="text-[11px] text-slate-500">No events today</p>
+          ) : (
+            <div className="flex gap-2 overflow-x-auto pb-0.5">
+              {todayEvents.map((ev) => (
+                <button
+                  key={ev.id}
+                  onClick={() => setSelectedEvent(ev)}
+                  className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-left min-w-[9rem] hover:border-brand/30 transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn("h-2 w-2 rounded-full shrink-0", getEventColor(ev))} />
+                    <span className="text-[11px] font-medium text-slate-800 truncate">{ev.title}</span>
+                  </div>
+                  <p className="mt-0.5 text-[10px] text-slate-500">{formatTime(ev.start)}</p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {connected === false && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
+            External calendar not connected.{" "}
+            <a href="/dashboard/integrations" className="font-semibold underline underline-offset-2">
+              Connect Google Calendar or Outlook
+            </a>
+            {" "}in Integrations to sync meetings. CRM bookings still appear on the calendar.
+          </div>
+        )}
+
         {/* Calendar body */}
-        <div className="flex-1 overflow-hidden flex">
-          <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="relative flex-1 overflow-hidden flex">
+          <div className={cn(
+            "flex-1 overflow-hidden flex flex-col bg-white min-w-0",
+            selectedEvent && "hidden lg:flex",
+          )}>
             {loading ? (
               <div className="flex-1 flex items-center justify-center">
-                <Loader2 size={24} className="animate-spin text-slate-600" />
+                <Loader2 size={24} className="animate-spin text-slate-400" />
               </div>
-            ) : connected === false ? (
+            ) : connected === false && events.length === 0 ? (
               <NoConnection />
             ) : view === "month" ? (
               <MonthGrid
                 days={monthDays()} cursor={cursor} todayStr={todayStr}
                 eventsForDay={eventsForDay}
-                onDayClick={(d) => openCreate(isoDay(d))}
+                onDayClick={(d) => {
+                  const day = isoDay(d);
+                  if (window.matchMedia("(max-width: 1023px)").matches) {
+                    setAgendaQuickDay(day);
+                    setView("agenda");
+                  } else {
+                    openCreate(day);
+                  }
+                }}
                 onEventClick={setSelectedEvent}
                 eventColor={getEventColor}
               />
@@ -1039,7 +1522,13 @@ export default function CalendarPage() {
               <AgendaView
                 events={events}
                 onEventClick={setSelectedEvent}
-                onDayClick={(d) => openCreate(isoDay(d))}
+                onQuickAdd={handleQuickAdd}
+                onMoreOptions={(day) => openCreate(day)}
+                saving={saving}
+                canCreate={connected !== false}
+                selectedDay={agendaQuickDay}
+                onSelectedDayChange={setAgendaQuickDay}
+                quickAddRef={quickAddRef}
                 eventColor={getEventColor}
               />
             )}
@@ -1047,87 +1536,26 @@ export default function CalendarPage() {
 
           {/* Event detail panel */}
           {selectedEvent && (
-            <div className="w-72 border-l border-slate-800 bg-slate-900 flex flex-col overflow-y-auto shrink-0">
-              <div className={cn("h-1 w-full", getEventColor(selectedEvent))} />
-              <div className="flex items-start justify-between px-4 py-3 border-b border-slate-800">
-                <p className="text-sm font-semibold text-slate-200 pr-2 leading-snug">{selectedEvent.title}</p>
-                <button onClick={() => setSelectedEvent(null)} className="text-slate-500 hover:text-slate-100 shrink-0"><X size={14} /></button>
-              </div>
-              <div className="px-4 py-4 space-y-3 flex-1">
-                <div className="flex items-start gap-2.5 text-xs">
-                  <Clock size={13} className="text-slate-500 shrink-0 mt-0.5" />
-                  <div>
-                    {selectedEvent.allDay ? (
-                      <p className="text-slate-200 font-medium">All day · {selectedEvent.start.slice(0, 10)}</p>
-                    ) : (
-                      <>
-                        <p className="text-slate-200 font-medium">
-                          {new Date(selectedEvent.start).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
-                        </p>
-                        <p className="text-slate-500">{formatTime(selectedEvent.start)} – {formatTime(selectedEvent.end)}</p>
-                        <p className="text-slate-700 text-[10px]">{formatDuration(selectedEvent.start, selectedEvent.end)}</p>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {selectedEvent.location && (
-                  <div className="flex items-start gap-2.5 text-xs">
-                    <MapPin size={13} className="text-slate-500 shrink-0 mt-0.5" />
-                    <span className="text-slate-300">{selectedEvent.location}</span>
-                  </div>
-                )}
-
-                {selectedEvent.attendees.length > 0 && (
-                  <div className="flex items-start gap-2.5 text-xs">
-                    <Users size={13} className="text-slate-500 shrink-0 mt-0.5" />
-                    <div className="space-y-0.5">
-                      {selectedEvent.attendees.map((a) => (
-                        <p key={a.email} className="text-slate-300">{a.name || a.email}</p>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {selectedEvent.description && (
-                  <div className="text-xs text-slate-400 leading-relaxed bg-slate-800/50 rounded-xl p-3">
-                    {selectedEvent.description}
-                  </div>
-                )}
-
-                {selectedEvent.bookingRef && (
-                  <div className="text-xs text-amber-400 font-medium bg-amber-900/20 border border-amber-700/30 rounded-xl px-3 py-2 flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-                    <span>Booking · {selectedEvent.bookingRef} · <span className="capitalize">{selectedEvent.bookingStatus}</span></span>
-                  </div>
-                )}
-                {selectedEvent.link && selectedEvent.provider !== "booking" && (
-                  <a href={selectedEvent.link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs text-brand hover:text-brand/50 transition-colors">
-                    <Zap size={11} /> Open in {selectedEvent.provider === "google" ? "Google Calendar" : "Outlook"}
-                  </a>
-                )}
-              </div>
-              <div className="px-4 pb-4 pt-2 border-t border-slate-800">
-                {selectedEvent.provider === "booking" ? (
-                  <a
-                    href="/dashboard/bookings"
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-amber-900/30 hover:bg-amber-900/50 text-xs font-medium text-amber-400 transition-colors"
-                  >
-                    View in Bookings →
-                  </a>
-                ) : (
-                  <button
-                    onClick={() => openEdit(selectedEvent)}
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors"
-                  >
-                    <Edit3 size={12} /> Edit event
-                  </button>
-                )}
-              </div>
-            </div>
+            <EventDetailPanel
+              event={selectedEvent}
+              getColor={getEventColor}
+              onClose={() => setSelectedEvent(null)}
+              onEdit={openEdit}
+            />
           )}
         </div>
       </div>
+
+      {view === "agenda" && connected !== false && (
+        <button
+          type="button"
+          onClick={() => quickAddRef.current?.focus()}
+          className="fixed bottom-20 right-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-brand-dark text-white shadow-lg hover:bg-brand lg:hidden transition-colors"
+          aria-label="Quick add event"
+        >
+          <Plus size={20} />
+        </button>
+      )}
 
       {/* Modal */}
       {showModal && (

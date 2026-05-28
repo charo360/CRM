@@ -14358,6 +14358,73 @@ async def composio_gmail_mark_read(request: Request, user=Depends(get_current_us
     return {"ok": True}
 
 
+@api_router.get("/composio/calendar/events")
+async def composio_calendar_list_events(
+    timeMin: str = "",
+    timeMax: str = "",
+    provider: str = "",
+    user=Depends(get_current_user),
+):
+    """List Google Calendar or Outlook events via Composio execute_action."""
+    from composio_calendar import list_calendar_events as _list
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        return await _list(user_id, time_min=timeMin, time_max=timeMax, provider=provider or None)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.post("/composio/calendar/events")
+async def composio_calendar_create_event(request: Request, user=Depends(get_current_user)):
+    from composio_calendar import create_calendar_event as _create
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    provider = str(body.get("provider") or "google")
+    try:
+        event = await _create(user_id, body, provider)
+        return {"event": event}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.patch("/composio/calendar/events")
+async def composio_calendar_update_event(request: Request, user=Depends(get_current_user)):
+    from composio_calendar import update_calendar_event as _update
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    provider = str(body.get("provider") or "google")
+    if not body.get("eventId"):
+        raise HTTPException(status_code=400, detail="eventId required")
+    try:
+        event = await _update(user_id, body, provider)
+        return {"event": event}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.delete("/composio/calendar/events")
+async def composio_calendar_delete_event(
+    eventId: str = "",
+    provider: str = "google",
+    user=Depends(get_current_user),
+):
+    from composio_calendar import delete_calendar_event as _delete
+    user_id = str(user.get("business_id") or user["_id"])
+    if not eventId:
+        raise HTTPException(status_code=400, detail="eventId required")
+    try:
+        await _delete(user_id, eventId, provider)
+        return {"ok": True}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EMAIL DB — Store emails in MongoDB for instant loading & full control
 # ══════════════════════════════════════════════════════════════════════════════

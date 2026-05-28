@@ -9,7 +9,7 @@ import {
   Radio, Search, Eye, Loader2, ChevronRight, Bell, MessageCircle, X,
   BarChart3, Antenna, Calendar, Hash, MapPin, CheckCircle2, SkipForward,
   AlertTriangle, Clock, Building2, Briefcase, Megaphone, Filter,
-  ShoppingBag, Mail, Phone, Copy,
+  ShoppingBag, Mail, Phone, Copy, Menu,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -406,6 +406,7 @@ function daysUntil(iso: string) {
 
 export default function ActionModePage() {
   const [section, setSection] = useState<Section>("hunt");
+  const [navOpen, setNavOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>({ enabled: false, goals: "", agents: {} });
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -1294,6 +1295,11 @@ export default function ActionModePage() {
     { id: "settings", label: "Settings", icon: Settings2 },
   ];
 
+  const goToSection = (id: Section) => {
+    setSection(id);
+    setNavOpen(false);
+  };
+
   // ─── Loading ────────────────────────────────────────────────────────────────
 
   if (loading) return (
@@ -1308,11 +1314,24 @@ export default function ActionModePage() {
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-[calc(100vh-64px)] bg-slate-50 overflow-hidden">
+    <div className="flex h-[calc(100dvh-3.5rem)] bg-slate-50 overflow-hidden lg:h-[calc(100vh-4rem)]">
+
+      {navOpen && (
+        <button
+          type="button"
+          aria-label="Close AI Scout menu"
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
 
       {/* ── Sidebar ── */}
-      <aside className="w-52 bg-white border-r border-slate-100 flex flex-col flex-shrink-0">
-        <div className="p-4 border-b border-slate-100">
+      <aside
+        className={`fixed top-14 bottom-0 left-0 z-50 flex w-[min(13rem,82vw)] flex-col border-r border-slate-100 bg-white transition-transform duration-200 ease-out lg:relative lg:top-auto lg:bottom-auto lg:z-auto lg:w-52 lg:translate-x-0 ${
+          navOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        }`}
+      >
+        <div className="flex items-center justify-between border-b border-slate-100 p-4 lg:block">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-emerald-600 flex items-center justify-center">
               <Antenna className="w-4 h-4 text-white" />
@@ -1322,22 +1341,30 @@ export default function ActionModePage() {
               <p className="text-[10px] text-emerald-600 mt-0.5">Field Intelligence</p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setNavOpen(false)}
+            className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 lg:hidden"
+            aria-label="Close menu"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
         <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
           {navItems.map(item => (
             <button
               key={item.id}
-              onClick={() => setSection(item.id)}
+              onClick={() => goToSection(item.id)}
               className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm transition-all ${
                 section === item.id
                   ? "bg-emerald-50 text-emerald-700 font-semibold"
                   : "text-slate-600 hover:bg-slate-50 hover:text-slate-800"
               }`}
             >
-              <span className="flex items-center gap-2.5 min-w-0 max-w-[115px]">
+              <span className="flex items-center gap-2.5 min-w-0">
                 <item.icon className="w-4 h-4 flex-shrink-0" />
-                <span className="truncate text-left block w-full">{item.label}</span>
+                <span className="truncate text-left block">{item.label}</span>
               </span>
               {item.badge ? (
                 <span className="text-[10px] font-bold bg-emerald-600 text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
@@ -1361,23 +1388,31 @@ export default function ActionModePage() {
       </aside>
 
       {/* ── Main ── */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
 
         {/* ── Topbar ── */}
-        <header className="bg-white border-b border-slate-100 px-5 py-2.5 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-4">
-            <h1 className="text-sm font-bold text-slate-800">
+        <header className="bg-white border-b border-slate-100 px-3 py-2.5 sm:px-5 flex items-center justify-between gap-3 flex-shrink-0">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-4">
+            <button
+              type="button"
+              onClick={() => setNavOpen(true)}
+              className="rounded-lg p-2 text-slate-600 hover:bg-slate-50 lg:hidden"
+              aria-label="Open AI Scout menu"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+            <h1 className="truncate text-sm font-bold text-slate-800">
               {navItems.find(n => n.id === section)?.label}
             </h1>
             {isLive && (
-              <div className="flex items-center gap-2 text-xs text-emerald-600">
+              <div className="hidden items-center gap-2 text-xs text-emerald-600 sm:flex">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="font-medium">{livePhase}</span>
+                <span className="font-medium truncate max-w-[8rem]">{livePhase}</span>
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3 text-xs text-slate-500">
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex">
               <span className="flex items-center gap-1">
                 <Activity className="w-3.5 h-3.5 text-emerald-500" />
                 {feed.length} signals
@@ -1403,15 +1438,15 @@ export default function ActionModePage() {
         </header>
 
         {/* ── Section Body ── */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto overflow-x-hidden">
 
           {/* ────────────────── HUNT ────────────────── */}
           {section === "hunt" && (
-            <div className="p-5">
+            <div className="p-4 sm:p-5">
               {/* Top Page Header */}
-              <div className="flex justify-between items-center mb-6">
+              <div className="mb-5 flex flex-col gap-3 sm:mb-6 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                  <h1 className="text-xl sm:text-2xl font-bold text-slate-800">
                     You have <span className="text-emerald-600">{filteredLeads.length} hot leads</span> today
                   </h1>
                   <p className="text-sm text-slate-500 mt-1">Respond first, win the deal</p>
@@ -1420,7 +1455,7 @@ export default function ActionModePage() {
                   <button
                     onClick={runSocial}
                     disabled={runningSocial}
-                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm"
+                    className="flex w-full items-center justify-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm sm:w-auto"
                   >
                     {runningSocial ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
                     Scan Now
@@ -1429,9 +1464,9 @@ export default function ActionModePage() {
               </div>
 
               {/* Controls and Approval Actions Row */}
-              <div className="flex items-center justify-between gap-3 mb-6 bg-slate-50/50 p-2.5 rounded-xl border border-slate-100">
-                <div className="flex items-center gap-3 flex-1">
-                  <div className="relative flex-1 max-w-xs">
+              <div className="mb-5 flex flex-col gap-3 rounded-xl border border-slate-100 bg-slate-50/50 p-3 sm:mb-6 sm:p-2.5 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-col gap-3 sm:flex-1 sm:flex-row sm:items-center">
+                  <div className="relative w-full sm:max-w-xs sm:flex-1">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
                     <input
                       value={searchQuery}
@@ -1440,7 +1475,7 @@ export default function ActionModePage() {
                       className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
                     />
                   </div>
-                  <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+                  <div className="flex items-center gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">
                     {(["all","hot","warm","cold"] as const).map(f => (
                       <button
                         key={f}
@@ -1461,7 +1496,7 @@ export default function ActionModePage() {
                 </div>
 
                 {/* Master Checkbox + Approve All Button down here */}
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                   <label className="flex items-center gap-2 px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all cursor-pointer shadow-sm">
                     <input
                       type="checkbox"
@@ -1493,7 +1528,7 @@ export default function ActionModePage() {
                         toast.success(`Approved and added ${approved} leads to CRM!`);
                       }
                     }}
-                    className="flex items-center gap-2 px-4 py-2 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg shadow-sm transition-all"
+                    className="flex w-full items-center justify-center gap-2 px-4 py-2 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg shadow-sm transition-all sm:w-auto"
                   >
                     Approve all
                   </button>
@@ -1533,9 +1568,10 @@ export default function ActionModePage() {
                           isSelected ? "bg-emerald-50/50 border-emerald-500 hover:border-emerald-500" : ""
                         }`}
                       >
-                        <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "32px 1fr 100px 105px 158px" }}>
-                          {/* Checkbox */}
-                          <div className="flex items-center justify-center">
+                        <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[32px_minmax(0,1fr)_100px_105px_158px] lg:items-center">
+                          {/* Checkbox + content */}
+                          <div className="flex gap-3 lg:contents">
+                          <div className="flex items-start justify-center pt-0.5 lg:items-center">
                             <input
                               type="checkbox"
                               checked={isSelected}
@@ -1549,9 +1585,8 @@ export default function ActionModePage() {
                             />
                           </div>
 
-                          {/* Content */}
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2 mb-1">
                               <span className="text-sm font-semibold text-slate-800">
                                 {lead.author || lead.contact_name || "Unknown user"}
                               </span>
@@ -1569,14 +1604,14 @@ export default function ActionModePage() {
                               "{lead.snippet || lead.title}"
                             </p>
                           </div>
+                          </div>
 
-                          {/* Beautiful Intent Ring Column */}
+                          <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 pt-3 sm:justify-between lg:contents lg:border-0 lg:pt-0">
                           <div className="flex flex-col items-center justify-center">
                             <IntentRing score={score} />
                             <span className="text-[10px] text-slate-400 mt-1 font-semibold">Intent</span>
                           </div>
 
-                          {/* Time & Reason Column */}
                           <div className="flex flex-col items-center justify-center text-center">
                             <span className="font-bold text-sm text-slate-700">
                               {timeAgo(lead.created_at).replace("ago", "").trim()}
@@ -1588,8 +1623,7 @@ export default function ActionModePage() {
                             </span>
                           </div>
 
-                          {/* Actions */}
-                          <div className="flex flex-col gap-1.5">
+                          <div className="w-full flex flex-col gap-1.5 sm:w-auto lg:w-full">
                             {(() => {
                               const p = (lead.platform || "").toLowerCase();
                               const hasUrl = !!lead.url;
@@ -1655,6 +1689,7 @@ export default function ActionModePage() {
                               </button>
                             </div>
                           </div>
+                          </div>
                         </div>
                       </div>
                     );
@@ -1664,7 +1699,7 @@ export default function ActionModePage() {
 
               {/* Bulk Action Bar at bottom */}
               {selectedLeads.size > 0 && (
-                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full flex items-center gap-4 shadow-lg z-50 animate-slide-up">
+                <div className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-50 flex flex-wrap items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-lg sm:inset-x-auto sm:left-1/2 sm:bottom-6 sm:-translate-x-1/2 sm:rounded-full sm:px-6 sm:py-3 sm:gap-4">
                   <span className="text-xs font-semibold">{selectedLeads.size} selected</span>
                   <button
                     onClick={async () => {
@@ -1736,27 +1771,27 @@ export default function ActionModePage() {
 
           {/* ────────────────── PULSE ────────────────── */}
           {section === "pulse" && (
-            <div className="p-5">
+            <div className="p-4 sm:p-5">
               {/* Header */}
-              <div className="mb-6">
-                <h1 className="text-2xl font-bold text-slate-800">Live pulse</h1>
+              <div className="mb-5 sm:mb-6">
+                <h1 className="text-xl sm:text-2xl font-bold text-slate-800">Live pulse</h1>
                 <p className="text-sm text-slate-500 mt-1">Real-time view of all agent activity</p>
               </div>
 
-              <div className="grid grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
                 
                 {/* LEFT COLUMN: Radar, Stats, Activity Feed */}
-                <div className="col-span-2 space-y-6">
+                <div className="space-y-6 xl:col-span-2">
                   
                   {/* Radar & Stats Block */}
-                  <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center gap-6 shadow-sm">
+                  <div className="bg-white rounded-xl border border-slate-100 p-4 sm:p-5 flex flex-col items-center gap-4 shadow-sm sm:flex-row sm:items-center sm:gap-6">
                     {/* Animated Radar */}
-                    <div className="flex-shrink-0">
+                    <div className="flex-shrink-0 scale-90 sm:scale-100">
                       <RadarSVG />
                     </div>
 
                     {/* Stats Grid */}
-                    <div className="flex-1 grid grid-cols-2 gap-4">
+                    <div className="w-full flex-1 grid grid-cols-2 gap-3 sm:gap-4">
                       {/* Stat 1 */}
                       <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
                         <div className="text-3xl font-extrabold tracking-tight text-[#059669]">{totalScanned}</div>
@@ -1811,10 +1846,10 @@ export default function ActionModePage() {
                             const minAgo = Math.max(1, Math.round(ms / 60000));
                             const timeLabel = minAgo < 60 ? `${minAgo} min ago` : `${Math.round(minAgo / 60)} hr ago`;
                             return (
-                              <div key={item._id} className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                                <div className="flex items-start gap-3">
+                              <div key={item._id} className="bg-white rounded-xl border border-slate-100 p-4 flex flex-col gap-3 hover:border-slate-200 hover:shadow-sm transition-all duration-200 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex items-start gap-3 min-w-0">
                                   <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: dotColor }} />
-                                  <div>
+                                  <div className="min-w-0">
                                     <div className="text-sm text-slate-700 font-medium">
                                       <span className="font-bold text-slate-800">{label}</span> — {item.title}
                                       {item.platform && <span className="text-slate-400 text-xs"> · {item.platform}</span>}
@@ -1824,8 +1859,8 @@ export default function ActionModePage() {
                                   </div>
                                 </div>
                                 <button
-                                  onClick={() => setSection(target)}
-                                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2 flex-shrink-0"
+                                  onClick={() => goToSection(target)}
+                                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all sm:pr-2 flex-shrink-0 self-start sm:self-auto"
                                 >
                                   {btnLabel}
                                 </button>
@@ -1987,7 +2022,7 @@ export default function ActionModePage() {
                     const score = opp.score ?? 5;
                     return (
                       <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200" style={{ borderLeftWidth: 3, borderLeftColor: accent }}>
-                        <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 140px" }}>
+                        <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_100px_140px] lg:items-center">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 mb-1.5">
                               <span className="font-bold text-slate-800 text-sm">{opp.title}</span>
@@ -2005,12 +2040,13 @@ export default function ActionModePage() {
                             )}
                           </div>
 
+                          <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 pt-3 sm:justify-between lg:contents lg:border-0 lg:pt-0">
                           <div className="flex flex-col items-center justify-center">
                             <IntentRing score={score} />
                             <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
                           </div>
 
-                          <div className="flex flex-col gap-1.5">
+                          <div className="w-full flex flex-col gap-1.5 sm:w-auto lg:w-full">
                             {opp.url ? (
                               <a
                                 href={opp.url}
@@ -2025,6 +2061,7 @@ export default function ActionModePage() {
                                 View details →
                               </button>
                             )}
+                          </div>
                           </div>
                         </div>
                       </div>
@@ -4031,28 +4068,29 @@ export default function ActionModePage() {
                       const score = opp.score ?? 5;
                       return (
                         <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-3.5 hover:border-emerald-200 hover:shadow-sm transition-all">
-                          <div className="grid gap-3" style={{ gridTemplateColumns: "46px 1fr 100px 105px 158px" }}>
-                            {/* Score ring component */}
+                          <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[46px_minmax(0,1fr)_100px_105px_158px] lg:items-center">
+                            <div className="flex gap-3 lg:contents">
+                            <div className="flex shrink-0 items-start lg:items-center lg:justify-center">
                             <IntentRing score={score} />
+                            </div>
 
-                            {/* Signal Details */}
-                            <div className="min-w-0">
+                            <div className="min-w-0 flex-1">
                               <p className="text-xs font-bold text-slate-800 truncate">{opp.title}</p>
                               <p className="text-[11px] text-slate-500 line-clamp-2 mt-1 leading-relaxed">{opp.snippet}</p>
                               <div className="flex items-center gap-1.5 mt-2">
                                 <span className="text-[9px] text-slate-400 font-medium">Captured {timeAgo(opp.created_at)}</span>
                               </div>
                             </div>
+                            </div>
 
-                            {/* Found Platform Badge */}
+                            <div className="flex flex-col gap-3 border-t border-slate-100 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between lg:contents lg:border-0 lg:pt-0">
                             <div className="flex items-center justify-center">
                               <span className="text-[9px] font-bold text-slate-500 capitalize bg-slate-50 px-2 py-1 rounded border border-slate-100 select-none">
                                 {opp.platform || "Custom"}
                               </span>
                             </div>
 
-                            {/* Contact Info card */}
-                            <div className="flex flex-col justify-center gap-1 text-xs">
+                            <div className="flex flex-col justify-center gap-1 text-xs min-w-0">
                               {opp.contact_name ? (
                                 <p className="font-bold text-slate-700 truncate">{opp.contact_name}</p>
                               ) : opp.author ? (
@@ -4066,17 +4104,17 @@ export default function ActionModePage() {
                             </div>
 
                             {/* Interactive Actions */}
-                            <div className="flex items-center gap-2 justify-end">
+                            <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                               <button
                                 onClick={() => openWhatsApp(opp.contact_info, `Hi, I saw your post regarding "${opp.title}" and wanted to connect.`)}
-                                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 flex items-center gap-1 shadow-sm"
+                                className="w-full px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 flex items-center justify-center gap-1 shadow-sm sm:w-auto"
                               >
                                 <MessageCircle className="w-3.5 h-3.5" />
                                 Reach Out
                               </button>
                               <button
                                 onClick={() => addToCRM(opp)}
-                                className="p-2 border border-slate-200 rounded-lg text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
+                                className="p-2 border border-slate-200 rounded-lg text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors self-end sm:self-auto"
                                 title="Add to CRM"
                               >
                                 <Plus className="w-4 h-4" />
@@ -4084,6 +4122,7 @@ export default function ActionModePage() {
                             </div>
                           </div>
                         </div>
+                      </div>
                       );
                     })}
                   </div>
