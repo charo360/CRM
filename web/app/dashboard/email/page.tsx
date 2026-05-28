@@ -1039,12 +1039,11 @@ function EmailPageInner() {
           if (data.status === "complete" || data.status === "never_synced") {
             if (syncPollRef.current) clearInterval(syncPollRef.current);
             setSyncStatus(null);
+            await loadThreadsRef.current("", undefined, threadLimit);
           }
         }
-        // Always refresh thread list using latest loadThreads ref
-        await loadThreadsRef.current("", undefined, threadLimit);
       } catch { /* ignore */ }
-    }, 5000);
+    }, 15000);
   }
 
   // Cleanup poll on unmount

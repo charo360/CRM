@@ -196,6 +196,8 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") ?? "25"), 100);
   const preferredProvider = req.nextUrl.searchParams.get("provider") as "gmail" | "microsoft" | null ?? undefined;
+  // Webhook-first mode (default): read from DB only and avoid costly live provider fetch loops.
+  const liveFetch = req.nextUrl.searchParams.get("live") === "1";
 
   // ── Try DB first (instant) ─────────────────────────────────────────────────
   try {
@@ -218,7 +220,32 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* fall through to live fetch */ }
 
-  // ── Fall back to live provider fetch (with provider fallback) ────────────
+  // Webhook-first default behavior: when DB has no rows, return connected state
+  // without calling live provider APIs. This prevents repeated GMAIL_FETCH_EMAILS
+  // loops from UI refresh/polling.
+  if (!liveFetch) {
+    try {
+      const allProviders = await detectAllEmailProviders(userId, auth ?? undefined);
+      const connectedProviders = [...new Set(allProviders.map((p) => p.provider))] as ("gmail" | "microsoft")[];
+      return NextResponse.json({
+        threads: [],
+        provider: preferredProvider ?? connectedProviders[0] ?? null,
+        connected: allProviders.length > 0,
+        connectedProviders,
+        source: "db-only",
+      });
+    } catch {
+      return NextResponse.json({
+        threads: [],
+        provider: preferredProvider ?? null,
+        connected: false,
+        connectedProviders: [],
+        source: "db-only",
+      });
+    }
+  }
+
+  // ── Optional live provider fetch (with provider fallback) ─────────────────
   try {
     const allProviders = await detectAllEmailProviders(userId, auth ?? undefined);
     const connectedProviders = [...new Set(allProviders.map((p) => p.provider))] as ("gmail" | "microsoft")[];
