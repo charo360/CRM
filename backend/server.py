@@ -8237,9 +8237,28 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
 COMPOSIO_WEBHOOK_SECRET = (os.environ.get("COMPOSIO_WEBHOOK_SECRET") or "").strip()
 
 
+async def _process_composio_webhook_bg(payload: dict) -> None:
+    """Run Composio webhook processing in the background.
+
+    Composio's delivery timeout is short (~5-10s) but our sync can take 10-30s
+    against a real Gmail account. Responding 200 immediately and processing
+    out-of-band keeps Composio happy and avoids retries/dropped deliveries.
+    """
+    from composio_webhooks import handle_composio_webhook
+    try:
+        result = await handle_composio_webhook(payload, db)
+        logging.info("[composio-webhook] Result: %s", result)
+    except Exception as exc:
+        logging.error("[composio-webhook] Handler error: %s", exc, exc_info=True)
+
+
 @api_router.post("/webhooks/composio")
-async def composio_webhook(request: Request):
-    """Receive Composio trigger webhooks (e.g. Gmail new message)."""
+async def composio_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive Composio trigger webhooks (e.g. Gmail new message).
+
+    Responds 200 quickly and defers actual processing to a background task —
+    Composio drops deliveries that don't ack within a few seconds.
+    """
     raw_body = await request.body()
     signature = request.headers.get("X-Composio-Signature", "")
 
@@ -8263,22 +8282,9 @@ async def composio_webhook(request: Request):
             logging.warning("[composio-webhook] Invalid JSON payload")
             raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    from composio_webhooks import handle_composio_webhook
-
-    try:
-        result = await handle_composio_webhook(payload, db)
-    except Exception as exc:
-        logging.error("[composio-webhook] Handler error: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Webhook processing error")
-
-    logging.info("[composio-webhook] Result: %s", result)
-
-    if not isinstance(result, dict):
-        result = {"status": "ok"}
-    else:
-        result.setdefault("status", "error" if "error" in result else "ok")
-
-    return result
+    background_tasks.add_task(_process_composio_webhook_bg, payload)
+    logging.info("[composio-webhook] Accepted; processing in background")
+    return {"status": "accepted"}
 
 
 # ============ EVOLUTION API WEBHOOK ============
