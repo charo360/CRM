@@ -5,6 +5,7 @@ Persists ledger, trust events, and notebook in Mongo when `db` is provided.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Optional
@@ -100,8 +101,15 @@ async def _get_orchestrator(
     db: Any | None,
     *,
     light: bool = True,
+    refresh: bool = True,
 ) -> Orchestrator:
-    """Load persisted state. Heavy CRM/email/scout work only when light=False."""
+    """Load persisted state.
+
+    refresh=False  → just load persisted orch, no CRM/email ingest. Use for
+                     read-only memory surfaces (journal, notebook, ledger).
+    light=True    → load + run light briefing refresh (email, queue, metrics).
+    light=False   → load + run full platform sweep (scouts, agents).
+    """
     uid = _uid(user)
     bid = _business_id(user)
 
@@ -119,10 +127,12 @@ async def _get_orchestrator(
     orch = await store.load(uid, business_id=bid)
     wire_action_mode_executor(orch, db, uid)
 
+    if not refresh:
+        return orch
+
     if light:
-        if _use_live_db(db):
-            await light_briefing_refresh(db, user, orch)
-            await store.save(uid, business_id=bid, orch=orch)
+        await light_briefing_refresh(db, user, orch)
+        await store.save(uid, business_id=bid, orch=orch)
         return orch
 
     await run_platform_sweep(db, user, orch, force=True)
@@ -136,6 +146,33 @@ async def _persist(user: dict, db: Any | None, orch: Orchestrator) -> None:
         return
     if _SESSION:
         await _SESSION.save(_uid(user), business_id=_business_id(user), orch=orch)
+
+
+_BG_REFRESH_INFLIGHT: set[str] = set()
+
+
+async def _background_briefing_refresh(user: dict, db: Any, uid: str, bid: str) -> None:
+    """Fire-and-forget light refresh for the SWR /home path.
+
+    Loads a fresh orch (the request's orch is already returned to the client),
+    runs the light refresh, persists. Deduped per-user so rapid reloads don't
+    stack refreshes on top of each other.
+    """
+    if uid in _BG_REFRESH_INFLIGHT:
+        return
+    _BG_REFRESH_INFLIGHT.add(uid)
+    try:
+        store = ZiloSessionStore(db)
+        await store.ensure_indexes()
+        orch = await store.load(uid, business_id=bid)
+        wire_action_mode_executor(orch, db, uid)
+        await light_briefing_refresh(db, user, orch)
+        await store.save(uid, business_id=bid, orch=orch)
+        logger.info("[zilo] background briefing refresh complete uid=%s", uid)
+    except Exception as e:
+        logger.warning("[zilo] background briefing refresh failed uid=%s: %s", uid, e)
+    finally:
+        _BG_REFRESH_INFLIGHT.discard(uid)
 
 
 # ── Request/response models ───────────────────────────────────────────────
@@ -197,24 +234,27 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     @router.get("/home")
     async def rex_home(
         user=Depends(get_current_user),
-        refresh: bool = Query(False, description="Full platform sweep (slow)"),
-        live: bool = Query(True, description="Pull latest email/messages/queue into briefing"),
+        refresh: bool = Query(False, description="Full platform sweep (slow, blocks)"),
+        live: bool = Query(False, description="Block on light refresh before returning"),
     ):
+        """Stale-while-revalidate by default.
+
+        Returns the persisted briefing instantly and kicks the light refresh in
+        the background — the next page load sees fresh data. Set ?live=true to
+        block on the refresh (e.g. user-clicked "refresh now"), or ?refresh=true
+        for a full platform sweep.
+        """
         try:
             if refresh and _use_live_db(db):
                 orch = await _get_orchestrator(user, db, light=False)
             elif live and _use_live_db(db):
                 orch = await _get_orchestrator(user, db, light=True)
             else:
-                store = await _session_store() if _use_live_db(db) else None
-                uid = _uid(user)
-                bid = _business_id(user)
-                if store:
-                    orch = await store.load(uid, business_id=bid)
-                    wire_action_mode_executor(orch, db, bid)
-                else:
-                    orch = _ORCHESTRATORS.get(uid) or build_demo_orchestrator()
-                    _ORCHESTRATORS[uid] = orch
+                orch = await _get_orchestrator(user, db, refresh=False)
+                if _use_live_db(db):
+                    asyncio.create_task(
+                        _background_briefing_refresh(user, db, _uid(user), _business_id(user))
+                    )
             return serialize_home(orch)
         except Exception as e:
             logger.exception("[zilo] /home failed: %s", e)
@@ -287,17 +327,17 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
 
     @router.get("/notebook")
     async def rex_notebook(user=Depends(get_current_user)):
-        orch = await _get_orchestrator(user, db)
+        orch = await _get_orchestrator(user, db, refresh=False)
         return serialize_notebook(orch)
 
     @router.get("/ledger")
     async def rex_ledger(user=Depends(get_current_user)):
-        orch = await _get_orchestrator(user, db)
+        orch = await _get_orchestrator(user, db, refresh=False)
         return serialize_ledger(orch)
 
     @router.get("/journal")
     async def rex_journal(user=Depends(get_current_user)):
-        orch = await _get_orchestrator(user, db)
+        orch = await _get_orchestrator(user, db, refresh=False)
         return serialize_journal(orch)
 
     @router.get("/team")

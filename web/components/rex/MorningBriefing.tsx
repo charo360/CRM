@@ -108,9 +108,12 @@ export type ZiloHome = {
   };
   counts: {
     staged: number;
-    overnight_total: number;
+    top_count?: number;
+    activity_total?: number;
+    overnight_total: number;  // legacy alias
   };
-  overnight: OvernightItem[];
+  activity?: OvernightItem[];
+  overnight: OvernightItem[];  // legacy alias
   zilo_rank?: string;
   rex_rank?: string;
   relationship_day: number;
@@ -203,7 +206,9 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
-      const data = normalizeHome(await api.get<ZiloHome>("/rex/home?live=1"));
+      // No ?live=1 — backend SWR returns the cached briefing instantly and
+      // refreshes in the background. Next poll picks up the fresh state.
+      const data = normalizeHome(await api.get<ZiloHome>("/rex/home"));
       setHome(data);
       onStagedCount?.(data.counts.staged);
     } catch (e) {
@@ -318,7 +323,7 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
     home.letter.quiet_night
       ? home.letter.body.split("\n")[0]
       : staged.length > 0
-        ? `Morning. ${staged.length} thing${staged.length === 1 ? "" : "s"} need you today. Everything else moved as expected overnight.`
+        ? `${staged.length} thing${staged.length === 1 ? "" : "s"} need you. Everything else is handled.`
         : home.letter.opener;
 
   return (
@@ -332,7 +337,7 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
             </p>
             <h1 className="mt-0.5 text-xl font-semibold tracking-tight text-white">Zilo Briefing</h1>
             <p className="mt-1 max-w-lg text-xs text-slate-500">
-              Live feed from your whole CRM — new email is drafted immediately; you review, edit, then send.
+              Everything that needs you today.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -423,7 +428,7 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
 
               {staged.length === 0 && (
                 <p className="py-12 text-center text-sm text-slate-500">
-                  Nothing staged — quiet morning. Overnight work is in the log.
+                  Nothing needs you right now. Recent activity is in the log.
                 </p>
               )}
             </div>
@@ -434,32 +439,46 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
       {/* Right rail — fixed; only overnight list scrolls inside */}
       <aside className="hidden h-full w-64 shrink-0 flex-col overflow-hidden border-l border-white/10 bg-[#071a10] xl:flex xl:w-72">
         <div className="grid grid-cols-2 gap-2.5 p-3">
-          <MetricCard label="Today's revenue" value={home.metrics.revenue_today} sub={home.metrics.revenue_delta} subTone="up" />
+          {isZeroRevenue(home.metrics.revenue_today) ? (
+            <ConnectCard
+              label="Today's revenue"
+              prompt="Connect Stripe so Zilo can watch your revenue."
+            />
+          ) : (
+            <MetricCard label="Today's revenue" value={home.metrics.revenue_today} sub={home.metrics.revenue_delta} subTone="up" />
+          )}
           <MetricCard
             label="Follow-ups due"
             value={String(home.metrics.followups_due)}
             sub={`Zilo handling ${home.metrics.followups_zilo}`}
             subTone="warn"
           />
+          {home.metrics.open_deals === 0 ? (
+            <ConnectCard
+              label="Open deals"
+              prompt="Add a deal so Zilo can track your pipeline."
+            />
+          ) : (
+            <MetricCard
+              label="Open deals"
+              value={String(home.metrics.open_deals)}
+              sub={`${home.metrics.deals_at_risk} at risk`}
+              subTone="risk"
+            />
+          )}
           <MetricCard
-            label="Open deals"
-            value={String(home.metrics.open_deals)}
-            sub={`${home.metrics.deals_at_risk} at risk`}
-            subTone="risk"
-          />
-          <MetricCard
-            label="Overnight actions"
-            value={String(home.counts.overnight_total)}
-            sub="All handled"
+            label="Recent activity"
+            value={String(home.counts.activity_total ?? home.counts.overnight_total)}
+            sub="Live"
             subTone="up"
           />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-            What Zilo did last night
+            Recent activity
           </h3>
           <ul className="mt-3 space-y-2">
-            {home.overnight.map((item) => (
+            {(home.activity ?? home.overnight).map((item) => (
               <li key={item.action_id} className="flex gap-2 text-xs text-slate-400">
                 <span
                   className={cn(
@@ -633,4 +652,21 @@ function MetricCard({
       <p className={cn("mt-0.5 text-[10px] font-medium", subClass)}>{sub}</p>
     </div>
   );
+}
+
+function ConnectCard({ label, prompt }: { label: string; prompt: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-white/15 bg-black/10 p-2.5">
+      <p className="text-[10px] text-slate-500">{label}</p>
+      <p className="mt-1 text-[11px] leading-snug text-slate-300">{prompt}</p>
+    </div>
+  );
+}
+
+function isZeroRevenue(value: string | undefined): boolean {
+  if (!value) return true;
+  // "USD 0.00", "$0", "KES 0", "0.00" — any string whose numeric tokens are all 0.
+  const nums = value.match(/\d+(\.\d+)?/g);
+  if (!nums) return true;
+  return nums.every((n) => parseFloat(n) === 0);
 }

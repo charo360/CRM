@@ -400,6 +400,10 @@ SUBTYPE: For investor (Angel/VC/PE/Family Office/Other), for partner (Strategic/
 
         except Exception as e:
             logger.error("[email_classifier] AI classification failed: %s", e)
+            err_msg = str(e).lower()
+            if "insufficient_quota" in err_msg or "quota" in err_msg or "429" in err_msg:
+                logger.warning("[email_classifier] OpenAI quota exceeded. Disabling AI classification fallback.")
+                self.has_ai = False
             return None
 
     def _parse_ai_response(self, text: str) -> Optional[Dict[str, Any]]:

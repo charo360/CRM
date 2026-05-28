@@ -13154,7 +13154,15 @@ async def startup_tasks():
 
         # Customers — most queried collection
         await db.customers.create_index("user_id")
-        await db.customers.create_index([("user_id", 1), ("phone_number", 1)], unique=True)
+        try:
+            await db.customers.drop_index("user_id_1_phone_number_1")
+        except Exception:
+            pass
+        await db.customers.create_index(
+            [("user_id", 1), ("phone_number", 1)],
+            unique=True,
+            partialFilterExpression={"phone_number": {"$type": "string", "$gt": ""}}
+        )
         await db.customers.create_index([("user_id", 1), ("last_contacted", 1)])
         await db.customers.create_index([("user_id", 1), ("tags", 1)])
         await db.customers.create_index([("user_id", 1), ("created_at", -1)])
@@ -13461,7 +13469,7 @@ async def _email_sync_runner(db) -> None:
             for u in users:
                 uid = str(u.get("business_id") or u["_id"])
                 try:
-                    await sync_emails_for_user(uid, db, max_results=10)
+                    await sync_emails_for_user(uid, db, max_results=10, trigger_briefing_ingest=True)
                 except Exception as e:
                     logging.warning(f"[email-sync] Failed for user {uid}: {e}")
                 await _asyncio.sleep(5)  # space out users to keep backend responsive
@@ -14374,7 +14382,7 @@ async def email_db_sync(user=Depends(get_current_user)):
     await ensure_indexes(db)
 
     # Quick sync — get latest emails from Gmail + Outlook
-    result = await sync_emails_for_user(user_id, db, max_results=10)
+    result = await sync_emails_for_user(user_id, db, max_results=10, trigger_briefing_ingest=True)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
 

@@ -107,11 +107,15 @@ async def fetch_metrics(db: Any, uid: str) -> dict[str, Any]:
     sales_result = await db.sales.aggregate(sales_pipeline).to_list(1)
     sales_today = float(sales_result[0]["total"]) if sales_result else 0.0
 
+    # "Due" = anything that needs you now or sooner — overdue items (reminder_date
+    # in the past) plus everything dated through end-of-today (+ tz buffer).
+    # Previously this used `$gte: today_start - 14h`, which silently dropped the
+    # 7 overdue follow-ups the user actually saw on the follow-ups page.
     followups_due = await db.followups.count_documents({
         "user_id": uid,
         "status": "pending",
         "is_auto_sequence": {"$ne": True},
-        "reminder_date": {"$gte": tz_window_start, "$lt": tz_window_end},
+        "reminder_date": {"$lt": tz_window_end},
     })
 
     staged_zilo = 0  # filled by caller from orch

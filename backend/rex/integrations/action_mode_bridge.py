@@ -75,7 +75,10 @@ async def import_pending_queue(
         {"user_id": uid, "status": "pending"},
     ).sort("created_at", -1).to_list(limit)
 
+    from rex.integrations.email_bridge import _is_promotional
+
     imported = 0
+    skipped_promo = 0
     for item in items:
         qid = str(item["_id"])
         ref = queue_ref(qid)
@@ -83,6 +86,22 @@ async def import_pending_queue(
             continue
 
         action_type = item.get("action_type") or "review_result"
+
+        # Filter newsletter / promo / automated email drafts that may have been
+        # queued before the email_bridge filter was in place. We feed the queue
+        # metadata into the same heuristic email_bridge uses at draft time.
+        if action_type == "send_email":
+            meta = item.get("metadata") or {}
+            promo, reason = _is_promotional({
+                "from_addr": meta.get("from_addr"),
+                "subject": meta.get("subject"),
+                "body_clean": meta.get("snippet"),
+                "headers": meta.get("headers"),
+            })
+            if promo:
+                skipped_promo += 1
+                logger.debug("[zilo] queue skip qid=%s reason=%s", qid, reason)
+                continue
         kind = ACTION_TYPE_TO_KIND.get(action_type, ActionKind.DATA_FLAG)
         category = _category_for_item(item)
         meta = dict(item.get("metadata") or {})
@@ -132,8 +151,11 @@ async def import_pending_queue(
         )
         imported += 1
 
-    if imported:
-        logger.info("[zilo] imported %d queue items for uid=%s", imported, uid)
+    if imported or skipped_promo:
+        logger.info(
+            "[zilo] queue import uid=%s imported=%d skipped_promo=%d",
+            uid, imported, skipped_promo,
+        )
     return imported
 
 

@@ -169,12 +169,75 @@ def _memory_line(notebook: Notebook, action: Action) -> str | None:
     return entry.text
 
 
-def _overnight_tone(state: ActionState) -> str:
+def _activity_tone(state: ActionState) -> str:
     if state is ActionState.STAGED:
         return "pending"
     if state is ActionState.SENT:
         return "done"
     return "flag"
+
+
+def _clean_summary(text: str) -> str:
+    """Strip emoji and clamp a CRM-passthrough summary for the activity rail."""
+    from rex.persona.voice_rules import _EMOJI_PATTERN
+
+    text = _EMOJI_PATTERN.sub("", text or "").strip()
+    text = " ".join(text.split())
+    if len(text) > 90:
+        text = text[:87].rstrip() + "…"
+    return text
+
+
+def _activity_score(action: Action, state: ActionState, now: datetime) -> float:
+    """Rank actions for the activity rail.
+
+    Higher score = more important to surface. Combines:
+      • state weight (staged > flag > sent — needs-you items first)
+      • recency (newer wins)
+      • confidence (high-confidence work surfaces first when scores tie)
+    """
+    state_w = {
+        ActionState.STAGED: 3.0,
+        ActionState.FAILED: 2.0,
+        ActionState.UNDONE: 2.0,
+        ActionState.SENT: 1.0,
+    }.get(state, 0.5)
+
+    hours_ago = max(0.0, (now - action.proposed_at).total_seconds() / 3600.0)
+    recency = 1.0 / (1.0 + hours_ago / 6.0)  # half-life ~6h
+
+    return state_w + recency + (action.confidence or 0.0) * 0.5
+
+
+def _select_recent_activity(orch: Orchestrator, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Pick the most important recent actions and emit them with real summaries.
+
+    Surfaces actual events ("Reply drafted to Sarah about Q3 invoice") instead
+    of generic counts. Filters out REJECTED/DISMISSED (including newsletter
+    auto-dismissals) so the list only shows real work.
+    """
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[float, Action, ActionState]] = []
+    for act in orch.ledger.all_actions():
+        state = orch.ledger.current_state(act.id)
+        if state in (ActionState.REJECTED, ActionState.DISMISSED):
+            continue
+        scored.append((_activity_score(act, state, now), act, state))
+
+    scored.sort(key=lambda triple: triple[0], reverse=True)
+
+    out: list[dict[str, Any]] = []
+    for _, act, state in scored[:limit]:
+        out.append({
+            "action_id": act.id,
+            "summary": _clean_summary(act.summary),
+            "state": state.value,
+            "category": act.category,
+            "tone": _activity_tone(state),
+            "target_subject": act.target_subject,
+            "proposed_at": _dt_iso(act.proposed_at),
+        })
+    return out
 
 
 def serialize_home(orch: Orchestrator, *, relationship_day: int | None = None) -> dict[str, Any]:
@@ -205,18 +268,11 @@ def serialize_home(orch: Orchestrator, *, relationship_day: int | None = None) -
             "source_url": (act.payload or {}).get("url") or None,
         })
 
-    overnight = []
-    for act in orch.ledger.all_actions():
-        state = orch.ledger.current_state(act.id)
-        if state in (ActionState.REJECTED, ActionState.DISMISSED):
-            continue
-        overnight.append({
-            "action_id": act.id,
-            "summary": act.summary,
-            "state": state.value,
-            "category": act.category,
-            "tone": _overnight_tone(state),
-        })
+    activity = _select_recent_activity(orch, limit=8)
+    activity_total = sum(
+        1 for act in orch.ledger.all_actions()
+        if orch.ledger.current_state(act.id) not in (ActionState.REJECTED, ActionState.DISMISSED)
+    )
 
     standing = orch.engine.standing(CHIEF_OF_STAFF_NAME, "outreach")
     counts = home.counts
@@ -230,12 +286,15 @@ def serialize_home(orch: Orchestrator, *, relationship_day: int | None = None) -
         },
         "counts": {
             "staged": counts.staged,
+            "top_count": len(letter_actions),  # ≤3 — what the briefing card lists
             "sent_today": counts.sent_today,
             "undone_today": counts.undone_today,
             "failed_today": counts.failed_today,
-            "overnight_total": len(overnight),
+            "activity_total": activity_total,
+            "overnight_total": activity_total,  # legacy alias
         },
-        "overnight": overnight[-14:],
+        "activity": activity,
+        "overnight": activity,  # legacy alias for older clients
         "zilo_rank": standing.rank.display,
         "rex_rank": standing.rank.display,  # legacy clients
         "zilo_on_probation": standing.on_probation,

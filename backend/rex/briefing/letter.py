@@ -16,6 +16,7 @@ The Ledger underneath remains the source of truth.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Sequence
@@ -32,7 +33,7 @@ from rex.persona.templates import (
     assert_inviolable_briefing_shape,
     render_citation,
 )
-from rex.persona.voice_rules import validate_voice
+from rex.persona.voice_rules import _EMOJI_PATTERN, validate_voice
 
 
 class LetterShapeError(ValueError):
@@ -74,13 +75,26 @@ def _format_hhmm(dt: datetime) -> str:
     return f"{dt.hour:02d}:{dt.minute:02d}"
 
 
+def _strip_emoji(text: str) -> str:
+    """Remove emoji from CRM-passthrough text before it enters the Letter body.
+
+    Why: action.summary and action.reasoning come from customer email / WhatsApp
+    / queue items and may contain emoji. The Letter body is voice-validated as
+    if it were Rex's own writing, which has a zero-emoji budget — so passthrough
+    emojis would fail validation and 500 the briefing.
+    """
+    if not text:
+        return ""
+    return _EMOJI_PATTERN.sub("", text)
+
+
 def _letter_safe_prose(text: str) -> str:
     """
     CRM / Action Mode reasoning can be long snippets. The Letter must pass
     Rex voice validation — split into short sentences for the raw letter body.
     Full reasoning stays on the Action for the structured UI.
     """
-    text = " ".join((text or "").split())
+    text = " ".join(_strip_emoji(text or "").split())
     if not text:
         return ""
     words = text.split()
@@ -95,7 +109,8 @@ def _letter_safe_prose(text: str) -> str:
 
 def _summary_line(action: Action) -> str:
     """Action's one-line summary as it appears at the start of its block."""
-    return f"  {_format_hhmm(action.proposed_at)} — {action.summary}"
+    summary = _letter_safe_prose(action.summary)
+    return f"  {_format_hhmm(action.proposed_at)} — {summary}"
 
 
 def _confidence_line(action: Action) -> str:
@@ -233,16 +248,28 @@ def compose_letter(
 # Voice validation — strict but action-friendly
 # ---------------------------------------------------------------------------
 
-def _voice_check(body: str) -> None:
-    """
-    Run the Phase-1 voice validator on the Letter prose.
+_TIMESTAMP_PREFIX = re.compile(r"^\s*\d{1,2}:\d{2}\s*—\s*", re.MULTILINE)
 
-    We strip out the deterministic UI tokens before checking — those are
-    exact strings, not Rex's writing, and would otherwise confuse rules
-    like 'no_em_dash' with literal em-dashes that ARE expected in Rex's
-    voice (he uses em-dashes deliberately).
+
+def _normalize_for_voice_check(body: str) -> str:
+    """Make `body` safe to feed to validate_voice.
+
+    The Letter body interleaves Rex's prose with structural tokens (UI affordance
+    `[Review → Send / Dismiss]`, time stamps `09:30 — `, citation tags `[tag]`).
+    The voice validator splits sentences on `.!?` — without normalization a
+    block that ends in `]` flows across the blank line into the next block's
+    summary, producing spurious sentence_length violations. We treat the
+    deterministic UI tokens as sentence boundaries here so each rendered line
+    is validated on its own merit.
     """
-    report = validate_voice(body)
+    text = body.replace(ACTION_TOKEN_REVIEW_SEND, ".")
+    text = _TIMESTAMP_PREFIX.sub("", text)
+    return text
+
+
+def _voice_check(body: str) -> None:
+    """Run the voice validator on the Letter prose, after normalizing UI tokens."""
+    report = validate_voice(_normalize_for_voice_check(body))
     hard = [v for v in report.violations if v.severity.value == "hard"]
     if hard:
         raise LetterShapeError(
