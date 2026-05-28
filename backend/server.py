@@ -8263,9 +8263,6 @@ async def composio_webhook(request: Request):
             logging.warning("[composio-webhook] Invalid JSON payload")
             raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    trigger_name = payload.get("trigger_name")
-    logging.info("[composio-webhook] Received: %s", trigger_name)
-
     from composio_webhooks import handle_composio_webhook
 
     try:
@@ -8273,6 +8270,8 @@ async def composio_webhook(request: Request):
     except Exception as exc:
         logging.error("[composio-webhook] Handler error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing error")
+
+    logging.info("[composio-webhook] Result: %s", result)
 
     if not isinstance(result, dict):
         result = {"status": "ok"}
