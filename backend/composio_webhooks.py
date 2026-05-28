@@ -90,40 +90,26 @@ async def process_gmail_trigger(event: Dict[str, Any], db: Any) -> Dict[str, Any
         
         user_id = str(user.get("business_id") or user["_id"])
         
-        # Fetch full message details via Composio
-        from composio_service import composio_proxy
-        
+        # Webhook payload shape can vary; safest path is to run the existing quick
+        # sync pipeline that normalizes + stores Gmail/Outlook into email_db.
         try:
-            # Get full message from Gmail API
-            message_response = await composio_proxy(
-                user_id,
-                "gmail",
-                "GET",
-                f"gmail/v1/users/me/messages/{message_id}?format=full"
+            from email_sync import sync_emails_for_user
+            result = await sync_emails_for_user(user_id, db, max_results=10)
+            logger.info(
+                "✅ Gmail webhook sync for %s → threads=%s messages=%s",
+                user.get("email", user_id),
+                result.get("synced_threads", 0),
+                result.get("synced_messages", 0),
             )
-            
-            if "error" not in message_response:
-                # Store in MongoDB using existing email_sync logic
-                from email_sync import _store_messages
-                
-                result = await _store_messages(user_id, db, [message_response])
-                
-                logger.info(f"✅ Stored {result.get('synced_messages', 0)} message(s) for {user.get('email', user_id)}")
-                
-                # Trigger email classification
-                from email_classifier import get_email_classifier
-                await get_email_classifier(db).classify_new_emails(user_id)
-                
-                return {
-                    "success": True,
-                    "synced_messages": result.get("synced_messages", 0)
-                }
-            else:
-                logger.error(f"Failed to fetch message {message_id}: {message_response['error']}")
-                return {"error": message_response["error"]}
-                
+            return {
+                "success": True,
+                "synced_threads": result.get("synced_threads", 0),
+                "synced_messages": result.get("synced_messages", 0),
+                "message_id": message_id,
+                "thread_id": thread_id,
+            }
         except Exception as e:
-            logger.error(f"Error fetching message via Composio: {e}")
+            logger.error(f"Error syncing after Gmail webhook: {e}", exc_info=True)
             return {"error": str(e)}
         
     except Exception as e:
