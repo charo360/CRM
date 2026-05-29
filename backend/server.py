@@ -15467,14 +15467,26 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
     ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     try:
+        # AliExpress requires signed token exchange via the REST system-tool endpoint.
+        # Params: app_key, timestamp, sign_method, code; signed with HMAC-SHA256.
+        token_params = {
+            "app_key":     app_key,
+            "timestamp":   str(int(time.time() * 1000)),
+            "sign_method": "sha256",
+            "code":        code,
+        }
+        sorted_keys = sorted(token_params.keys())
+        sign_base   = "/auth/token/create" + "".join(f"{k}{token_params[k]}" for k in sorted_keys)
+        token_params["sign"] = hmac.new(
+            app_secret.encode("utf-8"),
+            sign_base.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest().upper()
         async with httpx.AsyncClient(timeout=20) as hc:
-            r = await hc.post("https://oauth.aliexpress.com/token", data={
-                "grant_type":    "authorization_code",
-                "code":          code,
-                "client_id":     app_key,
-                "client_secret": app_secret,
-                "redirect_uri":  redirect_uri,
-            })
+            r = await hc.post(
+                "https://api-sg.aliexpress.com/rest/auth/token/create",
+                data=token_params,
+            )
         token_data = r.json()
         logging.info("[ae/oauth/callback] token response: %s", token_data)
     except Exception as e:
