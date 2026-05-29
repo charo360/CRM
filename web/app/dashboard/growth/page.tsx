@@ -62,15 +62,15 @@ export default function GrowthPage() {
           <p className="text-sm text-slate-500 mt-1">Your daily AI-powered business health dashboard</p>
         </div>
         <button onClick={loadDigest} disabled={loading}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50">
+          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-brand-dark text-white rounded-lg hover:bg-brand disabled:opacity-50 transition-colors">
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
       </div>
 
       {/* Live Pulse */}
       {pulse && (
-        <div className="bg-slate-800 text-slate-100 rounded-xl px-5 py-3 text-sm font-medium flex items-center gap-2">
-          <BarChart2 size={15} className="text-slate-400 shrink-0" />
+        <div className="bg-brand-dark text-white rounded-xl px-5 py-3 text-sm font-medium flex items-center gap-2">
+          <BarChart2 size={15} className="text-white/70 shrink-0" />
           {pulse}
         </div>
       )}

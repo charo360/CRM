@@ -1943,7 +1943,7 @@ def make_blog_router(db, get_current_user):
                 site_url=site_base,
                 business_name=blog.get("business_name", "Business"),
                 industry=blog.get("industry", "General"),
-                location=blog.get("location", "Nairobi"),
+                location=blog.get("location", ""),
             )
             return {"status": "ok", "products_pushed": result.get("pushed", 0), "detail": result}
         except Exception as exc:

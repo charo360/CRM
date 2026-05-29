@@ -129,18 +129,41 @@ async def insert_brand_kit_asset(
 
 async def get_primary_logo_url(db, business_id: str) -> Optional[str]:
     """Public URL for the default or latest brand logo, for compositing into generated HTML."""
-    docs = (
-        await db[COLLECTION]
-        .find({"user_id": business_id, "source": "brand_kit", "content_type": "brand_logo", "file_url": {"$ne": ""}})
-        .sort([("is_default", -1), ("created_at", -1)])
-        .limit(1)
-        .to_list(1)
-    )
-    doc = docs[0] if docs else None
-    if not doc:
-        return None
-    url = (doc.get("file_url") or "").strip()
-    return _absolutize_url(url) if url else None
+    queries = [
+        {"user_id": business_id, "source": "brand_kit", "content_type": "brand_logo"},
+        {"user_id": business_id, "content_type": "brand_logo"},
+        {
+            "user_id": business_id,
+            "source": "brand_kit",
+            "name": {"$regex": r"logo", "$options": "i"},
+        },
+    ]
+    for q in queries:
+        filt = {**q, "file_url": {"$ne": ""}}
+        docs = (
+            await db[COLLECTION]
+            .find(filt)
+            .sort([("is_default", -1), ("created_at", -1)])
+            .limit(1)
+            .to_list(1)
+        )
+        if docs:
+            url = (docs[0].get("file_url") or docs[0].get("thumbnail_url") or "").strip()
+            if url:
+                return _absolutize_url(url)
+
+    # Legacy / settings logo on user profile
+    try:
+        user = await db.users.find_one({"_id": business_id})
+        if user:
+            settings = user.get("settings") or {}
+            for key in ("logo_url", "invoice_logo_url", "brand_logo_url"):
+                raw = (settings.get(key) or user.get(key) or "").strip()
+                if raw:
+                    return _absolutize_url(raw)
+    except Exception as exc:
+        logger.warning("[saved_designs] user logo lookup failed: %s", exc)
+    return None
 
 
 async def build_design_library_context_message(db, business_id: str) -> str:

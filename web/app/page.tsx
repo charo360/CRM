@@ -14,20 +14,21 @@ export const metadata: Metadata = {
   },
 };
 
-export default function HomePage({
+export default async function HomePage({
   searchParams,
 }: {
-  searchParams: { shop?: string; hmac?: string; timestamp?: string; locale?: string };
+  searchParams: Promise<{ shop?: string; hmac?: string; timestamp?: string; locale?: string }>;
 }) {
+  const params = await searchParams;
   // Shopify App Store install: forward to the backend install handler
-  if (searchParams.shop && searchParams.hmac) {
+  if (params.shop && params.hmac) {
     const apiBase = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/api$/, "").replace(/\/$/, "");
     const backendBase = apiBase || "https://crm-1-pnfo.onrender.com";
     const qs = new URLSearchParams({
-      shop: searchParams.shop,
-      hmac: searchParams.hmac,
-      ...(searchParams.timestamp ? { timestamp: searchParams.timestamp } : {}),
-      ...(searchParams.locale ? { locale: searchParams.locale } : {}),
+      shop: params.shop,
+      hmac: params.hmac,
+      ...(params.timestamp ? { timestamp: params.timestamp } : {}),
+      ...(params.locale ? { locale: params.locale } : {}),
     }).toString();
     redirect(`${backendBase}/api/shopify/install?${qs}`);
   }

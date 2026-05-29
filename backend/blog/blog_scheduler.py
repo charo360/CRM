@@ -1,6 +1,6 @@
 """
 Zilo Autoblogging — Daily Post Scheduler.
-Runs every day at 9 AM Nairobi time (6 AM UTC) and publishes one post per active client,
+Runs every day at 9 AM UTC and publishes one post per active client,
 respecting per-plan weekly post limits.
 """
 import logging

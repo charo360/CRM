@@ -111,7 +111,7 @@ export default function VoicePage() {
             <p className="text-2xl font-mono font-bold text-slate-800">{fmt(seconds)}</p>
             <p className="text-sm text-slate-500">Recording… speak clearly</p>
             <button onClick={stopRecording}
-              className="flex items-center gap-2 px-6 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700 font-medium">
+              className="flex items-center gap-2 px-6 py-2.5 bg-brand-dark text-white rounded-lg hover:bg-brand font-medium transition-colors">
               <Square size={14} fill="white" /> Stop Recording
             </button>
           </>

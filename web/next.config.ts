@@ -36,6 +36,10 @@ const nextConfig: NextConfig = {
         source: "/api/media/presentations/:file*",
         destination: `${BACKEND_ORIGIN}/api/media/presentations/:file*`,
       },
+      {
+        source: "/api/document-preview/:key*",
+        destination: `${BACKEND_ORIGIN}/api/document-preview/:key*`,
+      },
     ];
   },
 };

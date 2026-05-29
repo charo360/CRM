@@ -392,12 +392,12 @@ export default function LoginPage() {
                       setPhone(e.target.value);
                       setError("");
                     }}
-                    placeholder="+254 700 000 000"
+                    placeholder="+1 555 000 0000"
                     required
                     className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0 placeholder:text-slate-400"
                   />
                 </div>
-                <p className="text-xs text-slate-400 mt-1">Include country code, e.g. +254</p>
+                <p className="text-xs text-slate-400 mt-1">Include country code, e.g. +1</p>
               </div>
               {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
               <button

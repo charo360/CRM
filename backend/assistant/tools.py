@@ -393,6 +393,70 @@ async def list_followups(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="search_meeting_notes",
+    description=(
+        "Search the meeting knowledge base using natural language. "
+        "Use for: finding past decisions, open action items, what was discussed with a client, "
+        "project status from meetings, who attended a call, follow-ups agreed in a meeting. "
+        "Examples: 'action items from last week', 'what did we decide about pricing', "
+        "'meetings with Acme Corp', 'open tasks from client calls'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for — use natural language"},
+            "limit": {"type": "integer", "default": 6, "minimum": 1, "maximum": 20},
+        },
+        "required": ["query"],
+    },
+)
+async def search_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
+    query = (args.get("query") or "").strip()
+    limit = min(int(args.get("limit") or 6), 20)
+    if not query:
+        return {"error": "query is required"}
+    try:
+        from smart_notes.knowledge import search_knowledge, list_recent_notes_summary
+        results = await search_knowledge(ctx.db, ctx.business_id, query, top_k=limit)
+        if not results:
+            # Fall back to listing recent notes
+            recent = await list_recent_notes_summary(ctx.db, ctx.business_id, limit=5)
+            return {
+                "message": "No close semantic match found. Showing recent notes instead.",
+                "recent_notes": recent,
+            }
+        return {"query": query, "results": results}
+    except Exception as e:
+        logger.warning("[search_meeting_notes] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
+    name="list_meeting_notes",
+    description=(
+        "List recent AI-generated meeting notes. Use when the user asks to see their notes, "
+        "recent meetings, or wants a summary of what meetings happened. "
+        "Returns title, date, attendees, summary and action items for each note."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+        },
+    },
+)
+async def list_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
+    limit = min(int(args.get("limit") or 10), 50)
+    try:
+        from smart_notes.knowledge import list_recent_notes_summary
+        notes = await list_recent_notes_summary(ctx.db, ctx.business_id, limit=limit)
+        return {"count": len(notes), "notes": notes}
+    except Exception as e:
+        logger.warning("[list_meeting_notes] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
     name="get_analytics_summary",
     description="High-level business stats: customer count, sales today, revenue, active orders, bookings today.",
     parameters={"type": "object", "properties": {}},
@@ -527,54 +591,45 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
 @tool(
     name="get_owner_info",
     description=(
-        "Return the business owner's name, phone, business name, currency, country, "
-        "business_type (industry), short hints from business knowledge, and the brand kit "
+        "Return the full business owner profile: identity, contact, currency, country, "
+        "website, tagline, plus nested `settings` (all dashboard settings), "
+        "`business_knowledge` (products, pricing, hours, location, FAQs, etc.), "
+        "`document_style` (tone, signature, header/footer), `payment_methods`, and brand kit "
         "(`default_logo_url`, `brand_primary_color`, `brand_font`). "
-        "Use for Meta/Google ads, proposals, and any time industry-aware advice is needed. "
-        "For design work, **always call this first** so you can pass the brand logo URL and "
-        "primary colour into Gemini design tools (brand_color, logo_url) and `generate_design_background.logo_url`."
+        "Use before drafting documents, ads, or proposals — never re-ask for data already here."
     ),
     parameters={"type": "object", "properties": {}},
     destructive=False,
 )
 async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
+    from .owner_profile import build_owner_profile
+
     user = await ctx.db.users.find_one({"_id": ctx.business_id})
     if not user:
         return {"error": "Owner record not found"}
-    settings = user.get("settings", {}) or {}
-    bk = user.get("business_knowledge") or {}
 
-    # Brand assets — best-effort lookups so failures here don't break the tool.
     default_logo_url = ""
     brand_primary_color = ""
     brand_font = ""
+    document_style: Dict[str, Any] = {}
     try:
-        from saved_designs import get_primary_logo_url, get_brand_settings
+        from saved_designs import get_document_style, get_primary_logo_url, get_brand_settings
 
         default_logo_url = (await get_primary_logo_url(ctx.db, ctx.business_id)) or ""
-        brand = await get_brand_settings(ctx.db, ctx.business_id)
-        brand_primary_color = (brand or {}).get("brand_primary_color", "") or ""
-        brand_font = (brand or {}).get("brand_font", "") or ""
+        brand = await get_brand_settings(ctx.db, ctx.business_id) or {}
+        brand_primary_color = (brand.get("brand_primary_color") or "") if brand else ""
+        brand_font = (brand.get("brand_font") or "") if brand else ""
+        document_style = await get_document_style(ctx.db, ctx.business_id) or {}
     except Exception:
-        logger.exception("[get_owner_info] brand asset lookup skipped")
+        logger.exception("[get_owner_info] brand/document style lookup skipped")
 
-    return {
-        "owner_name":    user.get("owner_name") or user.get("name", ""),
-        "business_name": user.get("business_name", ""),
-        "phone_number":  user.get("phone_number") or settings.get("phone_number", ""),
-        "email":         user.get("email", ""),
-        "country":       settings.get("country", ""),
-        "currency":      settings.get("currency", ""),
-        "whatsapp_number": (user.get("whatsapp") or {}).get("number", ""),
-        "business_type":   (settings.get("business_type") or "").strip(),
-        "business_description_hint": (bk.get("business_description") or "")[:400],
-        "products_services_hint":    (bk.get("products_services") or "")[:400],
-        # Brand kit — pass these straight into Gemini design tools
-        # (brand_color, logo_url) and generate_design_background.logo_url.
-        "default_logo_url":    default_logo_url,
-        "brand_primary_color": brand_primary_color,
-        "brand_font":          brand_font,
-    }
+    return build_owner_profile(
+        user,
+        default_logo_url=default_logo_url,
+        brand_primary_color=brand_primary_color,
+        brand_font=brand_font,
+        document_style=document_style,
+    )
 
 
 @tool(
@@ -4165,6 +4220,163 @@ async def get_revenue_trends(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="get_field_agent_status",
+    description=(
+        "Return a summary of field agent tasks and team performance. "
+        "Use this when the user asks about their field team, agent tasks, who is overdue, "
+        "which agent has the most pending work, or what tasks are assigned today."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "agent_name": {"type": "string", "description": "Filter by a specific agent's name (partial match, optional)."},
+            "status":     {"type": "string", "enum": ["pending", "in_progress", "completed", "missed", "overdue"],
+                          "description": "Filter tasks by status. 'overdue' returns open tasks past their due date."},
+        },
+    },
+)
+async def get_field_agent_status(ctx: ToolContext, args: Dict[str, Any]):
+    from datetime import date as _date
+    tid = ctx.business_id
+    today_str = _date.today().isoformat()
+
+    # Agents with task counts via aggregation
+    pipeline = [
+        {"$match": {"user_id": tid}},
+        {"$group": {
+            "_id": "$assigned_to",
+            "agent_name": {"$first": "$agent_name"},
+            "total":     {"$sum": 1},
+            "pending":   {"$sum": {"$cond": [{"$eq": ["$status", "pending"]},   1, 0]}},
+            "in_progress": {"$sum": {"$cond": [{"$eq": ["$status", "in_progress"]}, 1, 0]}},
+            "completed": {"$sum": {"$cond": [{"$eq": ["$status", "completed"]}, 1, 0]}},
+            "overdue":   {"$sum": {"$cond": [{"$and": [
+                {"$in": ["$status", ["pending", "in_progress"]]},
+                {"$gt": ["$due_date", ""]},
+                {"$lt": ["$due_date", today_str]},
+            ]}, 1, 0]}},
+        }},
+    ]
+    agent_rows = await ctx.db.field_agent_tasks.aggregate(pipeline).to_list(200)
+
+    # Filter by agent name if requested
+    name_filter = (args.get("agent_name") or "").lower()
+    if name_filter:
+        agent_rows = [r for r in agent_rows if name_filter in (r.get("agent_name") or "").lower()]
+
+    # Fetch matching tasks if status filter given
+    status_filter = args.get("status")
+    tasks = []
+    if status_filter:
+        q: Dict[str, Any] = {"user_id": tid}
+        if status_filter == "overdue":
+            q["status"] = {"$in": ["pending", "in_progress"]}
+            q["due_date"] = {"$gt": "", "$lt": today_str}
+        else:
+            q["status"] = status_filter
+        if name_filter:
+            q["agent_name"] = {"$regex": name_filter, "$options": "i"}
+        raw = await ctx.db.field_agent_tasks.find(q, sort=[("due_date", 1)]).to_list(50)
+        tasks = [{"title": t["title"], "agent": t.get("agent_name",""), "due": t.get("due_date",""),
+                  "customer": t.get("customer_name",""), "type": t.get("task_type",""),
+                  "status": t["status"]} for t in raw]
+
+    total_agents = await ctx.db.team_members.count_documents({"business_id": tid, "status": {"$ne": "suspended"}})
+    total_overdue = sum(r.get("overdue", 0) for r in agent_rows)
+    total_pending = sum(r.get("pending", 0) for r in agent_rows)
+
+    return {
+        "total_agents": total_agents,
+        "total_pending": total_pending,
+        "total_overdue": total_overdue,
+        "agents": [
+            {"name": r.get("agent_name", r["_id"]), "total": r["total"], "pending": r["pending"],
+             "in_progress": r.get("in_progress", 0), "completed": r["completed"], "overdue": r["overdue"]}
+            for r in sorted(agent_rows, key=lambda x: x.get("overdue", 0), reverse=True)
+        ],
+        "filtered_tasks": tasks,
+    }
+
+
+@tool(
+    name="get_budget_status",
+    description=(
+        "Return the business's expense budget vs actual spend for a given month. "
+        "Use this when the user asks about their budget, how much they've spent vs budget, "
+        "which categories are over budget, or how much budget is left. "
+        "Returns per-category breakdown with % used, remaining amount, and over/near-limit flags."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "year":  {"type": "integer", "description": "Year (defaults to current year)."},
+            "month": {"type": "integer", "minimum": 1, "maximum": 12,
+                      "description": "Month number 1-12 (defaults to current month)."},
+        },
+    },
+)
+async def get_budget_status(ctx: ToolContext, args: Dict[str, Any]):
+    import calendar as _cal
+    from datetime import date as _date
+    today = _date.today()
+    year  = int(args.get("year")  or today.year)
+    month = int(args.get("month") or today.month)
+
+    from_date = f"{year:04d}-{month:02d}-01"
+    last_day  = _cal.monthrange(year, month)[1]
+    to_date   = f"{year:04d}-{month:02d}-{last_day:02d}"
+
+    budget_q = {"user_id": ctx.business_id, "period": "monthly", "year": year, "month": month}
+    budgets  = await ctx.db.budgets.find(budget_q).to_list(200)
+
+    pipeline = [
+        {"$match": {"user_id": ctx.business_id, "type": "expense",
+                    "date": {"$gte": from_date, "$lte": to_date}}},
+        {"$group": {"_id": "$category", "actual": {"$sum": "$amount"}}},
+    ]
+    rows = await ctx.db.finance_entries.aggregate(pipeline).to_list(200)
+    actual_by_cat: Dict[str, float] = {r["_id"]: round(r["actual"], 2) for r in rows}
+
+    items = []
+    for b in budgets:
+        cat     = b["category"]
+        actual  = actual_by_cat.get(cat, 0.0)
+        budgeted = b["amount"]
+        items.append({
+            "category": cat,
+            "budgeted": budgeted,
+            "actual": actual,
+            "remaining": round(budgeted - actual, 2),
+            "pct_used": round((actual / budgeted * 100) if budgeted > 0 else 0, 1),
+            "status": "over" if actual > budgeted else "warning" if actual >= budgeted * 0.75 else "ok",
+        })
+
+    budgeted_cats = {b["category"] for b in budgets}
+    for cat, actual in actual_by_cat.items():
+        if cat not in budgeted_cats:
+            items.append({"category": cat, "budgeted": None, "actual": actual,
+                           "remaining": None, "pct_used": None, "status": "no_budget"})
+
+    items.sort(key=lambda x: (x["status"] not in ("over", "warning"), x["category"]))
+
+    total_budgeted = sum(i["budgeted"] for i in items if i["budgeted"] is not None)
+    total_actual   = sum(i["actual"] for i in items)
+    over_budget    = [i for i in items if i["status"] == "over"]
+    near_limit     = [i for i in items if i["status"] == "warning"]
+
+    return {
+        "month": f"{year}-{month:02d}",
+        "total_budgeted": round(total_budgeted, 2),
+        "total_actual": round(total_actual, 2),
+        "total_remaining": round(total_budgeted - total_actual, 2),
+        "overall_pct_used": round((total_actual / total_budgeted * 100) if total_budgeted > 0 else 0, 1),
+        "over_budget_categories": over_budget,
+        "near_limit_categories": near_limit,
+        "all_categories": items,
+    }
+
+
+@tool(
     name="get_top_customers",
     description=(
         "Return the top customers ranked by total revenue or order count. "
@@ -4558,13 +4770,12 @@ async def delete_automation(ctx: ToolContext, args: Dict[str, Any]):
     name="generate_document",
     description=(
         "Convert markdown content into a downloadable PDF or DOCX file and return a download link. "
-        "Call this after writing a full document (proposal, report, invoice, contract) so the user can download it immediately. "
-        "Pass the complete markdown as `content`. Set `format` to 'pdf' or 'docx'. "
-        "Set `filename` to a short descriptive name without extension (e.g. 'business-proposal'). "
-        "Use `template` to control the visual design: "
-        "'professional' (default) — branded header bar with accent colour, clean sans-serif; "
-        "'minimal' — ultra-clean white layout, uppercase section headings, no coloured bars; "
-        "'executive' — dark navy header, Playfair Display serif headings, dark table headers — ideal for proposals and contracts."
+        "Call after check_document_requirements returns ready=true and you have drafted the full document. "
+        "Pass doc_type so logo, template, and hero image follow document-type rules automatically. "
+        "Set `format` to 'pdf' or 'docx'. Set `filename` to a short descriptive name without extension. "
+        "Templates: professional (default business), minimal (invoices/contracts/memos), executive (proposals/plans). "
+        "Logo: included automatically for client-facing docs when a logo exists in Design library; omitted for internal memos/minutes. "
+        "Hero image: auto-generated for proposals/business plans; never for invoices, contracts, or loan letters."
     ),
     parameters={
         "type": "object",
@@ -4576,7 +4787,15 @@ async def delete_automation(ctx: ToolContext, args: Dict[str, Any]):
                 "type": "string",
                 "enum": ["professional", "minimal", "executive"],
                 "default": "professional",
-                "description": "Visual design template for the document.",
+                "description": "Visual design template. Prefer the template from check_document_requirements export_config when available.",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": (
+                    "Document type — controls logo, hero image, template, and premium layout defaults. "
+                    "Use the same doc_type as check_document_requirements. "
+                    "Examples: business_proposal, invoice, contract, loan_application, report, memo."
+                ),
             },
             "image_prompt": {
                 "type": "string",
@@ -4609,7 +4828,23 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     fmt = (args.get("format") or "pdf").lower()
     if fmt not in ("pdf", "docx"):
         fmt = "pdf"
-    template = (args.get("template") or "professional").lower()
+
+    from .document_plan import (
+        build_export_config,
+        enrich_doc_style,
+        get_document_type_spec,
+        infer_document_type_from_title,
+        resolve_document_type,
+        sanitize_document_text,
+    )
+    raw_doc_type = (args.get("doc_type") or "").strip()
+    if not raw_doc_type:
+        raw_doc_type = infer_document_type_from_title((args.get("filename") or "document").replace("_", " "))
+    doc_type = resolve_document_type(raw_doc_type or "other")
+    type_spec = get_document_type_spec(doc_type)
+    export_cfg = build_export_config(doc_type, type_spec)
+
+    template = (args.get("template") or export_cfg.get("template") or "professional").lower()
     if template not in ("professional", "minimal", "executive"):
         template = "professional"
 
@@ -4620,19 +4855,38 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     # Fetch business name and document style for branded output
     owner = await ctx.db.users.find_one({"_id": ctx.business_id})
     business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business") if owner else "My Business"
+    owner_profile: Dict[str, Any] = {}
+    try:
+        owner_profile = await get_owner_info(ctx, {}) or {}
+        if owner_profile.get("error"):
+            owner_profile = {}
+    except Exception:
+        owner_profile = {}
     doc_style: Dict[str, Any] = {}
     try:
         from saved_designs import get_document_style as _get_doc_style
         doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
     except Exception:
         pass
+    doc_style, _spec = await enrich_doc_style(
+        ctx.db, ctx.business_id, doc_style, doc_type, owner=owner_profile,
+    )
+
+    content = sanitize_document_text(
+        content,
+        website_url=(owner_profile.get("website_url") or "").strip(),
+        email=(owner_profile.get("email") or "").strip(),
+    )
 
     _title = raw_name.replace("-", " ").replace("_", " ").title()
 
-    # Generate a hero image only when the AI explicitly provides an image_prompt
-    # The AI decides based on document content whether an image adds value
+    # Hero image: only when doc type allows it; use type-specific scene if AI omitted image_prompt
     hero_image_url: str | None = None
     _image_prompt = (args.get("image_prompt") or "").strip()
+    if not export_cfg.get("hero_image"):
+        _image_prompt = ""
+    elif not _image_prompt:
+        _image_prompt = (export_cfg.get("hero_hint") or "").strip()
     if _image_prompt:
         try:
             from nano_banana_service import generate_creative_image
@@ -4665,21 +4919,20 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     if fmt == "pdf":
         # Use Playwright (HTML→PDF) for polished, branded output
         try:
-            from .document_generator import generate_pdf_from_html
+            from .document_generator import generate_pdf_from_html_async
             if html_doc is None:
                 from .document_generator import generate_html_document
                 html_doc = generate_html_document(
                     content, title=_title, business_name=business_name,
                     style=doc_style, template=template, hero_image_url=hero_image_url,
                 )
-            filepath = await asyncio.get_event_loop().run_in_executor(
-                None, generate_pdf_from_html, html_doc, filename
-            )
+            filepath = await generate_pdf_from_html_async(html_doc, filename)
         except Exception as e:
-            logger.exception("[generate_document] WeasyPrint PDF failed, falling back to ReportLab")
+            logger.exception("[generate_document] HTML PDF failed, retrying once")
             try:
-                from .document_generator import generate_pdf
-                filepath = generate_pdf(content, filename, business_name=business_name, style=doc_style)
+                if html_doc is None:
+                    raise e
+                filepath = await generate_pdf_from_html_async(html_doc, filename)
             except Exception as e2:
                 return {"error": f"PDF generation failed: {e2}"}
     else:
@@ -4736,8 +4989,12 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
             "filename": filename,
             "format": fmt,
             "template": template,
-            "html_preview": html_doc or "",  # Stripped from LLM context by orchestrator
-            "content_md": content,            # Stripped from LLM context by orchestrator
+            "doc_type": doc_type,
+            "logo_included": bool(export_cfg.get("use_logo") and doc_style.get("logo_url")),
+            "preview_key": preview_key,
+            "preview_url": f"/api/document-preview/{preview_key}" if preview_key else "",
+            "html_preview": html_doc or "",
+            "content_md": content,
             "message": f"✅ **{raw_name}** is ready. See the document preview below.",
         }
     else:
@@ -4750,8 +5007,10 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
             "filename": filename,
             "format": fmt,
             "template": template,
-            "html_preview": html_doc or "",  # Stripped from LLM context by orchestrator
-            "content_md": content,            # Stripped from LLM context by orchestrator
+            "preview_key": preview_key,
+            "preview_url": f"/api/document-preview/{preview_key}" if preview_key else "",
+            "html_preview": html_doc or "",
+            "content_md": content,
             "message": f"✅ **{raw_name}** is ready. See the document preview below.",
         }
 
@@ -5427,11 +5686,23 @@ async def refine_design(ctx: ToolContext, args: Dict[str, Any]):
                 ),
                 "additionalProperties": {"type": "string"},
             },
+            "original_request": {
+                "type": "string",
+                "description": (
+                    "The user's original wording for this deliverable (e.g. 'create a company profile'). "
+                    "Required when format may be ambiguous."
+                ),
+            },
         },
         "required": ["deck_purpose"],
     },
 )
 async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_format import (
+        combined_request_text,
+        format_choice_blocked_response,
+        needs_deliverable_format_choice,
+    )
     from .presentation_plan import (
         CHECKLIST_VERSION,
         RESEARCHABLE_KEYS,
@@ -5454,6 +5725,12 @@ async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]
     topic = (args.get("topic") or "Presentation").strip()
     audience = (args.get("audience") or "").strip()
     user_context = dict(args.get("user_context") or {})
+    original_request = (args.get("original_request") or user_context.get("original_request") or "").strip()
+    if needs_deliverable_format_choice(
+        combined_request_text(original_request, topic, user_context),
+        user_context,
+    ):
+        return format_choice_blocked_response()
 
     owner: Dict[str, Any] = {}
     analytics: Dict[str, Any] = {}
@@ -5581,6 +5858,165 @@ async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]
         "analytics": bool(analytics),
         "products_count": len(products),
         "team_count": len(team),
+    }
+    return assessment
+
+
+@tool(
+    name="check_document_requirements",
+    description=(
+        "STEP 1 of the written-document loop — verify you have every fact needed BEFORE drafting. "
+        "Call as soon as doc_type is known. Loads CRM profile automatically and web-researches "
+        "public industry/market context where appropriate. "
+        "Returns logo_policy (include_logo | no_logo), hero_image_policy, export_config (template), "
+        "design_notes, and recommended_sections for premium output. "
+        "Owner-only facts (bank name, client name, loan amount, contract party) must come from the user — never guess. "
+        "If ready=false, reply using chat_reply — ask ONE missing field at a time."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "doc_type": {
+                "type": "string",
+                "description": (
+                    "Document type, e.g. business_proposal, business_plan, contract, invoice, quote, "
+                    "loan_application, report, sow, memo, meeting_minutes, press_release, other."
+                ),
+            },
+            "topic": {
+                "type": "string",
+                "description": "Short subject line for the document (defaults to business name from CRM).",
+            },
+            "user_context": {
+                "type": "object",
+                "description": (
+                    "Facts the user already provided, keyed by requirement id "
+                    "(e.g. bank_name, recipient_company, loan_amount, invoice_items). "
+                    "Merge new answers after each user reply."
+                ),
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["doc_type"],
+    },
+)
+async def check_document_requirements(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_plan import (
+        CHECKLIST_VERSION,
+        assess_document_requirements,
+        auto_research_document_context,
+        build_document_agent_note,
+        build_document_chat_reply,
+        build_document_checklist,
+        build_website_policy,
+        researchable_keys_for_document,
+        resolve_document_type,
+        resolve_business_country,
+        seed_document_context_from_crm,
+    )
+    from .presentation_plan import _ctx_val
+
+    doc_type = resolve_document_type(args.get("doc_type") or "other")
+    topic = (args.get("topic") or "").strip()
+    user_context = dict(args.get("user_context") or {})
+
+    owner: Dict[str, Any] = {}
+    analytics: Dict[str, Any] = {}
+    products: List[Dict[str, Any]] = []
+
+    try:
+        owner = await get_owner_info(ctx, {}) or {}
+        if owner.get("error"):
+            owner = {}
+    except Exception:
+        logger.exception("[check_document_requirements] get_owner_info skipped")
+
+    try:
+        analytics = await get_analytics_summary(ctx, {}) or {}
+        if analytics.get("error"):
+            analytics = {}
+    except Exception:
+        logger.exception("[check_document_requirements] get_analytics_summary skipped")
+
+    try:
+        prod_result = await list_products(ctx, {"limit": 20}) or {}
+        products = prod_result.get("products") or []
+    except Exception:
+        logger.exception("[check_document_requirements] list_products skipped")
+
+    if not topic:
+        topic = (owner.get("business_name") or owner.get("owner_name") or "Document").strip()
+
+    user_context = seed_document_context_from_crm(
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        user_context=user_context,
+    )
+
+    purpose_researchable = researchable_keys_for_document(doc_type)
+    research_keys_list = [
+        k for k in purpose_researchable
+        if not _ctx_val(user_context, k)
+    ]
+    researched: Dict[str, str] = {}
+    research_sources: Dict[str, str] = {}
+    if research_keys_list:
+
+        async def _search_fn(query: str) -> Dict[str, Any]:
+            return await web_search(ctx, {"query": query, "max_results": 6})
+
+        researched, research_sources = await auto_research_document_context(
+            doc_type=doc_type,
+            topic=topic,
+            owner=owner,
+            user_context=user_context,
+            search_fn=_search_fn,
+        )
+        user_context.update(researched)
+
+    assessment = assess_document_requirements(
+        doc_type=doc_type,
+        owner=owner,
+        analytics=analytics,
+        products=products,
+        user_context=user_context,
+        research_keys=set(researched.keys()),
+    )
+    checklist = build_document_checklist(assessment, owner=owner)
+    assessment["success"] = True
+    assessment["topic"] = topic
+    assessment["business_country"] = resolve_business_country(owner)
+    assessment["checklist"] = checklist
+    assessment["checklist_ui"] = not assessment.get("ready") and len(checklist) > 0
+    assessment["checklist_version"] = CHECKLIST_VERSION
+    assessment["auto_researched"] = researched
+    assessment["research_sources"] = research_sources
+    assessment["user_context"] = user_context
+    assessment["agent_reply_hint"] = build_document_agent_note(assessment, researched)
+    assessment["website_policy"] = build_website_policy(owner)
+    assessment["do_not_ask"] = sorted(purpose_researchable)
+    if not assessment.get("ready"):
+        assessment["chat_reply"] = build_document_chat_reply(assessment, owner=owner)
+    else:
+        assessment["chat_reply"] = (
+            f"All set for your **{assessment.get('doc_type_label', 'document')}**. "
+            "I have your business profile, researched public context, and the details you provided. "
+            "Drafting now with premium layout and branding."
+        )
+    assessment["crm_loaded"] = {
+        "owner": bool(owner),
+        "analytics": bool(analytics),
+        "products_count": len(products),
+        "currency": (owner.get("currency") or "").strip(),
+        "country": (owner.get("country") or "").strip(),
+        "country_code": (owner.get("country_code") or "").strip(),
+        "business_type": (owner.get("business_type") or "").strip(),
+        "website_url": (owner.get("website_url") or "").strip(),
+        "tagline": (owner.get("tagline") or "").strip(),
+        "settings": owner.get("settings") or {},
+        "business_knowledge_keys": sorted((owner.get("business_knowledge") or {}).keys()),
+        "has_document_style": bool(owner.get("document_style")),
     }
     return assessment
 
@@ -5715,6 +6151,11 @@ async def check_presentation_requirements(ctx: ToolContext, args: Dict[str, Any]
     },
 )
 async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_format import (
+        combined_request_text,
+        format_choice_blocked_response,
+        needs_deliverable_format_choice,
+    )
     from .presentation_plan import (
         RESEARCHABLE_KEYS,
         _PURPOSE_REQUIRED_KEYS,
@@ -5735,6 +6176,12 @@ async def plan_visual_presentation(ctx: ToolContext, args: Dict[str, Any]):
     deck_purpose = (args.get("deck_purpose") or "").strip()
     user_context = dict(args.get("user_context") or {})
     slides   = args.get("slides") or []
+    original_request = (args.get("original_request") or user_context.get("original_request") or "").strip()
+    if needs_deliverable_format_choice(
+        combined_request_text(original_request, topic, user_context),
+        user_context,
+    ):
+        return format_choice_blocked_response()
 
     if not slides:
         return {"error": "slides list is required."}
@@ -7316,9 +7763,53 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="plan_business_document",
+    description=(
+        "STEP 2 of the written-document loop — build the draft plan card ONLY (no PDF yet). "
+        "Call ONLY after check_document_requirements returns ready=true. "
+        "Pass the complete Markdown body as content and the document title. "
+        "The UI shows a preview + edit card — user taps Approve & Export PDF before create_business_document runs."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+            "title": {"type": "string", "description": "Document title."},
+            "content": {
+                "type": "string",
+                "description": "Full document body in Markdown (headings, bullets, tables). No # title line needed.",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": "From check_document_requirements (e.g. company_profile, business_proposal).",
+            },
+            "template": {
+                "type": "string",
+                "enum": ["professional", "minimal", "executive"],
+            },
+            "image_prompt": {"type": "string", "description": "Optional hero image prompt when doc_type allows."},
+        },
+    },
+)
+async def plan_business_document(ctx: ToolContext, args: Dict[str, Any]):
+    from .document_flow import prepare_business_document
+    return await prepare_business_document(
+        ctx,
+        title=args.get("title", "Document"),
+        content=args.get("content", ""),
+        doc_type=(args.get("doc_type") or "").strip(),
+        template=(args.get("template") or "").strip(),
+        image_prompt=(args.get("image_prompt") or "").strip(),
+        export_pdf=False,
+    )
+
+
+@tool(
     name="create_business_document",
     description=(
-        "Create a professional PDF document like an invoice, quote, proposal, or report."
+        "Export PDF — call ONLY after the user taps Approve on the document plan card, "
+        "or when they explicitly say export/generate PDF now. "
+        "For the normal flow use plan_business_document first."
     ),
     parameters={
         "type": "object",
@@ -7330,84 +7821,38 @@ async def generate_design_background(ctx: ToolContext, args: Dict[str, Any]):
             },
             "content": {
                 "type": "string",
-                "description": "The main body of the document. Use \\n for new paragraphs.",
-            }
+                "description": "The full document body in Markdown (headings, bullets, tables).",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": (
+                    "Document type from check_document_requirements "
+                    "(e.g. business_proposal, invoice, loan_application, contract, report, memo)."
+                ),
+            },
+            "template": {
+                "type": "string",
+                "enum": ["professional", "minimal", "executive"],
+                "description": "Override template; default comes from doc_type export_config.",
+            },
+            "image_prompt": {
+                "type": "string",
+                "description": "Optional hero image prompt — only used when doc_type allows hero images.",
+            },
         },
     },
 )
 async def create_business_document(ctx: ToolContext, args: Dict[str, Any]):
-    import asyncio
-    import base64
-    import uuid as _uuid
-    title = args.get("title", "Document")
-    content = args.get("content", "")
-
-    owner = await ctx.db.users.find_one({"_id": ctx.business_id})
-    business_name = (owner.get("business_name") or owner.get("owner_name") or "My Business") if owner else "My Business"
-
-    # Fetch document style profile for branded output
-    doc_style: Dict[str, Any] = {}
-    try:
-        from saved_designs import get_document_style as _get_doc_style
-        doc_style = await _get_doc_style(ctx.db, ctx.business_id) or {}
-    except Exception:
-        pass
-
-    md = f"# {title}\n\n{content}"
-    preview_key: str | None = None
-    html_preview: str | None = None
-    try:
-        from .document_generator import generate_html_document, generate_pdf_from_html, store_html_preview
-        html_preview = generate_html_document(md, title=title, business_name=business_name, style=doc_style)
-        preview_key = store_html_preview(html_preview)
-        filepath = await asyncio.get_event_loop().run_in_executor(
-            None, generate_pdf_from_html, html_preview, None
-        )
-    except Exception as e:
-        logger.exception("[create_business_document] PDF generation failed")
-        return {"error": f"PDF generation failed: {e}"}
-
-    try:
-        from pathlib import Path as _Path
-        from image_handler import S3Handler
-        _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
-        pdf_bytes = _filepath.read_bytes()
-        b64 = base64.b64encode(pdf_bytes).decode()
-        filename = f"doc-{_uuid.uuid4().hex[:8]}.pdf"
-        pdf_url = await S3Handler.upload_file(b64, filename, content_type="application/pdf")
-    except Exception as e:
-        logger.exception("[create_business_document] S3 upload failed")
-        return {"error": f"PDF upload failed: {e}"}
-    finally:
-        try:
-            _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
-            _filepath.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    try:
-        from saved_designs import insert_saved_design
-        await insert_saved_design(
-            ctx.db,
-            ctx.business_id,
-            name=(title or "PDF document")[:200],
-            asset_kind="pdf",
-            file_url=pdf_url,
-            thumbnail_url=None,
-            source_tool="create_business_document",
-            conversation_id=ctx.user.get("_active_conversation_id"),
-        )
-    except Exception:
-        logger.exception("[create_business_document] saved_designs insert skipped")
-
-    return {
-        "success": True,
-        "pdf_url": pdf_url,
-        "download_url": pdf_url,
-        "filename": f"{title}.pdf",
-        "html_preview": html_preview or "",   # Stripped from LLM context by orchestrator
-        "markdown": f"📄 **[Download {title}]({pdf_url})**" if pdf_url else "",
-    }
+    from .document_flow import prepare_business_document
+    return await prepare_business_document(
+        ctx,
+        title=args.get("title", "Document"),
+        content=args.get("content", ""),
+        doc_type=(args.get("doc_type") or "").strip(),
+        template=(args.get("template") or "").strip(),
+        image_prompt=(args.get("image_prompt") or "").strip(),
+        export_pdf=True,
+    )
 
 @tool(
     name="browse_presentation_themes",
@@ -8078,9 +8523,55 @@ async def list_x_ads_campaign_drafts(ctx: ToolContext, args: Dict[str, Any]):
 # ── Email helpers ─────────────────────────────────────────────────────────────
 
 import base64
+import mimetypes
 import os as _os
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email import encoders as _email_encoders
+
+import httpx as _httpx_email
+
+_GMAIL_MAX_TOTAL_BYTES = 24 * 1024 * 1024  # Gmail hard limit is ~25MB; leave headroom
+_GMAIL_PER_FILE_BYTES = 20 * 1024 * 1024
+
+
+async def _fetch_attachments(attachments: Optional[List[Dict[str, Any]]]) -> tuple[list[tuple[str, bytes, str]], Optional[str]]:
+    """Download each attachment from its URL.
+
+    Returns (parts, error) where parts is a list of (filename, raw_bytes, mime_type).
+    Returns ([], error_message) if any fetch fails or size limits are exceeded.
+    """
+    if not attachments:
+        return [], None
+    out: list[tuple[str, bytes, str]] = []
+    total = 0
+    async with _httpx_email.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        for i, att in enumerate(attachments):
+            url = (att.get("url") or "").strip()
+            filename = (att.get("filename") or "").strip() or f"attachment-{i + 1}"
+            if not url:
+                return [], f"attachment[{i}] is missing 'url'"
+            try:
+                resp = await client.get(url)
+            except Exception as e:
+                return [], f"attachment[{i}] fetch failed: {e}"
+            if resp.status_code != 200:
+                return [], f"attachment[{i}] fetch failed: HTTP {resp.status_code}"
+            data = resp.content
+            if len(data) > _GMAIL_PER_FILE_BYTES:
+                return [], f"attachment[{i}] '{filename}' is {len(data)} bytes; per-file limit is {_GMAIL_PER_FILE_BYTES}"
+            total += len(data)
+            if total > _GMAIL_MAX_TOTAL_BYTES:
+                return [], f"total attachment size exceeds Gmail limit ({_GMAIL_MAX_TOTAL_BYTES} bytes)"
+            ctype = resp.headers.get("content-type", "").split(";")[0].strip()
+            if not ctype or ctype == "application/octet-stream":
+                guessed, _ = mimetypes.guess_type(filename)
+                if guessed:
+                    ctype = guessed
+            out.append((filename, data, ctype or "application/octet-stream"))
+    return out, None
+
 
 _GMAIL_KEY     = "gmail"       # Composio toolkit slug (was: google-mail via Nango)
 _MICROSOFT_KEY = "outlook"     # Composio toolkit slug (was: microsoft via Nango)
@@ -8125,8 +8616,29 @@ def _gmail_build_raw(
     bcc: str = "",
     in_reply_to: str = "",
     references: str = "",
+    attachments: Optional[list[tuple[str, bytes, str]]] = None,
 ) -> str:
-    msg = MIMEMultipart("alternative")
+    """Build a base64url-encoded RFC 2822 message. If attachments are provided,
+    wraps the text body inside a multipart/mixed envelope so files attach cleanly.
+    Each attachment tuple is (filename, raw_bytes, mime_type)."""
+    body_part = MIMEMultipart("alternative")
+    body_part.attach(MIMEText(body, "plain", "utf-8"))
+
+    if attachments:
+        msg = MIMEMultipart("mixed")
+        msg.attach(body_part)
+        for filename, data, ctype in attachments:
+            maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
+            if not subtype:
+                subtype = "octet-stream"
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(data)
+            _email_encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+    else:
+        msg = body_part
+
     msg["To"] = to
     msg["Subject"] = subject
     if cc:
@@ -8137,7 +8649,6 @@ def _gmail_build_raw(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
-    msg.attach(MIMEText(body, "plain", "utf-8"))
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
 
@@ -8146,6 +8657,99 @@ def _email_trunc(text: str, n: int = 3000) -> str:
 
 
 # ── Gmail tools ───────────────────────────────────────────────────────────────
+# All Gmail tools use Composio's dedicated action slugs via execute_action,
+# NOT /api/v2/actions/proxy (which Composio retired in 2026; v3 proxy is gated
+# behind an org-level entitlement we don't currently have).
+
+
+async def _composio_upload_file(
+    toolkit_slug: str, tool_slug: str, filename: str, data: bytes, mimetype: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Upload bytes to Composio's file storage so they can be referenced as
+    an attachment in a tool call. Returns (attachment_dict, error)."""
+    import hashlib
+    key = _os.getenv("COMPOSIO_API_KEY", "").strip()
+    if not key:
+        return None, "COMPOSIO_API_KEY not configured"
+    md5 = hashlib.md5(data).hexdigest()
+    async with _httpx_email.AsyncClient(timeout=60.0) as client:
+        try:
+            presign = await client.post(
+                "https://backend.composio.dev/api/v3/files/upload/request",
+                headers={"X-API-Key": key, "Content-Type": "application/json"},
+                json={
+                    "md5": md5,
+                    "toolkit_slug": toolkit_slug,
+                    "tool_slug": tool_slug,
+                    "filename": filename,
+                    "mimetype": mimetype,
+                },
+            )
+        except Exception as e:
+            return None, f"presign request failed: {e}"
+        if presign.status_code != 200:
+            return None, f"presign failed: HTTP {presign.status_code} {presign.text[:200]}"
+        pdata = presign.json()
+        s3key = pdata.get("key")
+        upload_url = pdata.get("new_presigned_url") or pdata.get("url")
+        if not s3key or not upload_url:
+            return None, f"presign missing fields: {pdata}"
+        # If Composio already has the file (same md5), skip upload
+        if not pdata.get("exists"):
+            try:
+                put = await client.put(
+                    upload_url,
+                    content=data,
+                    headers={"Content-Type": mimetype},
+                )
+            except Exception as e:
+                return None, f"s3 upload failed: {e}"
+            if put.status_code not in (200, 201, 204):
+                return None, f"s3 upload failed: HTTP {put.status_code}"
+    return {"name": filename, "mimetype": mimetype, "s3key": s3key}, None
+
+
+async def _prepare_single_attachment(
+    attachment: Optional[Dict[str, Any]], tool_slug: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Fetch a single {url, filename} attachment from its URL and upload to
+    Composio. Returns (attachment_dict_for_action, error)."""
+    if not attachment:
+        return None, None
+    url = (attachment.get("url") or "").strip()
+    filename = (attachment.get("filename") or "").strip() or "attachment"
+    if not url:
+        return None, "attachment is missing 'url'"
+    async with _httpx_email.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(url)
+        except Exception as e:
+            return None, f"attachment fetch failed: {e}"
+    if resp.status_code != 200:
+        return None, f"attachment fetch failed: HTTP {resp.status_code}"
+    data = resp.content
+    if len(data) > _GMAIL_PER_FILE_BYTES:
+        return None, f"attachment '{filename}' is {len(data)} bytes; per-file limit is {_GMAIL_PER_FILE_BYTES}"
+    ctype = resp.headers.get("content-type", "").split(";")[0].strip()
+    if not ctype or ctype == "application/octet-stream":
+        guessed, _ = mimetypes.guess_type(filename)
+        if guessed:
+            ctype = guessed
+    return await _composio_upload_file(_GMAIL_KEY, tool_slug, filename, data, ctype or "application/octet-stream")
+
+
+def _gmail_response_data(execute_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Composio actions wrap responses inconsistently — some put the payload
+    directly under `data`, others nest it under `data.response_data`. Return
+    the actual payload regardless."""
+    inner = execute_result.get("data") or {}
+    if isinstance(inner, dict):
+        rd = inner.get("response_data")
+        if isinstance(rd, dict):
+            return rd
+        return inner
+    return {}
+
 
 @tool(
     name="gmail_list_threads",
@@ -8164,43 +8768,36 @@ def _email_trunc(text: str, n: int = 3000) -> str:
     },
 )
 async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     q = (args.get("query") or "in:inbox").strip()
     if args.get("unread_only"):
         q = "is:unread " + q
     limit = min(int(args.get("max_results") or 15), 50)
-    try:
-        data = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "GET",
-            "gmail/v1/users/me/threads",
-            params={"q": q, "maxResults": limit},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    threads = []
-    for t in (data.get("threads") or [])[:limit]:
-        try:
-            td = await nango_proxy(
-                ctx.business_id, _GMAIL_KEY, "GET",
-                f"gmail/v1/users/me/threads/{t['id']}",
-                params={"format": "metadata", "metadataHeaders": ["Subject", "From", "Date"]},
-            )
-            msgs = td.get("messages") or []
-            if not msgs:
-                continue
-            first = msgs[0]
-            hdrs = (first.get("payload") or {}).get("headers") or []
-            threads.append({
-                "thread_id":     t["id"],
-                "message_count": len(msgs),
-                "subject":       _gmail_header(hdrs, "Subject") or "(no subject)",
-                "from":          _gmail_header(hdrs, "From"),
-                "date":          _gmail_header(hdrs, "Date"),
-                "snippet":       _email_trunc(td.get("snippet") or "", 200),
-                "unread":        "UNREAD" in (first.get("labelIds") or []),
-            })
-        except Exception:
+    r = await execute_action(ctx.business_id, "GMAIL_LIST_THREADS", {
+        "user_id": "me", "query": q, "max_results": limit, "verbose": True,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    raw_threads = (inner.get("threads") or inner.get("data") or [])
+    threads: list[Dict[str, Any]] = []
+    for t in raw_threads[:limit]:
+        if not isinstance(t, dict):
             continue
+        # Composio's verbose response shape varies — be defensive
+        msgs = t.get("messages") or []
+        first = msgs[0] if msgs else t
+        hdrs = (first.get("payload") or {}).get("headers") or []
+        thread_id = t.get("id") or t.get("threadId") or first.get("threadId") or ""
+        threads.append({
+            "thread_id":     thread_id,
+            "message_count": len(msgs) or 1,
+            "subject":       _gmail_header(hdrs, "Subject") or t.get("subject") or "(no subject)",
+            "from":          _gmail_header(hdrs, "From") or t.get("sender") or "",
+            "date":          _gmail_header(hdrs, "Date") or t.get("date") or "",
+            "snippet":       _email_trunc(first.get("snippet") or t.get("snippet") or "", 200),
+            "unread":        "UNREAD" in ((first.get("labelIds") or t.get("labelIds")) or []),
+        })
     return {"threads": threads, "total": len(threads), "query": q}
 
 
@@ -8219,162 +8816,424 @@ async def gmail_list_threads(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def gmail_read_thread(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     thread_id = (args.get("thread_id") or "").strip()
     if not thread_id:
         return {"error": "thread_id is required"}
-    try:
-        data = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "GET",
-            f"gmail/v1/users/me/threads/{thread_id}",
-            params={"format": "full"},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+    r = await execute_action(ctx.business_id, "GMAIL_FETCH_MESSAGE_BY_THREAD_ID", {
+        "user_id": "me", "thread_id": thread_id,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    raw_msgs = inner.get("messages") or inner.get("data") or []
     messages = []
-    for msg in data.get("messages") or []:
+    for msg in raw_msgs:
+        if not isinstance(msg, dict):
+            continue
         payload = msg.get("payload") or {}
         hdrs = payload.get("headers") or []
         messages.append({
-            "message_id":         msg["id"],
-            "from":               _gmail_header(hdrs, "From"),
+            "message_id":         msg.get("id") or msg.get("messageId"),
+            "from":               _gmail_header(hdrs, "From") or msg.get("sender", ""),
             "to":                 _gmail_header(hdrs, "To"),
-            "subject":            _gmail_header(hdrs, "Subject"),
+            "subject":            _gmail_header(hdrs, "Subject") or msg.get("subject", ""),
             "date":               _gmail_header(hdrs, "Date"),
             "message_id_header":  _gmail_header(hdrs, "Message-ID"),
             "references":         _gmail_header(hdrs, "References"),
-            "body":               _email_trunc(_gmail_decode_part(payload), 4000),
+            "body":               _email_trunc(_gmail_decode_part(payload) or msg.get("messageText", "") or msg.get("snippet", ""), 4000),
             "unread":             "UNREAD" in (msg.get("labelIds") or []),
         })
     return {"thread_id": thread_id, "message_count": len(messages), "messages": messages}
 
 
+_ATTACHMENT_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional single file attachment. Provide a public 'url' the server can fetch "
+        "and a 'filename' to display in the email. Up to 20MB. Composio's current API "
+        "supports one attachment per email — to send multiple files, send multiple emails. "
+        "Pass URLs returned by other tools (e.g. generate_document's download_url) here."
+    ),
+    "properties": {
+        "url":      {"type": "string", "description": "Direct download URL"},
+        "filename": {"type": "string", "description": "Filename shown in the email, e.g. 'invoice.pdf'"},
+    },
+    "required": ["url", "filename"],
+}
+
+
+def _split_csv(s: Any) -> list[str]:
+    if not s:
+        return []
+    if isinstance(s, list):
+        return [str(x).strip() for x in s if str(x).strip()]
+    return [p.strip() for p in str(s).split(",") if p.strip()]
+
+
 @tool(
     name="gmail_send",
-    description="Send a new email via Gmail. Requires to, subject, and body. cc and bcc are optional.",
+    description=(
+        "Send a new email via Gmail. Requires to, subject, and body. "
+        "cc and bcc are optional. Pass a single 'attachment' ({url, filename}) to attach a file."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "to":      {"type": "string", "description": "Recipient email address"},
-            "subject": {"type": "string", "description": "Subject line"},
-            "body":    {"type": "string", "description": "Plain text email body"},
-            "cc":      {"type": "string"},
-            "bcc":     {"type": "string"},
+            "to":         {"type": "string", "description": "Recipient email address"},
+            "subject":    {"type": "string", "description": "Subject line"},
+            "body":       {"type": "string", "description": "Plain text email body"},
+            "cc":         {"type": "string", "description": "Comma-separated CC addresses"},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses"},
+            "attachment": _ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
     destructive=True,
 )
 async def gmail_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
     if not to or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    raw = _gmail_build_raw(to, subject, body, cc=args.get("cc") or "", bcc=args.get("bcc") or "")
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            "gmail/v1/users/me/messages/send",
-            json={"raw": raw},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "sent", "message_id": result.get("id"), "thread_id": result.get("threadId")}
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "GMAIL_SEND_EMAIL")
+    if err:
+        return {"error": err}
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "recipient_email": to,
+        "subject": subject,
+        "body": body,
+        "is_html": False,
+    }
+    if args.get("cc"):
+        action_args["cc"] = _split_csv(args.get("cc"))
+    if args.get("bcc"):
+        action_args["bcc"] = _split_csv(args.get("bcc"))
+    if att_dict:
+        action_args["attachment"] = att_dict
+    r = await execute_action(ctx.business_id, "GMAIL_SEND_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    msg = inner.get("message") if isinstance(inner.get("message"), dict) else inner
+    return {
+        "status": "sent",
+        "message_id": msg.get("id") or inner.get("id") or inner.get("messageId"),
+        "thread_id": msg.get("threadId") or inner.get("threadId"),
+        "attached": bool(att_dict),
+    }
 
 
 @tool(
     name="gmail_reply",
     description=(
         "Reply to an existing Gmail thread. Automatically threads correctly. "
-        "Set reply_all=true to include all original recipients."
+        "Set reply_all=true to include all original recipients. "
+        "Pass 'attachment' ({url, filename}) to include a file."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "thread_id": {"type": "string", "description": "Gmail thread ID to reply to"},
-            "body":      {"type": "string", "description": "Reply body text"},
-            "reply_all": {"type": "boolean", "description": "Reply all. Default false."},
+            "thread_id":  {"type": "string", "description": "Gmail thread ID to reply to"},
+            "body":       {"type": "string", "description": "Reply body text"},
+            "reply_all":  {"type": "boolean", "description": "Reply all. Default false."},
+            "attachment": _ATTACHMENT_SCHEMA,
         },
         "required": ["thread_id", "body"],
     },
     destructive=True,
 )
 async def gmail_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     thread_id = (args.get("thread_id") or "").strip()
     body = (args.get("body") or "").strip()
     if not thread_id or not body:
         return {"error": "thread_id and body are required"}
-    try:
-        td = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "GET",
-            f"gmail/v1/users/me/threads/{thread_id}",
-            params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Message-ID", "References"]},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    msgs = td.get("messages") or []
+
+    # Need recipient email; fetch the thread to extract original 'From'
+    fetch = await execute_action(ctx.business_id, "GMAIL_FETCH_MESSAGE_BY_THREAD_ID", {
+        "user_id": "me", "thread_id": thread_id,
+    })
+    if "error" in fetch and not fetch.get("success"):
+        return {"error": fetch["error"]}
+    msgs = _gmail_response_data(fetch).get("messages") or []
     if not msgs:
         return {"error": "Thread not found or empty"}
     last = msgs[-1]
     hdrs = (last.get("payload") or {}).get("headers") or []
-    orig_from   = _gmail_header(hdrs, "From")
-    orig_to     = _gmail_header(hdrs, "To")
-    subject     = _gmail_header(hdrs, "Subject")
-    msg_id_hdr  = _gmail_header(hdrs, "Message-ID")
-    existing_refs = _gmail_header(hdrs, "References")
-    reply_to = orig_from
+    orig_from = _gmail_header(hdrs, "From") or last.get("sender", "")
+    orig_to = _gmail_header(hdrs, "To")
+    if not orig_from:
+        return {"error": "Could not determine recipient from thread"}
+
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "GMAIL_REPLY_TO_THREAD")
+    if err:
+        return {"error": err}
+
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "thread_id": thread_id,
+        "recipient_email": orig_from,
+        "message_body": body,
+        "is_html": False,
+    }
     if args.get("reply_all") and orig_to:
-        reply_to = f"{orig_from}, {orig_to}"
-    if not subject.lower().startswith("re:"):
-        subject = "Re: " + subject
-    refs = (existing_refs + " " + msg_id_hdr).strip() if existing_refs else msg_id_hdr
-    raw = _gmail_build_raw(reply_to, subject, body, in_reply_to=msg_id_hdr, references=refs)
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            "gmail/v1/users/me/messages/send",
-            json={"raw": raw, "threadId": thread_id},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "sent", "message_id": result.get("id"), "thread_id": result.get("threadId")}
+        action_args["extra_recipients"] = _split_csv(orig_to)
+    if att_dict:
+        action_args["attachment"] = att_dict
+
+    r = await execute_action(ctx.business_id, "GMAIL_REPLY_TO_THREAD", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    msg = inner.get("message") if isinstance(inner.get("message"), dict) else inner
+    return {
+        "status": "sent",
+        "message_id": msg.get("id") or inner.get("id") or inner.get("messageId"),
+        "thread_id": msg.get("threadId") or inner.get("threadId") or thread_id,
+        "attached": bool(att_dict),
+    }
 
 
 @tool(
     name="gmail_draft",
-    description="Save a Gmail draft without sending. Returns the draft ID.",
+    description=(
+        "Save a Gmail draft without sending. Returns the draft ID. "
+        "Pass 'attachment' ({url, filename}) to include a file."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "to":      {"type": "string"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string"},
-            "cc":      {"type": "string"},
-            "bcc":     {"type": "string"},
+            "to":         {"type": "string"},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string"},
+            "cc":         {"type": "string", "description": "Comma-separated CC addresses"},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses"},
+            "attachment": _ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
 )
 async def gmail_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
     if not to or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    raw = _gmail_build_raw(to, subject, body, cc=args.get("cc") or "", bcc=args.get("bcc") or "")
-    try:
-        result = await nango_proxy(
-            ctx.business_id, _GMAIL_KEY, "POST",
-            "gmail/v1/users/me/drafts",
-            json={"message": {"raw": raw}},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "draft_saved", "draft_id": result.get("id")}
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "GMAIL_CREATE_EMAIL_DRAFT")
+    if err:
+        return {"error": err}
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "recipient_email": to,
+        "subject": subject,
+        "body": body,
+        "is_html": False,
+    }
+    if args.get("cc"):
+        action_args["cc"] = _split_csv(args.get("cc"))
+    if args.get("bcc"):
+        action_args["bcc"] = _split_csv(args.get("bcc"))
+    if att_dict:
+        action_args["attachment"] = att_dict
+    r = await execute_action(ctx.business_id, "GMAIL_CREATE_EMAIL_DRAFT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _gmail_response_data(r)
+    return {
+        "status": "draft_saved",
+        "draft_id": inner.get("id") or inner.get("draftId"),
+        "attached": bool(att_dict),
+    }
+
+
+@tool(
+    name="gmail_trash_thread",
+    description=(
+        "Move an entire Gmail thread to Trash. Recoverable from the Trash folder for 30 days. "
+        "Use this — not a permanent delete — when the user asks to delete emails."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "thread_id": {"type": "string", "description": "Gmail thread ID to trash"},
+        },
+        "required": ["thread_id"],
+    },
+    destructive=True,
+)
+async def gmail_trash_thread(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    thread_id = (args.get("thread_id") or "").strip()
+    if not thread_id:
+        return {"error": "thread_id is required"}
+    # Composio's GMAIL_MOVE_TO_TRASH only takes message_id, so we list the
+    # thread's messages and trash each one to mimic a thread-level trash.
+    fetch = await execute_action(ctx.business_id, "GMAIL_FETCH_MESSAGE_BY_THREAD_ID", {
+        "user_id": "me", "thread_id": thread_id,
+    })
+    if "error" in fetch and not fetch.get("success"):
+        return {"error": fetch["error"]}
+    msgs = _gmail_response_data(fetch).get("messages") or []
+    if not msgs:
+        return {"error": "Thread not found or empty"}
+    trashed: list[str] = []
+    failed: list[Dict[str, str]] = []
+    for m in msgs:
+        mid = (m.get("id") or m.get("messageId") or "").strip() if isinstance(m, dict) else ""
+        if not mid:
+            continue
+        # GMAIL_MOVE_TO_TRASH is gated by Composio plan tier — use
+        # GMAIL_ADD_LABEL_TO_EMAIL with the system TRASH label as an
+        # equivalent that's enabled on the current project.
+        r = await execute_action(ctx.business_id, "GMAIL_ADD_LABEL_TO_EMAIL", {
+            "user_id": "me", "message_id": mid, "add_label_ids": ["TRASH"],
+        })
+        if "error" in r and not r.get("success"):
+            failed.append({"message_id": mid, "error": r["error"]})
+        else:
+            trashed.append(mid)
+    if failed and not trashed:
+        return {"error": f"Failed to trash any messages in thread: {failed[0]['error']}"}
+    return {
+        "status": "trashed",
+        "thread_id": thread_id,
+        "trashed_count": len(trashed),
+        "failed": failed or None,
+    }
+
+
+@tool(
+    name="gmail_bulk_trash",
+    description=(
+        "Move many Gmail threads to Trash in one call using a search query. "
+        "Recoverable for 30 days. Designed for inbox cleanup — newsletters, "
+        "promotions, bulk archives. Auto-paginates up to the cap. Common queries:\n"
+        "  - 'category:promotions' — Gmail's auto-categorized Promotions tab\n"
+        "  - 'list:*' — anything with a List-Unsubscribe header (real newsletters)\n"
+        "  - 'from:noreply OR from:newsletter' — sender-based filter\n"
+        "  - 'older_than:1y category:promotions' — old promotions only\n"
+        "Always confirm with the user how many threads will be trashed before running. "
+        "Throughput is ~1 thread/second (Composio rate-limits modify-label calls), "
+        "so 100 threads ≈ 90s, 300 threads ≈ 5min, 500 threads ≈ 8–10min. "
+        "Default 100; hard cap 500 per call. For larger cleanups, tell the user "
+        "the realistic time and consider splitting into multiple calls or doing it "
+        "with a tighter query first (e.g. add older_than:1y)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query":       {"type": "string", "description": "Gmail search query identifying threads to trash"},
+            "max_threads": {"type": "integer", "description": "Max threads to trash (default 100, hard cap 500). At 500 expect ~8min runtime."},
+        },
+        "required": ["query"],
+    },
+    destructive=True,
+)
+async def gmail_bulk_trash(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    import asyncio as _asyncio
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"error": "query is required"}
+    limit = min(max(int(args.get("max_threads") or 100), 1), 500)
+
+    # Paginate through Gmail in ids_only mode. Composio caps response payload
+    # size, so we don't request thread metadata here — the agent is instructed
+    # to preview via gmail_list_threads first, so subjects aren't needed in
+    # this destructive call.
+    thread_ids: list[str] = []
+    page_token: Optional[str] = None
+    PAGE_SIZE = 500
+    while len(thread_ids) < limit:
+        page_limit = min(PAGE_SIZE, limit - len(thread_ids))
+        list_args: Dict[str, Any] = {
+            "user_id": "me", "query": query, "max_results": page_limit, "ids_only": True,
+        }
+        if page_token:
+            list_args["page_token"] = page_token
+        list_r = await execute_action(ctx.business_id, "GMAIL_LIST_THREADS", list_args)
+        if "error" in list_r and not list_r.get("success"):
+            return {"error": list_r["error"]}
+        inner = _gmail_response_data(list_r)
+        page_threads = inner.get("threads") or []
+        for t in page_threads:
+            tid = (t.get("id") or t.get("threadId") or "") if isinstance(t, dict) else str(t)
+            if tid:
+                thread_ids.append(tid)
+        page_token = inner.get("nextPageToken") or inner.get("next_page_token")
+        if not page_token or not page_threads:
+            break
+
+    if not thread_ids:
+        return {"status": "nothing_to_trash", "query": query, "trashed_count": 0}
+
+    # Trash threads in parallel batches (20 at a time) — adds the TRASH system
+    # label, which moves the whole thread to Trash. Works on projects where
+    # GMAIL_MOVE_TO_TRASH is plan-gated. Gmail's per-user quota is generous
+    # enough for this concurrency; back off if you start seeing rateLimitExceeded.
+    async def _trash_one(thread_id: str) -> tuple[str, Optional[str]]:
+        r = await execute_action(ctx.business_id, "GMAIL_MODIFY_THREAD_LABELS", {
+            "user_id": "me", "thread_id": thread_id, "add_label_ids": ["TRASH"],
+        })
+        err = r["error"] if ("error" in r and not r.get("success")) else None
+        return thread_id, err
+
+    trashed: list[str] = []
+    failed: list[Dict[str, str]] = []
+    BATCH = 20
+    for i in range(0, len(thread_ids), BATCH):
+        chunk = thread_ids[i:i + BATCH]
+        results = await _asyncio.gather(*[_trash_one(tid) for tid in chunk])
+        for tid, err in results:
+            if err:
+                failed.append({"thread_id": tid, "error": err})
+            else:
+                trashed.append(tid)
+
+    return {
+        "status": "trashed",
+        "query": query,
+        "trashed_count": len(trashed),
+        "failed_count": len(failed),
+        "failed": failed[:5] or None,
+    }
+
+
+@tool(
+    name="gmail_trash_message",
+    description=(
+        "Move a single Gmail message to Trash (not the whole thread). "
+        "Recoverable from Trash for 30 days. Prefer gmail_trash_thread for most delete requests."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "message_id": {"type": "string", "description": "Gmail message ID to trash"},
+        },
+        "required": ["message_id"],
+    },
+    destructive=True,
+)
+async def gmail_trash_message(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    message_id = (args.get("message_id") or "").strip()
+    if not message_id:
+        return {"error": "message_id is required"}
+    # GMAIL_MOVE_TO_TRASH is gated by Composio plan tier — use
+    # GMAIL_ADD_LABEL_TO_EMAIL with the system TRASH label as an
+    # equivalent that's enabled on the current project.
+    r = await execute_action(ctx.business_id, "GMAIL_ADD_LABEL_TO_EMAIL", {
+        "user_id": "me", "message_id": message_id, "add_label_ids": ["TRASH"],
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "trashed", "message_id": message_id}
 
 
 # ── Slack tools (Composio packaged actions, Slack Web API proxy fallback) ────
@@ -8541,58 +9400,148 @@ def _ms_addr_list(val: str) -> list:
     return [{"emailAddress": {"address": a.strip()}} for a in (val or "").split(",") if a.strip()]
 
 
+# ── Outlook tools (Microsoft 365 mail + calendar via Composio action slugs) ──
+# All Outlook tools use Composio's dedicated action slugs via execute_action,
+# NOT the v2 actions/proxy (retired) or v3 proxy (gated).
+
+_OUTLOOK_ATTACHMENT_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional single file attachment. Provide a public 'url' the server can fetch "
+        "and a 'filename' to display in the email. Up to 20MB. Composio currently supports "
+        "one attachment per email — to send multiple files, send multiple emails."
+    ),
+    "properties": {
+        "url":      {"type": "string", "description": "Direct download URL"},
+        "filename": {"type": "string", "description": "Filename shown in the email, e.g. 'invoice.pdf'"},
+    },
+    "required": ["url", "filename"],
+}
+
+
+def _outlook_response_data(execute_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Outlook actions wrap responses much like Gmail: usually under
+    `data.response_data`, sometimes flat. Return the payload either way."""
+    inner = execute_result.get("data") or {}
+    if isinstance(inner, dict):
+        rd = inner.get("response_data")
+        if isinstance(rd, dict):
+            return rd
+        return inner
+    return {}
+
+
 @tool(
     name="outlook_list_messages",
     description=(
-        "List Outlook / Microsoft 365 inbox messages. "
-        "Filter by folder, unread status, or search term. "
+        "List Outlook / Microsoft 365 inbox messages. Filter by folder, unread, or sender. "
+        "For full-text search across body, use outlook_search instead. "
         "Returns: id, subject, from, preview, date, read status."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "folder":      {"type": "string", "description": "inbox (default), sentItems, drafts, deletedItems"},
-            "search":      {"type": "string", "description": "Search subject or body"},
-            "unread_only": {"type": "boolean"},
-            "max_results": {"type": "integer", "description": "1-50, default 15"},
+            "folder":      {"type": "string", "description": "Well-known folder name. Default 'inbox'. Other: 'sentitems', 'drafts', 'deleteditems'."},
+            "unread_only": {"type": "boolean", "description": "Only unread messages."},
+            "from_email":  {"type": "string", "description": "Filter to messages from this exact sender address."},
+            "max_results": {"type": "integer", "description": "1-100, default 15"},
         },
     },
 )
 async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     folder = (args.get("folder") or "inbox").strip()
-    limit  = min(int(args.get("max_results") or 15), 50)
-    params: Dict[str, Any] = {
-        "$top":     limit,
-        "$select":  _OUTLOOK_SELECT,
-        "$orderby": "receivedDateTime desc",
+    limit  = min(max(int(args.get("max_results") or 15), 1), 100)
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "folder":  folder,
+        "top":     limit,
+        "orderby": ["receivedDateTime desc"],
     }
     if args.get("unread_only"):
-        params["$filter"] = "isRead eq false"
-    if args.get("search"):
-        params["$search"] = f'"{args["search"]}"'
-    try:
-        data = await nango_proxy(
-            ctx.business_id, _MICROSOFT_KEY, "GET",
-            f"v1.0/me/mailFolders/{folder}/messages",
-            params=params,
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+        action_args["is_read"] = False
+    if args.get("from_email"):
+        action_args["from_address"] = args["from_email"].strip()
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_MESSAGES", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("messages") or inner.get("items") or []
     messages = []
-    for m in (data.get("value") or []):
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
         sender = (m.get("from") or {}).get("emailAddress") or {}
         messages.append({
-            "message_id":    m.get("id"),
-            "subject":       m.get("subject") or "(no subject)",
+            "message_id":      m.get("id"),
+            "subject":         m.get("subject") or "(no subject)",
+            "from_name":       sender.get("name"),
+            "from_email":      sender.get("address"),
+            "preview":         _email_trunc(m.get("bodyPreview") or "", 200),
+            "date":            m.get("receivedDateTime"),
+            "is_read":         m.get("isRead", True),
+            "conversation_id": m.get("conversationId"),
+            "has_attachments": m.get("hasAttachments", False),
+        })
+    return {"messages": messages, "total": len(messages), "folder": folder}
+
+
+@tool(
+    name="outlook_search",
+    description=(
+        "Full-text search across Outlook messages (body, subject, attachments). "
+        "Use this when the user describes content rather than a sender/folder filter."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query":            {"type": "string", "description": "Free-text search string."},
+            "from_email":       {"type": "string", "description": "Optional: only this sender."},
+            "subject":          {"type": "string", "description": "Optional: only matches in subject."},
+            "has_attachments":  {"type": "boolean", "description": "Optional: filter messages with attachments."},
+            "max_results":      {"type": "integer", "description": "1-100, default 20."},
+        },
+        "required": ["query"],
+    },
+)
+async def outlook_search(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    action_args: Dict[str, Any] = {
+        "query": q,
+        "size":  min(max(int(args.get("max_results") or 20), 1), 100),
+        "enable_top_results": True,
+    }
+    if args.get("from_email"):
+        action_args["fromEmail"] = args["from_email"].strip()
+    if args.get("subject"):
+        action_args["subject"] = args["subject"]
+    if "has_attachments" in args:
+        action_args["hasAttachments"] = bool(args["has_attachments"])
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_SEARCH_MESSAGES", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("hits") or inner.get("results") or inner.get("messages") or []
+    messages = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        # Search hits may wrap the message inside a 'resource' or 'hit' field
+        msg = m.get("resource") or m.get("hit") or m.get("message") or m
+        sender = (msg.get("from") or {}).get("emailAddress") or {}
+        messages.append({
+            "message_id":    msg.get("id"),
+            "subject":       msg.get("subject") or "(no subject)",
             "from_name":     sender.get("name"),
             "from_email":    sender.get("address"),
-            "preview":       _email_trunc(m.get("bodyPreview") or "", 200),
-            "date":          m.get("receivedDateTime"),
-            "is_read":       m.get("isRead", True),
-            "conversation_id": m.get("conversationId"),
+            "preview":       _email_trunc(msg.get("bodyPreview") or "", 200),
+            "date":          msg.get("receivedDateTime"),
+            "has_attachments": msg.get("hasAttachments", False),
         })
-    return {"messages": messages, "total": len(messages)}
+    return {"query": q, "count": len(messages), "messages": messages}
 
 
 @tool(
@@ -8607,104 +9556,619 @@ async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     msg_id = (args.get("message_id") or "").strip()
     if not msg_id:
         return {"error": "message_id is required"}
-    try:
-        m = await nango_proxy(
-            ctx.business_id, _MICROSOFT_KEY, "GET",
-            f"v1.0/me/messages/{msg_id}",
-            params={"$select": _OUTLOOK_FULL_SELECT},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_MESSAGE", {
+        "user_id": "me", "message_id": msg_id,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    m = _outlook_response_data(r)
     sender = (m.get("from") or {}).get("emailAddress") or {}
-    to_list = [(r.get("emailAddress") or {}).get("address") for r in (m.get("toRecipients") or [])]
+    to_list = [(rcp.get("emailAddress") or {}).get("address") for rcp in (m.get("toRecipients") or [])]
     body_content = _email_trunc((m.get("body") or {}).get("content") or m.get("bodyPreview") or "", 4000)
     return {
-        "message_id":    m.get("id"),
-        "subject":       m.get("subject") or "(no subject)",
-        "from_name":     sender.get("name"),
-        "from_email":    sender.get("address"),
-        "to":            ", ".join(filter(None, to_list)),
-        "date":          m.get("receivedDateTime"),
-        "is_read":       m.get("isRead", True),
-        "body":          body_content,
+        "message_id":          m.get("id") or msg_id,
+        "subject":             m.get("subject") or "(no subject)",
+        "from_name":           sender.get("name"),
+        "from_email":          sender.get("address"),
+        "to":                  ", ".join(filter(None, to_list)),
+        "date":                m.get("receivedDateTime"),
+        "is_read":             m.get("isRead", True),
+        "body":                body_content,
         "internet_message_id": m.get("internetMessageId"),
-        "conversation_id": m.get("conversationId"),
+        "conversation_id":     m.get("conversationId"),
+        "has_attachments":     m.get("hasAttachments", False),
     }
 
 
 @tool(
     name="outlook_send",
-    description="Send a new email via Outlook / Microsoft 365. to, subject, body required. cc and bcc optional.",
+    description=(
+        "Send a new email via Outlook / Microsoft 365. The primary recipient goes in 'to'; "
+        "extra to-addresses go in 'cc' or 'bcc'. Pass 'attachment' ({url, filename}) for a single file."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "to":      {"type": "string", "description": "Recipient(s), comma-separated"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string", "description": "Plain text body"},
-            "cc":      {"type": "string"},
-            "bcc":     {"type": "string"},
+            "to":         {"type": "string", "description": "Primary recipient email address."},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string", "description": "Plain text body (HTML if is_html=true)."},
+            "is_html":    {"type": "boolean", "description": "Body is HTML. Default false."},
+            "cc":         {"type": "string", "description": "Comma-separated CC addresses."},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses."},
+            "attachment": _OUTLOOK_ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
     destructive=True,
 )
 async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    to = (args.get("to") or "").strip()
+    from composio_service import execute_action
+    to_raw = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
-    if not to or not subject or not body:
+    if not to_raw or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    payload: Dict[str, Any] = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "Text", "content": body},
-            "toRecipients": _ms_addr_list(to),
-        },
-        "saveToSentItems": True,
+    # to_email is a single string; if user passed CSV, take the first
+    to_emails = [e.strip() for e in to_raw.split(",") if e.strip()]
+    primary = to_emails[0]
+    extra_to = to_emails[1:]
+
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "OUTLOOK_OUTLOOK_SEND_EMAIL")
+    if err:
+        return {"error": err}
+
+    action_args: Dict[str, Any] = {
+        "user_id":  "me",
+        "to_email": primary,
+        "subject":  subject,
+        "body":     body,
+        "is_html":  bool(args.get("is_html", False)),
+        "save_to_sent_items": True,
     }
-    if args.get("cc"):
-        payload["message"]["ccRecipients"] = _ms_addr_list(args["cc"])
+    cc = _split_csv(args.get("cc")) + extra_to  # roll extra primary-to into CC
+    if cc:
+        action_args["cc_emails"] = cc
     if args.get("bcc"):
-        payload["message"]["bccRecipients"] = _ms_addr_list(args["bcc"])
-    try:
-        await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", "v1.0/me/sendMail", json=payload)
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "sent"}
+        action_args["bcc_emails"] = _split_csv(args["bcc"])
+    if att_dict:
+        action_args["attachment"] = att_dict
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_SEND_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "sent", "attached": bool(att_dict)}
 
 
 @tool(
     name="outlook_reply",
-    description="Reply to an Outlook message. Set reply_all=true to reply to all recipients.",
+    description=(
+        "Reply to an Outlook message. Pass extra recipients via 'cc' (Composio's "
+        "OUTLOOK_REPLY_EMAIL doesn't have a native reply-all flag, so reply-all "
+        "is approximated by listing the original To/CC recipients in 'cc')."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "message_id": {"type": "string", "description": "Outlook message ID to reply to"},
-            "body":       {"type": "string", "description": "Reply body text"},
-            "reply_all":  {"type": "boolean", "description": "Reply all. Default false."},
+            "body":       {"type": "string", "description": "Reply body (plain text)"},
+            "cc":         {"type": "string", "description": "Comma-separated extra recipients (use for reply-all)."},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses."},
         },
         "required": ["message_id", "body"],
     },
     destructive=True,
 )
 async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    msg_id    = (args.get("message_id") or "").strip()
-    body      = (args.get("body") or "").strip()
-    reply_all = bool(args.get("reply_all"))
+    from composio_service import execute_action
+    msg_id = (args.get("message_id") or "").strip()
+    body   = (args.get("body") or "").strip()
     if not msg_id or not body:
         return {"error": "message_id and body are required"}
-    endpoint = f"v1.0/me/messages/{msg_id}/{'replyAll' if reply_all else 'reply'}"
-    try:
-        await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", endpoint, json={"comment": body})
-    except RuntimeError as e:
-        return {"error": str(e)}
+    action_args: Dict[str, Any] = {
+        "user_id":    "me",
+        "message_id": msg_id,
+        "comment":    body,
+    }
+    if args.get("cc"):
+        action_args["cc_emails"] = _split_csv(args["cc"])
+    if args.get("bcc"):
+        action_args["bcc_emails"] = _split_csv(args["bcc"])
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_REPLY_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
     return {"status": "replied"}
+
+
+@tool(
+    name="outlook_draft",
+    description=(
+        "Save a draft email in Outlook without sending. Returns the draft message_id. "
+        "Pass 'attachment' ({url, filename}) for a single file."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "to":         {"type": "string", "description": "Comma-separated recipient addresses (To)."},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string"},
+            "is_html":    {"type": "boolean", "description": "Body is HTML. Default false."},
+            "cc":         {"type": "string"},
+            "bcc":        {"type": "string"},
+            "attachment": _OUTLOOK_ATTACHMENT_SCHEMA,
+        },
+        "required": ["to", "subject", "body"],
+    },
+)
+async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    to = (args.get("to") or "").strip()
+    subject = (args.get("subject") or "").strip()
+    body = (args.get("body") or "").strip()
+    if not to or not subject or not body:
+        return {"error": "to, subject, and body are required"}
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "OUTLOOK_OUTLOOK_CREATE_DRAFT")
+    if err:
+        return {"error": err}
+    action_args: Dict[str, Any] = {
+        "subject":       subject,
+        "body":          body,
+        "is_html":       bool(args.get("is_html", False)),
+        "to_recipients": _split_csv(to),
+    }
+    if args.get("cc"):
+        action_args["cc_recipients"] = _split_csv(args["cc"])
+    if args.get("bcc"):
+        action_args["bcc_recipients"] = _split_csv(args["bcc"])
+    if att_dict:
+        action_args["attachment"] = att_dict
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_CREATE_DRAFT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    return {"status": "draft_saved", "message_id": inner.get("id"), "attached": bool(att_dict)}
+
+
+@tool(
+    name="outlook_trash_message",
+    description=(
+        "Move an Outlook message to the Deleted Items folder. Recoverable from there. "
+        "Use this when the user asks to delete an email — Composio doesn't expose a "
+        "permanent-delete to agents."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "message_id": {"type": "string", "description": "Outlook message ID to trash."},
+        },
+        "required": ["message_id"],
+    },
+    destructive=True,
+)
+async def outlook_trash_message(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    msg_id = (args.get("message_id") or "").strip()
+    if not msg_id:
+        return {"error": "message_id is required"}
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_MOVE_MESSAGE", {
+        "user_id":        "me",
+        "message_id":     msg_id,
+        "destination_id": "deleteditems",
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "trashed", "message_id": msg_id}
+
+
+# ── Outlook Calendar tools ─────────────────────────────────────────────────────
+
+@tool(
+    name="list_outlook_calendars",
+    description="List the user's Outlook calendars (primary + secondary + shared).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "description": "Max calendars (default 50)."},
+        },
+    },
+)
+async def list_outlook_calendars(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    r = await execute_action(ctx.business_id, "OUTLOOK_LIST_CALENDARS", {
+        "user_id": "me",
+        "top": min(int(args.get("max_results") or 50), 200),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    items = inner.get("value") or inner.get("calendars") or inner.get("items") or []
+    cals = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        cals.append({
+            "calendar_id": c.get("id"),
+            "name":        c.get("name"),
+            "owner_email": ((c.get("owner") or {}).get("address")),
+            "color":       c.get("color"),
+            "is_default":  c.get("isDefaultCalendar", False),
+        })
+    return {"count": len(cals), "calendars": cals}
+
+
+@tool(
+    name="list_outlook_calendar_events",
+    description="List upcoming Outlook calendar events. Use time_min/time_max to constrain the window.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "time_min":    {"type": "string", "description": "Start of window in ISO 8601 (UTC), e.g. '2026-06-01T00:00:00Z'."},
+            "time_max":    {"type": "string", "description": "End of window in ISO 8601 (UTC)."},
+            "timezone":    {"type": "string", "description": "Preferred IANA timezone for displaying times, e.g. 'America/New_York'."},
+            "max_results": {"type": "integer", "description": "Max events (default 25)."},
+        },
+    },
+)
+async def list_outlook_calendar_events(ctx: ToolContext, args: Dict[str, Any]):
+    """Microsoft Graph rejects most OData filters on event start/end (works
+    only via the separate calendarView endpoint, which Composio doesn't
+    expose). We fetch a sorted batch and filter client-side."""
+    from composio_service import execute_action
+    # Fetch more than asked so we have room to filter
+    requested = min(int(args.get("max_results") or 25), 100)
+    fetch_n = min(requested * 3, 250) if (args.get("time_min") or args.get("time_max")) else requested
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "top":     fetch_n,
+        "orderby": ["start/dateTime asc"],
+        "expand_recurring_events": True,
+    }
+    if args.get("timezone"):
+        action_args["timezone"] = args["timezone"]
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("events") or inner.get("items") or []
+
+    # Client-side date filtering (strip Z for naive compare)
+    tmin = (args.get("time_min") or "").rstrip("Z") or None
+    tmax = (args.get("time_max") or "").rstrip("Z") or None
+    events = []
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        start_dt = ((e.get("start") or {}).get("dateTime") or "").rstrip("Z")
+        end_dt = ((e.get("end") or {}).get("dateTime") or "").rstrip("Z")
+        if tmin and end_dt and end_dt < tmin:
+            continue
+        if tmax and start_dt and start_dt > tmax:
+            continue
+        events.append({
+            "event_id":  e.get("id"),
+            "subject":   e.get("subject"),
+            "start":     start_dt,
+            "end":       end_dt,
+            "timezone":  (e.get("start") or {}).get("timeZone"),
+            "location":  (e.get("location") or {}).get("displayName"),
+            "is_online": e.get("isOnlineMeeting", False),
+            "teams_url": (e.get("onlineMeeting") or {}).get("joinUrl"),
+            "attendees": [(a.get("emailAddress") or {}).get("address") for a in (e.get("attendees") or [])],
+            "organizer": ((e.get("organizer") or {}).get("emailAddress") or {}).get("address"),
+            "web_link":  e.get("webLink"),
+        })
+        if len(events) >= requested:
+            break
+    return {"count": len(events), "events": events}
+
+
+@tool(
+    name="create_outlook_calendar_event",
+    description=(
+        "Create an Outlook / Microsoft 365 calendar event. Set is_online_meeting=true to "
+        "attach a Microsoft Teams meeting link automatically. "
+        "NOTE: Teams meetings only work on Microsoft 365 Business / Enterprise accounts — "
+        "consumer outlook.com / hotmail.com / live.com accounts silently ignore "
+        "is_online_meeting (no Teams license). Datetimes are ISO 8601 (UTC) "
+        "or local time with explicit timezone."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "start_datetime", "end_datetime"],
+        "properties": {
+            "title":             {"type": "string", "description": "Event subject."},
+            "start_datetime":    {"type": "string", "description": "ISO 8601 start, e.g. '2026-06-01T14:00:00'."},
+            "end_datetime":      {"type": "string", "description": "ISO 8601 end."},
+            "timezone":          {"type": "string", "description": "IANA timezone for start/end (e.g. 'America/New_York'). Default UTC."},
+            "body":              {"type": "string", "description": "Event description / agenda."},
+            "is_html":           {"type": "boolean", "description": "Body is HTML. Default false."},
+            "location":          {"type": "string", "description": "Free-form location text."},
+            "attendees":         {"type": "string", "description": "Comma-separated attendee email addresses."},
+            "is_online_meeting": {"type": "boolean", "description": "If true, attach a Microsoft Teams meeting link."},
+            "show_as":           {"type": "string", "description": "'free' | 'tentative' | 'busy' | 'oof' | 'workingElsewhere'. Default 'busy'."},
+        },
+    },
+    destructive=True,
+)
+async def create_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    tz = (args.get("timezone") or "UTC").strip()
+    # Strip trailing Z (Composio's Outlook action expects naive ISO + timezone field)
+    start = args["start_datetime"].rstrip("Z")
+    end = args["end_datetime"].rstrip("Z")
+    action_args: Dict[str, Any] = {
+        "user_id":        "me",
+        "subject":        args["title"],
+        "start_datetime": start,
+        "end_datetime":   end,
+        "time_zone":      tz,
+        "body":           args.get("body") or "",
+        "is_html":        bool(args.get("is_html", False)),
+    }
+    if args.get("location"):
+        action_args["location"] = args["location"]
+    if args.get("show_as"):
+        action_args["show_as"] = args["show_as"]
+    if args.get("attendees"):
+        emails = _split_csv(args["attendees"])
+        action_args["attendees_info"] = [{"email": e, "type": "required"} for e in emails]
+    if args.get("is_online_meeting"):
+        action_args["is_online_meeting"] = True
+        action_args["online_meeting_provider"] = "teamsForBusiness"
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_CALENDAR_CREATE_EVENT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    evt = _outlook_response_data(r)
+    return {
+        "status":    "created",
+        "event_id":  evt.get("id"),
+        "web_link":  evt.get("webLink"),
+        "teams_url": (evt.get("onlineMeeting") or {}).get("joinUrl"),
+    }
+
+
+@tool(
+    name="update_outlook_calendar_event",
+    description=(
+        "Update / reschedule an Outlook calendar event by event_id. Only pass fields to change. "
+        "Reusing attendees replaces the existing list — pass the FULL set, not a delta."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["event_id"],
+        "properties": {
+            "event_id":       {"type": "string"},
+            "title":          {"type": "string"},
+            "start_datetime": {"type": "string", "description": "New ISO 8601 start."},
+            "end_datetime":   {"type": "string", "description": "New ISO 8601 end."},
+            "timezone":       {"type": "string", "description": "IANA timezone (required if changing datetimes)."},
+            "body":           {"type": "string"},
+            "is_html":        {"type": "boolean"},
+            "location":       {"type": "string"},
+            "attendees":      {"type": "string", "description": "Comma-separated; replaces existing attendees."},
+            "show_as":        {"type": "string"},
+        },
+    },
+    destructive=True,
+)
+async def update_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    action_args: Dict[str, Any] = {
+        "user_id":  "me",
+        "event_id": args["event_id"],
+    }
+    if args.get("title"):
+        action_args["subject"] = args["title"]
+    if args.get("start_datetime"):
+        action_args["start_datetime"] = args["start_datetime"].rstrip("Z")
+    if args.get("end_datetime"):
+        action_args["end_datetime"] = args["end_datetime"].rstrip("Z")
+    if args.get("timezone"):
+        action_args["time_zone"] = args["timezone"]
+    if args.get("body") is not None:
+        action_args["body"] = {
+            "contentType": "HTML" if args.get("is_html") else "Text",
+            "content": args["body"],
+        }
+    if args.get("location"):
+        action_args["location"] = {"displayName": args["location"]}
+    if args.get("attendees") is not None:
+        emails = _split_csv(args["attendees"])
+        action_args["attendees"] = [
+            {"emailAddress": {"address": e}, "type": "required"} for e in emails
+        ]
+    if args.get("show_as"):
+        action_args["show_as"] = args["show_as"]
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_UPDATE_CALENDAR_EVENT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    evt = _outlook_response_data(r)
+    return {
+        "status":   "updated",
+        "event_id": evt.get("id") or args["event_id"],
+        "web_link": evt.get("webLink"),
+    }
+
+
+@tool(
+    name="delete_outlook_calendar_event",
+    description="Delete an Outlook calendar event by event_id. Set send_notifications=true to email attendees.",
+    parameters={
+        "type": "object",
+        "required": ["event_id"],
+        "properties": {
+            "event_id":           {"type": "string"},
+            "send_notifications": {"type": "boolean", "description": "Email attendees about the cancellation. Default false."},
+        },
+    },
+    destructive=True,
+)
+async def delete_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_DELETE_EVENT", {
+        "user_id": "me",
+        "event_id": args["event_id"],
+        "send_notifications": bool(args.get("send_notifications", False)),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "deleted", "event_id": args["event_id"]}
+
+
+@tool(
+    name="find_outlook_free_slots",
+    description=(
+        "Get busy intervals for one or more people via Microsoft 365's GetSchedule API. "
+        "The agent can use the returned busy intervals to propose free meeting times."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["time_min", "time_max", "schedules"],
+        "properties": {
+            "time_min":  {"type": "string", "description": "Start of window (ISO 8601)."},
+            "time_max":  {"type": "string", "description": "End of window (ISO 8601)."},
+            "timezone":  {"type": "string", "description": "IANA timezone, default UTC."},
+            "schedules": {"type": "string", "description": "Comma-separated email addresses (use 'me' for the user)."},
+            "interval":  {"type": "integer", "description": "Slot granularity in minutes (default 30, max 1440)."},
+        },
+    },
+)
+async def find_outlook_free_slots(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    tz = (args.get("timezone") or "UTC").strip()
+    emails = _split_csv(args["schedules"]) or ["me"]
+    # Microsoft Graph GetSchedule needs actual email addresses, NOT 'me'.
+    # If the caller passed 'me' (or it's the default), resolve it via the profile.
+    if any(e.lower() == "me" for e in emails):
+        prof = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_PROFILE", {"user_id": "me"})
+        if not (prof.get("success") and prof.get("data")):
+            return {"error": "Could not resolve 'me' to a real email. Pass schedules='actual@email.com'."}
+        prof_inner = prof["data"].get("response_data") or prof["data"]
+        my_email = prof_inner.get("mail") or prof_inner.get("userPrincipalName")
+        if not my_email:
+            return {"error": "Profile lookup returned no email. Pass schedules='actual@email.com'."}
+        emails = [my_email if e.lower() == "me" else e for e in emails]
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_SCHEDULE", {
+        "user_id":   "me",
+        "Schedules": emails,
+        "StartTime": {"dateTime": args["time_min"].rstrip("Z"), "timeZone": tz},
+        "EndTime":   {"dateTime": args["time_max"].rstrip("Z"), "timeZone": tz},
+        "availabilityViewInterval": str(min(max(int(args.get("interval") or 30), 5), 1440)),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    # GetSchedule has an extra layer of wrapping vs other Outlook actions:
+    # {data: {data: {value: [...]}}}
+    inner = _outlook_response_data(r)
+    if isinstance(inner.get("data"), dict):
+        inner = inner["data"]
+    schedules = inner.get("value") or inner.get("schedules") or []
+    out: Dict[str, Any] = {}
+    unavailable: Dict[str, str] = {}
+    for s in schedules:
+        if not isinstance(s, dict):
+            continue
+        email = s.get("scheduleId") or s.get("email")
+        if not email:
+            continue
+        # Per-schedule error (common for consumer outlook.com addresses
+        # that don't support free/busy lookup)
+        if isinstance(s.get("error"), dict):
+            unavailable[email] = s["error"].get("message", "unknown")
+            continue
+        busy = []
+        for b in (s.get("scheduleItems") or []):
+            if not isinstance(b, dict):
+                continue
+            busy.append({
+                "start":  (b.get("start") or {}).get("dateTime"),
+                "end":    (b.get("end") or {}).get("dateTime"),
+                "status": b.get("status"),
+            })
+        out[email] = busy
+    result: Dict[str, Any] = {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "busy_by_email": out,
+    }
+    if unavailable:
+        result["unavailable"] = unavailable
+    return result
+
+
+@tool(
+    name="find_outlook_calendar_event",
+    description=(
+        "Find an Outlook calendar event by subject keywords + optional time window. "
+        "Use this before update/delete when the user describes an event rather than giving event_id."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query":       {"type": "string", "description": "Words to match in the subject."},
+            "time_min":    {"type": "string"},
+            "time_max":    {"type": "string"},
+            "max_results": {"type": "integer", "description": "Default 10."},
+        },
+    },
+)
+async def find_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    """Microsoft Graph's OData contains() on subject isn't reliably supported
+    via this Composio action, so we fetch a sorted batch and substring-match
+    subjects client-side."""
+    from composio_service import execute_action
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    q_lower = q.lower()
+    requested = min(int(args.get("max_results") or 10), 50)
+    # Pull a wider window so client-side filter has something to find
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", {
+        "user_id": "me",
+        "top": 100,
+        "orderby": ["start/dateTime desc"],  # bias toward recent
+        "expand_recurring_events": True,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("events") or []
+
+    tmin = (args.get("time_min") or "").rstrip("Z") or None
+    tmax = (args.get("time_max") or "").rstrip("Z") or None
+
+    events = []
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        subject = e.get("subject") or ""
+        if q_lower not in subject.lower():
+            continue
+        start_dt = ((e.get("start") or {}).get("dateTime") or "").rstrip("Z")
+        end_dt = ((e.get("end") or {}).get("dateTime") or "").rstrip("Z")
+        if tmin and end_dt and end_dt < tmin:
+            continue
+        if tmax and start_dt and start_dt > tmax:
+            continue
+        events.append({
+            "event_id":  e.get("id"),
+            "subject":   subject,
+            "start":     start_dt,
+            "end":       end_dt,
+            "location":  (e.get("location") or {}).get("displayName"),
+            "attendees": [(a.get("emailAddress") or {}).get("address") for a in (e.get("attendees") or [])],
+            "web_link":  e.get("webLink"),
+        })
+        if len(events) >= requested:
+            break
+    return {"query": q, "count": len(events), "events": events}
 
 
 @tool(
@@ -8808,7 +10272,7 @@ async def web_search(ctx: ToolContext, args: Dict[str, Any]):
             resp = await client.get(
                 "https://api.duckduckgo.com/",
                 params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-                headers={"User-Agent": "ZiloAI/1.0"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -8973,7 +10437,8 @@ async def fetch_url(ctx: ToolContext, args: Dict[str, Any]):
         async with httpx.AsyncClient(
             timeout=30,
             follow_redirects=True,
-            headers={"User-Agent": "ZiloAI/1.0 (assistant; +https://zilo.pro)"},
+            verify=False,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
         ) as client:
             resp = await client.get(normalized)
             resp.raise_for_status()
@@ -9053,39 +10518,7 @@ async def save_document_style(ctx: ToolContext, args: Dict[str, Any]):
     return {"status": "saved", "saved_fields": saved_fields, "profile": updated}
 
 
-@tool(
-    name="outlook_draft",
-    description="Save a draft email in Outlook without sending. Returns the draft message_id.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "to":      {"type": "string"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string"},
-            "cc":      {"type": "string"},
-        },
-        "required": ["to", "subject", "body"],
-    },
-)
-async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    to = (args.get("to") or "").strip()
-    subject = (args.get("subject") or "").strip()
-    body = (args.get("body") or "").strip()
-    if not to or not subject or not body:
-        return {"error": "to, subject, and body are required"}
-    payload: Dict[str, Any] = {
-        "subject": subject,
-        "body": {"contentType": "Text", "content": body},
-        "toRecipients": _ms_addr_list(to),
-    }
-    if args.get("cc"):
-        payload["ccRecipients"] = _ms_addr_list(args["cc"])
-    try:
-        result = await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", "v1.0/me/messages", json=payload)
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "draft_saved", "message_id": result.get("id")}
+# outlook_draft has been moved into the main Outlook section above.
 
 
 
@@ -11874,6 +13307,56 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
 
 
 @tool(
+    name="get_sidebar_feature_recommendations",
+    description=(
+        "Check if the user's goal needs an optional sidebar tool that is not enabled yet. "
+        "Call when they want to do something that lives in a CRM module (SMS, broadcast, "
+        "field agents, invoices, SEO, etc.) OR when they ask which features to turn on. "
+        "Returns disabled tools only, with exact steps: Features page → search → toggle on. "
+        "Do NOT call for general questions unrelated to a specific module."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "user_intent": {
+                "type": "string",
+                "description": "What the user is trying to do, in plain language (e.g. 'send SMS promos').",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["intent", "profile"],
+                "description": (
+                    "intent = their current task needs a specific tool; "
+                    "profile = they asked what to enable for their business type."
+                ),
+            },
+        },
+        "required": ["user_intent", "mode"],
+    },
+    destructive=False,
+)
+async def get_sidebar_feature_recommendations(ctx: ToolContext, args: Dict[str, Any]):
+    from .sidebar_features import build_feature_guidance
+
+    user = await ctx.db.users.find_one({"_id": ctx.business_id}, {"settings": 1})
+    settings = (user or {}).get("settings") or {}
+    features = settings.get("features") or {}
+    business_type = settings.get("business_type") or "general"
+    user_intent = (args.get("user_intent") or "").strip()
+    mode = (args.get("mode") or "intent").strip().lower()
+    if mode not in ("intent", "profile"):
+        mode = "intent"
+
+    return build_feature_guidance(
+        business_type=business_type,
+        features=features,
+        user_intent=user_intent,
+        mode=mode,
+        limit=3,
+    )
+
+
+@tool(
     name="get_kling_video_status",
     description=(
         "Poll the status of a Kling AI video generation task. "
@@ -12693,31 +14176,88 @@ async def list_calendar_events(ctx: ToolContext, args: Dict[str, Any]) -> Dict[s
     return result
 
 
+def _split_attendees(s: Any) -> list[str]:
+    if not s:
+        return []
+    if isinstance(s, list):
+        return [str(e).strip() for e in s if str(e).strip()]
+    return [e.strip() for e in str(s).split(",") if e.strip()]
+
+
+def _parse_naive_dt_and_tz(s: str, fallback_tz: str = "UTC") -> tuple[str, str]:
+    """Composio's CREATE/UPDATE_EVENT requires a naive ISO datetime (no Z, no
+    offset) plus a separate `timezone`. Accept user input in either form and
+    normalize. Returns (naive_iso, timezone).
+    """
+    s = (s or "").strip()
+    if s.endswith("Z"):
+        return s[:-1], "UTC"
+    # detect ±HH:MM offset
+    if len(s) >= 6 and s[-3] == ":" and s[-6] in ("+", "-"):
+        # We can't reliably map offset → IANA tz, so warn-default to UTC for
+        # the offset and pass the naive part.
+        return s[:-6], fallback_tz
+    return s, fallback_tz
+
+
+def _duration_from_range(start_iso: str, end_iso: str) -> tuple[int, int]:
+    """Compute (hours, minutes) from two ISO datetimes."""
+    from datetime import datetime
+    def _parse(x: str) -> datetime:
+        x = x.strip().rstrip("Z")
+        # strip offset if present
+        if len(x) >= 6 and x[-3] == ":" and x[-6] in ("+", "-"):
+            x = x[:-6]
+        return datetime.fromisoformat(x)
+    delta = _parse(end_iso) - _parse(start_iso)
+    total_min = max(int(delta.total_seconds() // 60), 1)
+    return total_min // 60, total_min % 60
+
+
 @tool(
     name="create_calendar_event",
-    description="Create a new event in the user's Google Calendar.",
+    description=(
+        "Create a Google Calendar event. Provide either end_datetime or duration_minutes "
+        "(not both). Set create_meeting_room=true to attach a Google Meet link automatically."
+    ),
     parameters={
         "type": "object",
-        "required": ["title", "start_datetime", "end_datetime"],
+        "required": ["title", "start_datetime"],
         "properties": {
             "title": {"type": "string", "description": "Event title/summary."},
             "start_datetime": {
                 "type": "string",
-                "description": "Start time in ISO 8601 format e.g. '2025-05-10T14:00:00Z'.",
+                "description": "Start time in ISO 8601 (Z for UTC, or naive + timezone), e.g. '2026-06-01T14:00:00Z'.",
             },
             "end_datetime": {
                 "type": "string",
-                "description": "End time in ISO 8601 format e.g. '2025-05-10T15:00:00Z'.",
+                "description": "End time in ISO 8601. Either this OR duration_minutes is required.",
             },
-            "description": {"type": "string", "description": "Optional event description/notes."},
+            "duration_minutes": {
+                "type": "integer",
+                "description": "Event duration in minutes (alternative to end_datetime). Default 60.",
+            },
+            "timezone": {
+                "type": "string",
+                "description": "IANA timezone (e.g. 'America/New_York'). Required if start_datetime is naive. Defaults UTC.",
+            },
+            "description": {"type": "string", "description": "Optional event description (can be HTML)."},
             "location": {"type": "string", "description": "Optional event location."},
             "attendees": {
                 "type": "string",
                 "description": "Optional comma-separated attendee email addresses.",
             },
+            "create_meeting_room": {
+                "type": "boolean",
+                "description": "If true, attach a Google Meet video link to the event. Default false.",
+            },
+            "send_updates": {
+                "type": "boolean",
+                "description": "Email invitations to attendees. Default true.",
+            },
             "calendar_id": {
                 "type": "string",
-                "description": "Calendar ID to create the event in (defaults to primary).",
+                "description": "Calendar ID (default 'primary').",
             },
         },
     },
@@ -12731,21 +14271,316 @@ async def create_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[
             "error": "Google Calendar is not connected.",
             "action_required": "Connect Google Calendar in the Integrations page first.",
         }
+
+    explicit_tz = (args.get("timezone") or "").strip()
+    naive_start, inferred_tz = _parse_naive_dt_and_tz(args["start_datetime"], explicit_tz or "UTC")
+    tz = explicit_tz or inferred_tz
+
+    # Resolve duration: end_datetime overrides duration_minutes if both present
+    if args.get("end_datetime"):
+        hours, minutes = _duration_from_range(args["start_datetime"], args["end_datetime"])
+    else:
+        total = max(int(args.get("duration_minutes") or 60), 1)
+        hours, minutes = total // 60, total % 60
+
     params: Dict[str, Any] = {
         "summary": args["title"],
-        "start": {"dateTime": args["start_datetime"]},
-        "end": {"dateTime": args["end_datetime"]},
+        "start_datetime": naive_start,
+        "timezone": tz,
+        "event_duration_hour": hours,
+        "event_duration_minutes": minutes,
         "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": bool(args.get("send_updates", True)),
     }
     if args.get("description"):
         params["description"] = args["description"]
     if args.get("location"):
         params["location"] = args["location"]
-    if args.get("attendees"):
-        emails = [e.strip() for e in args["attendees"].split(",") if e.strip()]
-        params["attendees"] = [{"email": e} for e in emails]
-    result = await execute_action(ctx.business_id, ACTION_CALENDAR_CREATE, params)
-    return result
+    attendees = _split_attendees(args.get("attendees"))
+    if attendees:
+        params["attendees"] = attendees
+    if args.get("create_meeting_room"):
+        params["create_meeting_room"] = True
+
+    r = await execute_action(ctx.business_id, ACTION_CALENDAR_CREATE, params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    evt = inner.get("response_data") or inner
+    return {
+        "status": "created",
+        "event_id": evt.get("id"),
+        "html_link": evt.get("htmlLink"),
+        "meet_link": evt.get("hangoutLink") or None,
+    }
+
+
+@tool(
+    name="update_calendar_event",
+    description=(
+        "Update / reschedule an existing Google Calendar event. Provide event_id plus any "
+        "fields to change. To add a Google Meet link to an existing event, set create_meeting_room=true."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["event_id", "start_datetime"],
+        "properties": {
+            "event_id":           {"type": "string", "description": "Event ID to update."},
+            "title":              {"type": "string", "description": "New title/summary."},
+            "start_datetime":     {"type": "string", "description": "New start time (ISO 8601). Required by the v3 action."},
+            "end_datetime":       {"type": "string", "description": "New end time (ISO 8601). Either this OR duration_minutes."},
+            "duration_minutes":   {"type": "integer", "description": "New duration in minutes (alternative to end_datetime). Default 60."},
+            "timezone":           {"type": "string", "description": "IANA timezone for naive datetimes. Defaults UTC."},
+            "description":        {"type": "string"},
+            "location":           {"type": "string"},
+            "attendees":          {"type": "string", "description": "Comma-separated emails. Replaces existing attendees."},
+            "create_meeting_room": {"type": "boolean", "description": "Add a Google Meet link to the event."},
+            "send_updates":       {"type": "boolean", "description": "Email attendees about the change. Default true."},
+            "calendar_id":        {"type": "string", "description": "Calendar ID (default 'primary')."},
+        },
+    },
+    destructive=True,
+)
+async def update_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+
+    tz = (args.get("timezone") or "").strip() or "UTC"
+    naive_start, inferred_tz = _parse_naive_dt_and_tz(args["start_datetime"], tz)
+    tz = inferred_tz if inferred_tz != "UTC" or not args.get("timezone") else tz
+
+    if args.get("end_datetime"):
+        hours, minutes = _duration_from_range(args["start_datetime"], args["end_datetime"])
+    else:
+        total = max(int(args.get("duration_minutes") or 60), 1)
+        hours, minutes = total // 60, total % 60
+
+    params: Dict[str, Any] = {
+        "event_id": args["event_id"],
+        "start_datetime": naive_start,
+        "timezone": tz,
+        "event_duration_hour": hours,
+        "event_duration_minutes": minutes,
+        "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": bool(args.get("send_updates", True)),
+    }
+    if args.get("title"):
+        params["summary"] = args["title"]
+    if args.get("description"):
+        params["description"] = args["description"]
+    if args.get("location"):
+        params["location"] = args["location"]
+    attendees = _split_attendees(args.get("attendees"))
+    if attendees:
+        params["attendees"] = attendees
+    if args.get("create_meeting_room"):
+        params["create_meeting_room"] = True
+
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_UPDATE_EVENT", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    evt = inner.get("response_data") or inner
+    return {
+        "status": "updated",
+        "event_id": evt.get("id") or args["event_id"],
+        "html_link": evt.get("htmlLink"),
+        "meet_link": evt.get("hangoutLink") or None,
+    }
+
+
+@tool(
+    name="quick_add_calendar_event",
+    description=(
+        "Create a calendar event from a natural-language string. Google parses it "
+        "and infers time, duration, attendees. Examples: 'Lunch with John tomorrow at 1pm', "
+        "'Team standup every Monday at 9am'. Use this when the user describes an event "
+        "casually and exact times aren't easy to extract — saves a round trip."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text":         {"type": "string", "description": "Natural language event description."},
+            "calendar_id":  {"type": "string", "description": "Calendar ID (default 'primary')."},
+            "send_updates": {"type": "string", "description": "'all' | 'externalOnly' | 'none'. Default 'none'."},
+        },
+    },
+    destructive=True,
+)
+async def quick_add_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    params: Dict[str, Any] = {
+        "text": args["text"],
+        "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": args.get("send_updates") or "none",
+    }
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_QUICK_ADD", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # QUICK_ADD returns {"event": {...}}; fall through to inner for safety
+    evt = inner.get("event") or inner.get("response_data") or inner
+    return {
+        "status": "created",
+        "event_id": evt.get("id"),
+        "summary": evt.get("summary"),
+        "start": (evt.get("start") or {}).get("dateTime") or (evt.get("start") or {}).get("date"),
+        "html_link": evt.get("htmlLink"),
+    }
+
+
+@tool(
+    name="find_calendar_event",
+    description=(
+        "Search the user's calendar for events matching a free-text query. "
+        "Use this to look up a specific event before editing/deleting it (gives you the event_id)."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query":       {"type": "string", "description": "Free-text search terms."},
+            "time_min":    {"type": "string", "description": "Only events ending after this ISO time (optional)."},
+            "time_max":    {"type": "string", "description": "Only events starting before this ISO time (optional)."},
+            "max_results": {"type": "integer", "description": "Max events (default 10, max 50)."},
+            "calendar_id": {"type": "string", "description": "Calendar ID (default 'primary')."},
+        },
+    },
+)
+async def find_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    params: Dict[str, Any] = {
+        "query": args["query"],
+        "calendar_id": args.get("calendar_id") or "primary",
+        "max_results": min(int(args.get("max_results") or 10), 50),
+        "single_events": True,
+        "order_by": "startTime",
+    }
+    if args.get("time_min"):
+        params["timeMin"] = args["time_min"]
+    if args.get("time_max"):
+        params["timeMax"] = args["time_max"]
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_FIND_EVENT", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # FIND_EVENT returns {"event_data": {"event_data": [...]}}; unwrap both layers
+    ed = inner.get("event_data") or inner.get("response_data") or inner
+    if isinstance(ed, dict) and isinstance(ed.get("event_data"), list):
+        items = ed["event_data"]
+    else:
+        items = ed.get("items") or ed.get("events") or ed if isinstance(ed, list) else []
+        if not isinstance(items, list):
+            items = []
+    events = []
+    for e in items:
+        if not isinstance(e, dict):
+            continue
+        start = (e.get("start") or {}).get("dateTime") or (e.get("start") or {}).get("date")
+        end = (e.get("end") or {}).get("dateTime") or (e.get("end") or {}).get("date")
+        events.append({
+            "event_id":  e.get("id"),
+            "summary":   e.get("summary"),
+            "start":     start,
+            "end":       end,
+            "location":  e.get("location"),
+            "attendees": [a.get("email") for a in (e.get("attendees") or []) if isinstance(a, dict)],
+            "meet_link": e.get("hangoutLink"),
+            "html_link": e.get("htmlLink"),
+        })
+    return {"query": args["query"], "count": len(events), "events": events}
+
+
+@tool(
+    name="find_calendar_free_slots",
+    description=(
+        "Find free time slots across one or more calendars in a given window. "
+        "Returns busy intervals; agent can compute gaps to propose meeting times."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["time_min", "time_max"],
+        "properties": {
+            "time_min":  {"type": "string", "description": "Start of search window (ISO 8601)."},
+            "time_max":  {"type": "string", "description": "End of search window (ISO 8601)."},
+            "calendars": {"type": "string", "description": "Comma-separated calendar IDs or emails (default 'primary')."},
+            "timezone":  {"type": "string", "description": "IANA timezone for interpreting times (default UTC)."},
+        },
+    },
+)
+async def find_calendar_free_slots(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    cals = _split_attendees(args.get("calendars")) or ["primary"]
+    params: Dict[str, Any] = {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "items": cals,  # v3 expects an array of strings
+        "timezone": args.get("timezone") or "UTC",
+    }
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_FIND_FREE_SLOTS", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    rd = inner.get("response_data") or inner
+    cal_busy = (rd.get("calendars") or {})
+    out: Dict[str, list] = {}
+    for cal_id, info in cal_busy.items():
+        if isinstance(info, dict):
+            out[cal_id] = info.get("busy") or []
+    return {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "busy_by_calendar": out,
+    }
+
+
+@tool(
+    name="list_calendars",
+    description="List all Google Calendars the user has access to (primary + secondary + shared).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "description": "Max calendars (default 50, max 250)."},
+        },
+    },
+)
+async def list_calendars(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_LIST_CALENDARS", {
+        "max_results": min(int(args.get("max_results") or 50), 250),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # LIST_CALENDARS returns {"calendars": [...]}
+    items = inner.get("calendars") or (inner.get("response_data") or {}).get("items") or []
+    cals = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        cals.append({
+            "calendar_id": c.get("id"),
+            "summary":     c.get("summary") or c.get("summaryOverride"),
+            "primary":     bool(c.get("primary")),
+            "access_role": c.get("accessRole"),
+            "timezone":    c.get("timeZone"),
+        })
+    return {"count": len(cals), "calendars": cals}
 
 
 @tool(
@@ -16440,4 +18275,44 @@ async def configure_email_provider(ctx: ToolContext, args: Dict[str, Any]) -> Di
             "message":  f"Email provider set to {provider}. Use send_email_campaign to test it.",
         }
     except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="manage_gmail_filters",
+    description=(
+        "Manage Gmail filters through natural language commands. "
+        "Use this to create, list, suggest, or delete email filters. "
+        "Examples: 'Archive emails from newsletter@example.com', "
+        "'Set up newsletter filters', 'Show me filter suggestions', "
+        "'List all my filters', 'Delete filter for spam@example.com'"
+    ),
+    parameters={
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": (
+                    "Natural language command for filter management. "
+                    "Examples: 'Archive all emails from sender@example.com', "
+                    "'Set up filters for newsletters', 'Show filter suggestions', "
+                    "'Mark emails from boss@company.com as important'"
+                )
+            }
+        },
+    },
+    destructive=False,
+)
+async def manage_gmail_filters(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from agents.gmail_filter_agent import gmail_filter_agent_tool
+        result = await gmail_filter_agent_tool(
+            user_id=ctx.business_id,
+            db=ctx.db,
+            command=args["command"]
+        )
+        return result
+    except Exception as e:
+        logger.exception("[manage_gmail_filters] error")
         return {"error": str(e)}

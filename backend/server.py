@@ -523,6 +523,15 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 @app.on_event("startup")
+async def start_lead_scout_worker():
+    try:
+        from lead_scout_worker import background_loop
+        asyncio.create_task(background_loop(db))
+        logging.info("[lead_scout] background worker started")
+    except Exception as e:
+        logging.warning("[lead_scout] could not start background worker: %s", e)
+
+@app.on_event("startup")
 async def fix_team_members_index():
     try:
         await db.team_members.drop_index("business_id_1_email_1")
@@ -1109,16 +1118,26 @@ class ActivityLog(BaseModel):
 # Customer Models
 class CustomerCreate(BaseModel):
     name: str
-    phone_number: str
+    phone_number: str = ""
+    email: Optional[str] = None
     notes: Optional[str] = None
     tags: List[str] = []
     is_personal: bool = False
 
+class ContactCreate(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    notes: Optional[str] = None
+    source: Optional[str] = None
+    source_url: Optional[str] = None
+
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
+    email: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
     auto_reply: Optional[bool] = None
+    sms_opt_in: Optional[bool] = None
     is_personal: Optional[bool] = None
     stage: Optional[str] = None
 
@@ -1126,12 +1145,15 @@ class CustomerResponse(BaseModel):
     id: str
     user_id: str
     name: str
-    phone_number: str
+    phone_number: str = ""
+    email: Optional[str] = None
     notes: Optional[str] = None
     tags: List[str] = []
     auto_reply: Optional[bool] = None
+    sms_opt_in: Optional[bool] = None
     is_personal: bool = False
     stage: str = "lead"
+    source: Optional[str] = None
     purchase_count: int = 0
     total_spent: float = 0.0
     last_message: Optional[str] = None
@@ -1141,6 +1163,8 @@ class CustomerResponse(BaseModel):
     created_at: datetime
     assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
+    email_thread_ids: List[str] = []
+    email_classification: Optional[dict] = None
 
 # Follow-up Models
 class FollowUpCreate(BaseModel):
@@ -3369,6 +3393,335 @@ async def remove_supplier_tag(customer_id: str, user = Depends(get_current_user)
     )
     return {"status": "success"}
 
+# ============ INVESTOR ENDPOINTS ============
+
+INVESTOR_TYPES = [
+    "Angel", "VC", "Private Equity", "Family Office",
+    "Crowdfunding", "Angel Syndicate", "Corporate", "Other"
+]
+
+INVESTOR_PIPELINE_STAGES = [
+    "Prospect", "Intro", "Pitch", "Due Diligence", "Term Sheet", "Closed", "Passed"
+]
+
+@api_router.get("/investors/types")
+async def get_investor_types():
+    return INVESTOR_TYPES
+
+@api_router.get("/investors/stages")
+async def get_investor_stages():
+    return INVESTOR_PIPELINE_STAGES
+
+@api_router.get("/investors")
+async def get_investors(user = Depends(get_current_user)):
+    """Get all contacts tagged as investors"""
+    business_id = user.get("business_id", user["_id"])
+    investors = await db.customers.find({
+        "user_id": business_id,
+        "tags": "Investor"
+    }).to_list(100)
+
+    for inv in investors:
+        inv["id"] = inv["_id"]
+        inv["investor_type"] = inv.get("investor_type", "Other")
+        inv["investment_stage"] = inv.get("investment_stage", "Prospect")
+        inv["ticket_size"] = inv.get("ticket_size", "")
+        inv["investor_notes"] = inv.get("investor_notes", "")
+
+    return serialize_doc(investors)
+
+@api_router.post("/investors/{customer_id}/tag")
+async def tag_investor(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$addToSet": {"tags": "Investor"}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.put("/investors/{customer_id}")
+async def update_investor_details(customer_id: str, body: dict = Body(...), user = Depends(get_current_user)):
+    update_fields = {}
+    for key in ("investor_type", "investment_stage", "ticket_size", "investor_notes"):
+        if key in body:
+            update_fields[key] = body[key]
+
+    business_id = user.get("business_id", user["_id"])
+    if update_fields:
+        result = await db.customers.update_one(
+            {"_id": customer_id, "user_id": business_id},
+            {"$set": update_fields}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.delete("/investors/{customer_id}")
+async def remove_investor_tag(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$pull": {"tags": "Investor"}, "$unset": {
+            "investor_type": "", "investment_stage": "",
+            "ticket_size": "", "investor_notes": ""
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+# ============ INVESTOR / PARTNER DOCUMENTS ============
+
+CONTACT_DOC_MAX_BYTES = 20 * 1024 * 1024
+CONTACT_DOC_ALLOWED_EXT = {".pdf", ".doc", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
+CONTACT_DOC_MIME = {
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+async def _assert_tagged_contact(customer_id: str, business_id: str, tag: str):
+    customer = await db.customers.find_one({
+        "_id": customer_id,
+        "user_id": business_id,
+        "tags": tag,
+    })
+    if not customer:
+        raise HTTPException(status_code=404, detail="Contact not found or not tagged")
+    return customer
+
+async def _upload_contact_document_file(file: UploadFile) -> tuple[str, str, str, int]:
+    import base64
+    from image_handler import S3Handler
+
+    raw_name = (file.filename or "document").strip() or "document"
+    ext = ("." + raw_name.rsplit(".", 1)[-1].lower()) if "." in raw_name else ""
+    if ext not in CONTACT_DOC_ALLOWED_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Use PDF, Word, text, or image files.",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(content) > CONTACT_DOC_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 20 MB)")
+
+    mime = (file.content_type or CONTACT_DOC_MIME.get(ext) or "application/octet-stream").split(";")[0]
+    b64 = base64.b64encode(content).decode("ascii")
+    safe_name = _re.sub(r"[^\w.\-]+", "_", raw_name)[:120]
+    file_url = None
+    try:
+        file_url = await S3Handler.upload_file(b64, safe_name, content_type=mime, folder="contact-docs")
+    except Exception as exc:
+        logging.warning("S3 contact document upload failed, using local storage: %s", exc)
+
+    if not file_url:
+        import aiofiles
+        from pathlib import Path
+        upload_dir = Path(__file__).parent / "uploads" / "contact-docs"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        unique_name = f"{uuid.uuid4()}-{safe_name}"
+        file_path = upload_dir / unique_name
+        async with aiofiles.open(file_path, "wb") as out:
+            await out.write(content)
+        server_url = os.environ.get("SERVER_URL", "").rstrip("/")
+        file_url = f"{server_url}/uploads/contact-docs/{unique_name}" if server_url else f"/uploads/contact-docs/{unique_name}"
+
+    return safe_name, file_url, mime, len(content)
+
+def _serialize_contact_document(doc: dict) -> dict:
+    return {
+        "id": doc["_id"],
+        "customer_id": doc.get("customer_id"),
+        "context": doc.get("context"),
+        "title": doc.get("title") or doc.get("filename", ""),
+        "doc_type": doc.get("doc_type", "other"),
+        "filename": doc.get("filename", ""),
+        "file_url": doc.get("file_url", ""),
+        "mime_type": doc.get("mime_type", ""),
+        "size": doc.get("size", 0),
+        "uploaded_at": doc.get("uploaded_at"),
+    }
+
+async def _list_contact_documents(customer_id: str, business_id: str, context: str):
+    await _assert_tagged_contact(customer_id, business_id, "Investor" if context == "investor" else "Partner")
+    docs = await db.contact_documents.find({
+        "user_id": business_id,
+        "customer_id": customer_id,
+        "context": context,
+    }).sort("uploaded_at", -1).to_list(100)
+    return serialize_doc([_serialize_contact_document(d) for d in docs])
+
+async def _upload_contact_document(
+    customer_id: str,
+    business_id: str,
+    context: str,
+    file: UploadFile,
+    title: str,
+    doc_type: str,
+):
+    await _assert_tagged_contact(customer_id, business_id, "Investor" if context == "investor" else "Partner")
+    filename, file_url, mime, size = await _upload_contact_document_file(file)
+    doc_id = str(uuid.uuid4())
+    doc = {
+        "_id": doc_id,
+        "user_id": business_id,
+        "customer_id": customer_id,
+        "context": context,
+        "title": sanitize_string(title or filename.rsplit(".", 1)[0], 200) or filename,
+        "doc_type": sanitize_string(doc_type or "other", 50) or "other",
+        "filename": filename,
+        "file_url": file_url,
+        "mime_type": mime,
+        "size": size,
+        "uploaded_at": datetime.utcnow(),
+    }
+    await db.contact_documents.insert_one(doc)
+    return _serialize_contact_document(doc)
+
+async def _delete_contact_document(customer_id: str, business_id: str, context: str, doc_id: str):
+    await _assert_tagged_contact(customer_id, business_id, "Investor" if context == "investor" else "Partner")
+    result = await db.contact_documents.delete_one({
+        "_id": doc_id,
+        "user_id": business_id,
+        "customer_id": customer_id,
+        "context": context,
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "success"}
+
+@api_router.get("/investors/{customer_id}/documents")
+async def list_investor_documents(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _list_contact_documents(customer_id, business_id, "investor")
+
+@api_router.post("/investors/{customer_id}/documents")
+async def upload_investor_document(
+    customer_id: str,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    doc_type: str = Form("other"),
+    user = Depends(get_current_user),
+):
+    business_id = user.get("business_id", user["_id"])
+    return await _upload_contact_document(customer_id, business_id, "investor", file, title, doc_type)
+
+@api_router.delete("/investors/{customer_id}/documents/{doc_id}")
+async def delete_investor_document(customer_id: str, doc_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _delete_contact_document(customer_id, business_id, "investor", doc_id)
+
+@api_router.get("/partners/{customer_id}/documents")
+async def list_partner_documents(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _list_contact_documents(customer_id, business_id, "partner")
+
+@api_router.post("/partners/{customer_id}/documents")
+async def upload_partner_document(
+    customer_id: str,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    doc_type: str = Form("other"),
+    user = Depends(get_current_user),
+):
+    business_id = user.get("business_id", user["_id"])
+    return await _upload_contact_document(customer_id, business_id, "partner", file, title, doc_type)
+
+@api_router.delete("/partners/{customer_id}/documents/{doc_id}")
+async def delete_partner_document(customer_id: str, doc_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    return await _delete_contact_document(customer_id, business_id, "partner", doc_id)
+
+# ============ PARTNER ENDPOINTS ============
+
+PARTNER_TYPES = [
+    "Strategic", "Channel", "Technology", "Reseller",
+    "Affiliate", "Distribution", "Marketing", "Other"
+]
+
+@api_router.get("/partners/types")
+async def get_partner_types():
+    return PARTNER_TYPES
+
+@api_router.get("/partners")
+async def get_partners(user = Depends(get_current_user)):
+    """Get all contacts tagged as partners"""
+    business_id = user.get("business_id", user["_id"])
+    partners = await db.customers.find({
+        "user_id": business_id,
+        "tags": "Partner"
+    }).to_list(100)
+
+    for p in partners:
+        p["id"] = p["_id"]
+        p["partner_type"] = p.get("partner_type", "Other")
+        p["partnership_terms"] = p.get("partnership_terms", "")
+        p["revenue_share"] = p.get("revenue_share", "")
+        p["focus_areas"] = p.get("focus_areas", [])
+        p["rating"] = p.get("rating", 0)
+
+    return serialize_doc(partners)
+
+@api_router.post("/partners/{customer_id}/tag")
+async def tag_partner(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$addToSet": {"tags": "Partner"}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.put("/partners/{customer_id}")
+async def update_partner_details(customer_id: str, body: dict = Body(...), user = Depends(get_current_user)):
+    update_fields = {}
+    if "partner_type" in body:
+        update_fields["partner_type"] = body["partner_type"]
+    if "partnership_terms" in body:
+        update_fields["partnership_terms"] = body["partnership_terms"]
+    if "revenue_share" in body:
+        update_fields["revenue_share"] = body["revenue_share"]
+    if "focus_areas" in body:
+        update_fields["focus_areas"] = body["focus_areas"]
+    if "rating" in body:
+        update_fields["rating"] = int(body["rating"])
+
+    business_id = user.get("business_id", user["_id"])
+    if update_fields:
+        result = await db.customers.update_one(
+            {"_id": customer_id, "user_id": business_id},
+            {"$set": update_fields}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
+@api_router.delete("/partners/{customer_id}")
+async def remove_partner_tag(customer_id: str, user = Depends(get_current_user)):
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$pull": {"tags": "Partner"}, "$unset": {
+            "partner_type": "", "partnership_terms": "",
+            "revenue_share": "", "focus_areas": "", "rating": ""
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return {"status": "success"}
+
 # ============ CONTACT CLASSIFICATION ============
 
 @api_router.post("/contacts/classify")
@@ -3478,8 +3831,9 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
 
     if not clean_name:
         raise HTTPException(status_code=400, detail="Customer name is required")
-    if not clean_phone or len(clean_phone) < 6:
-        raise HTTPException(status_code=400, detail="Valid phone number is required")
+    clean_email = (customer.email or "").strip().lower() or None
+    if (not clean_phone or len(clean_phone) < 6) and not clean_email:
+        raise HTTPException(status_code=400, detail="A valid phone number or email is required")
 
     customer_id = str(uuid.uuid4())
     business_id = user.get("business_id", user["_id"])
@@ -3487,7 +3841,8 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         "_id": customer_id,
         "user_id": business_id,
         "name": clean_name,
-        "phone_number": clean_phone,
+        "phone_number": clean_phone or "",
+        "email": clean_email,
         "notes": clean_notes,
         "tags": clean_tags if clean_tags else ["New"],
         "purchase_count": 0,
@@ -3602,6 +3957,57 @@ async def get_all_contacts(user = Depends(get_current_user)):
                           or (not c.get("classification_type") and "Supplier" not in c.get("tags", [])),
         })
     return result
+
+@api_router.post("/contacts", response_model=CustomerResponse)
+async def create_contact_as_customer_endpoint(contact: ContactCreate, user = Depends(get_current_user)):
+    """Create or promote a contact as a customer from AI Scout (Hunt)"""
+    business_id = user.get("business_id", user["_id"])
+    clean_name = sanitize_string(contact.name, 200)
+    clean_phone = sanitize_phone(contact.phone) if contact.phone else ""
+    clean_notes = sanitize_string(contact.notes, 2000) if contact.notes else ""
+    
+    if clean_phone:
+        existing = await db.customers.find_one({"user_id": business_id, "phone_number": clean_phone})
+        if existing:
+            if not existing.get("is_customer"):
+                await db.customers.update_one({"_id": existing["_id"]}, {"$set": {"is_customer": True}})
+                existing["is_customer"] = True
+            return CustomerResponse(
+                id=existing["_id"], user_id=business_id, name=existing.get("name", clean_name),
+                phone_number=existing.get("phone_number", clean_phone), notes=existing.get("notes") or clean_notes,
+                tags=existing.get("tags") or ["New"], purchase_count=existing.get("purchase_count", 0),
+                total_spent=existing.get("total_spent", 0.0), last_message=existing.get("last_message"),
+                last_contacted=existing.get("last_contacted"), created_at=existing.get("created_at", datetime.utcnow())
+            )
+
+    customer_id = str(uuid.uuid4())
+    customer_doc = {
+        "_id": customer_id,
+        "user_id": business_id,
+        "name": clean_name,
+        "phone_number": clean_phone,
+        "notes": clean_notes,
+        "tags": ["New", "AI Scout"] if contact.source == "ai_scout" else ["New"],
+        "purchase_count": 0,
+        "total_spent": 0.0,
+        "last_message": None,
+        "last_contacted": None,
+        "created_at": datetime.utcnow(),
+        "is_customer": True,
+    }
+    
+    if contact.source:
+        customer_doc["source"] = contact.source
+    if contact.source_url:
+        customer_doc["source_url"] = contact.source_url
+
+    await db.customers.insert_one(customer_doc)
+    return CustomerResponse(
+        id=customer_id, user_id=business_id, name=clean_name,
+        phone_number=clean_phone, notes=clean_notes, tags=customer_doc["tags"],
+        purchase_count=0, total_spent=0.0, last_message=None,
+        last_contacted=None, created_at=customer_doc["created_at"]
+    )
 
 @api_router.get("/contacts")
 async def get_contacts(search: str = "", user = Depends(get_current_user)):
@@ -3832,9 +4238,11 @@ async def get_customers(
                     user_id=str(uid),
                     name=(c.get("name") or "Unknown").strip() or "Unknown",
                     phone_number=c.get("phone_number") or c.get("phone", "") or "",
+                    email=c.get("email"),
                     notes=c.get("notes"),
                     tags=_tags_list(c.get("tags")),
                     stage=c.get("stage", "lead"),
+                    source=c.get("source"),
                     purchase_count=_safe_int(c.get("purchase_count"), 0),
                     total_spent=_safe_float(c.get("total_spent"), 0.0),
                     last_message=c.get("last_message"),
@@ -3846,6 +4254,8 @@ async def get_customers(
                     assigned_to_name=member_map.get(assignment_map.get(c["_id"]))
                     if assignment_map.get(c["_id"])
                     else None,
+                    email_thread_ids=c.get("email_thread_ids", []),
+                    email_classification=c.get("email_classification"),
                 )
             )
         except Exception as e:
@@ -3954,6 +4364,21 @@ async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_
     """Alias for get_cold_customers to support frontend with reasons included"""
     return await get_cold_customers(days, user)
 
+@api_router.get("/customers/duplicate-check")
+async def customer_duplicate_check(email: str = "", domain: str = "", user = Depends(get_current_user)):
+    """Check if a customer already exists by email or Shopify domain (stored in notes)."""
+    business_id = user.get("business_id", user["_id"])
+    q: dict = {"user_id": business_id}
+    if email:
+        match = await db.customers.find_one({**q, "email": email.strip().lower()})
+        if match:
+            return {"exists": True, "name": match.get("name", "")}
+    if domain:
+        match = await db.customers.find_one({**q, "notes": {"$regex": _re.escape(domain), "$options": "i"}})
+        if match:
+            return {"exists": True, "name": match.get("name", "")}
+    return {"exists": False, "name": ""}
+
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse)
 async def get_customer(customer_id: str, user = Depends(get_current_user)):
     """Get a specific customer"""
@@ -3974,6 +4399,7 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
         profile_picture=customer.get("profile_picture"),
         # None means "inherit global auto-reply settings"
         auto_reply=customer.get("auto_reply"),
+        sms_opt_in=customer.get("sms_opt_in"),
         is_personal=customer.get("is_personal", False),
         created_at=customer["created_at"]
     )
@@ -4009,6 +4435,11 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         update_data["tags"] = [sanitize_string(t, 50) for t in update.tags if t.strip()][:20]
     if update.auto_reply is not None:
         update_data["auto_reply"] = update.auto_reply
+    if update.sms_opt_in is not None:
+        update_data["sms_opt_in"] = update.sms_opt_in
+        if not update.sms_opt_in:
+            update_data["sms_opt_out_at"] = datetime.utcnow()
+        
     if update.is_personal is not None:
         update_data["is_personal"] = update.is_personal
     if update.stage is not None:
@@ -4017,7 +4448,10 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
             update_data["stage"] = update.stage
         
     if update_data:
-        await db.customers.update_one({"_id": customer_id}, {"$set": update_data})
+        op: Dict[str, Any] = {"$set": update_data}
+        if update.sms_opt_in is True:
+            op["$unset"] = {"sms_opt_out_at": ""}
+        await db.customers.update_one({"_id": customer_id}, op)
     
     updated = await db.customers.find_one({"_id": customer_id})
     
@@ -4030,6 +4464,7 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         tags=updated.get("tags", []),
         # None means "inherit global auto-reply settings"
         auto_reply=updated.get("auto_reply"),
+        sms_opt_in=updated.get("sms_opt_in"),
         is_personal=updated.get("is_personal", False),
         stage=updated.get("stage", "lead"),
         last_message=updated.get("last_message"),
@@ -7921,6 +8356,61 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
         logging.error(f"Error sending message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============ COMPOSIO WEBHOOK ============
+
+COMPOSIO_WEBHOOK_SECRET = (os.environ.get("COMPOSIO_WEBHOOK_SECRET") or "").strip()
+
+
+async def _process_composio_webhook_bg(payload: dict) -> None:
+    """Run Composio webhook processing in the background.
+
+    Composio's delivery timeout is short (~5-10s) but our sync can take 10-30s
+    against a real Gmail account. Responding 200 immediately and processing
+    out-of-band keeps Composio happy and avoids retries/dropped deliveries.
+    """
+    from composio_webhooks import handle_composio_webhook
+    try:
+        result = await handle_composio_webhook(payload, db)
+        logging.info("[composio-webhook] Result: %s", result)
+    except Exception as exc:
+        logging.error("[composio-webhook] Handler error: %s", exc, exc_info=True)
+
+
+@api_router.post("/webhooks/composio")
+async def composio_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive Composio trigger webhooks (e.g. Gmail new message).
+
+    Responds 200 quickly and defers actual processing to a background task —
+    Composio drops deliveries that don't ack within a few seconds.
+    """
+    raw_body = await request.body()
+    signature = request.headers.get("X-Composio-Signature", "")
+
+    if COMPOSIO_WEBHOOK_SECRET:
+        from composio_webhooks import verify_composio_webhook
+
+        if not verify_composio_webhook(raw_body, signature, COMPOSIO_WEBHOOK_SECRET):
+            logging.warning("[composio-webhook] Invalid signature")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+    else:
+        logging.debug(
+            "[composio-webhook] COMPOSIO_WEBHOOK_SECRET not configured; skipping signature verification"
+        )
+
+    if not raw_body:
+        payload = {}
+    else:
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            logging.warning("[composio-webhook] Invalid JSON payload")
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    background_tasks.add_task(_process_composio_webhook_bg, payload)
+    logging.info("[composio-webhook] Accepted; processing in background")
+    return {"status": "accepted"}
+
+
 # ============ EVOLUTION API WEBHOOK ============
 
 async def _apply_inbound_routing_bg(
@@ -9786,7 +10276,43 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
         except Exception as _e:
             logging.warning(f"[qdrant] knowledge re-index failed: {_e}")
 
+    # Regenerate auto-scout queries in background when business profile changes
+    if update_data:
+        try:
+            from scout_service import get_biz_context, _default_scout_templates, SCOUTS_COLLECTION
+            asyncio.create_task(_regenerate_auto_scouts(user["_id"]))
+        except Exception as _se:
+            logging.debug("[scouts] regenerate task skipped: %s", _se)
+
     return {"status": "success", "message": "Business knowledge updated"}
+
+
+async def _regenerate_auto_scouts(uid: str) -> None:
+    """Refresh search queries on auto-generated scouts after profile update."""
+    try:
+        from scout_service import get_biz_context, _default_scout_templates, SCOUTS_COLLECTION
+        ctx = await get_biz_context(db, uid)
+        templates = {t["scout_type"]: t for t in _default_scout_templates(ctx)}
+        scouts = await db[SCOUTS_COLLECTION].find({
+            "user_id": uid,
+            "auto_generated": True,
+        }).to_list(10)
+        for scout in scouts:
+            tpl = templates.get(scout.get("scout_type"))
+            if not tpl:
+                continue
+            await db[SCOUTS_COLLECTION].update_one(
+                {"_id": scout["_id"]},
+                {"$set": {
+                    "search_queries": tpl["search_queries"],
+                    "goal": tpl["goal"],
+                    "updated_at": datetime.utcnow(),
+                }},
+            )
+        logging.info("[scouts] refreshed queries for %d auto-scouts user=%s", len(scouts), uid)
+    except Exception as e:
+        logging.warning("[scouts] regenerate failed uid=%s: %s", uid, e)
+
 
 @api_router.post("/ai/draft-message")
 async def draft_ai_message(request: DraftMessageRequest, user = Depends(get_current_user)):
@@ -10780,6 +11306,115 @@ def _shopify_redirect_uri(request: Request) -> str:
 
 def _shopify_frontend_url() -> str:
     return os.environ.get("SHOPIFY_FRONTEND_URL") or os.environ.get("NEXT_PUBLIC_APP_URL") or "http://localhost:3000"
+
+
+# ── Shopify Partner: create development store ─────────────────────────────────
+@api_router.post("/shopify/partner/create-store")
+async def shopify_partner_create_store(request: Request, user=Depends(get_current_user)):
+    """
+    Create a Shopify development store via the Shopify Partners GraphQL API.
+    Requires SHOPIFY_PARTNER_ID and SHOPIFY_PARTNER_ACCESS_TOKEN in env.
+    When the merchant later upgrades to a paid plan, Zilo earns the recurring
+    20% Partner revenue share from Shopify automatically.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+
+    store_name   = str(body.get("store_name",   "")).strip().lower()
+    first_name   = str(body.get("first_name",   "")).strip()
+    last_name    = str(body.get("last_name",    "")).strip()
+    email        = str(body.get("email",        "")).strip()
+    country_code = str(body.get("country_code", "US")).strip().upper()
+
+    if not store_name or not first_name or not email:
+        raise HTTPException(422, "store_name, first_name and email are required")
+
+    # Sanitise store name — only lowercase letters, numbers, hyphens
+    import re as _re
+    store_name = _re.sub(r"[^a-z0-9-]", "-", store_name).strip("-")
+    if not store_name:
+        raise HTTPException(422, "store_name must contain letters or numbers")
+
+    partner_id    = os.environ.get("SHOPIFY_PARTNER_ID",           "").strip()
+    partner_token = os.environ.get("SHOPIFY_PARTNER_ACCESS_TOKEN", "").strip()
+    if not partner_id or not partner_token:
+        raise HTTPException(503,
+            "Shopify Partner credentials not configured. "
+            "Add SHOPIFY_PARTNER_ID and SHOPIFY_PARTNER_ACCESS_TOKEN to your .env file."
+        )
+
+    mutation = """
+    mutation CreateDevStore($input: ShopifyDevStoreInput!) {
+      shopifyDevStoreCreate(input: $input) {
+        shop {
+          id
+          myshopifyDomain
+          name
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    variables = {
+        "input": {
+            "storeName":   store_name,
+            "storeType":   "DEVELOPMENT",
+            "login":       email,
+            "firstName":   first_name,
+            "lastName":    last_name or first_name,
+            "countryCode": country_code,
+        }
+    }
+
+    import httpx as _httpx
+    gql_url = f"https://partners.shopify.com/{partner_id}/api/2024-10/graphql.json"
+    try:
+        async with _httpx.AsyncClient(timeout=20) as hc:
+            r = await hc.post(
+                gql_url,
+                json={"query": mutation, "variables": variables},
+                headers={
+                    "X-Shopify-Access-Token": partner_token,
+                    "Content-Type": "application/json",
+                },
+            )
+    except Exception as exc:
+        logging.error("[partner/create-store] network error: %s", exc)
+        raise HTTPException(502, f"Could not reach Shopify Partners API: {exc}")
+
+    if r.status_code == 401:
+        raise HTTPException(401, "Invalid SHOPIFY_PARTNER_ACCESS_TOKEN")
+    if r.status_code >= 400:
+        raise HTTPException(502, f"Shopify Partners API returned {r.status_code}: {r.text[:300]}")
+
+    try:
+        data = r.json()
+    except Exception:
+        raise HTTPException(502, f"Non-JSON response from Shopify: {r.text[:300]}")
+
+    result = data.get("data", {}).get("shopifyDevStoreCreate", {})
+    user_errors = result.get("userErrors", [])
+    if user_errors:
+        msg = "; ".join(f"{e.get('field','')}: {e.get('message','')}" for e in user_errors)
+        raise HTTPException(422, f"Shopify error: {msg}")
+
+    shop = result.get("shop")
+    if not shop:
+        raise HTTPException(502, f"Unexpected response from Shopify Partners API: {data}")
+
+    domain = shop.get("myshopifyDomain", f"{store_name}.myshopify.com")
+    logging.info("[partner/create-store] created store=%s user=%s", domain, user.get("_id"))
+
+    return {
+        "ok":     True,
+        "domain": domain,
+        "name":   shop.get("name", store_name),
+    }
 
 
 @api_router.get("/shopify/install")
@@ -12879,6 +13514,22 @@ async def startup_tasks():
     except Exception as e:
         logging.error(f"[social-publisher] Failed to start publisher: {e}")
 
+    # Start Zilo Scout worker (runs due keyword scouts every 5 min)
+    try:
+        from scout_worker import run_scout_worker as _run_scout_worker
+        asyncio.create_task(_run_scout_worker(db))
+        logging.info("[scout-worker] Zilo Scout worker started")
+    except Exception as e:
+        logging.error(f"[scout-worker] Failed to start scout worker: {e}")
+
+    # Start Facebook group worker (API Direct scans every 30 min)
+    try:
+        from fb_group_worker import run_fb_group_worker as _run_fb_group_worker
+        asyncio.create_task(_run_fb_group_worker(db))
+        logging.info("[fb-group-worker] Facebook group worker started")
+    except Exception as e:
+        logging.error(f"[fb-group-worker] Failed to start fb group worker: {e}")
+
     # Start social engagement syncer (syncs likes/reach/clicks every 30 min)
     try:
         from social_engagement_syncer import run_engagement_syncer as _run_engagement_syncer
@@ -13844,6 +14495,73 @@ async def composio_gmail_mark_read(request: Request, user=Depends(get_current_us
     return {"ok": True}
 
 
+@api_router.get("/composio/calendar/events")
+async def composio_calendar_list_events(
+    timeMin: str = "",
+    timeMax: str = "",
+    provider: str = "",
+    user=Depends(get_current_user),
+):
+    """List Google Calendar or Outlook events via Composio execute_action."""
+    from composio_calendar import list_calendar_events as _list
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        return await _list(user_id, time_min=timeMin, time_max=timeMax, provider=provider or None)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.post("/composio/calendar/events")
+async def composio_calendar_create_event(request: Request, user=Depends(get_current_user)):
+    from composio_calendar import create_calendar_event as _create
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    provider = str(body.get("provider") or "google")
+    try:
+        event = await _create(user_id, body, provider)
+        return {"event": event}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.patch("/composio/calendar/events")
+async def composio_calendar_update_event(request: Request, user=Depends(get_current_user)):
+    from composio_calendar import update_calendar_event as _update
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    provider = str(body.get("provider") or "google")
+    if not body.get("eventId"):
+        raise HTTPException(status_code=400, detail="eventId required")
+    try:
+        event = await _update(user_id, body, provider)
+        return {"event": event}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.delete("/composio/calendar/events")
+async def composio_calendar_delete_event(
+    eventId: str = "",
+    provider: str = "google",
+    user=Depends(get_current_user),
+):
+    from composio_calendar import delete_calendar_event as _delete
+    user_id = str(user.get("business_id") or user["_id"])
+    if not eventId:
+        raise HTTPException(status_code=400, detail="eventId required")
+    try:
+        await _delete(user_id, eventId, provider)
+        return {"ok": True}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EMAIL DB — Store emails in MongoDB for instant loading & full control
 # ══════════════════════════════════════════════════════════════════════════════
@@ -13957,6 +14675,207 @@ async def email_db_save_sent(request: Request, user=Depends(get_current_user)):
         db=db,
     )
     return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EMAIL CLASSIFICATION — AI-powered sorting of email contacts
+# ══════════════════════════════════════════════════════════════════════════════
+
+@api_router.post("/email-db/classify")
+async def email_db_classify(user=Depends(get_current_user)):
+    """
+    Trigger email contact classification for this user.
+    Analyzes unclassified email senders and sorts them into
+    investors, customers, or partners.
+    """
+    from email_classifier import get_email_classifier
+    user_id = str(user.get("business_id") or user["_id"])
+    classifier = get_email_classifier(db)
+    result = await classifier.classify_new_emails(user_id)
+    return result
+
+
+@api_router.post("/email-db/reclassify")
+async def email_db_reclassify(user=Depends(get_current_user)):
+    """Force reclassify ALL email contacts (resets and re-runs)."""
+    from email_classifier import get_email_classifier
+    user_id = str(user.get("business_id") or user["_id"])
+    classifier = get_email_classifier(db)
+    result = await classifier.reclassify_all(user_id)
+    return result
+
+
+@api_router.get("/email-db/classifications")
+async def email_db_classifications(
+    status: str = "pending",
+    limit: int = 50,
+    user=Depends(get_current_user),
+):
+    """List pending email contact classifications for owner review."""
+    user_id = str(user.get("business_id") or user["_id"])
+    flt: dict = {"user_id": user_id}
+    if status != "all":
+        flt["status"] = status
+    docs = await db.pending_email_classifications.find(flt).sort(
+        "updated_at", -1
+    ).limit(min(limit, 100)).to_list(min(limit, 100))
+
+    results = []
+    for d in docs:
+        results.append({
+            "id": str(d.get("_id", "")),
+            "customer_id": d.get("customer_id", ""),
+            "contact_name": d.get("contact_name", ""),
+            "email": d.get("email", ""),
+            "suggested_type": d.get("suggested_type", ""),
+            "subtype": d.get("subtype"),
+            "confidence": d.get("confidence", 0),
+            "reason": d.get("reason", ""),
+            "email_thread_ids": d.get("email_thread_ids", []),
+            "status": d.get("status", "pending"),
+            "updated_at": str(d.get("updated_at", "")),
+        })
+    return {"classifications": results, "total": len(results)}
+
+
+@api_router.post("/email-db/classifications/{classification_id}/approve")
+async def email_db_approve_classification(
+    classification_id: str,
+    request: Request,
+    user=Depends(get_current_user),
+):
+    """
+    Approve or override a pending email classification.
+    Body: { "action": "approve" | "reject" | "override", "override_type": "investor" | "customer" | "partner" }
+    """
+    from bson import ObjectId
+    user_id = str(user.get("business_id") or user["_id"])
+    body = await request.json()
+    action = body.get("action", "approve")
+
+    # Find the pending classification
+    try:
+        flt = {"_id": ObjectId(classification_id), "user_id": user_id}
+    except Exception:
+        flt = {"_id": classification_id, "user_id": user_id}
+    pending = await db.pending_email_classifications.find_one(flt)
+    if not pending:
+        raise HTTPException(status_code=404, detail="Classification not found")
+
+    customer_id = pending.get("customer_id")
+
+    if action == "reject":
+        # Remove classification, untag contact
+        await db.pending_email_classifications.update_one(
+            {"_id": pending["_id"]},
+            {"$set": {"status": "rejected"}},
+        )
+        # Remove auto-applied tags
+        suggested = pending.get("suggested_type", "")
+        tag_map = {"investor": "Investor", "customer": "Customer", "partner": "Partner", "supplier": "Supplier"}
+        tag = tag_map.get(suggested)
+        if tag and customer_id:
+            await db.customers.update_one(
+                {"_id": customer_id, "user_id": user_id},
+                {"$pull": {"tags": tag}},
+            )
+        return {"ok": True, "action": "rejected"}
+
+    if action == "override":
+        # Change to a different type
+        new_type = body.get("override_type", "customer")
+        tag_map = {"investor": "Investor", "customer": "Customer", "partner": "Partner", "supplier": "Supplier"}
+        old_tag = tag_map.get(pending.get("suggested_type", ""))
+        new_tag = tag_map.get(new_type, "Customer")
+
+        update_ops: dict = {"$addToSet": {"tags": new_tag}}
+        if old_tag and old_tag != new_tag:
+            update_ops["$pull"] = {"tags": old_tag}
+
+        # Set type-specific fields
+        set_fields: dict = {"classification_confirmed": True}
+        if new_type == "investor":
+            set_fields["investor_type"] = body.get("subtype", "Other")
+            set_fields["investment_stage"] = "Prospect"
+        elif new_type == "partner":
+            set_fields["partner_type"] = body.get("subtype", "Other")
+        elif new_type == "supplier":
+            set_fields["supplier_category"] = body.get("subtype", "Other")
+        update_ops["$set"] = set_fields
+
+        if customer_id:
+            # Can't $pull and $addToSet same field in one op — do two updates
+            if "$pull" in update_ops:
+                await db.customers.update_one(
+                    {"_id": customer_id, "user_id": user_id},
+                    {"$pull": {"tags": old_tag}},
+                )
+            await db.customers.update_one(
+                {"_id": customer_id, "user_id": user_id},
+                {"$addToSet": {"tags": new_tag}, "$set": set_fields},
+            )
+
+        await db.pending_email_classifications.update_one(
+            {"_id": pending["_id"]},
+            {"$set": {"status": "overridden", "final_type": new_type}},
+        )
+        return {"ok": True, "action": "overridden", "new_type": new_type}
+
+    # Default: approve
+    if customer_id:
+        await db.customers.update_one(
+            {"_id": customer_id, "user_id": user_id},
+            {"$set": {"classification_confirmed": True}},
+        )
+    await db.pending_email_classifications.update_one(
+        {"_id": pending["_id"]},
+        {"$set": {"status": "approved"}},
+    )
+    return {"ok": True, "action": "approved"}
+
+
+@api_router.get("/email-db/contact/{customer_id}/threads")
+async def email_db_contact_threads(customer_id: str, user=Depends(get_current_user)):
+    """Get all email threads linked to a specific contact."""
+    from email_sync import get_threads_from_db
+    user_id = str(user.get("business_id") or user["_id"])
+
+    # Get the contact to find linked thread IDs
+    contact = await db.customers.find_one({"_id": customer_id, "user_id": user_id})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    thread_ids = contact.get("email_thread_ids", [])
+    if not thread_ids:
+        # Fall back: search by email address
+        email = contact.get("email", "")
+        if email:
+            threads = await db.email_threads.find({
+                "user_id": user_id,
+                "participants": {"$regex": email, "$options": "i"},
+            }).sort("last_message_at", -1).limit(50).to_list(50)
+        else:
+            threads = []
+    else:
+        threads = await db.email_threads.find({
+            "_id": {"$in": thread_ids},
+            "user_id": user_id,
+        }).sort("last_message_at", -1).to_list(50)
+
+    from email_sync import _fmt_thread
+    return {"threads": [_fmt_thread(t) for t in threads], "contact_id": customer_id}
+
+
+@api_router.post("/email-db/thread/{thread_id}/classify")
+async def email_db_classify_thread(thread_id: str, user=Depends(get_current_user)):
+    """Classify a single email thread's sender."""
+    from email_classifier import get_email_classifier
+    user_id = str(user.get("business_id") or user["_id"])
+    classifier = get_email_classifier(db)
+    result = await classifier.classify_thread(user_id, thread_id)
+    if not result:
+        return {"classification": None, "message": "Could not classify this thread"}
+    return {"classification": result}
 
 
 def _operator_provision_secret() -> str:
@@ -14374,10 +15293,14 @@ async def ae_oauth_start(user=Depends(get_current_user)):
         {"$set": {"state": state, "business_id": business_id, "created_at": _dt.utcnow()}},
         upsert=True,
     )
-    base_url = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    base_url = (
+        os.environ.get("BASE_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     auth_url = (
-        "https://oauth.aliexpress.com/auth"
+        "https://api-sg.aliexpress.com/oauth/authorize"
         f"?response_type=code"
         f"&client_id={app_key}"
         f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
@@ -14394,11 +15317,16 @@ async def ae_oauth_callback(code: str = "", state: str = "", error: str = ""):
     import urllib.parse
 
     def _close_popup(ok: bool, msg: str = "") -> HTMLResponse:
+        if not ok:
+            logging.error("[ae/oauth/callback] failed: %s", msg)
         js_event = "ae_connected" if ok else "ae_connect_failed"
+        encoded_msg = urllib.parse.quote(msg or "", safe="")
         return HTMLResponse(f"""<!DOCTYPE html><html><body>
+<pre style="font-family:monospace;padding:24px">AliExpress OAuth: {'success' if ok else 'FAILED'}
+{msg}</pre>
 <script>
 if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},window.location.origin);window.close();}}
-else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}";}}
+else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}&msg={encoded_msg}";}}
 </script></body></html>""")
 
     if error:
@@ -14418,25 +15346,50 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
     app_secret = os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
     if not app_key or not app_secret:
         return _close_popup(False, "Server not configured")
-    base_url     = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    base_url = (
+        os.environ.get("BASE_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     try:
+        import time as _time
+        # AliExpress requires signed token exchange via the REST system-tool endpoint.
+        # Params: app_key, timestamp, sign_method, code; signed with HMAC-SHA256.
+        token_params = {
+            "app_key":     app_key,
+            "timestamp":   str(int(_time.time() * 1000)),
+            "sign_method": "sha256",
+            "code":        code,
+        }
+        sorted_keys = sorted(token_params.keys())
+        sign_base   = "/auth/token/create" + "".join(f"{k}{token_params[k]}" for k in sorted_keys)
+        token_params["sign"] = hmac.new(
+            app_secret.encode("utf-8"),
+            sign_base.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest().upper()
         async with httpx.AsyncClient(timeout=20) as hc:
-            r = await hc.post("https://oauth.aliexpress.com/token", data={
-                "grant_type":    "authorization_code",
-                "code":          code,
-                "client_id":     app_key,
-                "client_secret": app_secret,
-                "redirect_uri":  redirect_uri,
-            })
+            r = await hc.post(
+                "https://api-sg.aliexpress.com/rest/auth/token/create",
+                data=token_params,
+            )
         token_data = r.json()
+        logging.info("[ae/oauth/callback] token response: %s", token_data)
     except Exception as e:
         return _close_popup(False, f"Token exchange failed: {e}")
 
     access_token  = token_data.get("access_token", "")
     refresh_token = token_data.get("refresh_token", "")
     if not access_token:
-        return _close_popup(False, token_data.get("error_description", "No access token returned"))
+        err_msg = (
+            token_data.get("error_description")
+            or token_data.get("error_msg")
+            or token_data.get("message")
+            or f"No access token returned. Full response: {token_data}"
+        )
+        err_code = token_data.get("error_code") or token_data.get("code") or ""
+        return _close_popup(False, f"[{err_code}] {err_msg}" if err_code else err_msg)
 
     from datetime import datetime as _dt
     await db.supplier_connections.update_one(
@@ -14458,13 +15411,34 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
 
 
 # ── CJdropshipping REST endpoints (used by Shopify Products tab UI) ─────────
+
+def _parse_cj_products(data: dict) -> list[dict]:
+    raw = data.get("list", []) if isinstance(data, dict) else []
+    out = []
+    for p in raw:
+        cost = _cj_price(p.get("sellPrice"))
+        out.append({
+            "cj_pid":           p.get("pid", ""),
+            "title":            p.get("productNameEn") or p.get("productName", ""),
+            "category":         p.get("categoryName", ""),
+            "cost_price":       cost,
+            "suggested_price":  round(cost * 2.5, 2),
+            "image_url":        p.get("productImage", ""),
+            "is_free_shipping": bool(p.get("isFreeShipping", False)),
+            "supplier":         p.get("supplierName", "") or "",
+            "listed_count":     int(p.get("listedNum", 0) or 0),
+            "source":           "cj",
+        })
+    return out
+
+
 @api_router.get("/cj/products")
 async def cj_search_products(
     keyword: str = "",
     category_id: str = "",
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
-    page_size: int = 20,
+    page_size: int = 50,
     hot: bool = False,
     user=Depends(get_current_user),
 ):
@@ -14476,45 +15450,44 @@ async def cj_search_products(
     business_id = user.get("business_id") or str(user["_id"])
     cj_creds = await _get_supplier_creds(business_id, "cj")
 
-    params: dict = {"pageNum": 1, "pageSize": min(page_size, 50)}
-    if keyword:
-        params["productNameEn"] = keyword
-    if category_id:
-        params["categoryId"] = category_id
-    if min_price is not None:
-        params["minPrice"] = min_price
-    if max_price is not None:
-        params["maxPrice"] = max_price
+    # Expand keyword into variants for broader coverage
+    variants = await _ae_expand_keywords(keyword) if keyword else [keyword]
+
+    async def _search_one(kw: str) -> list[dict]:
+        params: dict = {"pageNum": 1, "pageSize": 50}
+        if kw:
+            params["productNameEn"] = kw
+        if category_id:
+            params["categoryId"] = category_id
+        if min_price is not None:
+            params["minPrice"] = min_price
+        if max_price is not None:
+            params["maxPrice"] = max_price
+        try:
+            data = await cj_get("/product/list", params, creds=cj_creds)
+            return _parse_cj_products(data)
+        except Exception as e:
+            logging.warning("[cj/products] variant '%s' failed: %s", kw, e)
+            return []
 
     try:
-        data = await cj_get("/product/list", params, creds=cj_creds)
+        results_per_variant = await asyncio.gather(*[_search_one(kw) for kw in variants])
     except Exception as e:
-        logging.error("[cj/products] cj_get error: %s", e, exc_info=True)
+        logging.error("[cj/products] error: %s", e, exc_info=True)
         raise HTTPException(502, f"CJ API error: {e}")
 
-    try:
-        raw = data.get("list", []) if isinstance(data, dict) else []
-        if hot:
-            raw.sort(key=lambda p: int(p.get("listedNum", 0) or 0), reverse=True)
+    # Deduplicate by cj_pid, sort by listed_count (most popular first)
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for batch in results_per_variant:
+        for p in batch:
+            pid = p["cj_pid"]
+            if pid and pid not in seen:
+                seen.add(pid)
+                merged.append(p)
 
-        products = []
-        for p in raw:
-            cost = _cj_price(p.get("sellPrice"))
-            products.append({
-                "cj_pid":           p.get("pid", ""),
-                "title":            p.get("productNameEn") or p.get("productName", ""),
-                "category":         p.get("categoryName", ""),
-                "cost_price":       cost,
-                "suggested_price":  round(cost * 2.5, 2),
-                "image_url":        p.get("productImage", ""),
-                "is_free_shipping": bool(p.get("isFreeShipping", False)),
-                "supplier":         p.get("supplierName", "") or "",
-                "listed_count":     int(p.get("listedNum", 0) or 0),
-            })
-        return {"products": products, "total": data.get("total", len(products)) if isinstance(data, dict) else len(products)}
-    except Exception as e:
-        logging.error("[cj/products] serialisation error: %s", e, exc_info=True)
-        raise HTTPException(500, f"Response processing error: {e}")
+    merged.sort(key=lambda p: p["listed_count"], reverse=True)
+    return {"products": merged[:200], "total": len(merged)}
 
 
 @api_router.get("/cj/categories")
@@ -14538,13 +15511,94 @@ async def cj_get_categories(user=Depends(get_current_user)):
 
 
 # ── AliExpress REST endpoints (used by Shopify Products tab UI) ──────────────
+
+async def _ae_expand_keywords(keyword: str) -> list[str]:
+    """Use AI to generate 3 search variants for broader, smarter results."""
+    try:
+        import openai as _oai
+        client = _oai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Generate 3 AliExpress search keyword variants for: \"{keyword}\". "
+                    "Include the original plus 2 alternatives (synonyms, related terms, or broader product names). "
+                    "Return ONLY a JSON array of 3 strings, no explanation."
+                ),
+            }],
+            max_tokens=80,
+            temperature=0.3,
+        )
+        import json as _json
+        variants = _json.loads(resp.choices[0].message.content.strip())
+        if isinstance(variants, list):
+            return [str(v) for v in variants[:3]]
+    except Exception:
+        pass
+    return [keyword]
+
+
+def _parse_ae_products(data: dict) -> list[dict]:
+    # ds.text.search:        data.products.selection_search_product[]
+    # ds.recommend.feed.get: result.products.traffic_product_d_t_o[]
+    # legacy:                products.product[]  /  result.products.product[]
+    containers = [
+        data.get("data", {}).get("products", {}),
+        data.get("result", {}).get("products", {}),
+        data.get("products", {}),
+    ]
+    raw: list = []
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        for key in ("selection_search_product", "traffic_product_d_t_o", "product"):
+            if c.get(key):
+                raw = c[key]
+                break
+        if raw:
+            break
+
+    out = []
+    for p in raw:
+        cost = float(
+            p.get("targetSalePrice")
+            or p.get("target_sale_price")
+            or p.get("salePrice")
+            or p.get("sale_price")
+            or p.get("min_price")
+            or 0
+        )
+        try:
+            orders = int(p.get("orders") or p.get("lastest_volume") or p.get("orders_count") or 0)
+        except (TypeError, ValueError):
+            orders = 0
+        item_url = p.get("itemUrl") or ""
+        if item_url and item_url.startswith("//"):
+            item_url = "https:" + item_url
+        out.append({
+            "ae_pid":          str(p.get("itemId") or p.get("product_id") or ""),
+            "title":           p.get("title") or p.get("product_title") or p.get("subject", ""),
+            "category":        p.get("second_level_category_name") or p.get("first_level_category_name") or p.get("cateId", ""),
+            "cost_price":      cost,
+            "suggested_price": round(cost * 2.5, 2),
+            "image_url":       p.get("itemMainPic") or p.get("product_main_image_url") or p.get("main_image_url", ""),
+            "orders_count":    orders,
+            "shipping_time":   p.get("shipping_lead_time", ""),
+            "store_name":      p.get("shop_name", ""),
+            "product_url":     item_url,
+            "source":          "aliexpress",
+        })
+    return out
+
+
 @api_router.get("/ae/products")
 async def ae_search_products(
     keyword: str = "",
     category_id: str = "",
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
-    page_size: int = 20,
+    page_size: int = 50,
     sort: str = "LAST_VOLUME_DESC",
     user=Depends(get_current_user),
 ):
@@ -14558,45 +15612,127 @@ async def ae_search_products(
     business_id = user.get("business_id") or str(user["_id"])
     ae_creds = await _get_supplier_creds(business_id, "aliexpress")
 
+    # Expand keyword into variants for broader coverage
+    variants = await _ae_expand_keywords(keyword) if keyword else [keyword]
+
+    errors = []
+
+    async def _search_one(kw: str) -> list[dict]:
+        try:
+            data = await ae_ds_search(
+                keyword=kw or "bestseller",
+                category_id=category_id or None,
+                min_price=min_price,
+                max_price=max_price,
+                page_size=50,
+                sort=sort,
+                creds=ae_creds,
+            )
+            return _parse_ae_products(data)
+        except Exception as e:
+            logging.warning("[ae/products] variant '%s' failed: %s", kw, e)
+            errors.append(e)
+            return []
+
     try:
-        data = await ae_ds_search(
-            keyword=keyword or "bestseller",
-            category_id=category_id or None,
-            min_price=min_price,
-            max_price=max_price,
-            page_size=min(page_size, 50),
-            sort=sort,
-            creds=ae_creds,
-        )
+        results_per_variant = await asyncio.gather(*[_search_one(kw) for kw in variants])
+        if len(errors) == len(variants) and errors:
+            raise errors[0]
     except Exception as e:
         logging.error("[ae/products] error: %s", e, exc_info=True)
         raise HTTPException(502, f"AliExpress API error: {e}")
 
+
+    # Deduplicate by ae_pid, keeping first occurrence, then sort by order volume
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for batch in results_per_variant:
+        for p in batch:
+            pid = p["ae_pid"]
+            if pid and pid not in seen:
+                seen.add(pid)
+                merged.append(p)
+
+    merged.sort(key=lambda p: p["orders_count"], reverse=True)
+    return {"products": merged[:200], "total": len(merged)}
+
+
+# ── Unified compare endpoint (AE + CJ in one call) ───────────────────────────
+@api_router.get("/products/compare")
+async def compare_products(
+    keyword: str,
+    max_price: Optional[float] = None,
+    sort: str = "price_asc",
+    user=Depends(get_current_user),
+):
+    """Search both AliExpress and CJ simultaneously and return a unified list."""
     try:
-        products_raw = (
-            data.get("products", {}).get("product", [])
-            or data.get("result", {}).get("products", {}).get("product", [])
-            or []
-        )
-        products = []
-        for p in products_raw:
-            cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
-            products.append({
-                "ae_pid":          str(p.get("product_id", "")),
-                "title":           p.get("product_title", ""),
-                "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
-                "cost_price":      cost,
-                "suggested_price": round(cost * 2.5, 2),
-                "image_url":       p.get("product_main_image_url", ""),
-                "orders_count":    int(p.get("lastest_volume", 0) or 0),
-                "shipping_time":   p.get("shipping_lead_time", ""),
-                "store_name":      p.get("shop_name", ""),
-                "source":          "aliexpress",
+        from aliexpress.client import ae_ds_search
+        from cj_dropship.client import cj_get
+    except ImportError as exc:
+        raise HTTPException(503, f"Supplier module not available: {exc}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    variants = await _ae_expand_keywords(keyword)
+
+    async def _ae_one(kw: str) -> list[dict]:
+        try:
+            data = await ae_ds_search(keyword=kw, max_price=max_price, page_size=50,
+                                       sort="LAST_VOLUME_DESC", creds=ae_creds)
+            return _parse_ae_products(data)
+        except Exception as e:
+            logging.warning("[compare/ae] '%s': %s", kw, e)
+            return []
+
+    async def _cj_one(kw: str) -> list[dict]:
+        params: dict = {"pageNum": 1, "pageSize": 50, "productNameEn": kw}
+        if max_price is not None:
+            params["maxPrice"] = max_price
+        try:
+            data = await cj_get("/product/list", params, creds=cj_creds)
+            return _parse_cj_products(data)
+        except Exception as e:
+            logging.warning("[compare/cj] '%s': %s", kw, e)
+            return []
+
+    all_tasks = [_ae_one(kw) for kw in variants] + [_cj_one(kw) for kw in variants]
+    batches = await asyncio.gather(*all_tasks)
+
+    # Normalise to a unified schema and deduplicate
+    seen: set[str] = set()
+    unified: list[dict] = []
+    for batch in batches:
+        for p in batch:
+            source = p.get("source", "ae")
+            uid = f"{source}:{p.get('ae_pid') or p.get('cj_pid', '')}"
+            if uid in seen:
+                continue
+            seen.add(uid)
+            unified.append({
+                "source":           source,
+                "id":               p.get("ae_pid") or p.get("cj_pid", ""),
+                "title":            p.get("title", ""),
+                "image_url":        p.get("image_url", ""),
+                "category":         p.get("category", ""),
+                "cost_price":       p.get("cost_price", 0),
+                "suggested_price":  p.get("suggested_price", 0),
+                "popularity":       p.get("orders_count") or p.get("listed_count") or 0,
+                "is_free_shipping": p.get("is_free_shipping", False),
+                "shipping_time":    p.get("shipping_time", ""),
+                "store_name":       p.get("store_name", "") or p.get("supplier", ""),
             })
-        return {"products": products, "total": int(data.get("total_record_count", len(products)))}
-    except Exception as e:
-        logging.error("[ae/products] serialisation error: %s", e, exc_info=True)
-        raise HTTPException(500, f"Response processing error: {e}")
+
+    if sort == "price_asc":
+        unified.sort(key=lambda p: p["cost_price"])
+    elif sort == "price_desc":
+        unified.sort(key=lambda p: p["cost_price"], reverse=True)
+    elif sort == "popular":
+        unified.sort(key=lambda p: p["popularity"], reverse=True)
+
+    return {"products": unified[:300], "total": len(unified)}
 
 
 @api_router.get("/ae/categories")
@@ -15118,6 +16254,20 @@ try:
     logging.info("[finance] routes mounted")
 except Exception as _e:
     logging.error(f"[finance] failed to mount routes: {_e}")
+
+try:
+    from field_agents.routes import make_field_agents_router as _mk_fa_router
+    api_router.include_router(_mk_fa_router(db, Depends(get_current_user)))
+    logging.info("[field-agents] routes mounted")
+except Exception as _e:
+    logging.error(f"[field-agents] failed to mount routes: {_e}")
+
+try:
+    from smart_notes.routes import make_smart_notes_router as _mk_sn_router
+    api_router.include_router(_mk_sn_router(db, Depends(get_current_user)))
+    logging.info("[smart-notes] routes mounted")
+except Exception as _e:
+    logging.error(f"[smart-notes] failed to mount routes: {_e}")
 
 try:
     from quotes.routes import make_quotes_router as _mk_quo_router
@@ -16102,6 +17252,28 @@ async def zernio_webhook(request: Request):
 
     comment_event = _extract_zernio_comment_event(payload)
     if comment_event:
+        # ── Field Agents: deal alert when someone asks for a service ─────────
+        try:
+            from deal_alerts import queue_deal_alert
+            post_url = str(
+                _zernio_get(payload, "postUrl", "post_url", "permalink", "data.postUrl", default="")
+            ).strip()
+            await queue_deal_alert(
+                db,
+                str(user["_id"]),
+                text=comment_event["comment_text"],
+                author=comment_event.get("author_name") or "Commenter",
+                platform=comment_event.get("platform") or "facebook",
+                url=post_url,
+                source="zernio_webhook",
+                group_name="Post comment",
+                post_id=comment_event["post_id"],
+                comment_id=comment_event["comment_id"],
+                account_id=comment_event["account_id"],
+            )
+        except Exception as _deal_exc:
+            logging.warning("[Zernio] deal alert: %s", _deal_exc)
+
         settings = ((user.get("settings") or {}).get("zernio_comment_autoreply") or {}
                     if isinstance(user.get("settings"), dict)
                     else {})
@@ -16148,6 +17320,22 @@ async def zernio_webhook(request: Request):
 
     customer = await get_or_create_zernio_customer(db, user["_id"], sender_id, sender_name, platform, conversation_id)
     await save_incoming_zernio_message(db, user["_id"], customer["_id"], text, message_id, platform)
+
+    try:
+        from deal_alerts import queue_deal_alert
+        await queue_deal_alert(
+            db,
+            str(user["_id"]),
+            text=text,
+            author=sender_name or "Customer",
+            platform=platform,
+            url="",
+            source="zernio_inbox",
+            group_name=f"{platform} DM",
+            conversation_id=conversation_id,
+        )
+    except Exception as _dm_deal:
+        logging.warning("[Zernio] inbox deal alert: %s", _dm_deal)
 
     asyncio.create_task(
         _apply_inbound_routing_bg(user["_id"], customer["_id"], text, None, "social")
@@ -16275,8 +17463,10 @@ async def kds_put_settings(business_id: str, body: dict, user=Depends(get_curren
 @app.get("/api/document-preview/{key}", include_in_schema=False)
 async def serve_document_preview(key: str):
     try:
-        from assistant.document_generator import get_html_preview
+        from assistant.document_generator import get_html_preview, _fix_text_encoding
         html = get_html_preview(key)
+        if html:
+            html = _fix_text_encoding(html)
     except Exception:
         html = None
     if not html:
@@ -16501,6 +17691,30 @@ try:
     logging.info("[email-marketing] routes mounted at /api/email-marketing/*")
 except Exception as _eme:
     logging.error("[email-marketing] failed to mount routes: %s", _eme)
+
+# ── SMS Marketing (Sent.dm) ───────────────────────────────────────────────────
+try:
+    from sms_marketing.routes import make_sms_marketing_router as _mk_sms_router
+    from sms_marketing.routes import make_sms_webhook_router as _mk_sms_wh_router
+    from sms_marketing.routes import make_sms_operator_router as _mk_sms_op_router
+    _sms_router = _mk_sms_router(get_current_user, db)
+    _sms_wh_router = _mk_sms_wh_router(db)
+    _sms_op_router = _mk_sms_op_router(db, _require_operator_secret)
+    api_router.include_router(_sms_router)
+    api_router.include_router(_sms_wh_router)
+    api_router.include_router(_sms_op_router)
+    logging.info("[sms-marketing] routes mounted at /api/sms-marketing/*")
+except Exception as _sme:
+    logging.error("[sms-marketing] failed to mount routes: %s", _sme)
+
+# ── Gmail Filter Management ────────────────────────────────────────────────
+try:
+    from gmail_filter_routes import init_gmail_filter_routes
+    _gmail_filter_router = init_gmail_filter_routes(db)
+    app.include_router(_gmail_filter_router)
+    logging.info("[gmail-filters] routes mounted at /api/gmail/filters/*")
+except Exception as _gfe:
+    logging.error("[gmail-filters] failed to mount routes: %s", _gfe)
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)

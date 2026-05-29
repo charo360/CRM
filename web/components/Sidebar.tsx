@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import {
+  X,
   LayoutDashboard,
   ShoppingCart,
   Users,
@@ -52,6 +53,11 @@ import {
   Globe2,
   Activity,
   Radar,
+  Crosshair,
+  Smartphone,
+  NotebookPen,
+  Landmark,
+  Handshake,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -63,7 +69,6 @@ function coreNavItems(overviewLabel: string) {
   return [
     { href: "/dashboard", label: overviewLabel, icon: LayoutDashboard, exact: true as const },
     { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
-    { href: "/dashboard/field-agents", label: "Field Agents", icon: Globe },
     { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
@@ -77,6 +82,8 @@ const MAIN_NAV = [
   { href: "/dashboard/customers", label: "Customers", icon: Users },
   { href: "/dashboard/contacts", label: "Contacts", icon: UserCheck },
   { href: "/dashboard/suppliers", label: "Suppliers", icon: Truck },
+  { href: "/dashboard/investors", label: "Investors", icon: Landmark },
+  { href: "/dashboard/partners", label: "Partners", icon: Handshake },
   { href: "/dashboard/followups", label: "Follow-ups", icon: Bell },
 ] as const;
 
@@ -92,7 +99,12 @@ const BUSINESS_NAV_BASE = [
 
 const DISPLAY_NAV = [{ href: "/dashboard/kds", label: "KDS Display", icon: Monitor }] as const;
 
-export default function Sidebar() {
+type SidebarProps = {
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+};
+
+export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { showBookingsNav, bookingsNavLabel, bookingsNavHref, ui, sidebarFeatures } = useBusiness();
@@ -121,7 +133,9 @@ export default function Sidebar() {
   const mainNavFiltered = mainNav.filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const salesAndGrowthNav = [
+    { href: "/dashboard/action-mode", label: "AI Scout", icon: Crosshair },
     { href: "/dashboard/broadcast", label: "Broadcast", icon: Megaphone },
+    { href: "/dashboard/sms-marketing", label: "SMS Marketing", icon: Smartphone },
     { href: "/dashboard/social-scheduler", label: "Social scheduler", icon: CalendarClock },
     { href: "/dashboard/meta-ads", label: "Meta Ads", icon: Target },
     { href: "/dashboard/google-ads", label: "Google Ads", icon: LineChart },
@@ -134,6 +148,8 @@ export default function Sidebar() {
 
   const businessNavFiltered = [
     ...businessNav,
+    { href: "/dashboard/field-agents", label: "Field Agents", icon: Globe },
+    { href: "/dashboard/smart-notes", label: "Smart Notes", icon: NotebookPen },
     { href: "/dashboard/inventory", label: "Inventory", icon: Package },
     { href: "/dashboard/loyalty", label: "Loyalty", icon: Star },
     { href: "/dashboard/nps", label: "Feedback / NPS", icon: MessageCircle },
@@ -186,12 +202,27 @@ export default function Sidebar() {
     return pathname.startsWith(href);
   }
 
-  return (
-    <aside className="flex flex-col w-56 min-h-screen bg-[#071a10] text-slate-100 shrink-0 border-r border-brand-dark/25">
+  const asideClassName =
+    "flex flex-col w-56 min-h-screen bg-[#071a10] text-slate-100 shrink-0 border-r border-brand-dark/25";
+
+  const navContent = (
+    <>
       {/* Logo - Sticky Header */}
-      <div className="sticky top-0 z-10 flex items-center gap-1 px-5 py-4 border-b border-white/10 bg-[#071a10]">
-        <ZiloLogo size={28} className="shrink-0" />
-        <span className="font-semibold text-sm tracking-tight">Zilo</span>
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-1 px-5 py-4 border-b border-white/10 bg-[#071a10]">
+        <div className="flex items-center gap-1 min-w-0">
+          <ZiloLogo size={28} className="shrink-0" />
+          <span className="font-semibold text-sm tracking-tight">Zilo</span>
+        </div>
+        {onMobileClose && (
+          <button
+            type="button"
+            onClick={onMobileClose}
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-slate-100 lg:hidden"
+            aria-label="Close menu"
+          >
+            <X size={18} />
+          </button>
+        )}
       </div>
 
       {/* Nav groups - Scrollable */}
@@ -209,6 +240,7 @@ export default function Sidebar() {
                 <Link
                   key={href}
                   href={href}
+                  onClick={onMobileClose}
                   className={cn(
                     "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
                     linkActive(href, exact)
@@ -248,6 +280,22 @@ export default function Sidebar() {
           Log out
         </button>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      <aside className={cn(asideClassName, "hidden lg:flex")}>{navContent}</aside>
+      <aside
+        className={cn(
+          asideClassName,
+          "fixed inset-y-0 left-0 z-50 h-[100dvh] w-[min(18rem,85vw)] transform transition-transform duration-200 ease-out lg:hidden",
+          mobileOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"
+        )}
+        aria-hidden={!mobileOpen}
+      >
+        {navContent}
+      </aside>
+    </>
   );
 }

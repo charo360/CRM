@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { customersApi, zernioApi, type ZernioCommentAutoReplySettings } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import {
   Inbox, RefreshCw, Send,
   MessageCircle, Globe, ChevronLeft, CheckCircle, XCircle, Loader2
@@ -10,6 +11,10 @@ type Account = { id: string; platform: string; name: string; username?: string; 
 type Conversation = {
   id: string;
   platform: string;
+  source?: "social" | "email";
+  emailProvider?: "gmail" | "microsoft";
+  threadId?: string;
+  subject?: string;
   accountId?: string;
   account_id?: string;
   participantId?: string;
@@ -20,7 +25,16 @@ type Conversation = {
   unread?: number;
   avatar?: string;
 };
-type Message = { id: string; content: string; direction: "in" | "out"; created_at: string; sender?: string };
+type Message = {
+  id: string;
+  content: string;
+  direction: "in" | "out";
+  created_at: string;
+  sender?: string;
+  from?: string;
+  date?: string;
+  body?: string;
+};
 type CommentedPost = {
   id: string;
   accountId?: string;
@@ -291,6 +305,8 @@ const PLATFORM_ICON: Record<string, React.ReactNode> = {
   ),
   whatsapp: <MessageCircle size={14} className="text-green-500" />,
   telegram: <Send size={14} className="text-sky-400" />,
+  gmail: <Inbox size={14} className="text-rose-500" />,
+  microsoft: <Inbox size={14} className="text-blue-600" />,
 };
 
 const PLATFORM_COLOR: Record<string, string> = {
@@ -299,6 +315,8 @@ const PLATFORM_COLOR: Record<string, string> = {
   twitter: "bg-sky-50 text-sky-700 border-sky-200",
   whatsapp: "bg-green-50 text-green-700 border-green-200",
   telegram: "bg-sky-50 text-sky-600 border-sky-200",
+  gmail: "bg-rose-50 text-rose-700 border-rose-200",
+  microsoft: "bg-blue-50 text-blue-700 border-blue-200",
 };
 
 function PlatformBadge({ platform }: { platform: string }) {
@@ -318,6 +336,17 @@ function timeAgo(dateStr?: string) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function extractEmailAddress(input?: string): string {
+  if (!input) return "";
+  const m = input.match(/<([^>]+)>/);
+  return (m ? m[1] : input).trim();
 }
 
 function isOlderThanHours(dateStr: string | undefined, hours: number): boolean {
@@ -587,7 +616,7 @@ function postLookupKeys(post: CommentedPost): string[] {
     String(raw.external_post_id || ""),
     String(raw.permalink || ""),
   ]
-    .map((x) => x.trim())
+    .map((x) => String(x ?? "").trim())
     .filter(Boolean);
   return Array.from(new Set(keys));
 }
@@ -604,7 +633,7 @@ function postAnalyticsIds(post: CommentedPost): string[] {
     String(raw.external_post_id || ""),
     String(raw.zernio_post_id || ""),
   ]
-    .map((x) => x.trim())
+    .map((x) => String(x ?? "").trim())
     .filter(Boolean);
   return Array.from(new Set(ids));
 }
@@ -843,37 +872,46 @@ export default function SocialInboxPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [status, accs, customers, autoReplySettings] = await Promise.all([
+      const [status, accs, customers, autoReplySettings, emailRes] = await Promise.all([
         zernioApi.status(),
         zernioApi.accounts().catch(() => ({})),
         customersApi.list().catch(() => [] as AiCustomer[]),
         zernioApi.getCommentAutoReplySettings().catch(() => DEFAULT_COMMENT_AUTOREPLY),
+        fetch("/api/email?limit=50", { headers: authHeaders() }).catch(() => null),
       ]);
-      const isConnected = (status as { connected?: boolean }).connected === true;
+      const socialConnected = (status as { connected?: boolean }).connected === true;
+      const emailPayload = emailRes && emailRes.ok
+        ? (await emailRes.json() as { connected?: boolean; threads?: Array<Record<string, unknown>> })
+        : null;
+      const emailConnected = Boolean(emailPayload?.connected);
+      const isConnected = socialConnected || emailConnected;
       setConnected(isConnected);
       if (isConnected) {
+        let socialConversations: Conversation[] = [];
         const list = pickList<Account>(accs, ["accounts"]);
         setAccounts(list);
-        // Load inbox
-        const inbox = await zernioApi.inbox(platformFilter || undefined);
-        const normalizedConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
-        setConversations(normalizedConversations);
-        const cposts = await zernioApi.commentedPosts({
-          ...(platformFilter ? { platform: platformFilter } : {}),
-          ...(accountFilter ? { account_id: accountFilter } : {}),
-          limit: 50,
-        }).catch(() => ({}));
-        const [commentedRaw, postsRaw, analyticsRaw] = await Promise.all([
-          Promise.resolve(pickList<CommentedPost>(cposts, ["posts", "comments"])),
-          zernioApi.posts(platformFilter || undefined).then((p) => pickList<CommentedPost>(p, ["posts"])).catch(() => [] as CommentedPost[]),
-          zernioApi.analytics({
-            platform: platformFilter || "facebook",
+        if (socialConnected) {
+          // Load social inbox
+          const inbox = await zernioApi.inbox(platformFilter || undefined);
+          socialConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
+        }
+        if (socialConnected) {
+          const cposts = await zernioApi.commentedPosts({
+            ...(platformFilter ? { platform: platformFilter } : {}),
             ...(accountFilter ? { account_id: accountFilter } : {}),
-            metrics: "likes,comments,shares,saves,clicks,reach,impressions",
-            limit: 100,
-            page: 1,
-          }).then((p) => pickAnalyticsRows(p)).catch(() => [] as CommentedPost[]),
-        ]);
+            limit: 50,
+          }).catch(() => ({}));
+          const [commentedRaw, postsRaw, analyticsRaw] = await Promise.all([
+            Promise.resolve(pickList<CommentedPost>(cposts, ["posts", "comments"])),
+            zernioApi.posts(platformFilter || undefined).then((p) => pickList<CommentedPost>(p, ["posts"])).catch(() => [] as CommentedPost[]),
+            zernioApi.analytics({
+              platform: platformFilter || "facebook",
+              ...(accountFilter ? { account_id: accountFilter } : {}),
+              metrics: "likes,comments,shares,saves,clicks,reach,impressions",
+              limit: 100,
+              page: 1,
+            }).then((p) => pickAnalyticsRows(p)).catch(() => [] as CommentedPost[]),
+          ]);
         const postsByKey = new Map<string, CommentedPost>();
         postsRaw.map(normalizeCommentedPost).forEach((p) => {
           postLookupKeys(p).forEach((k) => postsByKey.set(k, p));
@@ -1075,6 +1113,37 @@ export default function SocialInboxPage() {
           .slice(0, 8);
         setAiCustomers(relevantCustomers);
       }
+        const emailThreads = Array.isArray(emailPayload?.threads) ? emailPayload.threads : [];
+        const emailConversations: Conversation[] = emailThreads.map((t) => {
+          const provider = String(t.provider || "gmail").toLowerCase() as "gmail" | "microsoft";
+          const threadId = String(t.id || "");
+          const from = String(t.from || "").trim();
+          return normalizeConversation({
+            id: `email:${provider}:${threadId}`,
+            threadId,
+            source: "email",
+            emailProvider: provider,
+            platform: provider,
+            participant_name: from || "(unknown sender)",
+            participant: from || "(unknown sender)",
+            last_message: String(t.snippet || ""),
+            last_message_at: String(t.date || ""),
+            unread: Number(t.unread ? 1 : 0),
+            accountId: "",
+            account_id: "",
+            subject: String(t.subject || "(no subject)"),
+          } as Conversation);
+        });
+        const merged = [...socialConversations, ...emailConversations].sort((a, b) =>
+          new Date(b.last_message_at || 0).getTime() - new Date(a.last_message_at || 0).getTime(),
+        );
+        setConversations(merged);
+        if (!socialConnected) {
+          setCommentedPosts([]);
+          setEngagementDebugByPost({});
+          setAiCustomers([]);
+        }
+      }
       const settings = autoReplySettings as ZernioCommentAutoReplySettings;
       if (settings && typeof settings === "object") {
         setCommentAutoReply({
@@ -1096,9 +1165,35 @@ export default function SocialInboxPage() {
     setLoadingMsgs(true);
     setMessages([]);
     try {
-      const data = await zernioApi.conversation(conv.id, conv.accountId || conv.account_id);
-      const normalized = pickList<Message>(data, ["messages"]).map((m) => normalizeMessage(m, conv));
-      setMessages(rebalanceDirections(normalized, conv));
+      if (conv.source === "email" && conv.threadId) {
+        const res = await fetch("/api/email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({
+            action: "get_thread",
+            threadId: conv.threadId,
+            provider: conv.emailProvider || conv.platform,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json() as { messages?: Message[] };
+        const normalized = pickList<Message>(data, ["messages"]).map((m) => {
+          const sender = extractEmailAddress(m.from);
+          const participant = extractEmailAddress(conv.participant_name || conv.participant || "");
+          const maybeBody = (m as unknown as { body?: string }).body;
+          return {
+            ...m,
+            content: maybeBody || m.content || "",
+            direction: participant && sender && sender === participant ? "in" : "out",
+            created_at: m.date || m.created_at || new Date().toISOString(),
+          } as Message;
+        });
+        setMessages(normalized);
+      } else {
+        const data = await zernioApi.conversation(conv.id, conv.accountId || conv.account_id);
+        const normalized = pickList<Message>(data, ["messages"]).map((m) => normalizeMessage(m, conv));
+        setMessages(rebalanceDirections(normalized, conv));
+      }
     } finally { setLoadingMsgs(false); }
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   }
@@ -1109,14 +1204,32 @@ export default function SocialInboxPage() {
     setSendResult(null);
     setSendError(null);
     try {
-      await zernioApi.send(
-        selected.id,
-        reply.trim(),
-        selected.accountId || selected.account_id,
-        selected.platform,
-        facebookReplyWindowClosed ? "MESSAGE_TAG" : undefined,
-        facebookReplyWindowClosed ? fbTag : undefined
-      );
+      if (selected.source === "email") {
+        const to = extractEmailAddress(selected.participant_name || selected.participant || "");
+        const subjectBase = selected.subject || "Message";
+        const subject = /^re:/i.test(subjectBase) ? subjectBase : `Re: ${subjectBase}`;
+        const res = await fetch("/api/email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({
+            action: "send",
+            provider: selected.emailProvider || selected.platform,
+            to,
+            subject,
+            replyBody: reply.trim(),
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+      } else {
+        await zernioApi.send(
+          selected.id,
+          reply.trim(),
+          selected.accountId || selected.account_id,
+          selected.platform,
+          facebookReplyWindowClosed ? "MESSAGE_TAG" : undefined,
+          facebookReplyWindowClosed ? fbTag : undefined
+        );
+      }
       setReply("");
       setSendResult("ok");
       await openConversation(selected);

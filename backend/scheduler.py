@@ -172,33 +172,30 @@ def start_scheduler(db: AsyncIOMotorDatabase):
     Args:
         db: MongoDB database instance
     """
-    # Morning digest at 8:00 AM (user's local time - assuming UTC+3 for East Africa)
-    # For UTC+3, 8 AM local = 5 AM UTC
+    # Morning digest at 8:00 AM UTC
     scheduler.add_job(
         send_daily_digest,
-        CronTrigger(hour=5, minute=0),  # 8 AM EAT = 5 AM UTC
+        CronTrigger(hour=8, minute=0),
         args=[db, "morning"],
         id="morning_digest",
-        name="Morning Digest (8 AM)",
+        name="Morning Digest (8 AM UTC)",
         replace_existing=True
     )
-    
-    # Afternoon reminder at 3:00 PM (user's local time)
-    # For UTC+3, 3 PM local = 12 PM UTC
+
+    # Afternoon reminder at 3:00 PM UTC
     scheduler.add_job(
         send_daily_digest,
-        CronTrigger(hour=12, minute=0),  # 3 PM EAT = 12 PM UTC
+        CronTrigger(hour=15, minute=0),
         args=[db, "afternoon"],
         id="afternoon_digest",
-        name="Afternoon Reminder (3 PM)",
+        name="Afternoon Reminder (3 PM UTC)",
         replace_existing=True
     )
-    
-    # Monday motivation at 9:00 AM (after morning digest)
-    # For UTC+3, 9 AM local = 6 AM UTC
+
+    # Monday motivation at 9:00 AM UTC
     scheduler.add_job(
         send_motivation_message,
-        CronTrigger(day_of_week='mon', hour=6, minute=0),  # 9 AM EAT Monday
+        CronTrigger(day_of_week='mon', hour=9, minute=0),
         args=[db, True],  # is_monday=True
         id="monday_motivation",
         name="Monday Motivation (9 AM)",
@@ -214,7 +211,7 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         day_name = day_names[day_num]
         scheduler.add_job(
             send_motivation_message,
-            CronTrigger(day_of_week=day_name, hour=6, minute=0),  # 9 AM EAT
+            CronTrigger(day_of_week=day_name, hour=9, minute=0),
             args=[db, False],  # is_monday=False
             id=f"motivation_{day_name}",
             name=f"{day_name.capitalize()} Motivation (9 AM)",
@@ -224,7 +221,7 @@ def start_scheduler(db: AsyncIOMotorDatabase):
     
     # Start the scheduler
     scheduler.start()
-    logger.info(f"Scheduler started: Digests at 8 AM & 3 PM, Motivation on Monday + 2 random days")
+    logger.info("Scheduler started: Digests at 8 AM & 3 PM UTC, Motivation on Monday + 2 random days")
 
 
 def stop_scheduler():

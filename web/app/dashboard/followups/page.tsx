@@ -125,16 +125,16 @@ export default function FollowupsPage() {
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-4 sm:space-y-5 min-w-0">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Follow-ups</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Follow-ups</h1>
           <p className="text-slate-500 text-sm mt-0.5">Track reminders, cold customers, and outcomes</p>
         </div>
       </div>
 
       {/* Tab Bar */}
-      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+      <div className="flex w-full gap-1 overflow-x-auto rounded-xl bg-slate-100 p-1 sm:w-fit">
         {(["reminders", "attention", "results"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-semibold capitalize transition-colors ${
+            className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold capitalize transition-colors sm:px-4 sm:text-sm ${
               tab === t ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
             }`}>
             {t === "attention" ? "Attention Needed" : t === "results" ? "Results" : "Reminders"}
@@ -365,11 +365,11 @@ function RemindersTab({
           {overdue > 0 && <span className="text-red-600 font-medium">{overdue} overdue · </span>}
           {todayCount} due today · {followups.length} loaded
         </p>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"
             onClick={() => load()}
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
+            className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:py-1.5"
           >
             <RefreshCw size={14} /> Refresh
           </button>
@@ -377,7 +377,7 @@ function RemindersTab({
             type="button"
             onClick={exportCsv}
             disabled={!baseFiltered.length}
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+            className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 sm:py-1.5"
           >
             <Download size={14} /> Export CSV
           </button>
@@ -386,7 +386,7 @@ function RemindersTab({
               setEditing(null);
               setShowAdd(true);
             }}
-            className="flex items-center gap-2 rounded-lg bg-brand-dark px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand"
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-dark px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand sm:w-auto sm:py-2"
           >
             <Plus size={15} /> Add Follow-up
           </button>
@@ -395,13 +395,13 @@ function RemindersTab({
 
       {/* Scope + assignee */}
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-        <div className="flex gap-1 rounded-xl bg-slate-100 p-1">
+        <div className="flex w-full gap-1 overflow-x-auto rounded-xl bg-slate-100 p-1 sm:w-auto">
           {(["pending", "completed", "all"] as ListScope[]).map((s) => (
             <button
               key={s}
               type="button"
               onClick={() => setListScope(s)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-semibold capitalize ${
+              className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold capitalize ${
                 listScope === s ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"
               }`}
             >
@@ -412,7 +412,7 @@ function RemindersTab({
         <select
           value={assigneeFilter}
           onChange={(e) => setAssigneeFilter(e.target.value as AssigneeFilter)}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 sm:w-auto"
         >
           <option value="all">Everyone</option>
           <option value="mine">Assigned to me</option>
@@ -439,7 +439,7 @@ function RemindersTab({
         />
       </div>
 
-      <div className="flex flex-wrap gap-1.5">
+      <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
         {DATE_FILTERS.map((f) => {
           const count = followups.filter((fu) => {
             if (listScope === "pending" && fu.status !== "pending") return false;
@@ -451,7 +451,7 @@ function RemindersTab({
               key={f}
               type="button"
               onClick={() => setDateFilter(f)}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition ${
                 dateFilter === f
                   ? "bg-brand-dark text-white"
                   : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
@@ -511,23 +511,24 @@ function RemindersTab({
             return (
               <div
                 key={fu.id}
-                className={`flex min-w-0 items-center gap-2 rounded-xl border px-3 py-3 sm:gap-4 sm:px-5 sm:py-4 ${
+                className={`flex flex-col gap-3 rounded-xl border px-3 py-3 sm:flex-row sm:items-center sm:gap-4 sm:px-5 sm:py-4 ${
                   status === "overdue" ? "border-red-200 bg-white" : "border-slate-200 bg-white"
                 }`}
               >
+                <div className="flex min-w-0 items-start gap-2 sm:flex-1 sm:items-center sm:gap-4">
                 {fu.status === "pending" && (
                   <input
                     type="checkbox"
                     checked={selected.has(fu.id)}
                     onChange={() => toggleSelect(fu.id)}
-                    className="h-4 w-4 shrink-0 rounded border-slate-300"
+                    className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 sm:mt-0"
                   />
                 )}
                 <div className={`w-10 h-10 shrink-0 rounded-xl ${cfg.bg} flex items-center justify-center`}>
                   <Icon size={18} className={cfg.color} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <Link
                       href={`/dashboard/customers/${fu.customer_id}`}
                       className="font-semibold text-slate-800 hover:text-brand-dark hover:underline"
@@ -550,15 +551,16 @@ function RemindersTab({
                     )}
                     <span className="text-xs capitalize text-slate-400">{fu.type}</span>
                   </div>
-                  {fu.message && <p className="mt-0.5 truncate text-sm text-slate-500">{fu.message}</p>}
+                  {fu.message && <p className="mt-1 line-clamp-2 text-sm text-slate-500 sm:truncate">{fu.message}</p>}
                   {fu.outcome && (
                     <p className="mt-0.5 text-xs text-green-700">
                       Outcome: {OUTCOMES.find((o) => o.value === fu.outcome)?.label || fu.outcome}
                     </p>
                   )}
                 </div>
-                <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
-                  <div className="mr-1 flex min-w-0 flex-col items-end gap-0.5 text-right sm:min-w-[4.5rem]">
+                </div>
+                <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3 sm:shrink-0 sm:justify-end sm:border-0 sm:pt-0">
+                  <div className="flex min-w-0 items-center gap-2 text-left sm:mr-1 sm:flex-col sm:items-end sm:gap-0.5 sm:text-right">
                     <span className="text-[11px] font-medium leading-tight text-slate-500">
                       {new Date(fu.reminder_date).toLocaleDateString(undefined, {
                         weekday: "short",
@@ -574,6 +576,7 @@ function RemindersTab({
                       })}
                     </span>
                   </div>
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
                   {wa && (
                     <>
                       <button
@@ -645,6 +648,7 @@ function RemindersTab({
                   >
                     <Trash2 size={15} />
                   </button>
+                  </div>
                 </div>
               </div>
             );

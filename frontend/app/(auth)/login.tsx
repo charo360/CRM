@@ -51,9 +51,8 @@ export default function LoginScreen() {
     >
       <View style={styles.content}>
         <View style={styles.header}>
-          <Text style={styles.emoji}>🇰🇪</Text>
-          <Text style={styles.title}>WhatsApp CRM</Text>
-          <Text style={styles.subtitle}>For Kenyan SMEs</Text>
+          <Text style={styles.title}>Zilo CRM</Text>
+          <Text style={styles.subtitle}>Grow your business with AI</Text>
         </View>
 
         <View style={styles.form}>
@@ -64,7 +63,7 @@ export default function LoginScreen() {
               style={styles.input}
               value={phoneNumber}
               onChangeText={setPhoneNumber}
-              placeholder="+254 7XX XXX XXX"
+              placeholder="+1 555 000 0000"
               placeholderTextColor="#666"
               keyboardType="phone-pad"
               autoComplete="tel"

@@ -22,6 +22,10 @@ from .presentation_flow import (
     run_presentation_generate_stream,
     run_presentation_regenerate_slide_stream,
 )
+from .document_flow import (
+    persist_document_plan_update,
+    run_document_generate_stream,
+)
 from .titler import generate_title
 from .agent_workspace import update_workspace
 from .conversation_access import (
@@ -682,6 +686,136 @@ def _mk_router(db, get_current_user):
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @router.post("/document/generate/stream")
+    async def document_generate_stream(req: Request, user=Depends(get_current_user)):
+        """Export PDF directly from an approved document draft card."""
+        body = await req.json()
+        title = (body.get("title") or "Document").strip()
+        content_md = (body.get("content_md") or "").strip()
+        body_markdown = (body.get("body_markdown") or "").strip()
+        doc_type = (body.get("doc_type") or "").strip()
+        edited = bool(body.get("edited"))
+        message_index = body.get("message_index")
+        if message_index is not None and not isinstance(message_index, int):
+            message_index = None
+
+        user_id = user.get("business_id", user["_id"])
+
+        async def _generate():
+            yield ": open\n\n"
+            try:
+                await _check_rate_limit(user_id)
+            except HTTPException as e:
+                yield "data: " + json.dumps({"type": "error", "message": e.detail}) + "\n\n"
+                return
+
+            conv_id = body.get("conversation_id")
+            conv: Dict[str, Any] = {"messages": []}
+            if conv_id:
+                conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id}) or conv
+                if not conv.get("_id") or not can_access_conversation_row(conv, user):
+                    yield "data: " + json.dumps({"type": "error", "message": "Conversation not found"}) + "\n\n"
+                    return
+
+            import asyncio as _asyncio
+            _KEEPALIVE_SEC = 15
+            _queue: _asyncio.Queue[Optional[Dict[str, Any]]] = _asyncio.Queue()
+            result: Optional[Dict[str, Any]] = None
+
+            async def _feed() -> None:
+                try:
+                    async for ev in run_document_generate_stream(
+                        db=db,
+                        user=user,
+                        conversation_id=conv_id,
+                        title=title,
+                        content_md=content_md,
+                        body_markdown=body_markdown,
+                        doc_type=doc_type,
+                        edited=edited,
+                        message_index=message_index,
+                        conversation_messages=conv.get("messages") or [],
+                    ):
+                        await _queue.put(ev)
+                except Exception as exc:
+                    await _queue.put({"type": "error", "message": str(exc)})
+                finally:
+                    await _queue.put(None)
+
+            _task = _asyncio.create_task(_feed())
+            try:
+                while True:
+                    try:
+                        item = await _asyncio.wait_for(_queue.get(), timeout=_KEEPALIVE_SEC)
+                    except _asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    if item is None:
+                        break
+                    etype = item.get("type")
+                    if etype == "done":
+                        result = item
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+                    elif etype == "error":
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+                        _task.cancel()
+                        return
+                    else:
+                        yield "data: " + json.dumps(item, default=str) + "\n\n"
+            except Exception as e:
+                _task.cancel()
+                logger.exception("[assistant.document/generate/stream] failure")
+                yield "data: " + json.dumps({"type": "error", "message": str(e)}) + "\n\n"
+                return
+
+            if not result:
+                yield "data: " + json.dumps({"type": "error", "message": "No result from document exporter"}) + "\n\n"
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @router.post("/document/plan/update")
+    async def document_plan_update(req: Request, user=Depends(get_current_user)):
+        body = await req.json()
+        conv_id = (body.get("conversation_id") or "").strip()
+        message_index = body.get("message_index")
+        title = (body.get("title") or "Document").strip()
+        content_md = (body.get("content_md") or "").strip()
+        body_markdown = (body.get("body_markdown") or "").strip()
+
+        if not conv_id:
+            raise HTTPException(status_code=400, detail="conversation_id is required")
+        if not isinstance(message_index, int) or message_index < 0:
+            raise HTTPException(status_code=400, detail="message_index is required")
+        if not content_md and not body_markdown:
+            raise HTTPException(status_code=400, detail="content is required")
+
+        user_id = user.get("business_id", user["_id"])
+        conv = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": user_id})
+        if not conv or not can_access_conversation_row(conv, user):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        await _check_rate_limit(user_id)
+        result = await persist_document_plan_update(
+            db=db,
+            user_id=user_id,
+            conversation_id=conv_id,
+            message_index=message_index,
+            title=title,
+            content_md=content_md or f"# {title}\n\n{body_markdown}",
+            body_markdown=body_markdown or content_md,
+        )
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
 
     @router.post("/presentation/plan/update")
     async def presentation_plan_update(req: Request, user=Depends(get_current_user)):

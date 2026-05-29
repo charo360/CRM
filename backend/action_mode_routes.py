@@ -26,72 +26,29 @@ async def queue_social_match(
     group_name: str,
     platform: str,
     url: str,
+    post_id: str = "",
+    comment_id: str = "",
+    account_id: str = "",
+    conversation_id: str = "",
 ) -> bool:
     """
-    Keyword-match `text` against the user's social settings and, if matched,
-    draft a reply and insert it into action_mode_queue.
-
-    Returns True if a queue item was created, False otherwise.
-    Called from the Evolution API webhook for WhatsApp group messages
-    and can be reused for any real-time message pipeline.
+    Detect buy-intent in social/group messages and alert the business owner.
     """
-    try:
-        social_cfg = await db.action_mode_social.find_one({"user_id": user_id})
-        if not social_cfg:
-            return False
-
-        keywords = social_cfg.get("keywords") or []
-        if not keywords:
-            return False
-
-        lower = text.lower()
-        matched = [kw for kw in keywords if kw and kw.lower().strip() in lower]
-        if not matched:
-            return False
-
-        biz = await db.users.find_one({"_id": user_id}) or {}
-        biz_name     = biz.get("business_name", "")
-        biz_type     = biz.get("business_type", "")
-        location     = social_cfg.get("location") or ""
-        mode         = social_cfg.get("mode", "review")
-        status       = "approved" if mode == "auto" else "pending"
-
-        draft = _draft_contextual_comment(biz_name, biz_type, text, matched[0], location)
-
-        await db.action_mode_queue.insert_one({
-            "_id":          str(uuid.uuid4()),
-            "user_id":      user_id,
-            "agent":        "social_extension",
-            "action_type":  "post_comment",
-            "title":        f"{platform.title()}: {text[:70]}",
-            "draft_content": draft,
-            "metadata": {
-                "url":        url,
-                "platform":   platform,
-                "snippet":    text[:300],
-                "keyword":    matched[0],
-                "author":     author,
-                "group_name": group_name,
-            },
-            "status":       status,
-            "posted":       False,
-            "created_at":   datetime.utcnow(),
-        })
-
-        await db.action_mode_feed.insert_one({
-            "_id":        str(uuid.uuid4()),
-            "user_id":    user_id,
-            "agent":      "social_extension",
-            "title":      f"🎯 Match in {group_name}",
-            "detail":     f"{author}: {text[:120]}",
-            "kind":       "opportunity",
-            "created_at": datetime.utcnow(),
-        })
-        return True
-
-    except Exception as e:
-        logger.error("[queue_social_match] user=%s error=%s", user_id, e)
-        return False
+    from deal_alerts import queue_deal_alert
+    return await queue_deal_alert(
+        db,
+        user_id,
+        text=text,
+        author=author,
+        platform=platform,
+        url=url,
+        source="social_monitor",
+        group_name=group_name,
+        post_id=post_id,
+        comment_id=comment_id,
+        account_id=account_id,
+        conversation_id=conversation_id,
+    )
 
 
 class ActionModeSettings(BaseModel):
@@ -121,7 +78,9 @@ class SocialEngagementSettings(BaseModel):
     location: Optional[str] = ""
     daily_limit: Optional[int] = 10
     auto_run: Optional[bool] = True
-    mode: Optional[str] = "review"
+    mode: Optional[str] = "review"  # review | auto | notify
+    deal_mode: Optional[str] = None   # review | auto_reply | notify_only
+    notify_push: Optional[bool] = True
     google_review_link: Optional[str] = None
 
 
@@ -147,6 +106,19 @@ class ReviewRequestBody(BaseModel):
     phone: Optional[str] = None
     customer_name: Optional[str] = None
     review_link: Optional[str] = None
+
+
+class ScoutBody(BaseModel):
+    title: Optional[str] = None
+    goal: Optional[str] = None
+    search_queries: Optional[List[str]] = None
+    location: Optional[str] = None
+    frequency: Optional[str] = "12h"
+    scout_type: Optional[str] = "custom"
+    is_active: Optional[bool] = True
+
+
+_VALID_CONTACT_TYPES = {"Customer", "Lead", "Investor", "Partner", "Supplier", "Other"}
 
 
 def make_action_mode_router(db, user_dep):
@@ -179,6 +151,10 @@ def make_action_mode_router(db, user_dep):
             }},
             upsert=True,
         )
+        if body.enabled:
+            from scout_service import ensure_default_scouts, get_biz_context
+            ctx = await get_biz_context(db, uid)
+            await ensure_default_scouts(db, uid, ctx)
         return {"status": "saved"}
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -312,6 +288,487 @@ def make_action_mode_router(db, user_dep):
             i["_id"] = str(i["_id"])
         return {"opportunities": items}
 
+    @router.delete("/opportunities/{opp_id}")
+    async def dismiss_opportunity(opp_id: str, user=Depends(user_dep)):
+        uid = _uid(user)
+        result = await db.action_mode_opportunities.delete_one({"_id": opp_id, "user_id": uid})
+        if result.deleted_count == 0:
+            raise HTTPException(404, "Opportunity not found")
+        return {"status": "dismissed"}
+
+    @router.post("/enrich-shopify")
+    async def enrich_shopify_store(body: Dict[str, str], user=Depends(user_dep)):
+        domain = body.get("domain")
+        if not domain:
+            raise HTTPException(400, "Domain or URL is required")
+        from rapidapi_shopify import get_shopify_store_info
+        info = await get_shopify_store_info(domain)
+        return info
+
+    @router.post("/shopify-leads/search")
+    async def search_shopify_leads_route(body: Dict[str, Any], user=Depends(user_dep)):
+        """Find Shopify stores in a niche as B2B leads using web search + RapidAPI enrichment."""
+        niche = (body.get("niche") or "").strip()
+        if not niche:
+            raise HTTPException(400, "niche is required")
+        country = (body.get("country") or "").strip()
+        limit = min(int(body.get("limit") or 12), 20)
+
+        from rapidapi_shopify import search_shopify_leads
+        leads = await search_shopify_leads(niche, country=country, limit=limit)
+        return {"leads": leads, "total": len(leads), "niche": niche}
+
+    @router.post("/business-leads/search")
+    async def search_business_leads_route(body: Dict[str, Any], user=Depends(user_dep)):
+        """Find any type of business by keyword + location using Google Maps data."""
+        keyword = (body.get("keyword") or "").strip()
+        if not keyword:
+            raise HTTPException(400, "keyword is required")
+        location = (body.get("location") or "").strip()
+        from business_leads import search_business_leads
+        leads = await search_business_leads(keyword, location=location)
+        return {"leads": leads, "total": len(leads), "keyword": keyword}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # LinkedIn Leads — paste URLs, get emails enriched via RapidAPI
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.post("/linkedin-leads/find-urls")
+    async def linkedin_find_urls(body: Dict[str, Any], user=Depends(user_dep)):
+        """
+        Find LinkedIn profile URLs by title / location / company via web search.
+        Body: { title?, location?, company?, keywords?, limit? }
+        """
+        title    = (body.get("title")    or "").strip()
+        location = (body.get("location") or "").strip()
+        company  = (body.get("company")  or "").strip()
+        keywords = (body.get("keywords") or "").strip()
+        limit    = min(int(body.get("limit") or 30), 60)
+        expand   = bool(body.get("expand_title", True))
+
+        if not any([title, location, company, keywords]):
+            raise HTTPException(400, "Provide at least one of: title, location, company, keywords")
+
+        from linkedin_leads import find_linkedin_urls
+        result = await find_linkedin_urls(
+            title=title, location=location, company=company,
+            keywords=keywords, limit=limit, expand_title=expand,
+        )
+        return {
+            "profiles":        result["profiles"],
+            "total":           len(result["profiles"]),
+            "expanded_titles": result["expanded_titles"],
+        }
+
+    @router.post("/linkedin-leads/enrich")
+    async def linkedin_enrich(body: Dict[str, Any], user=Depends(user_dep)):
+        """Enrich LinkedIn profile URLs with emails. Body: { urls: [str] }"""
+        raw_urls = body.get("urls")
+        if not isinstance(raw_urls, list) or not raw_urls:
+            raise HTTPException(400, "urls (list) is required")
+        urls = [str(u) for u in raw_urls if isinstance(u, (str, int))][:200]   # cap at 200 per request
+        from linkedin_leads import enrich_linkedin_urls
+        leads = await enrich_linkedin_urls(urls)
+        return {
+            "leads":     leads,
+            "total":     len(leads),
+            "with_email": sum(1 for l in leads if l.get("email")),
+            "errors":    sum(1 for l in leads if l.get("status") == "error"),
+        }
+
+    @router.post("/linkedin-leads/bulk-save")
+    async def linkedin_bulk_save(body: Dict[str, Any], user=Depends(user_dep)):
+        """Add a batch of enriched LinkedIn leads to the CRM. Body: { leads: [...], contact_type?: str }"""
+        uid = _uid(user)
+        leads = body.get("leads") or []
+        if not isinstance(leads, list) or not leads:
+            raise HTTPException(400, "leads (list) is required")
+        contact_type = (body.get("contact_type") or "Lead").strip().title()
+        if contact_type not in _VALID_CONTACT_TYPES:
+            contact_type = "Lead"
+
+        saved, skipped = 0, 0
+        for l in leads:
+            if not isinstance(l, dict):
+                skipped += 1
+                continue
+            name  = (l.get("name") or "").strip()
+            email = (l.get("email") or "").strip().lower() or None
+            url   = (l.get("linkedin_url") or "").strip()
+            if not name and not email and not url:
+                skipped += 1
+                continue
+            notes = "\n".join(filter(None, [
+                f"LinkedIn: {url}" if url else "",
+                f"Title: {l.get('title')}" if l.get("title") else "",
+                f"Company: {l.get('company')}" if l.get("company") else "",
+                "Added via LinkedIn Email Finder",
+            ]))
+            payload: Dict[str, Any] = {
+                "_id":            str(uuid.uuid4()),
+                "user_id":        uid,
+                "name":           name or (email or url),
+                "email":          email,
+                "phone_number":   "",
+                "notes":          notes,
+                "tags":           [contact_type, "LinkedIn"],
+                "contact_type":   contact_type,
+                "linkedin_url":   url or None,
+                "purchase_count": 0,
+                "total_spent":    0.0,
+                "last_message":   None,
+                "last_contacted": None,
+                "created_at":     datetime.utcnow(),
+                "is_customer":    contact_type == "Customer",
+            }
+            if not payload["email"]:
+                # Customer collection requires a unique key — synthesize a placeholder phone
+                seed = (payload["name"] or "li").replace(" ", "")[:7].encode().hex()[:7]
+                payload["phone_number"] = f"+1555{seed}"
+            try:
+                await db.customers.insert_one(payload)
+                saved += 1
+            except Exception:
+                skipped += 1
+        return {"saved": saved, "skipped": skipped, "total": len(leads), "contact_type": contact_type}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Lead Scouts — saved searches that discover new leads automatically
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.get("/lead-scouts")
+    async def list_lead_scouts(user=Depends(user_dep)):
+        uid = _uid(user)
+        scouts = await db["lead_scouts"].find({"user_id": uid}).sort("created_at", -1).to_list(100)
+        for s in scouts:
+            inbox_count = await db["discovered_leads"].count_documents(
+                {"user_id": uid, "scout_id": s["_id"], "status": "new"})
+            s["inbox_count"] = inbox_count
+        return {"scouts": scouts}
+
+    @router.post("/lead-scouts")
+    async def create_lead_scout(body: Dict[str, Any], background_tasks: BackgroundTasks, user=Depends(user_dep)):
+        uid = _uid(user)
+        keyword = (body.get("keyword") or "").strip()
+        if not keyword:
+            raise HTTPException(400, "keyword is required")
+        scout_id = str(uuid.uuid4())
+        scout = {
+            "_id":               scout_id,
+            "user_id":           uid,
+            "name":              (body.get("name") or keyword).strip(),
+            "keyword":           keyword,
+            "location":          (body.get("location") or "").strip(),
+            "frequency":         body.get("frequency") or "manual",
+            "min_rating":        float(body.get("min_rating") or 0),
+            "require_phone":     bool(body.get("require_phone")),
+            "require_email":     bool(body.get("require_email")),
+            "enabled":           True,
+            "created_at":        datetime.utcnow(),
+            "last_run":          None,
+            "next_run":          None,
+            "new_leads":         0,
+            "expanded_keywords": None,  # AI fills in background
+        }
+        await db["lead_scouts"].insert_one(scout)
+
+        async def _expand_keywords():
+            try:
+                from business_leads import expand_keywords
+                expanded = await expand_keywords(keyword)
+                await db["lead_scouts"].update_one(
+                    {"_id": scout_id},
+                    {"$set": {"expanded_keywords": expanded}},
+                )
+                logger.info("[lead_scout] keywords expanded for %s: %s", scout_id, expanded)
+            except Exception as exc:
+                logger.warning("[lead_scout] keyword expansion failed for %s: %s", scout_id, exc)
+
+        background_tasks.add_task(_expand_keywords)
+        return scout
+
+    @router.put("/lead-scouts/{scout_id}")
+    async def update_lead_scout(scout_id: str, body: Dict[str, Any], user=Depends(user_dep)):
+        uid = _uid(user)
+        allowed = {"name", "keyword", "location", "frequency", "expanded_keywords",
+                   "min_rating", "require_phone", "require_email", "enabled"}
+        update = {k: v for k, v in body.items() if k in allowed}
+        if not update:
+            raise HTTPException(400, "Nothing to update")
+        # If frequency changed, reset next_run so it triggers soon
+        if "frequency" in update:
+            update["next_run"] = None
+        await db["lead_scouts"].update_one({"_id": scout_id, "user_id": uid}, {"$set": update})
+        return {"status": "updated"}
+
+    @router.delete("/lead-scouts/{scout_id}")
+    async def delete_lead_scout(scout_id: str, user=Depends(user_dep)):
+        uid = _uid(user)
+        await db["lead_scouts"].delete_one({"_id": scout_id, "user_id": uid})
+        await db["discovered_leads"].delete_many({"scout_id": scout_id, "user_id": uid})
+        return {"status": "deleted"}
+
+    @router.post("/lead-scouts/{scout_id}/run")
+    async def run_lead_scout(scout_id: str, user=Depends(user_dep)):
+        uid = _uid(user)
+        scout = await db["lead_scouts"].find_one({"_id": scout_id, "user_id": uid})
+        if not scout:
+            raise HTTPException(404, "Scout not found")
+        from lead_scout_worker import run_scout
+        new_count = await run_scout(db, scout)
+        return {"status": "done", "new_leads": new_count}
+
+    @router.post("/lead-scouts/run-all")
+    async def run_all_scouts(user=Depends(user_dep)):
+        uid = _uid(user)
+        scouts = await db["lead_scouts"].find({"user_id": uid, "enabled": True}).to_list(50)
+        if not scouts:
+            return {"status": "no scouts"}
+        from lead_scout_worker import run_scout
+        total = 0
+        for scout in scouts:
+            try:
+                total += await run_scout(db, scout)
+            except Exception as e:
+                logger.warning("[lead_scouts] run_all: scout %s failed: %s", scout["_id"], e)
+        return {"status": "done", "new_leads": total, "scouts_run": len(scouts)}
+
+    @router.get("/lead-scouts/inbox")
+    async def get_lead_inbox(
+        user=Depends(user_dep),
+        page: int = Query(0, ge=0),
+        per_page: int = Query(15, ge=1, le=50),
+        scout_id: str = Query(""),
+        status: str = Query("new"),          # new | saved | dismissed | all
+        contacts: str = Query("any"),        # any | both | none — quality filter
+    ):
+        """
+        First page of 'new' leads is free; subsequent pages cost 1 credit each.
+        Browsing 'saved' or 'dismissed' is always free (already paid for in original unlock).
+        """
+        uid = _uid(user)
+        q: Dict[str, Any] = {"user_id": uid}
+        if status != "all":
+            q["status"] = status
+        if scout_id:
+            q["scout_id"] = scout_id
+
+        # Contact-quality filter (email/phone presence)
+        if contacts == "both":
+            q["email"] = {"$nin": [None, ""]}
+            q["phone"] = {"$nin": [None, ""]}
+
+        # Only charge for unlocking more NEW leads (paid model only applies to new)
+        if status == "new" and page > 0:
+            from lead_scout_worker import deduct_credit
+            try:
+                await deduct_credit(db, uid, credits=1.0)
+            except ValueError:
+                raise HTTPException(402, "Insufficient credits — top up to unlock more leads")
+
+        total = await db["discovered_leads"].count_documents(q)
+        leads = await db["discovered_leads"].find(q)\
+            .sort("discovered_at", -1)\
+            .skip(page * per_page)\
+            .limit(per_page)\
+            .to_list(per_page)
+
+        # Counts per status (for filter pill badges) — run in parallel for speed
+        import asyncio as _asyncio
+        base_q: Dict[str, Any] = {"user_id": uid}
+        if scout_id:
+            base_q["scout_id"] = scout_id
+        top_quality_q = {
+            **base_q,
+            "status": "new",
+            "email": {"$nin": [None, ""]},
+            "phone": {"$nin": [None, ""]},
+        }
+        count_new, count_saved, count_dismissed, count_with_contacts = await _asyncio.gather(
+            db["discovered_leads"].count_documents({**base_q, "status": "new"}),
+            db["discovered_leads"].count_documents({**base_q, "status": "saved"}),
+            db["discovered_leads"].count_documents({**base_q, "status": "dismissed"}),
+            db["discovered_leads"].count_documents(top_quality_q),
+        )
+        counts = {
+            "new":           count_new,
+            "saved":         count_saved,
+            "dismissed":     count_dismissed,
+            "with_contacts": count_with_contacts,
+        }
+
+        return {
+            "leads":    leads,
+            "total":    total,
+            "page":     page,
+            "per_page": per_page,
+            "has_more": (page + 1) * per_page < total,
+            "counts":   counts,
+        }
+
+    @router.post("/lead-scouts/inbox/{lead_id}/restore")
+    async def restore_inbox_lead(lead_id: str, user=Depends(user_dep)):
+        """Restore a dismissed lead back to 'new' status so it shows up in the inbox again."""
+        uid = _uid(user)
+        result = await db["discovered_leads"].update_one(
+            {"_id": lead_id, "user_id": uid},
+            {"$set": {"status": "new"}},
+        )
+        if result.matched_count == 0:
+            raise HTTPException(404, "Lead not found")
+        return {"status": "restored"}
+
+    @router.post("/lead-scouts/inbox/{lead_id}/save")
+    async def save_inbox_lead(lead_id: str, body: Dict[str, Any] = None, user=Depends(user_dep)):
+        uid = _uid(user)
+        lead = await db["discovered_leads"].find_one({"_id": lead_id, "user_id": uid})
+        if not lead:
+            raise HTTPException(404, "Lead not found")
+        contact_type = ((body or {}).get("contact_type") or "Customer").strip().title()
+        if contact_type not in _VALID_CONTACT_TYPES:
+            contact_type = "Customer"
+        notes = "\n".join(filter(None, [
+            f"Address: {lead.get('address')}" if lead.get("address") else "",
+            f"Category: {lead.get('category')}" if lead.get("category") else "",
+            f"Website: {lead.get('website')}" if lead.get("website") else "",
+            f"Google Rating: {lead.get('rating')} ({lead.get('reviews',0)} reviews)" if lead.get("rating") else "",
+            f"Found by scout: {lead.get('scout_name','Lead Scout')}",
+        ]))
+        payload: dict = {
+            "_id":            str(uuid.uuid4()),
+            "user_id":        uid,
+            "name":           lead["name"],
+            "email":          (lead.get("email") or "").lower() or None,
+            "phone_number":   lead.get("phone") or "",
+            "notes":          notes,
+            "tags":           [contact_type, "Lead Scout", lead.get("category") or "Business"],
+            "contact_type":   contact_type,
+            "purchase_count": 0,
+            "total_spent":    0.0,
+            "last_message":   None,
+            "last_contacted": None,
+            "created_at":     datetime.utcnow(),
+            "is_customer":    contact_type == "Customer",
+        }
+        if not payload["phone_number"] and not payload["email"]:
+            seed = lead["name"].replace(" ", "")[:7].encode().hex()[:7]
+            payload["phone_number"] = f"+1555{seed}"
+        try:
+            await db.customers.insert_one(payload)
+        except Exception:
+            pass  # duplicate — already in CRM
+        await db["discovered_leads"].update_one({"_id": lead_id}, {"$set": {"status": "saved", "saved_as": contact_type}})
+        return {"status": "saved", "contact_type": contact_type}
+
+    @router.post("/lead-scouts/inbox/bulk-save")
+    async def bulk_save_inbox(body: Dict[str, Any], user=Depends(user_dep)):
+        """
+        Bulk-add all new leads (matching the optional filter) into the CRM in one shot.
+        Body: { scout_id?, contacts?: "any"|"both", require_email?, contact_type?: Customer|Lead|Investor|Partner|Supplier|Other }
+        """
+        uid = _uid(user)
+        scout_id_f = (body.get("scout_id") or "").strip()
+        contacts   = (body.get("contacts") or "any").lower()
+        require_email = bool(body.get("require_email"))
+        contact_type = (body.get("contact_type") or "Customer").strip().title()
+        if contact_type not in _VALID_CONTACT_TYPES:
+            contact_type = "Customer"
+
+        q: Dict[str, Any] = {"user_id": uid, "status": "new"}
+        if scout_id_f:
+            q["scout_id"] = scout_id_f
+        if contacts == "both":
+            q["email"] = {"$nin": [None, ""]}
+            q["phone"] = {"$nin": [None, ""]}
+        elif require_email:
+            q["email"] = {"$nin": [None, ""]}
+
+        leads = await db["discovered_leads"].find(q).to_list(2000)
+        saved = 0
+        skipped = 0
+        for lead in leads:
+            email = (lead.get("email") or "").strip().lower() or None
+            phone = (lead.get("phone") or "").strip()
+            # Skip lead entirely if it has no usable contact info
+            if not email and not phone:
+                skipped += 1
+                continue
+            notes = "\n".join(filter(None, [
+                f"Address: {lead.get('address')}" if lead.get("address") else "",
+                f"Category: {lead.get('category')}" if lead.get("category") else "",
+                f"Website: {lead.get('website')}" if lead.get("website") else "",
+                f"Google Rating: {lead.get('rating')} ({lead.get('reviews',0)} reviews)" if lead.get("rating") else "",
+                f"Found by scout: {lead.get('scout_name','Lead Scout')}",
+            ]))
+            payload: dict = {
+                "_id":            str(uuid.uuid4()),
+                "user_id":        uid,
+                "name":           lead["name"],
+                "email":          email,
+                "phone_number":   phone,
+                "notes":          notes,
+                "tags":           [contact_type, "Lead Scout", lead.get("category") or "Business"],
+                "contact_type":   contact_type,
+                "purchase_count": 0,
+                "total_spent":    0.0,
+                "last_message":   None,
+                "last_contacted": None,
+                "created_at":     datetime.utcnow(),
+                "is_customer":    contact_type == "Customer",
+            }
+            try:
+                await db.customers.insert_one(payload)
+                saved += 1
+            except Exception:
+                skipped += 1
+            await db["discovered_leads"].update_one(
+                {"_id": lead["_id"]}, {"$set": {"status": "saved", "saved_as": contact_type}}
+            )
+        return {"saved": saved, "skipped": skipped, "total": len(leads), "contact_type": contact_type}
+
+    @router.delete("/lead-scouts/inbox/{lead_id}")
+    async def dismiss_inbox_lead(lead_id: str, user=Depends(user_dep)):
+        uid = _uid(user)
+        await db["discovered_leads"].update_one(
+            {"_id": lead_id, "user_id": uid}, {"$set": {"status": "dismissed"}})
+        return {"status": "dismissed"}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Lead Scout Credits — usage-based billing with margin
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.get("/lead-credits")
+    async def get_lead_credits(user=Depends(user_dep)):
+        import os as _os
+        from lead_scout_worker import get_credit_balance, _CREDIT_PRICE, _DFS_COST_USD, _MARGIN_USD, _FREE_CREDITS
+        uid = _uid(user)
+        balance = await get_credit_balance(db, uid)
+        doc = await db["lead_credits"].find_one({"user_id": uid}) or {}
+        return {
+            "balance": balance,
+            "total_runs": doc.get("total_runs", 0),
+            "total_spent_usd": round(doc.get("total_spent_usd", 0), 4),
+            "credit_price_usd": _CREDIT_PRICE,
+            "dfs_cost_usd": _DFS_COST_USD,
+            "margin_usd": _MARGIN_USD,
+            "free_credits": _FREE_CREDITS,
+        }
+
+    @router.post("/lead-credits/add")
+    async def admin_add_lead_credits(body: Dict[str, Any], user=Depends(user_dep)):
+        """Admin: add credits to any user. Pass target_user_id + credits + note."""
+        # Only owner role can add credits
+        if user.get("role") not in (None, "owner", "admin"):
+            raise HTTPException(403, "Owner access required")
+        from lead_scout_worker import add_credits
+        target_uid = str(body.get("target_user_id") or _uid(user))
+        credits = float(body.get("credits") or 0)
+        if credits <= 0:
+            raise HTTPException(400, "credits must be positive")
+        note = str(body.get("note") or "admin_grant")
+        new_balance = await add_credits(db, target_uid, credits, note)
+        return {"status": "ok", "new_balance": new_balance, "credits_added": credits}
+
     # ─────────────────────────────────────────────────────────────────────────
     # Custom Agents — users build their own agents in plain English
     # ─────────────────────────────────────────────────────────────────────────
@@ -401,6 +858,18 @@ def make_action_mode_router(db, user_dep):
         doc.setdefault("location", "")
         doc.setdefault("daily_limit", 10)
         doc.setdefault("auto_run", True)
+        doc.setdefault("deal_mode", doc.get("mode", "review"))
+        doc.setdefault("notify_push", True)
+        try:
+            from apidirect_collector import get_user_fb_usage
+            doc["fb_usage"] = await get_user_fb_usage(db, uid)
+        except Exception:
+            doc["fb_usage"] = None
+        try:
+            from scrapecreators import get_user_usage as sc_usage
+            doc["sc_usage"] = await sc_usage(db, uid)
+        except Exception:
+            doc["sc_usage"] = None
         return doc
 
     @router.put("/social/settings")
@@ -609,10 +1078,19 @@ def make_action_mode_router(db, user_dep):
     @router.post("/run-social")
     async def run_social(bg: BackgroundTasks, user=Depends(user_dep)):
         uid = _uid(user)
-        social_cfg = await db.action_mode_social.find_one({"user_id": uid})
-        if not social_cfg or not social_cfg.get("keywords"):
-            raise HTTPException(400, "Add at least one keyword in Social Engagement settings first")
+        social_cfg = await db.action_mode_social.find_one({"user_id": uid}) or {}
         biz = await db.users.find_one({"_id": uid}) or {}
+        has_keywords = bool(social_cfg.get("keywords"))
+        has_fb_groups = any(
+            "facebook.com/group" in (g or "").lower()
+            for g in (social_cfg.get("groups") or [])
+        )
+        has_biz_type = bool(biz.get("business_type") or biz.get("industry"))
+        if not has_keywords and not (has_fb_groups and has_biz_type):
+            raise HTTPException(
+                400,
+                "Add keywords in Social Engagement settings, or save Facebook group URLs with a business type on your profile",
+            )
         settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
         biz_context = {
             "business_name": biz.get("business_name", ""),
@@ -622,6 +1100,34 @@ def make_action_mode_router(db, user_dep):
         }
         bg.add_task(_run_social_engagement, db, uid, social_cfg, biz_context)
         return {"status": "started"}
+
+    @router.post("/social/fb-scan")
+    async def run_fb_group_scan(user=Depends(user_dep)):
+        """Scan Facebook groups + Marketplace via ScrapeCreators."""
+        from scrapecreators import is_configured as sc_configured
+        from scrapecreators import scan_user_facebook_groups as sc_scan
+        from scrapecreators import scan_marketplace
+        if not sc_configured():
+            raise HTTPException(503, "Facebook group search is not configured on the server")
+        uid = _uid(user)
+        social_cfg = await db.action_mode_social.find_one({"user_id": uid}) or {}
+        biz = await db.users.find_one({"_id": uid}) or {}
+        groups_result = await sc_scan(db, uid, social_cfg, biz)
+        market_result = await scan_marketplace(db, uid, social_cfg, biz)
+        if groups_result.get("skipped") == "no_facebook_groups" and market_result.get("skipped"):
+            raise HTTPException(400, "Add at least one Facebook group URL in Social Engagement settings")
+        return {
+            "groups": groups_result,
+            "marketplace": market_result,
+            "total_alerts": int(groups_result.get("alerts", 0)) + int(market_result.get("alerts", 0)),
+            "total_credits": int(groups_result.get("credits", 0)) + int(market_result.get("credits", 0)),
+        }
+
+    @router.get("/social/fb-usage")
+    async def get_fb_group_usage(user=Depends(user_dep)):
+        from scrapecreators import get_user_usage as sc_usage
+        uid = _uid(user)
+        return await sc_usage(db, uid)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Fusion Engine — cluster weak signals into high-confidence opportunities
@@ -833,6 +1339,78 @@ def make_action_mode_router(db, user_dep):
         bg.add_task(_run_custom_agent, db, uid, agent_doc, biz_context)
         return {"status": "started", "agent": agent_id}
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Zilo Scouts — scheduled keyword monitors (Open Scouts pattern)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.get("/scouts")
+    async def list_scouts_route(user=Depends(user_dep)):
+        from scout_service import ensure_default_scouts, get_biz_context, list_scouts
+        uid = _uid(user)
+        settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
+        if settings.get("enabled"):
+            ctx = await get_biz_context(db, uid)
+            await ensure_default_scouts(db, uid, ctx)
+        scouts = await list_scouts(db, uid)
+        return {"scouts": scouts}
+
+    @router.get("/scouts/pulse")
+    async def scouts_pulse_route(user=Depends(user_dep)):
+        from scout_service import get_pulse
+        uid = _uid(user)
+        items = await get_pulse(db, uid, limit=20)
+        total = await db.action_mode_opportunities.count_documents({"user_id": uid, "agent": "zilo_scout"})
+        return {"pulse": items, "total_scanned": total}
+
+    @router.post("/scouts/setup")
+    async def scouts_setup_route(user=Depends(user_dep)):
+        """Reset and auto-generate scouts from business profile."""
+        from scout_service import ensure_default_scouts, get_biz_context
+        uid = _uid(user)
+        await db.zilo_scouts.delete_many({"user_id": uid})
+        ctx = await get_biz_context(db, uid)
+        scouts = await ensure_default_scouts(db, uid, ctx, force=True)
+        return {"scouts": scouts, "created": len(scouts)}
+
+    @router.post("/scouts")
+    async def create_scout_route(body: ScoutBody, user=Depends(user_dep)):
+        from scout_service import create_scout
+        uid = _uid(user)
+        doc = await create_scout(db, uid, body.dict(exclude_none=True))
+        return doc
+
+    @router.put("/scouts/{scout_id}")
+    async def update_scout_route(scout_id: str, body: ScoutBody, user=Depends(user_dep)):
+        from scout_service import update_scout
+        uid = _uid(user)
+        updated = await update_scout(db, uid, scout_id, body.dict(exclude_none=True))
+        if not updated:
+            raise HTTPException(404, "Scout not found")
+        return updated
+
+    @router.delete("/scouts/{scout_id}")
+    async def delete_scout_route(scout_id: str, user=Depends(user_dep)):
+        from scout_service import delete_scout
+        uid = _uid(user)
+        if not await delete_scout(db, uid, scout_id):
+            raise HTTPException(404, "Scout not found")
+        return {"status": "deleted"}
+
+    @router.post("/scouts/{scout_id}/run")
+    async def run_scout_route(scout_id: str, bg: BackgroundTasks, user=Depends(user_dep)):
+        from scout_service import execute_scout, get_biz_context
+        uid = _uid(user)
+        scout = await db.zilo_scouts.find_one({"_id": scout_id, "user_id": uid})
+        if not scout:
+            raise HTTPException(404, "Scout not found")
+
+        async def _run():
+            ctx = await get_biz_context(db, uid)
+            await execute_scout(db, scout, ctx)
+
+        bg.add_task(_run)
+        return {"status": "started", "scout_id": scout_id}
+
     return router
 
 
@@ -893,6 +1471,7 @@ async def _ai_score_results(
     """
     if not results:
         return results
+    results = results[:20]
     try:
         import json as _json, os as _os, httpx as _httpx
 
@@ -928,13 +1507,23 @@ async def _ai_score_results(
                             "model": model,
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.1,
-                            "max_tokens": 800,
+                            "max_tokens": 2000,
                         },
                     )
                     resp.raise_for_status()
                     raw = resp.json()["choices"][0]["message"]["content"].strip()
-                    raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
-                    scores = _json.loads(raw)
+                    
+                    # Robustly extract JSON array from raw response
+                    start_idx = raw.find("[")
+                    end_idx = raw.rfind("]")
+                    if start_idx != -1 and end_idx != -1:
+                        raw_json = raw[start_idx:end_idx + 1]
+                        scores = _json.loads(raw_json)
+                    else:
+                        # Fallback
+                        raw_stripped = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
+                        scores = _json.loads(raw_stripped)
+                        
                     scored = []
                     for item in scores:
                         idx = item.get("idx", 0) - 1
@@ -1357,17 +1946,18 @@ async def _run_admin_autopilot(db, uid: str, ctx: Dict[str, Any]):
             if existing:
                 continue
             amount = inv.get("amount", 0)
+            currency = inv.get("currency", "USD")
             name = cust.get("name", "there")
             days_overdue = (now - inv["created_at"]).days if inv.get("created_at") else 7
             draft = (
                 f"Hi {name.split()[0]}! 👋 Hope you're doing well.\n\n"
                 f"Just a friendly reminder about invoice #{inv.get('invoice_number', str(inv['_id'])[-6:])} "
-                f"for KES {amount:,.0f} which has been outstanding for {days_overdue} days.\n\n"
+                f"for {currency} {amount:,.2f} which has been outstanding for {days_overdue} days.\n\n"
                 f"Please let us know if you have any questions or need alternative payment arrangements.\n\n"
                 f"Thank you! — {biz_name}"
             )
             await _add_to_queue(db, uid, "admin_autopilot", "send_whatsapp",
-                                f"Invoice reminder: {name} — KES {amount:,.0f}",
+                                f"Invoice reminder: {name} — {currency} {amount:,.2f}",
                                 draft,
                                 {
                                     "phone": cust.get("phone"),
@@ -1461,10 +2051,27 @@ async def _execute_approved_action(db, uid: str, item: Dict[str, Any], content: 
                                 kind="action")
 
         elif action_type in ("post_comment", "join_group"):
-            await _log_activity(db, uid, item.get("agent", ""),
-                                f"✅ Approved: {item.get('title', '')}",
-                                f"Open the link and take action: {meta.get('url', '')}",
-                                kind="action")
+            post_id = meta.get("post_id", "")
+            comment_id = meta.get("comment_id", "")
+            account_id = meta.get("account_id", "")
+            replied = False
+            if action_type == "post_comment" and post_id and comment_id and account_id and content:
+                from deal_alerts import reply_zernio_comment
+                replied = await reply_zernio_comment(post_id, account_id, comment_id, content)
+                await db.action_mode_queue.update_one(
+                    {"_id": item.get("_id")},
+                    {"$set": {"posted": replied, "posted_at": datetime.utcnow()}},
+                )
+            if replied:
+                await _log_activity(db, uid, item.get("agent", ""),
+                                    f"💬 Reply sent on {meta.get('platform', 'social')}",
+                                    f"Replied to {meta.get('author', 'customer')}: {content[:120]}",
+                                    kind="action")
+            else:
+                await _log_activity(db, uid, item.get("agent", ""),
+                                    f"✅ Approved: {item.get('title', '')}",
+                                    meta.get("url") or f"Open link: {meta.get('url', '')}",
+                                    kind="action")
 
     except Exception as e:
         logger.error("[action-mode] execute error: %s", e)
@@ -1551,7 +2158,9 @@ async def _scan_zernio_for_keywords(
 
                     lower   = text.lower()
                     matched = [kw for kw in keywords if kw and kw.lower().strip() in lower]
-                    if not matched:
+                    from deal_alerts import detect_buy_intent
+                    biz_type = (await db.users.find_one({"_id": uid}) or {}).get("business_type", "")
+                    if not matched and not detect_buy_intent(text, keywords, biz_type):
                         await seen_col.insert_one({"uid": uid, "ref": conv_id, "ts": datetime.utcnow()})
                         continue
 
@@ -1569,6 +2178,7 @@ async def _scan_zernio_for_keywords(
                         group_name = f"{platform.title()} DM",
                         platform   = platform,
                         url        = f"https://web.whatsapp.com/",
+                        conversation_id = conv_id,
                     )
                     await seen_col.insert_one({"uid": uid, "ref": conv_id, "ts": datetime.utcnow()})
                     found += 1
@@ -1608,10 +2218,17 @@ async def _scan_zernio_for_keywords(
 
                         await seen_col.insert_one({"uid": uid, "ref": f"c_{comment_id}", "ts": datetime.utcnow()})
 
-                        if not matched:
+                        from deal_alerts import detect_buy_intent
+                        biz_type = (await db.users.find_one({"_id": uid}) or {}).get("business_type", "")
+                        if not matched and not detect_buy_intent(text, keywords, biz_type):
                             continue
 
                         author = comment.get("from", {}).get("name") or comment.get("authorName") or "Commenter"
+                        post_id_z = str(post.get("_id") or post.get("id") or post.get("postId") or "")
+                        account_id_z = str(
+                            comment.get("accountId") or comment.get("account_id")
+                            or post.get("accountId") or post.get("account_id") or ""
+                        )
                         await queue_social_match(
                             db, uid,
                             text       = text,
@@ -1619,6 +2236,9 @@ async def _scan_zernio_for_keywords(
                             group_name = f"{platform.title()} Post Comment",
                             platform   = platform,
                             url        = post_url,
+                            post_id    = post_id_z,
+                            comment_id = comment_id,
+                            account_id = account_id_z,
                         )
                         found += 1
         except Exception as e:
@@ -1736,6 +2356,38 @@ async def _run_social_engagement(db, uid: str, cfg: Dict[str, Any], biz: Dict[st
     # ── Zernio inbox + comments scan (official WhatsApp Business & social DMs) ──
     zernio_found = await _scan_zernio_for_keywords(db, uid, keywords, cfg)
     found += zernio_found
+
+    # ── ScrapeCreators — Facebook group posts + comments + Marketplace ──
+    fb_groups = [g for g in (cfg.get("groups") or []) if g and "facebook.com/group" in g.lower()]
+    try:
+        from scrapecreators import is_configured as sc_configured
+        from scrapecreators import scan_user_facebook_groups as sc_scan_groups
+        from scrapecreators import scan_marketplace
+        if sc_configured():
+            if fb_groups:
+                fb_result = await sc_scan_groups(db, uid, cfg, biz)
+                fb_alerts = int(fb_result.get("alerts") or 0)
+                found += fb_alerts
+                await _log_activity(
+                    db, uid, "social_engagement",
+                    f"📘 Facebook groups scanned — {fb_alerts} lead(s) found",
+                    f"ScrapeCreators: {fb_result.get('credits', 0)} credit(s) · "
+                    f"{fb_result.get('groups_scanned', 0)} group(s) · posts + comments analysed",
+                    kind="opportunity" if fb_alerts else "action",
+                )
+            # Always scan Marketplace if keywords/business type set
+            mp_result = await scan_marketplace(db, uid, cfg, biz)
+            mp_alerts = int(mp_result.get("alerts") or 0)
+            found += mp_alerts
+            if mp_alerts:
+                await _log_activity(
+                    db, uid, "social_engagement",
+                    f"🛒 Facebook Marketplace — {mp_alerts} listing(s) found",
+                    f"ScrapeCreators: {mp_result.get('credits', 0)} credit(s) used",
+                    kind="opportunity",
+                )
+    except Exception as e:
+        logger.warning("[social_engagement] scrapecreators fb scan error: %s", e)
 
     await _log_activity(db, uid, "social_engagement",
                         f"✅ Social agent done — {found} posts queued for review",

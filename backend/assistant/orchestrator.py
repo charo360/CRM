@@ -37,6 +37,22 @@ from .tools import REGISTRY, ToolContext, openai_tool_specs, openai_tool_specs_f
 
 logger = logging.getLogger(__name__)
 
+
+async def _load_sidebar_features(db, business_id: str) -> Dict[str, Any]:
+    try:
+        doc = await db.users.find_one({"_id": business_id}, {"settings.features": 1})
+        return ((doc or {}).get("settings") or {}).get("features") or {}
+    except Exception:
+        return {}
+
+
+def _nudge_tool_result(name: str, result: Any, features: Dict[str, Any]) -> Any:
+    try:
+        from .sidebar_features import enrich_tool_result_with_nudge
+        return enrich_tool_result_with_nudge(name, result, features)
+    except Exception:
+        return result
+
 AGENT_OWNERSHIP_CONTRACT = """You are one specialist inside a multi-agent CRM system.
 
 Respect ownership boundaries and hand off mentally:
@@ -563,6 +579,19 @@ async def _compress_history(
 
 def _limit_tool_result_size(result: Any) -> Any:
     """Replace oversized tool JSON with a short preview (design payloads, etc.)."""
+    if isinstance(result, dict) and result.get("html_preview"):
+        slim = {k: v for k, v in result.items() if k != "html_preview"}
+        if result.get("preview_key"):
+            result = slim
+        else:
+            try:
+                from assistant.document_generator import store_html_preview
+                key = store_html_preview(str(result["html_preview"]))
+                slim["preview_key"] = key
+                slim["preview_url"] = f"/api/document-preview/{key}"
+                result = slim
+            except Exception:
+                result = dict(result)
     try:
         s = json.dumps(result, default=str)
     except (TypeError, ValueError):
@@ -740,6 +769,7 @@ async def run_turn(
     # can scope their queries without an extra plumbing channel.
     user = {**user, "_active_conversation_id": conversation_id}
     ctx = ToolContext(db, user)
+    _sidebar_features = await _load_sidebar_features(db, ctx.business_id)
 
     ag_cfg = get_agent_config(agent_id)
     active_agent_id = ag_cfg["id"]
@@ -1047,6 +1077,7 @@ Before calling ANY tools or asking ANY questions, check conversation history and
             name = tc["name"]
             args = tc["arguments"]
             result = await run_tool(name, ctx, args)
+            result = _nudge_tool_result(name, result, _sidebar_features)
             return tc, result
 
         _tlog.info("[turn.tools] step=%d parallel=%d tools=%s", step_idx, len(_safe_tcs), [t["name"] for t in _safe_tcs])
@@ -1198,6 +1229,7 @@ async def run_turn_stream(
 
     user = {**user, "_active_conversation_id": conversation_id}
     ctx = ToolContext(db, user)
+    _sidebar_features = await _load_sidebar_features(db, ctx.business_id)
 
     ag_cfg = get_agent_config(agent_id)
     active_agent_id = ag_cfg["id"]
@@ -1467,7 +1499,10 @@ Before calling ANY tools or asking ANY questions, check conversation history and
 
         # Run all safe tools concurrently
         async def _exec_stream_one(tc: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
-            return tc, await run_tool(tc["name"], ctx, tc["arguments"])
+            name = tc["name"]
+            result = await run_tool(name, ctx, tc["arguments"])
+            result = _nudge_tool_result(name, result, _sidebar_features)
+            return tc, result
 
         stream_results = await asyncio.gather(*[_exec_stream_one(tc) for tc in _safe_stream_tcs], return_exceptions=True)
 
