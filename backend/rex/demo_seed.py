@@ -8,11 +8,12 @@ swap for Mongo-backed state when adapters land.
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from datetime import datetime, timezone
+from dataclasses import asdict, replace as dc_replace
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from rex.actions import Action, ActionKind, ActionState, Outcome
+from rex.ranks.events import EventType
 from rex.identity import CHIEF_OF_STAFF_NAME
 from rex.actions.protocols import ActionExecutor, ExecutionResult
 from rex.briefing import build_home_screen
@@ -73,12 +74,95 @@ def _record_sent(orch: Orchestrator, action: Action) -> None:
     )
 
 
+def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
+    """Append a small arc of trust events so the Journal page has substance.
+
+    Spaces events across the relationship arc so the user sees voice phases
+    shifting from OBSERVING → BLENDED (or whatever phase they're in).
+    """
+    now = datetime.now(timezone.utc)
+
+    # Day 3 — early operational note
+    e1 = TrustEvent.operational(
+        type=EventType.ACTION_APPROVED,
+        actor_name="Zilo",
+        category="outreach",
+        confidence=0.78,
+    )
+    e1 = dc_replace(e1, timestamp=now - timedelta(days=max(0, relationship_day - 3)))
+
+    # Day 7 — first clean send
+    e2 = TrustEvent.operational(
+        type=EventType.ACTION_CLEAN_SEND,
+        actor_name="Zilo",
+        category="outreach",
+        confidence=0.82,
+    )
+    e2 = dc_replace(e2, timestamp=now - timedelta(days=max(0, relationship_day - 7)))
+
+    # Day 12 — a setback
+    e3 = TrustEvent.operational(
+        type=EventType.ACTION_REJECTED,
+        actor_name="Zilo",
+        category="replies",
+        reason="Tone too warm",
+    )
+    e3 = dc_replace(e3, timestamp=now - timedelta(days=max(0, relationship_day - 12)))
+
+    # Day 20 — subagent recommendation
+    e4 = TrustEvent.rex_recommended_subagent_promotion(
+        subagent="Scout",
+        category="leads",
+        from_rank=Rank.OBSERVER,
+        to_rank=Rank.DRAFTER,
+        reason="14 leads found, 11 acted on",
+        confidence=0.91,
+    )
+    e4 = dc_replace(e4, timestamp=now - timedelta(days=max(0, relationship_day - 20)))
+
+    # Day 25 — recommendation approved
+    e5 = TrustEvent.user_approved_recommendation(
+        subagent="Scout",
+        category="leads",
+        from_rank=Rank.OBSERVER,
+        to_rank=Rank.DRAFTER,
+        recommendation_id=e4.id,
+    )
+    e5 = dc_replace(e5, timestamp=now - timedelta(days=max(0, relationship_day - 25)))
+
+    # Day 35 — another clean send
+    e6 = TrustEvent.operational(
+        type=EventType.ACTION_CLEAN_SEND,
+        actor_name="Zilo",
+        category="outreach",
+        confidence=0.94,
+    )
+    e6 = dc_replace(e6, timestamp=now - timedelta(days=max(0, relationship_day - 35)))
+
+    # Most recent — a promotion (rank already updated by _promote_rex; this is the journal record)
+    e7 = TrustEvent.user_promoted_rex(
+        category="replies",
+        from_rank=Rank.DRAFTER,
+        to_rank=Rank.SENDER,
+        reason="Three clean sends in a row",
+    )
+    e7 = dc_replace(e7, timestamp=now - timedelta(days=1))
+
+    for ev in (e1, e2, e3, e4, e5, e6, e7):
+        # Only seed events whose simulated date is on or after Day 1.
+        days_back = (now - ev.timestamp).days
+        if days_back > relationship_day:
+            continue
+        orch.event_store.append(ev)
+
+
 def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
     """Orchestrator seeded to match the Rex morning-briefing mock."""
     orch = Orchestrator()
     orch.register_executor(_DemoExecutor())
     _promote_rex(orch, "outreach")
     _promote_rex(orch, "replies")
+    _seed_journal_events(orch, relationship_day=relationship_day)
 
     meridian_mem = orch.notebook.add(
         bucket=Bucket.PEOPLE,
@@ -157,6 +241,7 @@ def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
         )
 
     orch._demo_relationship_day = relationship_day  # type: ignore[attr-defined]
+    orch._relationship_day = relationship_day  # type: ignore[attr-defined]
     return orch
 
 

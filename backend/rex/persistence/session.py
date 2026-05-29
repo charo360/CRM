@@ -79,6 +79,10 @@ class ZiloSessionStore:
             orch._relationship_day = int(doc.get("relationship_day") or 1)  # type: ignore[attr-defined]
         orch._metrics = dict(doc.get("metrics") or {})  # type: ignore[attr-defined]
         orch._live_mode = not doc.get("demo_mode", False)  # type: ignore[attr-defined]
+        # Journal engagement state
+        orch._journal_last_visit_day = doc.get("journal_last_visit_day")  # type: ignore[attr-defined]
+        orch._journal_streak = int(doc.get("journal_streak") or 0)  # type: ignore[attr-defined]
+        orch._journal_shown_milestones = list(doc.get("journal_shown_milestones") or [])  # type: ignore[attr-defined]
         return orch
 
     async def load(self, user_id: str, *, business_id: str) -> Orchestrator:
@@ -231,6 +235,9 @@ class ZiloSessionStore:
             "lead_scout_interval": getattr(orch, "_lead_scout_interval", "24h"),
             "open_scout_interval": getattr(orch, "_open_scout_interval", "12h"),
             "fb_group_interval": getattr(orch, "_fb_group_interval", "6h"),
+            "journal_last_visit_day": getattr(orch, "_journal_last_visit_day", None),
+            "journal_streak": int(getattr(orch, "_journal_streak", 0) or 0),
+            "journal_shown_milestones": list(getattr(orch, "_journal_shown_milestones", []) or []),
         }
         await self._col.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
 

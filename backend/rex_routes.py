@@ -221,6 +221,12 @@ class BriefingPreferencesRequest(BaseModel):
     fb_group_interval: Optional[str] = "6h"
 
 
+class RankChangeRequest(BaseModel):
+    category: str
+    reason: Optional[str] = None
+    to_rank: Optional[str] = None  # display name like "Sender"; defaults to one step up/down
+
+
 # ── Router factory ────────────────────────────────────────────────────────
 
 def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
@@ -480,7 +486,109 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     @router.get("/journal")
     async def rex_journal(user=Depends(get_current_user)):
         orch = await _get_orchestrator(user, db, refresh=False)
-        return serialize_journal(orch)
+        payload = serialize_journal(orch)  # mutates streak + shown_milestones
+        await _persist(user, db, orch)
+        return payload
+
+    @router.get("/standings")
+    async def rex_standings(user=Depends(get_current_user)):
+        """Per-category trust ladder for Zilo (Chief of Staff)."""
+        from rex.identity import CHIEF_OF_STAFF_NAME
+        from rex.ranks.categories import all_categories
+        from rex.ranks.events import Rank
+
+        orch = await _get_orchestrator(user, db, refresh=False)
+        rows = []
+        for cat in all_categories():
+            s = orch.engine.standing(CHIEF_OF_STAFF_NAME, cat.name)
+            rows.append({
+                "category": cat.name,
+                "display": cat.display,
+                "tier": int(cat.tier),
+                "rank": s.rank.display,
+                "rank_value": int(s.rank),
+                "on_probation": s.on_probation,
+            })
+        return {
+            "standings": rows,
+            "ranks": [r.display for r in Rank],
+            "max_rank_value": int(Rank.CHIEF_OF_STAFF),
+        }
+
+    async def _apply_rank_change(
+        user: dict,
+        body: RankChangeRequest,
+        *,
+        direction: str,
+    ) -> dict:
+        from rex.identity import CHIEF_OF_STAFF_NAME
+        from rex.ranks.categories import is_category
+        from rex.ranks.engine import RankEngine
+        from rex.ranks.events import Rank, TrustEvent
+
+        if not is_category(body.category):
+            raise HTTPException(status_code=400, detail=f"Unknown category: {body.category}")
+
+        orch = await _get_orchestrator(user, db, refresh=False)
+        standing = orch.engine.standing(CHIEF_OF_STAFF_NAME, body.category)
+        from_rank = standing.rank
+
+        if body.to_rank:
+            try:
+                to_rank = Rank.from_display(body.to_rank)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Unknown rank: {body.to_rank}")
+        else:
+            step = 1 if direction == "promote" else -1
+            new_value = int(from_rank) + step
+            if new_value < int(Rank.OBSERVER) or new_value > int(Rank.CHIEF_OF_STAFF):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Already at Chief of Staff." if direction == "promote"
+                        else "Already at Observer."
+                    ),
+                )
+            to_rank = Rank(new_value)
+
+        if direction == "promote" and int(to_rank) <= int(from_rank):
+            raise HTTPException(status_code=409, detail="Target rank is not a promotion.")
+        if direction == "demote" and int(to_rank) >= int(from_rank):
+            raise HTTPException(status_code=409, detail="Target rank is not a demotion.")
+
+        if direction == "promote":
+            event = TrustEvent.user_promoted_rex(
+                category=body.category,
+                from_rank=from_rank,
+                to_rank=to_rank,
+                reason=body.reason,
+            )
+        else:
+            event = TrustEvent.user_demoted_rex(
+                category=body.category,
+                from_rank=from_rank,
+                to_rank=to_rank,
+                reason=body.reason,
+            )
+
+        orch.event_store.append(event)
+        orch.engine = RankEngine.from_events(orch.event_store)
+        await _persist(user, db, orch)
+
+        return {
+            "ok": True,
+            "category": body.category,
+            "from_rank": from_rank.display,
+            "to_rank": to_rank.display,
+        }
+
+    @router.post("/promote")
+    async def rex_promote(body: RankChangeRequest, user=Depends(get_current_user)):
+        return await _apply_rank_change(user, body, direction="promote")
+
+    @router.post("/demote")
+    async def rex_demote(body: RankChangeRequest, user=Depends(get_current_user)):
+        return await _apply_rank_change(user, body, direction="demote")
 
     @router.get("/team")
     async def rex_team(user=Depends(get_current_user)):
