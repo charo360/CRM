@@ -15676,21 +15676,31 @@ def _parse_ae_products(data: dict) -> list[dict]:
     out = []
     for p in raw:
         cost = float(
-            p.get("target_sale_price")
+            p.get("targetSalePrice")
+            or p.get("target_sale_price")
+            or p.get("salePrice")
             or p.get("sale_price")
             or p.get("min_price")
             or 0
         )
+        try:
+            orders = int(p.get("orders") or p.get("lastest_volume") or p.get("orders_count") or 0)
+        except (TypeError, ValueError):
+            orders = 0
+        item_url = p.get("itemUrl") or ""
+        if item_url and item_url.startswith("//"):
+            item_url = "https:" + item_url
         out.append({
-            "ae_pid":          str(p.get("product_id", "")),
-            "title":           p.get("product_title") or p.get("subject", ""),
-            "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
+            "ae_pid":          str(p.get("itemId") or p.get("product_id") or ""),
+            "title":           p.get("title") or p.get("product_title") or p.get("subject", ""),
+            "category":        p.get("second_level_category_name") or p.get("first_level_category_name") or p.get("cateId", ""),
             "cost_price":      cost,
             "suggested_price": round(cost * 2.5, 2),
-            "image_url":       p.get("product_main_image_url") or p.get("main_image_url", ""),
-            "orders_count":    int(p.get("lastest_volume") or p.get("orders_count") or p.get("evaluate_rate") or 0),
+            "image_url":       p.get("itemMainPic") or p.get("product_main_image_url") or p.get("main_image_url", ""),
+            "orders_count":    orders,
             "shipping_time":   p.get("shipping_lead_time", ""),
             "store_name":      p.get("shop_name", ""),
+            "product_url":     item_url,
             "source":          "aliexpress",
         })
     return out
