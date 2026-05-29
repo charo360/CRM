@@ -18,6 +18,10 @@ import {
   Star,
   Sunrise,
   Moon,
+  Activity,
+  Undo2,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 
 type JournalEntry = {
@@ -33,6 +37,8 @@ type JournalEntry = {
   created_at: string;
   relationship_day: number;
   is_synthetic?: boolean;
+  action_id?: string | null;
+  details?: string[];
 };
 
 type Engagement = {
@@ -62,12 +68,49 @@ type Summary = {
   by_category: { category: string; count: number }[];
 };
 
+type OvernightEphemeraTask = {
+  id: string;
+  category: string;
+  summary: string;
+  kind: string;
+  timestamp: string;
+  status: string;
+  action_id?: string;
+  details?: string[];
+};
+
+type AutopilotProgress = {
+  category: string;
+  current_rank: string;
+  target_rank: string;
+  progress_pct: number;
+  tasks_completed: number;
+  tasks_required: number;
+  text: string;
+};
+
+type ActiveLearning = {
+  id: string;
+  category: string;
+  observation: string;
+  lesson: string;
+  impact: string;
+  timestamp: string;
+  source: string;
+  status: string;
+  applied_to?: string;
+};
+
 type JournalPayload = {
   relationship_day: number;
   phase?: PhaseInfo;
   summary?: Summary;
   engagement?: Engagement;
   entries: JournalEntry[];
+  ambient_thought?: string;
+  overnight_ephemera?: OvernightEphemeraTask[];
+  autopilot_progress?: AutopilotProgress;
+  active_learnings?: ActiveLearning[];
 };
 
 const PHASE_LABEL: Record<string, string> = {
@@ -98,6 +141,7 @@ const KIND_ICON: Record<string, React.ComponentType<{ size?: number; className?:
   returned: Sunrise,
   probation: ShieldCheck,
   team: Users,
+  background_action: Activity,
 };
 
 const KIND_TONE: Record<string, string> = {
@@ -112,6 +156,7 @@ const KIND_TONE: Record<string, string> = {
   milestone: "bg-gradient-to-br from-amber-50 to-amber-100 text-amber-800 border-amber-300",
   daily_anchor: "bg-slate-50 text-slate-500 border-slate-200",
   returned: "bg-sky-50 text-sky-700 border-sky-200",
+  background_action: "bg-slate-50 text-slate-700 border-slate-200",
 };
 
 function formatCategory(cat: string): string {
@@ -136,6 +181,9 @@ export default function ZiloJournalPage() {
   const [error, setError] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<string | null>(null);
   const [showExplainer, setShowExplainer] = useState(false);
+  const [undoneActions, setUndoneActions] = useState<Set<string>>(new Set());
+  const [undoing, setUndoing] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -153,6 +201,34 @@ export default function ZiloJournalPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  const handleUndo = useCallback(async (actionId: string) => {
+    setUndoing(actionId);
+    setToast(null);
+    try {
+      await api.post(`/rex/actions/${actionId}/undo`, {});
+      setUndoneActions((prev) => {
+        const next = new Set(prev);
+        next.add(actionId);
+        return next;
+      });
+      setToast({ message: "Action successfully undone.", type: "success" });
+    } catch (e) {
+      setToast({
+        message: e instanceof Error ? e.message : "Failed to undo action.",
+        type: "error",
+      });
+    } finally {
+      setUndoing(null);
+    }
+  }, []);
 
   const normalizedEntries = useMemo<JournalEntry[]>(() => {
     if (!data?.entries) return [];
@@ -229,7 +305,98 @@ export default function ZiloJournalPage() {
               phase={data.phase}
               day={data.relationship_day}
               engagement={data.engagement}
+              autopilotProgress={data.autopilot_progress}
             />
+          )}
+
+          {data.ambient_thought && (
+            <div className="mt-6 rounded-xl border border-[#0d2818]/15 bg-gradient-to-r from-[#eefaf2] to-white p-5 shadow-sm">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[#0d2818]/70">Zilo&apos;s Daily Ambient Thought</p>
+              <blockquote className="mt-2 text-base italic font-serif leading-relaxed text-slate-800 border-l-2 border-[#0d2818] pl-3">
+                &ldquo;{data.ambient_thought}&rdquo;
+              </blockquote>
+            </div>
+          )}
+
+
+
+
+          {data.active_learnings && data.active_learnings.length > 0 && (
+            <div className="mt-8">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                </span>
+                <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Zilo&apos;s Active Learning Loop</h3>
+              </div>
+              
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                {data.active_learnings.map((learning) => {
+                  const isApplied = learning.status === "applied";
+                  const isMuted = learning.status === "muted";
+                  const statusLabel = isApplied 
+                    ? "Applied to Autopilot" 
+                    : isMuted 
+                    ? "Alert Muted" 
+                    : "Observing Style";
+                  const statusColor = isApplied
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : isMuted
+                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                    : "bg-blue-50 text-blue-700 border-blue-200";
+                  
+                  return (
+                    <div 
+                      key={learning.id} 
+                      className="group relative rounded-xl border border-slate-100 bg-white p-5 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-md hover:border-blue-100/50"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="inline-flex rounded-full bg-slate-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+                          {formatCategory(learning.category)}
+                        </span>
+                        <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold ${statusColor}`}>
+                          {isApplied && <CheckCircle2 size={10} />}
+                          {learning.status === "observing" && <Loader2 size={10} className="animate-spin" />}
+                          {statusLabel}
+                        </span>
+                      </div>
+                      
+                      <div className="mt-3.5 space-y-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Interaction</span>
+                            <p className="text-xs text-slate-700 font-medium truncate">{learning.observation}</p>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Source</span>
+                            <p className="text-[10px] font-medium text-slate-500">{learning.source}</p>
+                          </div>
+                        </div>
+                        
+                        <div className="border-t border-slate-50 pt-2.5 bg-gradient-to-r from-blue-50/20 to-transparent p-2 rounded-lg border border-blue-500/5">
+                          <span className="text-[9px] font-bold uppercase tracking-wider text-blue-600">Lesson Extracted</span>
+                          <p className="text-xs font-semibold text-slate-900 leading-normal">{learning.lesson}</p>
+                        </div>
+                        
+                        <div className="rounded-lg bg-slate-50/50 p-2.5 border border-slate-100/50 flex justify-between items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Autopilot Impact</span>
+                            <p className="text-[11px] text-slate-600 font-medium truncate">{learning.impact}</p>
+                          </div>
+                          {learning.applied_to && (
+                            <div className="shrink-0 text-right">
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">System Path</span>
+                              <p className="text-[10px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/50">{learning.applied_to}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           {(data.entries?.length ?? 0) === 0 ? (
@@ -245,12 +412,29 @@ export default function ZiloJournalPage() {
               )}
               <div className="mt-6 space-y-8">
                 {entriesByDay.map(([day, entries]) => (
-                  <DaySection key={day} day={day} entries={entries} />
+                  <DaySection
+                    key={day}
+                    day={day}
+                    entries={entries}
+                    undoneActions={undoneActions}
+                    undoing={undoing}
+                    onUndo={handleUndo}
+                  />
                 ))}
               </div>
             </>
           )}
         </>
+      )}
+
+      {toast && (
+        <div className={`fixed bottom-5 right-5 z-50 rounded-lg px-4 py-3 text-xs font-semibold shadow-md transition-all border ${
+          toast.type === "success" 
+            ? "bg-emerald-50 text-emerald-800 border-emerald-200" 
+            : "bg-red-50 text-red-800 border-red-200"
+        }`}>
+          {toast.message}
+        </div>
       )}
 
       <Link
@@ -267,10 +451,12 @@ function PhaseBanner({
   phase,
   day,
   engagement,
+  autopilotProgress,
 }: {
   phase: PhaseInfo;
   day: number;
   engagement?: Engagement;
+  autopilotProgress?: AutopilotProgress;
 }) {
   const label = PHASE_LABEL[phase.phase] ?? phase.phase;
   const streak = engagement?.streak_days ?? 0;
@@ -325,7 +511,37 @@ function PhaseBanner({
         </p>
       )}
 
-      <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3">
+      {autopilotProgress && (
+        <div className="mt-5 border-t border-white/10 pt-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">Autopilot Rank Progression</p>
+              <p className="mt-1 text-sm font-semibold text-white">
+                {autopilotProgress.current_rank} &rarr; <span className="text-brand-light">{autopilotProgress.target_rank}</span> ({formatCategory(autopilotProgress.category)})
+              </p>
+            </div>
+            <div className="text-right">
+              <span className="inline-flex items-center gap-1 rounded-full bg-brand/20 px-2 py-0.5 text-[10px] font-bold text-brand-light border border-brand/30">
+                <Star size={10} className="animate-pulse text-amber-300" />
+                {autopilotProgress.progress_pct}% Earned
+              </span>
+            </div>
+          </div>
+          <div className="mt-2.5">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+              <div
+                className="h-full bg-gradient-to-r from-brand to-emerald-400 transition-all"
+                style={{ width: `${autopilotProgress.progress_pct}%` }}
+              />
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-300">
+              {autopilotProgress.text}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-5 rounded-xl border border-white/10 bg-white/5 p-3">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/60">
           How Zilo writes today
         </p>
@@ -375,7 +591,19 @@ function FilterChips({
   );
 }
 
-function DaySection({ day, entries }: { day: number; entries: JournalEntry[] }) {
+function DaySection({
+  day,
+  entries,
+  undoneActions,
+  undoing,
+  onUndo,
+}: {
+  day: number;
+  entries: JournalEntry[];
+  undoneActions: Set<string>;
+  undoing: string | null;
+  onUndo: (actionId: string) => void;
+}) {
   return (
     <section>
       <div className="sticky top-0 z-[1] -mx-6 mb-3 bg-gradient-to-b from-white via-white to-white/0 px-6 py-2">
@@ -385,14 +613,31 @@ function DaySection({ day, entries }: { day: number; entries: JournalEntry[] }) 
       </div>
       <ul className="space-y-3">
         {entries.map((e) => (
-          <EntryCard key={e.id} entry={e} />
+          <EntryCard
+            key={e.id}
+            entry={e}
+            isUndone={e.action_id ? undoneActions.has(e.action_id) : false}
+            isUndoing={e.action_id ? undoing === e.action_id : false}
+            onUndo={onUndo}
+          />
         ))}
       </ul>
     </section>
   );
 }
 
-function EntryCard({ entry }: { entry: JournalEntry }) {
+function EntryCard({
+  entry,
+  isUndone,
+  isUndoing,
+  onUndo,
+}: {
+  entry: JournalEntry;
+  isUndone: boolean;
+  isUndoing: boolean;
+  onUndo: (actionId: string) => void;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const Icon = KIND_ICON[entry.kind] ?? BookOpen;
   const tone = KIND_TONE[entry.kind] ?? "bg-slate-50 text-slate-700 border-slate-200";
 
@@ -409,13 +654,13 @@ function EntryCard({ entry }: { entry: JournalEntry }) {
     ? "rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm transition hover:bg-slate-50"
     : isReturned
     ? "rounded-xl border border-sky-200 bg-sky-50/60 p-4 shadow-sm transition hover:shadow-md"
-    : "rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md";
+    : `rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md ${isUndone ? "opacity-75" : ""}`;
 
   const bodyClass = isMilestone
-    ? "mt-1.5 whitespace-pre-wrap text-[17px] font-medium leading-relaxed text-slate-900"
+    ? `mt-1.5 whitespace-pre-wrap text-[17px] font-medium leading-relaxed text-slate-900 ${isUndone ? "line-through text-slate-400" : ""}`
     : isAnchor
     ? "mt-1.5 whitespace-pre-wrap text-[14px] italic leading-relaxed text-slate-500"
-    : "mt-1.5 whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800";
+    : `mt-1.5 whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800 ${isUndone ? "line-through text-slate-400" : ""}`;
 
   return (
     <li className={cardClass}>
@@ -444,8 +689,63 @@ function EntryCard({ entry }: { entry: JournalEntry }) {
                 Phase unlocked
               </span>
             )}
+            {isUndone && (
+              <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                Undone
+              </span>
+            )}
           </div>
           <p className={bodyClass}>{cleanBody}</p>
+
+          {entry.details && entry.details.length > 0 && (
+            <div className="mt-2.5">
+              <button
+                type="button"
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-800 transition"
+              >
+                {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                {isExpanded ? "Hide details" : `View details (${entry.details.length})`}
+              </button>
+
+              {isExpanded && (
+                <div className="mt-2.5 rounded-lg border border-slate-100 bg-slate-50/50 p-3 text-xs text-slate-700 space-y-1.5">
+                  {entry.details.map((detail, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full bg-slate-400"></span>
+                      <span className={isUndone ? "line-through text-slate-400" : ""}>{detail}</span>
+                    </div>
+                  ))}
+
+                  {entry.action_id && (
+                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                      <span className="text-[10px] text-slate-400">Action ID: {entry.action_id}</span>
+                      {isUndone ? (
+                        <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                          Undone
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={isUndoing}
+                          onClick={() => onUndo(entry.action_id!)}
+                          className="inline-flex items-center gap-1 rounded bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-200 transition disabled:opacity-50"
+                        >
+                          {isUndoing ? (
+                            <Loader2 size={10} className="animate-spin" />
+                          ) : (
+                            <Undo2 size={10} />
+                          )}
+                          Undo Action
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {!isAnchor && (
             <p className="mt-2 text-[11px] text-slate-400">
               {entry.word_count} words · {new Date(entry.created_at).toLocaleString()}

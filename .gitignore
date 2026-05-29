@@ -92,3 +92,5 @@ run_*.sh
 fix.py
 gen_token.py
 list_models.py
+_semantic_cache.json
+

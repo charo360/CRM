@@ -337,6 +337,18 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
         await _persist(user, db, orch)
         return {"ok": True, "home": serialize_home(orch)}
 
+    @router.post("/actions/{action_id}/undo")
+    async def rex_undo(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        try:
+            orch.undo(action_id, reason=body.reason)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Action not found")
+        except Exception as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        await _persist(user, db, orch)
+        return {"ok": True, "home": serialize_home(orch)}
+
     @router.post("/actions/{action_id}/like")
     async def rex_like(action_id: str, user=Depends(get_current_user)):
         orch = await _get_orchestrator(user, db, refresh=False)

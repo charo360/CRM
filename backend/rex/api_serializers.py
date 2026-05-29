@@ -13,6 +13,10 @@ from rex.journal.synthesis import (
     synthesize_daily_anchor,
     synthesize_milestone,
     synthesize_returned,
+    synthesize_ambient_thought,
+    list_overnight_ephemera,
+    compute_autopilot_progress,
+    list_active_learnings,
 )
 from rex.loop import Orchestrator
 from rex.memory.buckets import Bucket
@@ -76,6 +80,7 @@ _KIND_LABELS: dict[JournalEventKind, str] = {
     JournalEventKind.OPERATIONAL_SETBACK: "Setback",
     JournalEventKind.PROBATION: "Probation lifted",
     JournalEventKind.TEAM: "Team",
+    JournalEventKind.BACKGROUND_ACTION: "Background Action",
     JournalEventKind.MILESTONE: "Milestone",
     JournalEventKind.DAILY_ANCHOR: "Daily",
     JournalEventKind.RETURNED: "Returned",
@@ -192,6 +197,8 @@ def _entry_dict(e: JournalEntry) -> dict[str, Any]:
         "source_event_ids": list(e.source_event_ids),
         "created_at": _dt_iso(e.created_at),
         "relationship_day": e.relationship_day,
+        "action_id": getattr(e, "action_id", None),
+        "details": list(getattr(e, "details", ())),
         "is_synthetic": e.kind in {
             JournalEventKind.MILESTONE,
             JournalEventKind.DAILY_ANCHOR,
@@ -236,7 +243,38 @@ def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
     if not has_real_today and not synthetic:
         synthetic.append(synthesize_daily_anchor(relationship_day=day))
 
-    combined = list(real_entries) + synthetic
+    # Convert overnight ephemera to background action journal entries
+    background_entries = []
+    ephemera_tasks = list_overnight_ephemera(orch)
+    from rex.principals.visibility import visibility_founder_only
+    for task in ephemera_tasks:
+        try:
+            dt = datetime.fromisoformat(task["timestamp"])
+        except Exception:
+            dt = datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        body = f"Day {day}.\n{task['summary']}"
+        background_entries.append(
+            JournalEntry(
+                id=task["id"],
+                relationship_day=day,
+                kind=JournalEventKind.BACKGROUND_ACTION,
+                body=body,
+                source_event_ids=(task["action_id"],) if task.get("action_id") else (),
+                actor_name="Zilo",
+                category=task["category"],
+                phase=voice_for_day(day).phase,
+                word_count=len(body.split()),
+                visibility=visibility_founder_only,
+                created_at=dt,
+                action_id=task.get("action_id"),
+                details=tuple(task.get("details", ())),
+            )
+        )
+
+    combined = list(real_entries) + synthetic + background_entries
     ordered = sorted(combined, key=lambda e: e.created_at, reverse=True)
 
     by_kind = Counter(e.kind.value for e in ordered)
@@ -247,6 +285,10 @@ def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
     return {
         "relationship_day": day,
         "phase": phase_info,
+        "ambient_thought": synthesize_ambient_thought(orch, day),
+        "overnight_ephemera": [],
+        "autopilot_progress": compute_autopilot_progress(orch),
+        "active_learnings": list_active_learnings(orch),
         "engagement": {
             "streak_days": streak,
             "gap_days": gap,

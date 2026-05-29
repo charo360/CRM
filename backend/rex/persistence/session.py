@@ -209,22 +209,15 @@ class ZiloSessionStore:
         demo_mode: bool | None = None,
     ) -> None:
         self._compact_orchestrator(orch)
-        existing = await self._col.find_one({"user_id": user_id})
-        created_at = (existing or {}).get("created_at") or _utc_now()
-        rel_day = getattr(orch, "_relationship_day", None) or _relationship_day(
-            codec._parse_dt(created_at) if isinstance(created_at, str) else created_at
-        )
+        rel_day = getattr(orch, "_relationship_day", 1)
         metrics = getattr(orch, "_metrics", None) or {}
-        is_demo = demo_mode if demo_mode is not None else (existing or {}).get("demo_mode", False)
+        is_demo = demo_mode if demo_mode is not None else False
 
         doc: dict[str, Any] = {
-            "user_id": user_id,
             "business_id": business_id,
-            "created_at": created_at,
             "updated_at": _utc_now(),
             "relationship_day": rel_day,
             "last_sync_at": getattr(orch, "_last_sync_at", None),
-            "demo_mode": is_demo,
             "metrics": metrics,
             "events": [codec.trust_event_to_dict(e) for e in orch.event_store.all_events()],
             "actions": [codec.action_to_dict(a) for a in orch.ledger.all_actions()],
@@ -239,7 +232,21 @@ class ZiloSessionStore:
             "journal_streak": int(getattr(orch, "_journal_streak", 0) or 0),
             "journal_shown_milestones": list(getattr(orch, "_journal_shown_milestones", []) or []),
         }
-        await self._col.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
+
+        set_on_insert = {
+            "user_id": user_id,
+            "created_at": _utc_now(),
+            "demo_mode": is_demo,
+        }
+
+        await self._col.update_one(
+            {"user_id": user_id},
+            {
+                "$set": doc,
+                "$setOnInsert": set_on_insert,
+            },
+            upsert=True,
+        )
 
     def invalidate_cache(self, user_id: str) -> None:
         self._cache.pop(user_id, None)
