@@ -214,6 +214,13 @@ class HomeResetRequest(BaseModel):
     demo: bool = False
 
 
+class BriefingPreferencesRequest(BaseModel):
+    enabled_categories: list[str]
+    lead_scout_interval: Optional[str] = "24h"
+    open_scout_interval: Optional[str] = "12h"
+    fb_group_interval: Optional[str] = "6h"
+
+
 # ── Router factory ────────────────────────────────────────────────────────
 
 def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
@@ -236,6 +243,7 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
         user=Depends(get_current_user),
         refresh: bool = Query(False, description="Full platform sweep (slow, blocks)"),
         live: bool = Query(False, description="Block on light refresh before returning"),
+        background: bool = Query(True, description="Kicks light refresh in background"),
     ):
         """Stale-while-revalidate by default.
 
@@ -251,7 +259,7 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
                 orch = await _get_orchestrator(user, db, light=True)
             else:
                 orch = await _get_orchestrator(user, db, refresh=False)
-                if _use_live_db(db):
+                if background and _use_live_db(db):
                     asyncio.create_task(
                         _background_briefing_refresh(user, db, _uid(user), _business_id(user))
                     )
@@ -282,7 +290,7 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
 
     @router.post("/actions/{action_id}/approve")
     async def rex_approve(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
-        orch = await _get_orchestrator(user, db)
+        orch = await _get_orchestrator(user, db, refresh=False)
         if body.draft_body and db is not None:
             await _persist_edited_draft(db, orch, action_id, body.draft_body.strip(), _uid(user))
         try:
@@ -301,7 +309,7 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
 
     @router.post("/actions/{action_id}/dismiss")
     async def rex_dismiss(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
-        orch = await _get_orchestrator(user, db)
+        orch = await _get_orchestrator(user, db, refresh=False)
         try:
             orch.dismiss(action_id, reason=body.reason)
         except KeyError:
@@ -313,7 +321,7 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
 
     @router.post("/actions/{action_id}/reject")
     async def rex_reject(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
-        orch = await _get_orchestrator(user, db)
+        orch = await _get_orchestrator(user, db, refresh=False)
         try:
             orch.reject(action_id, reason=body.reason)
         except KeyError:
@@ -321,6 +329,140 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
         except Exception as e:
             raise HTTPException(status_code=409, detail=str(e))
         await _persist(user, db, orch)
+        return {"ok": True, "home": serialize_home(orch)}
+
+    @router.post("/actions/{action_id}/like")
+    async def rex_like(action_id: str, user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        try:
+            action = orch.ledger.get(action_id)
+            if not action:
+                raise HTTPException(status_code=404, detail="Action not found")
+            from dataclasses import replace
+            payload = dict(action.payload or {})
+            payload["feedback"] = "like"
+            new_action = replace(action, payload=payload)
+            orch.ledger._store._actions[action_id] = new_action
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Action not found")
+        except Exception as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        await _persist(user, db, orch)
+        return {"ok": True, "home": serialize_home(orch)}
+
+    @router.post("/actions/{action_id}/dislike")
+    async def rex_dislike(action_id: str, user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        try:
+            action = orch.ledger.get(action_id)
+            if not action:
+                raise HTTPException(status_code=404, detail="Action not found")
+            from dataclasses import replace
+            payload = dict(action.payload or {})
+            payload["feedback"] = "dislike"
+            new_action = replace(action, payload=payload)
+            orch.ledger._store._actions[action_id] = new_action
+            orch.dismiss(action_id, reason="User disliked this item.")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Action not found")
+        except Exception as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        await _persist(user, db, orch)
+        return {"ok": True, "home": serialize_home(orch)}
+
+    @router.get("/briefing/preferences")
+    async def get_briefing_preferences(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        disabled = getattr(orch, "_disabled_categories", set())
+        
+        from rex.ranks.categories import all_categories
+        categories_data = []
+        for cat in all_categories():
+            categories_data.append({
+                "name": cat.name,
+                "display": cat.display,
+                "tier": cat.tier.value,
+                "enabled": cat.name not in disabled
+            })
+        return {
+            "categories": categories_data,
+            "lead_scout_interval": getattr(orch, "_lead_scout_interval", "24h"),
+            "open_scout_interval": getattr(orch, "_open_scout_interval", "12h"),
+            "fb_group_interval": getattr(orch, "_fb_group_interval", "6h"),
+        }
+
+    @router.post("/briefing/preferences")
+    async def save_briefing_preferences(body: BriefingPreferencesRequest, user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        uid = _uid(user)
+        
+        from rex.ranks.categories import all_categories
+        all_names = {cat.name for cat in all_categories()}
+        enabled_names = set(body.enabled_categories)
+        disabled_names = all_names - enabled_names
+        
+        orch._disabled_categories = disabled_names
+        orch._lead_scout_interval = body.lead_scout_interval or "24h"
+        orch._open_scout_interval = body.open_scout_interval or "12h"
+        orch._fb_group_interval = body.fb_group_interval or "6h"
+        
+        await _persist(user, db, orch)
+        
+        # Propagate custom intervals to the user's active database scouts
+        try:
+            from datetime import datetime, timedelta
+            
+            # 1. Update Lead Scouts (Lead Finder)
+            delta_map = {
+                "1h": timedelta(hours=1),
+                "2h": timedelta(hours=2),
+                "6h": timedelta(hours=6),
+                "12h": timedelta(hours=12),
+                "24h": timedelta(hours=24),
+                "daily": timedelta(hours=24),
+                "weekly": timedelta(days=7),
+            }
+            lead_delta = delta_map.get(body.lead_scout_interval)
+            if lead_delta:
+                await db["lead_scouts"].update_many(
+                    {"user_id": uid, "enabled": True},
+                    {"$set": {
+                        "frequency": body.lead_scout_interval,
+                        "next_run": datetime.utcnow() + lead_delta
+                    }}
+                )
+            else:
+                await db["lead_scouts"].update_many(
+                    {"user_id": uid, "enabled": True},
+                    {"$set": {
+                        "frequency": "manual"
+                    }, "$unset": {"next_run": ""}}
+                )
+                
+            # 2. Update Open Scouts (Zilo Scouts / Web Finder)
+            freq_hours_map = {
+                "1h": 1,
+                "2h": 2,
+                "6h": 6,
+                "12h": 12,
+                "24h": 24,
+                "daily": 24,
+                "weekly": 168,
+            }
+            open_hours = freq_hours_map.get(body.open_scout_interval, 12)
+            await db["zilo_scouts"].update_many(
+                {"user_id": uid, "is_active": True},
+                {"$set": {
+                    "frequency": body.open_scout_interval,
+                    "frequency_hours": open_hours,
+                    "next_run_at": datetime.utcnow() + timedelta(hours=open_hours)
+                }}
+            )
+            
+            logger.info("[preferences] propagated scheduling changes to active scouts for user=%s", uid)
+        except Exception as e:
+            logger.error("[preferences] failed to propagate scheduling changes to scouts: %s", e)
+            
         return {"ok": True, "home": serialize_home(orch)}
 
     # ── Memory surfaces (persisted) ─────────────────────────────────────
@@ -342,13 +484,28 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
 
     @router.get("/team")
     async def rex_team(user=Depends(get_current_user)):
-        """All AI agents — Zilo Chat specialists, deputies, and Action Mode runners."""
+        """All AI agents — Zilo Chat specialists, deputies, and Action Mode runners.
+
+        Team roster is static; per-agent standings are skipped to keep this endpoint
+        snappy. Loading the orchestrator + calling `engine.standing()` for each
+        sub-agent triggered per-agent Mongo round-trips that could hang on slow links.
+        """
         try:
-            orch = await _get_orchestrator(user, db, light=True) if _use_live_db(db) else None
-            return serialize_team(orch)
+            return serialize_team(None)
         except Exception as e:
             logger.exception("[zilo] /team failed: %s", e)
             raise HTTPException(status_code=500, detail=str(e)[:500])
+
+    async def _background_sync_task(db: Any, user: dict, uid: str, bid: str):
+        try:
+            store = ZiloSessionStore(db)
+            orch = await store.load(uid, business_id=bid)
+            wire_action_mode_executor(orch, db, uid)
+            await run_platform_sweep(db, user, orch, force=True)
+            await store.save(uid, business_id=bid, orch=orch)
+            logger.info("[zilo] background /sync complete uid=%s", uid)
+        except Exception as e:
+            logger.warning("[zilo] background /sync failed uid=%s: %s", uid, e)
 
     @router.post("/sync")
     async def rex_sync(user=Depends(get_current_user)):
@@ -356,12 +513,14 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
         if not _use_live_db(db):
             raise HTTPException(status_code=501, detail="CRM sync requires database")
         uid = _uid(user)
+        bid = _business_id(user)
         store = await _session_store()
-        orch = await store.load(uid, business_id=_business_id(user))
-        wire_action_mode_executor(orch, db, uid)
-        report = await run_platform_sweep(db, user, orch, force=True)
-        await _persist(user, db, orch)
-        return {"ok": True, "report": report, "home": serialize_home(orch)}
+        orch = await store.load(uid, business_id=bid)
+        
+        # Run the heavy sync in the background to prevent 500 proxy timeouts
+        asyncio.create_task(_background_sync_task(db, user, uid, bid))
+        
+        return {"ok": True, "report": {"status": "syncing in background"}, "home": serialize_home(orch)}
 
     # ── Onboarding ───────────────────────────────────────────────────────
 

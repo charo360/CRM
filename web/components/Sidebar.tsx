@@ -115,10 +115,19 @@ export default function Sidebar() {
   const workspaceNav = coreNavItems();
 
   useEffect(() => {
-    api.get<{ counts?: { staged?: number } }>("/rex/home?live=0")
+    api.get<{ counts?: { staged?: number } }>("/rex/home?background=false")
       .then((d) => setZiloStagedCount(d.counts?.staged ?? 0))
       .catch(() => setZiloStagedCount(0));
   }, [pathname]);
+
+  useEffect(() => {
+    function handleCountChange(e: Event) {
+      const customEvent = e as CustomEvent<number>;
+      setZiloStagedCount(customEvent.detail ?? 0);
+    }
+    window.addEventListener("zilo-staged-count-change", handleCountChange);
+    return () => window.removeEventListener("zilo-staged-count-change", handleCountChange);
+  }, []);
 
   const mainNav = MAIN_NAV.map((item) =>
     item.href === "/dashboard/customers" ? { ...item, label: ui.customersNavLabel } : item

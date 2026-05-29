@@ -13255,8 +13255,10 @@ async def startup_tasks():
         await db.seo_agent_conversations.create_index([("user_id", 1), ("created_at", -1)])
         await db.seo_serp_rankings.create_index([("user_id", 1), ("keyword", 1), ("domain", 1)])
         await db.seo_serp_rankings.create_index([("user_id", 1), ("checked_at", -1)])
-        # TTL policy: auto-delete SERP rankings older than 1 year
-        await db.seo_serp_rankings.create_index("checked_at", expireAfterSeconds=31536000)
+        # Action Mode Queue indexes to optimize email and whatsapp background sweeps
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("metadata.thread_id", 1)])
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("metadata.customer_id", 1)])
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("action_type", 1)])
 
         logging.info("Database indexes ensured successfully")
     except Exception as e:

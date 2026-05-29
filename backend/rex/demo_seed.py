@@ -106,6 +106,7 @@ def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
         memory_citation_ids=(meridian_mem.id,),
         payload={"draft_preview": "Meridian — numbers from last quarter still hold. Ready to move when you are."},
     )
+    import dataclasses
     henderson = Action.propose(
         actor_name="Zilo",
         rank_at_time=Rank.DRAFTER,
@@ -121,6 +122,9 @@ def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
         memory_citation_ids=(henderson_mem.id,),
         payload={"draft_preview": "Henderson — here's what teams your size typically see in month one."},
     )
+    # Set to yesterday so it renders in the "Yesterday" section
+    henderson = dataclasses.replace(henderson, proposed_at=datetime.now(timezone.utc) - timedelta(days=1))
+
     _record_staged(orch, meridian)
     _record_staged(orch, henderson)
 
@@ -266,6 +270,9 @@ def serialize_home(orch: Orchestrator, *, relationship_day: int | None = None) -
             "review_only": bool((act.payload or {}).get("review_only")),
             "action_mode_type": (act.payload or {}).get("action_mode_type"),
             "source_url": (act.payload or {}).get("url") or None,
+            "is_informational": bool((act.payload or {}).get("is_informational") or act.kind == ActionKind.DATA_FLAG),
+            "feedback": (act.payload or {}).get("feedback"),
+            "proposed_at": _dt_iso(act.proposed_at) if act.proposed_at else None,
         })
 
     activity = _select_recent_activity(orch, limit=8)

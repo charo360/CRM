@@ -45,6 +45,8 @@ _CATALOG: tuple[_CategoryDef, ...] = (
     _CategoryDef("outreach", "outreach", Tier.CORE),
     _CategoryDef("replies", "email replies", Tier.CORE),
     _CategoryDef("leads", "leads", Tier.CORE),
+    _CategoryDef("competitor", "competitor analysis", Tier.CORE),
+    _CategoryDef("slack", "Slack", Tier.CORE),
     _CategoryDef("follow_ups", "follow-ups", Tier.CORE),
     _CategoryDef("meeting_follow_through", "meeting follow-through", Tier.CORE),
 
@@ -62,6 +64,7 @@ _CATALOG: tuple[_CategoryDef, ...] = (
     _CategoryDef("social_dms", "social DMs", Tier.GROWTH),
     _CategoryDef("seo_content", "SEO content", Tier.GROWTH),
     _CategoryDef("behavior_offers", "behavior-triggered offers", Tier.GROWTH),
+    _CategoryDef("news", "news & industry updates", Tier.GROWTH),
 
     # Tier 4 — Acquisition (money on the line — slow earn)
     _CategoryDef("meta_ads", "Meta Ads", Tier.ACQUISITION),

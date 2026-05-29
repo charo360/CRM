@@ -161,7 +161,8 @@ def _mk_router(db, get_current_user):
         try:
             recent_convs, owner_prefs_raw, biz_settings, biz_knowledge = await _asyncio.gather(
                 db.assistant_conversations.find(
-                    conversation_list_filter(user)
+                    conversation_list_filter(user),
+                    {"title": 1, "agent": 1}
                 ).sort("updated_at", -1).to_list(5),
                 _get_all_owner_prefs_safe(user_id),
                 db.users.find_one({"_id": user_id}, {"settings": 1}),
@@ -277,14 +278,24 @@ def _mk_router(db, get_current_user):
 
     @router.get("/conversations")
     async def list_conversations(user=Depends(get_current_user)):
+        projection = {
+            "title": 1,
+            "updated_at": 1,
+            "agent": 1,
+            "visibility": 1,
+            "shared_with": 1,
+            "created_by": 1,
+            "message_count": {"$size": {"$ifNull": ["$messages", []]}}
+        }
         rows = await db.assistant_conversations.find(
-            conversation_list_filter(user)
+            conversation_list_filter(user),
+            projection
         ).sort("updated_at", -1).to_list(50)
         return [{
             "id": r["_id"],
             "title": r.get("title") or "New chat",
             "updated_at": r.get("updated_at"),
-            "message_count": len(r.get("messages") or []),
+            "message_count": r.get("message_count", 0),
             "agent": r.get("agent") or "general",
             **serialize_conversation_meta(r),
         } for r in rows]
@@ -308,7 +319,7 @@ def _mk_router(db, get_current_user):
         row = await db.assistant_conversations.find_one({
             "_id": conv_id,
             "user_id": {"$in": tenant_user_ids(user)},
-        })
+        }, {"messages": 0})
         if not row or not can_access_conversation_row(row, user):
             raise HTTPException(404, "Conversation not found")
         await db.assistant_conversations.delete_one({

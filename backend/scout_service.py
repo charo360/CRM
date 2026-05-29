@@ -17,8 +17,11 @@ SCOUTS_COLLECTION = "zilo_scouts"
 EXECUTIONS_COLLECTION = "zilo_scout_executions"
 
 FREQUENCY_HOURS = {
+    "1h": 1,
+    "2h": 2,
     "6h": 6,
     "12h": 12,
+    "24h": 24,
     "daily": 24,
     "weekly": 168,
 }

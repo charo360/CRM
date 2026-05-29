@@ -122,21 +122,44 @@ def _looks_like_conversation(msg: dict[str, Any]) -> bool:
     return False
 
 
-def _is_promotional(msg: dict[str, Any]) -> tuple[bool, str]:
+def _clean_email(addr: str) -> str:
+    if not addr:
+        return ""
+    addr = addr.lower().strip()
+    if "<" in addr and ">" in addr:
+        return addr.split("<")[-1].split(">")[0].strip()
+    return addr
+
+
+def _is_promotional(msg: dict[str, Any], whitelist: set[str] | None = None) -> tuple[bool, str]:
     """Return (skip, reason) — should Zilo skip drafting a reply to this message?
 
     Layered heuristic:
-      1. Automated/no-reply sender address (noreply@, news@, marketing@, etc.)
-      2. List-Unsubscribe / List-ID header present (RFC 2369 — bulk mail marker)
-      3. ESP domain (Mailchimp, SendGrid, Substack, etc.)
-      4. Subject matches a promo / newsletter / clickbait pattern
-      5. Subject screams in ALL CAPS (4+ chars, 2+ words = spam)
-      6. Body contains the unsubscribe + newsletter-footer combo
-      7. Default-deny: nothing in the message looks like a real conversation
+      1. CRM Contact Whitelist (always allow if whitelisted)
+      2. Automated/no-reply sender address (noreply@, news@, marketing@, etc.)
+      3. List-Unsubscribe / List-ID header present (RFC 2369 — bulk mail marker)
+      4. ESP domain (Mailchimp, SendGrid, Substack, etc.)
+      5. Subject matches a promo / newsletter / clickbait pattern
+      6. Subject screams in ALL CAPS (4+ chars, 2+ words = spam)
+      7. Body contains the unsubscribe + newsletter-footer combo
+      8. Default-deny for unknown senders if not looking like a conversational email.
     """
-    from email_classifier import _should_skip
-
     from_addr = (msg.get("from_addr") or "").lower()
+    clean_from = _clean_email(from_addr)
+
+    # 1. CRM Contact Whitelist (always allow)
+    if whitelist and clean_from in whitelist:
+        return False, ""
+
+    # 2. Common Automated/System Senders
+    if clean_from:
+        prefix = clean_from.split("@")[0]
+        if prefix in ("noreply", "no-reply", "newsletter", "news", "marketing", "promotions",
+                      "alerts", "info", "hello", "support", "billing", "notifications",
+                      "updates", "feedback", "team", "join"):
+            return True, f"automated_prefix:{prefix}"
+
+    from email_classifier import _should_skip
     if _should_skip(from_addr):
         return True, "automated_sender"
 
@@ -165,17 +188,17 @@ def _is_promotional(msg: dict[str, Any]) -> tuple[bool, str]:
     body_raw = msg.get("body_clean") or msg.get("body_raw") or ""
     if body_raw:
         # An unsubscribe / manage-subscription URL is essentially conclusive.
-        # Newsletters always carry one; real conversation emails almost never do.
         if _UNSUB_URL.search(body_raw):
             return True, "unsubscribe_url"
         if _MANAGE_SUBS.search(body_raw):
             return True, "newsletter_footer"
 
-    # Note: an earlier version of this filter had a "default-deny unless the
-    # message looks like a conversation" rule. It mis-flagged real follow-ups
-    # (short emails without Re: or conversation keywords) and silently dismissed
-    # 85+ legitimate items. Default is now to allow — only positive promo
-    # signals above will block.
+    # Default-deny for unknown senders if it's not a reply thread and doesn't look conversational
+    sub_lower = subject.strip().lower()
+    if not sub_lower.startswith(("re:", "fwd:", "fw:")):
+        if not _looks_like_conversation(msg):
+            return True, "not_conversational"
+
     return False, ""
 
 
@@ -192,6 +215,17 @@ async def sync_and_draft_inbox(
     """
     from email_sync import sync_emails_for_user
     from action_mode_routes import _add_to_queue
+
+    # Batch-fetch customer email addresses for fast in-memory whitelist lookup
+    whitelist: set[str] = set()
+    try:
+        customers = await db.customers.find({"user_id": uid}, {"email": 1}).to_list(1000)
+        for c in customers:
+            e = c.get("email")
+            if e:
+                whitelist.add(e.lower().strip())
+    except Exception as e:
+        logger.warning("[zilo] failed to build customer email whitelist: %s", e)
 
     sync_result = await sync_emails_for_user(uid, db, max_results=max_messages)
     drafted = 0
@@ -211,7 +245,7 @@ async def sync_and_draft_inbox(
             continue
         seen_threads.add(thread_id)
 
-        skip, reason = _is_promotional(msg)
+        skip, reason = _is_promotional(msg, whitelist)
         if skip:
             skipped_promo += 1
             logger.debug("[zilo] email skip uid=%s thread=%s reason=%s", uid, thread_id, reason)

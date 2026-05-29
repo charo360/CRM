@@ -74,12 +74,13 @@ BRIEFING_SIGN_OFF = "— Zilo"
 QUIET_NIGHT_LETTER_TEMPLATE = (
     "{opener}\n"
     "\n"
-    "Quiet night. Nothing needs you this morning.\n"
+    "Quiet {tod}. Nothing needs your attention right now.\n"
     "\n"
     "I'll keep watching. Full ledger below if you want it.\n"
     "\n"
     f"{BRIEFING_SIGN_OFF}\n"
 )
+
 
 
 # ---------------------------------------------------------------------------
@@ -188,12 +189,5 @@ def assert_inviolable_briefing_shape(letter: str) -> None:
         raise AssertionError(
             f"Briefing must end with sign-off line '{BRIEFING_SIGN_OFF}'."
         )
-    # Cap action items at 3.
-    action_count = (
-        letter.count(ACTION_TOKEN_REVIEW_SEND)
-        + letter.count(ACTION_TOKEN_HANDLE_MANUALLY)
-    )
-    if action_count > 3:
-        raise AssertionError(
-            f"Briefing has {action_count} action items; maximum is 3."
-        )
+    # No action count cap.
+    pass

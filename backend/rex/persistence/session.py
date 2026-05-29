@@ -20,6 +20,7 @@ from rex.ranks.store import InMemoryEventStore
 logger = logging.getLogger(__name__)
 
 COLLECTION = "zilo_sessions"
+_INDEX_ENSURED = False
 
 
 def _utc_now() -> datetime:
@@ -35,14 +36,19 @@ def _relationship_day(created_at: datetime) -> int:
 class ZiloSessionStore:
     """Mongo-backed orchestrator sessions keyed by CRM user id."""
 
+    _cache: dict[str, Orchestrator] = {}
+
     def __init__(self, db: Any) -> None:
         self._db = db
         self._col = db[COLLECTION]
-        self._cache: dict[str, Orchestrator] = {}
 
     async def ensure_indexes(self) -> None:
+        global _INDEX_ENSURED
+        if _INDEX_ENSURED:
+            return
         try:
             await self._col.create_index("user_id", unique=True)
+            _INDEX_ENSURED = True
         except Exception as e:
             logger.warning("[zilo] index create: %s", e)
 
@@ -62,6 +68,10 @@ class ZiloSessionStore:
         orch = Orchestrator(ledger=ledger, event_store=event_store, notebook=notebook)
         ensure_stub_executor(orch)
         orch._swept_ids = set(doc.get("swept_ids") or [])
+        orch._disabled_categories = set(doc.get("disabled_categories") or [])
+        orch._lead_scout_interval = doc.get("lead_scout_interval", "24h")
+        orch._open_scout_interval = doc.get("open_scout_interval", "12h")
+        orch._fb_group_interval = doc.get("fb_group_interval", "6h")
         created = doc.get("created_at")
         if created:
             orch._relationship_day = _relationship_day(codec._parse_dt(created))  # type: ignore[attr-defined]
@@ -85,6 +95,10 @@ class ZiloSessionStore:
         orch = Orchestrator()
         ensure_stub_executor(orch)
         orch._relationship_day = 1  # type: ignore[attr-defined]
+        orch._disabled_categories = set()
+        orch._lead_scout_interval = "24h"
+        orch._open_scout_interval = "12h"
+        orch._fb_group_interval = "6h"
         orch._metrics = {}  # type: ignore[attr-defined]
         orch._live_mode = True  # type: ignore[attr-defined]
         await self.save(user_id, business_id=business_id, orch=orch)
@@ -119,6 +133,69 @@ class ZiloSessionStore:
         )
         self._cache[user_id] = orch
 
+    def _compact_orchestrator(self, orch: Orchestrator) -> None:
+        """Prune resolved actions and changes in ledger to limit document size in DB."""
+        try:
+            from datetime import timedelta
+            from rex.actions.primitives import ActionState
+
+            ledger = orch.ledger
+            swept_ids = set(orch._swept_ids)
+
+            all_actions = ledger.all_actions()
+            active_actions = []
+            resolved_actions = []
+
+            for action in all_actions:
+                try:
+                    state = ledger.current_state(action.id)
+                except KeyError:
+                    continue
+
+                is_active = False
+                if state in (ActionState.PROPOSED, ActionState.STAGED, ActionState.APPROVED):
+                    is_active = True
+                elif state == ActionState.SENT:
+                    if action.id not in swept_ids:
+                        is_active = True
+                    elif action.proposed_at:
+                        now_val = datetime.now(action.proposed_at.tzinfo or timezone.utc)
+                        if now_val - action.proposed_at < timedelta(minutes=45):
+                            is_active = True
+
+                if is_active:
+                    active_actions.append(action)
+                else:
+                    resolved_actions.append(action)
+
+            # Sort resolved by proposed_at descending, keep 50
+            tz_min = datetime.min.replace(tzinfo=timezone.utc)
+            def get_sort_key(act):
+                dt = act.proposed_at
+                if not dt:
+                    return tz_min
+                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+            resolved_actions.sort(key=get_sort_key, reverse=True)
+            max_resolved = 50
+            keep_resolved = resolved_actions[:max_resolved]
+
+            keep_ids = {a.id for a in active_actions} | {a.id for a in keep_resolved}
+
+            keep_actions_list = [a for a in all_actions if a.id in keep_ids]
+            all_changes = ledger.all_changes()
+            keep_changes_list = [c for c in all_changes if c.action_id in keep_ids]
+
+            ledger._store.load_snapshot(keep_actions_list, keep_changes_list)
+            orch._swept_ids = swept_ids & keep_ids
+            logger.info(
+                "[zilo] compacted session ledger: actions count %d -> %d, changes %d -> %d",
+                len(all_actions), len(keep_actions_list),
+                len(all_changes), len(keep_changes_list)
+            )
+        except Exception as e:
+            logger.exception("[zilo] failed to compact session ledger: %s", e)
+
     async def _save_doc(
         self,
         user_id: str,
@@ -127,6 +204,7 @@ class ZiloSessionStore:
         orch: Orchestrator,
         demo_mode: bool | None = None,
     ) -> None:
+        self._compact_orchestrator(orch)
         existing = await self._col.find_one({"user_id": user_id})
         created_at = (existing or {}).get("created_at") or _utc_now()
         rel_day = getattr(orch, "_relationship_day", None) or _relationship_day(
@@ -149,6 +227,10 @@ class ZiloSessionStore:
             "changes": [codec.change_to_dict(c) for c in orch.ledger._store.all_changes()],  # noqa: SLF001
             "notebook": [codec.notebook_entry_to_dict(e) for e in orch.notebook.all()],
             "swept_ids": list(orch._swept_ids),
+            "disabled_categories": list(getattr(orch, "_disabled_categories", set())),
+            "lead_scout_interval": getattr(orch, "_lead_scout_interval", "24h"),
+            "open_scout_interval": getattr(orch, "_open_scout_interval", "12h"),
+            "fb_group_interval": getattr(orch, "_fb_group_interval", "6h"),
         }
         await self._col.update_one({"user_id": user_id}, {"$set": doc}, upsert=True)
 

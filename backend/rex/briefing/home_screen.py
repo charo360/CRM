@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from rex.actions.primitives import ActionState
 from rex.briefing.letter import Letter, compose_letter
 from rex.briefing.opener import opener_for
-from rex.briefing.selector import pick_top_actions
+from rex.briefing.selector import pick_top_actions, score_action
 from rex.identity import CHIEF_OF_STAFF_NAME
 from rex.loop.orchestrator import Orchestrator
 from rex.ranks.categories import Tier, all_categories
@@ -151,17 +151,27 @@ def build_home_screen(
     p = principal if principal is not None else orchestrator.registry.founder
 
     # 1) Letter (filtered by what this principal is allowed to see)
+    disabled_cats = getattr(orchestrator, "_disabled_categories", set())
     staged = [
         a for a in orchestrator.ledger.staged_actions()
         if can_see(a.visibility, principal_id=p.id, role=p.role, is_founder=p.is_founder)
         and p.can_access_category(a.category)
+        and a.category not in disabled_cats
     ]
-    top = pick_top_actions(staged, limit=3, now=moment)
+    # Filter to only keep important actions (score >= 0.6)
+    important_staged = []
+    for a in staged:
+        score_obj = score_action(a, now=moment)
+        if score_obj.score >= 0.6:
+            important_staged.append(a)
+
+    top = pick_top_actions(important_staged, limit=len(important_staged), now=moment)
     opener = opener_for(now=moment, relationship_day=relationship_day)
     letter = compose_letter(
         opener=opener,
         staged_actions=top,
         notebook=orchestrator.notebook,
+        now=moment,
     )
 
     # 2) Counts (filtered by principal scope)
@@ -175,7 +185,7 @@ def build_home_screen(
         return can_see(act.visibility, principal_id=p.id, role=p.role, is_founder=p.is_founder) and p.can_access_category(act.category)
 
     counts = LedgerCounts(
-        staged=len(staged),
+        staged=len(top),
         sent_today=sum(1 for a in orchestrator.ledger.actions_in_state(ActionState.SENT) if _is_visible(a.id)),
         undone_today=sum(1 for a in orchestrator.ledger.actions_in_state(ActionState.UNDONE) if _is_visible(a.id)),
         failed_today=sum(1 for a in orchestrator.ledger.actions_in_state(ActionState.FAILED) if _is_visible(a.id)),

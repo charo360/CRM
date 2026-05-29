@@ -207,7 +207,7 @@ async def sync_from_crm(
         "user_id": uid,
         "status": {"$in": ["unpaid", "Pending", "overdue", "Overdue"]},
         "created_at": {"$lt": now - timedelta(days=7)},
-    }).sort("created_at", 1).to_list(5)
+    }).sort("created_at", 1).to_list(20)
 
     for inv in overdue:
         inv_id = str(inv["_id"])
@@ -248,7 +248,7 @@ async def sync_from_crm(
             {"last_contacted": {"$lt": now - timedelta(days=7)}},
             {"last_contacted": {"$exists": False}},
         ],
-    }).sort("last_contacted", 1).to_list(3)
+    }).sort("last_contacted", 1).to_list(15)
 
     for cust in cold:
         cid = str(cust["_id"])
@@ -271,7 +271,7 @@ async def sync_from_crm(
         "status": "pending",
         "is_auto_sequence": {"$ne": True},
         "reminder_date": {"$lte": now + timedelta(days=1)},
-    }).sort("reminder_date", 1).to_list(3)
+    }).sort("reminder_date", 1).to_list(15)
 
     for fu in pending_fu:
         fid = str(fu["_id"])

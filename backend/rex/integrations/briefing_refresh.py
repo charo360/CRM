@@ -36,7 +36,7 @@ async def _safe(coro, *, label: str):
         return {"error": str(e)}
 
 
-def _auto_dismiss_promotional_staged(orch: Orchestrator) -> int:
+def _auto_dismiss_promotional_staged(orch: Orchestrator, whitelist: set[str] | None = None) -> int:
     """Walk staged email actions and dismiss any that look promotional.
 
     Why: the email_bridge + queue-import filters block new newsletter drafts,
@@ -58,7 +58,7 @@ def _auto_dismiss_promotional_staged(orch: Orchestrator) -> int:
             "body_clean": payload.get("snippet") or payload.get("draft_preview"),
             "headers": payload.get("headers"),
         }
-        promo, reason = _is_promotional(meta_msg)
+        promo, reason = _is_promotional(meta_msg, whitelist)
         if not promo:
             continue
         try:
@@ -195,10 +195,21 @@ async def light_briefing_refresh(
 
     await sync_from_crm(db, user, orch, skip_heavy_staging=True)
 
+    # Batch-fetch customer email addresses for fast whitelist lookup
+    whitelist: set[str] = set()
+    try:
+        customers = await db.customers.find({"user_id": uid}, {"email": 1}).to_list(1000)
+        for c in customers:
+            e = c.get("email")
+            if e:
+                whitelist.add(e.lower().strip())
+    except Exception as e:
+        logger.warning("[zilo] failed to build customer email whitelist: %s", e)
+
     # Order matters: revive first (recovers items wrongly killed by an old
     # over-aggressive rule), then run the current promo-dismiss pass.
     report["revived"] = _revive_overzealously_dismissed(orch)
-    report["auto_dismissed_promo"] = _auto_dismiss_promotional_staged(orch)
+    report["auto_dismissed_promo"] = _auto_dismiss_promotional_staged(orch, whitelist)
 
     metrics = await fetch_metrics(db, uid)
     metrics["followups_zilo"] = sum(

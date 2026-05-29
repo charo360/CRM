@@ -54,6 +54,18 @@ def queue_ref(queue_id: str) -> str:
 def _category_for_item(item: dict[str, Any]) -> str:
     agent = (item.get("agent") or "").lower()
     at = item.get("action_type", "")
+    
+    # Check if the title or draft content/snippet contains competitor keywords
+    title = (item.get("title") or "").lower()
+    draft = (item.get("draft_content") or "").lower()
+    meta = item.get("metadata") or {}
+    url = (meta.get("url") or "").lower()
+    snippet = (meta.get("snippet") or "").lower()
+    
+    is_competitor = any(x in title or x in draft or x in snippet or x in url for x in ["competitor", "compete", "analysis", "audit", "benchmark"])
+    if is_competitor:
+        return "competitor"
+
     if "scout" in agent or at == "post_comment":
         return "leads"
     if at == "send_email":
@@ -184,6 +196,13 @@ async def import_scout_opportunities(db: Any, uid: str, orch: Orchestrator, *, l
             if pending:
                 continue
 
+        title_val = (opp.get("title") or "").lower()
+        snippet_val = (opp.get("snippet") or "").lower()
+        url_val = (opp.get("url") or "").lower()
+        
+        is_competitor = any(x in title_val or x in snippet_val or x in url_val for x in ["competitor", "compete", "analysis", "audit", "benchmark"])
+        category = "competitor" if is_competitor else "leads"
+
         kind = ActionKind.SOCIAL_POST if opp.get("kind") == "social" else ActionKind.DATA_FLAG
         if opp.get("kind") == "funding":
             kind = ActionKind.QUOTE
@@ -191,8 +210,8 @@ async def import_scout_opportunities(db: Any, uid: str, orch: Orchestrator, *, l
         _stage_action(
             orch,
             kind=kind,
-            category="leads",
-            summary=f"Lead: {(opp.get('title') or 'Opportunity')[:100]}",
+            category=category,
+            summary=f"{'Competitor' if is_competitor else 'Lead'}: {(opp.get('title') or 'Opportunity')[:100]}",
             reasoning=(opp.get("snippet") or "Scout found this — approve to engage or add to pipeline.")[:300],
             confidence=min(0.95, 0.7 + (opp.get("score", 7) * 0.03)),
             crm_ref=ref,
@@ -202,6 +221,7 @@ async def import_scout_opportunities(db: Any, uid: str, orch: Orchestrator, *, l
                 "url": url,
                 "score": opp.get("score"),
                 "scout_id": opp.get("scout_id"),
+                "is_informational": True,
                 "draft_preview": (opp.get("snippet") or "")[:500],
             },
         )

@@ -154,9 +154,11 @@ class TestSelector:
         now = _utc()
         a = _action_with_proposed_at(now, confidence=0.9, category="outreach")
         s = score_action(a, now=now)
-        assert s.confidence_term == round(0.6 * 0.9, 4)
-        assert s.freshness_term == 0.3
-        assert s.tier_term == 0.1
+        assert s.confidence_term == round(0.20 * 0.9, 4)
+        assert s.freshness_term == 0.10
+        assert s.tier_term == 0.10
+        assert s.urgency_term == round(0.35 * 0.4, 4)
+        assert s.importance_term == round(0.35 * 0.8, 4)
 
 
 # ===========================================================================
@@ -168,6 +170,7 @@ class TestQuietNightLetter:
         letter = compose_letter(
             opener="Tuesday. 6:47am.",
             staged_actions=(),
+            now=_utc(hour=23),
         )
         assert letter.quiet_night is True
         assert "Quiet night" in letter.body
@@ -176,7 +179,7 @@ class TestQuietNightLetter:
 
     def test_quiet_night_passes_voice_check(self):
         # Should not raise.
-        compose_letter(opener="Tuesday. 6:47am.", staged_actions=())
+        compose_letter(opener="Tuesday. 6:47am.", staged_actions=(), now=_utc(hour=23))
 
 
 # ===========================================================================
@@ -189,6 +192,7 @@ class TestLetterWithActions:
         letter = compose_letter(
             opener="Tuesday. 6:47am.",
             staged_actions=(a,),
+            now=_utc(hour=23),
         )
         assert "one thing needs you" in letter.body
         assert ACTION_TOKEN_REVIEW_SEND in letter.body
@@ -197,36 +201,36 @@ class TestLetterWithActions:
 
     def test_three_actions_uses_three(self):
         actions = tuple(make_action(summary=f"thing {i}") for i in range(3))
-        letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=actions)
+        letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=actions, now=_utc(hour=23))
         assert "three things need you" in letter.body
         assert letter.body.count(ACTION_TOKEN_REVIEW_SEND) == 3
 
     def test_more_than_three_raises(self):
         actions = tuple(make_action() for _ in range(4))
         with pytest.raises(LetterShapeError, match="limit is 3"):
-            compose_letter(opener="x.", staged_actions=actions)
+            compose_letter(opener="x.", staged_actions=actions, now=_utc(hour=23))
 
     def test_letter_ends_with_sign_off(self):
         a = make_action()
-        letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=(a,))
+        letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=(a,), now=_utc(hour=23))
         assert letter.body.rstrip().endswith(BRIEFING_SIGN_OFF)
 
     def test_action_with_reasoning_is_rendered(self):
         a = make_action(reasoning="9 days silent, prior cadence was 4 days.")
-        letter = compose_letter(opener="x.", staged_actions=(a,))
+        letter = compose_letter(opener="x.", staged_actions=(a,), now=_utc(hour=23))
         assert "9 days silent" in letter.body
 
     def test_long_imported_reasoning_passes_voice(self):
         long_reasoning = " ".join(["snippet"] * 81)
         a = make_action(reasoning=long_reasoning)
-        letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=(a,))
+        letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=(a,), now=_utc(hour=23))
         assert "snippet" in letter.body
 
     def test_voice_violation_raises(self):
         # Action with sycophantic summary should be caught by voice gate.
         a = make_action(summary="Absolutely! I'd love to help!", confidence=0.9)
         with pytest.raises(LetterShapeError):
-            compose_letter(opener="x.", staged_actions=(a,))
+            compose_letter(opener="x.", staged_actions=(a,), now=_utc(hour=23))
 
 
 # ===========================================================================
@@ -244,7 +248,7 @@ class TestLetterCitations:
         a = make_action()
         a = replace(a, memory_citation_ids=(entry.id,))
         letter = compose_letter(
-            opener="x.", staged_actions=(a,), notebook=nb,
+            opener="x.", staged_actions=(a,), notebook=nb, now=_utc(hour=23),
         )
         assert letter.actions[0].has_citation is True
         assert "directness" in letter.body
@@ -252,7 +256,7 @@ class TestLetterCitations:
     def test_no_citation_when_no_notebook_provided(self):
         a = make_action()
         a = replace(a, memory_citation_ids=("any-id",))
-        letter = compose_letter(opener="x.", staged_actions=(a,), notebook=None)
+        letter = compose_letter(opener="x.", staged_actions=(a,), notebook=None, now=_utc(hour=23))
         assert letter.actions[0].has_citation is False
 
 
@@ -352,9 +356,103 @@ class TestDeterminism:
         a1 = _action_with_proposed_at(_utc(), summary="A", confidence=0.9)
         a2 = _action_with_proposed_at(_utc(), summary="B", confidence=0.7)
         letter1 = compose_letter(
-            opener="Tuesday. 6:47am.", staged_actions=(a1, a2),
+            opener="Tuesday. 6:47am.", staged_actions=(a1, a2), now=_utc(hour=23),
         )
         letter2 = compose_letter(
-            opener="Tuesday. 6:47am.", staged_actions=(a1, a2),
+            opener="Tuesday. 6:47am.", staged_actions=(a1, a2), now=_utc(hour=23),
         )
         assert letter1.body == letter2.body
+
+
+# ===========================================================================
+# Live Feed — Importance, Urgency, Anti-Starvation & Filtering
+# ===========================================================================
+
+class TestLiveFeedImportanceUrgency:
+    def test_urgency_calculation(self):
+        from rex.briefing.selector import calculate_action_urgency
+        now = _utc()
+
+        # Inbound reply: highly urgent
+        reply = make_action(kind=ActionKind.REPLY, category="replies")
+        assert calculate_action_urgency(reply, reply.proposed_at) == 0.9
+
+        # Scout lead: lower urgency
+        lead = make_action(kind=ActionKind.SOCIAL_POST, category="leads")
+        assert calculate_action_urgency(lead, lead.proposed_at) == 0.4
+
+        # Urgency override
+        high_urg = make_action()
+        high_urg = replace(high_urg, payload={"urgency": "high"})
+        assert calculate_action_urgency(high_urg, high_urg.proposed_at) == 1.0
+
+        # Keyword triggers
+        urgent_kw = make_action(summary="Urgent invoice issue", category="outreach")
+        assert calculate_action_urgency(urgent_kw, urgent_kw.proposed_at) == 0.4 + 0.15 # 0.55
+
+    def test_importance_calculation(self):
+        from rex.briefing.selector import calculate_action_importance
+
+        # VIP Modifier
+        vip_action = make_action(category="outreach")
+        vip_action = replace(vip_action, payload={"tags": ["VIP"]})
+        assert calculate_action_importance(vip_action) == 0.8 + 0.20 # 1.0
+
+        # High value transaction
+        high_val = make_action(category="invoices")
+        high_val = replace(high_val, payload={"amount": 1500.0})
+        assert calculate_action_importance(high_val) == 0.7 + 0.20 # 0.90
+
+    def test_anti_starvation_decay(self):
+        from rex.briefing.selector import calculate_action_urgency
+        now = _utc()
+
+        # Proposed 3 days ago (should lose 0.3 urgency)
+        old_action = _action_with_proposed_at(now - timedelta(days=3), kind=ActionKind.REPLY, category="replies")
+        assert round(calculate_action_urgency(old_action, now), 2) == round(0.9 - 0.3, 2)
+
+    def test_time_of_day_phrasing(self):
+        a = make_action()
+
+        # Morning (hour 8)
+        letter_morning = compose_letter(opener="x", staged_actions=(a,), now=_utc(hour=8))
+        assert "Quiet morning overall" in letter_morning.body
+
+        # Afternoon (hour 14)
+        letter_afternoon = compose_letter(opener="x", staged_actions=(a,), now=_utc(hour=14))
+        assert "Quiet afternoon overall" in letter_afternoon.body
+
+        # Evening (hour 19)
+        letter_evening = compose_letter(opener="x", staged_actions=(a,), now=_utc(hour=19))
+        assert "Quiet evening overall" in letter_evening.body
+
+        # Night (hour 23)
+        letter_night = compose_letter(opener="x", staged_actions=(a,), now=_utc(hour=23))
+        assert "Quiet night overall" in letter_night.body
+
+    def test_promo_filtering_with_whitelist(self):
+        from rex.integrations.email_bridge import _is_promotional
+
+        # Newsletters should be blocked by default
+        newsletter = {
+            "from_addr": "newsletter@spam.com",
+            "subject": "Weekly gains are 200%",
+            "body_clean": "This is a weekly update containing list-manage links. Click here to unsubscribe.",
+        }
+        is_promo, reason = _is_promotional(newsletter)
+        assert is_promo is True
+
+        # But if whitelisted, it passes!
+        whitelist = {"newsletter@spam.com"}
+        is_promo_wl, reason_wl = _is_promotional(newsletter, whitelist)
+        assert is_promo_wl is False
+
+        # Normal conversation email passes
+        convo = {
+            "from_addr": "customer@company.com",
+            "subject": "Question about Q3 billing",
+            "body_clean": "Hi, please check when my billing cycle restarts. Thanks!",
+        }
+        is_promo_convo, reason_convo = _is_promotional(convo)
+        assert is_promo_convo is False
+
