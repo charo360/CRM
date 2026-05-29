@@ -15620,22 +15620,41 @@ async def _ae_expand_keywords(keyword: str) -> list[str]:
 
 
 def _parse_ae_products(data: dict) -> list[dict]:
-    raw = (
-        data.get("products", {}).get("product", [])
-        or data.get("result", {}).get("products", {}).get("product", [])
-        or []
-    )
+    # ds.text.search:        data.products.selection_search_product[]
+    # ds.recommend.feed.get: result.products.traffic_product_d_t_o[]
+    # legacy:                products.product[]  /  result.products.product[]
+    containers = [
+        data.get("data", {}).get("products", {}),
+        data.get("result", {}).get("products", {}),
+        data.get("products", {}),
+    ]
+    raw: list = []
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        for key in ("selection_search_product", "traffic_product_d_t_o", "product"):
+            if c.get(key):
+                raw = c[key]
+                break
+        if raw:
+            break
+
     out = []
     for p in raw:
-        cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
+        cost = float(
+            p.get("target_sale_price")
+            or p.get("sale_price")
+            or p.get("min_price")
+            or 0
+        )
         out.append({
             "ae_pid":          str(p.get("product_id", "")),
-            "title":           p.get("product_title", ""),
+            "title":           p.get("product_title") or p.get("subject", ""),
             "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
             "cost_price":      cost,
             "suggested_price": round(cost * 2.5, 2),
-            "image_url":       p.get("product_main_image_url", ""),
-            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "image_url":       p.get("product_main_image_url") or p.get("main_image_url", ""),
+            "orders_count":    int(p.get("lastest_volume") or p.get("orders_count") or p.get("evaluate_rate") or 0),
             "shipping_time":   p.get("shipping_lead_time", ""),
             "store_name":      p.get("shop_name", ""),
             "source":          "aliexpress",
@@ -15666,6 +15685,8 @@ async def ae_search_products(
     # Expand keyword into variants for broader coverage
     variants = await _ae_expand_keywords(keyword) if keyword else [keyword]
 
+    errors = []
+
     async def _search_one(kw: str) -> list[dict]:
         try:
             data = await ae_ds_search(
@@ -15680,13 +15701,17 @@ async def ae_search_products(
             return _parse_ae_products(data)
         except Exception as e:
             logging.warning("[ae/products] variant '%s' failed: %s", kw, e)
+            errors.append(e)
             return []
 
     try:
         results_per_variant = await asyncio.gather(*[_search_one(kw) for kw in variants])
+        if len(errors) == len(variants) and errors:
+            raise errors[0]
     except Exception as e:
         logging.error("[ae/products] error: %s", e, exc_info=True)
         raise HTTPException(502, f"AliExpress API error: {e}")
+
 
     # Deduplicate by ae_pid, keeping first occurrence, then sort by order volume
     seen: set[str] = set()
