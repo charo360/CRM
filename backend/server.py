@@ -15407,10 +15407,14 @@ async def ae_oauth_start(user=Depends(get_current_user)):
         {"$set": {"state": state, "business_id": business_id, "created_at": _dt.utcnow()}},
         upsert=True,
     )
-    base_url = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    base_url = (
+        os.environ.get("BASE_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     auth_url = (
-        "https://oauth.aliexpress.com/auth"
+        "https://api-sg.aliexpress.com/oauth/authorize"
         f"?response_type=code"
         f"&client_id={app_key}"
         f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
@@ -15451,7 +15455,11 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
     app_secret = os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
     if not app_key or not app_secret:
         return _close_popup(False, "Server not configured")
-    base_url     = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    base_url = (
+        os.environ.get("BASE_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     try:
         async with httpx.AsyncClient(timeout=20) as hc:
