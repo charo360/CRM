@@ -15467,11 +15467,12 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
     ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     try:
+        import time as _time
         # AliExpress requires signed token exchange via the REST system-tool endpoint.
         # Params: app_key, timestamp, sign_method, code; signed with HMAC-SHA256.
         token_params = {
             "app_key":     app_key,
-            "timestamp":   str(int(time.time() * 1000)),
+            "timestamp":   str(int(_time.time() * 1000)),
             "sign_method": "sha256",
             "code":        code,
         }
