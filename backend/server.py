@@ -15431,11 +15431,16 @@ async def ae_oauth_callback(code: str = "", state: str = "", error: str = ""):
     import urllib.parse
 
     def _close_popup(ok: bool, msg: str = "") -> HTMLResponse:
+        if not ok:
+            logging.error("[ae/oauth/callback] failed: %s", msg)
         js_event = "ae_connected" if ok else "ae_connect_failed"
+        encoded_msg = urllib.parse.quote(msg or "", safe="")
         return HTMLResponse(f"""<!DOCTYPE html><html><body>
+<pre style="font-family:monospace;padding:24px">AliExpress OAuth: {'success' if ok else 'FAILED'}
+{msg}</pre>
 <script>
 if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},window.location.origin);window.close();}}
-else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}";}}
+else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}&msg={encoded_msg}";}}
 </script></body></html>""")
 
     if error:
@@ -15471,13 +15476,21 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
                 "redirect_uri":  redirect_uri,
             })
         token_data = r.json()
+        logging.info("[ae/oauth/callback] token response: %s", token_data)
     except Exception as e:
         return _close_popup(False, f"Token exchange failed: {e}")
 
     access_token  = token_data.get("access_token", "")
     refresh_token = token_data.get("refresh_token", "")
     if not access_token:
-        return _close_popup(False, token_data.get("error_description", "No access token returned"))
+        err_msg = (
+            token_data.get("error_description")
+            or token_data.get("error_msg")
+            or token_data.get("message")
+            or f"No access token returned. Full response: {token_data}"
+        )
+        err_code = token_data.get("error_code") or token_data.get("code") or ""
+        return _close_popup(False, f"[{err_code}] {err_msg}" if err_code else err_msg)
 
     from datetime import datetime as _dt
     await db.supplier_connections.update_one(
