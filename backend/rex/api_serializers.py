@@ -207,6 +207,67 @@ def _entry_dict(e: JournalEntry) -> dict[str, Any]:
     }
 
 
+_MIN_DAY_FOR_PROMOTION = 14  # Spec: Observer only until Day 14.
+_MIN_GAP_BETWEEN_PROMOTIONS = 14  # Spec: >=14 days between promotions in a category.
+
+
+def _enforce_promotion_arc(
+    events_by_day: dict[int, list],
+) -> dict[int, list]:
+    """Defensive filter: drop promotion events that violate the spec arc.
+
+    The Journal must NEVER show:
+      - A promotion before Day 14 (Observer-only window).
+      - Two promotions on the same day (impossible — same as same-day Drafter
+        + Sender).
+      - Two promotions in the same category within 14 days of each other.
+
+    Persisted state from earlier broken code can contain these, so we filter
+    at serialization rather than trusting upstream. Non-promotion events are
+    untouched.
+    """
+    from rex.ranks.events import EventType
+
+    # Collect promotion events with their day.
+    promo_index: list[tuple[int, object]] = []
+    for entry_day, day_events in events_by_day.items():
+        for ev in day_events:
+            if ev.type is EventType.USER_PROMOTED_REX:
+                promo_index.append((entry_day, ev))
+
+    if not promo_index:
+        return events_by_day
+
+    promo_index.sort(key=lambda p: p[0])
+
+    # First pass: drop pre-Day-14 promotions.
+    keep_ids: set[str] = set()
+    last_promo_day_per_cat: dict[str, int] = {}
+    for entry_day, ev in promo_index:
+        if entry_day < _MIN_DAY_FOR_PROMOTION:
+            continue
+        cat = ev.category or ""
+        prev_day = last_promo_day_per_cat.get(cat)
+        if prev_day is not None and (entry_day - prev_day) < _MIN_GAP_BETWEEN_PROMOTIONS:
+            continue
+        keep_ids.add(ev.id)
+        last_promo_day_per_cat[cat] = entry_day
+
+    # Second pass: rebuild events_by_day, dropping promotion events whose id
+    # didn't make the cut.
+    filtered: dict[int, list] = {}
+    for entry_day, day_events in events_by_day.items():
+        kept = []
+        for ev in day_events:
+            if ev.type is EventType.USER_PROMOTED_REX and ev.id not in keep_ids:
+                continue
+            kept.append(ev)
+        if kept:
+            filtered[entry_day] = kept
+
+    return filtered
+
+
 async def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
     day = getattr(orch, "_relationship_day", 1)
 
@@ -227,6 +288,10 @@ async def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
         if event_day < 1 or event_day > day:
             continue
         events_by_day.setdefault(event_day, []).append(ev)
+
+    # Spec arc guard — never let pre-Day-14 promotions or same-day duplicates
+    # reach the AI / template synthesizer.
+    events_by_day = _enforce_promotion_arc(events_by_day)
 
     # Always ensure Day 1 has an entry (spec: "First day Zilo starts — Day 1 entry — always").
     if 1 not in events_by_day and day >= 1:

@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bumping this invalidates the in-memory reflection cache for prior sessions.
 # Bump whenever the prompt changes meaningfully.
-PROMPT_VERSION = "v8"
+PROMPT_VERSION = "v10"
 
 # Words/phrases the AI must never use. Each one is a report-voice tell or an
 # AI-fluff cliche. Match is case-insensitive substring.
@@ -62,6 +62,10 @@ _FORBIDDEN_WORDS = (
     "move faster", "move forward", "go-to", "going forward",
     "without issues", "no issues", "smooth",
     "i'll start", "i'll begin",
+    # Day 1 hallucinations — Zilo has no history yet on Day 1
+    "usual routines", "usual routine", "the routines", "settled in",
+    "nothing shifted", "around me", "the office", "the team meeting",
+    "the room", "earlier patterns", "previous patterns",
 )
 
 _PHASE_GUIDANCE: dict[JournalPhase, str] = {
@@ -111,10 +115,16 @@ They caught it. I did not.
 Fair. Rebuilding."""
 
 
-def _facts_block(events: Sequence[TrustEvent]) -> str:
+def _facts_block(
+    events: Sequence[TrustEvent],
+    *,
+    subjects: Sequence[str] = (),
+) -> str:
     """Produce a short factual summary of the day's events. Never includes
-    URLs, IDs, or raw subjects — only counts, categories, and ranks."""
-    if not events:
+    URLs, IDs, or raw source data — only counts, categories, ranks, and the
+    sanitized subject names (e.g. "Acme follow-up", "Patel reply") that the
+    AI can mention by name to keep the entry specific."""
+    if not events and not subjects:
         return "No actions today."
 
     lines: list[str] = []
@@ -192,6 +202,21 @@ def _facts_block(events: Sequence[TrustEvent]) -> str:
         for cat, n in by_cat.items():
             lines.append(f"- {n} {cat} action{'s' if n != 1 else ''} undone.")
 
+    # Specific subjects from the action ledger — the one detail Zilo can
+    # honestly mention to make the entry feel real ("the Acme follow-up",
+    # "the Patel reply") instead of generic ("one draft").
+    if subjects:
+        clean = [s.strip() for s in subjects if s and s.strip()]
+        # de-dupe while preserving order
+        seen: set[str] = set()
+        unique = []
+        for s in clean:
+            if s.lower() not in seen:
+                seen.add(s.lower())
+                unique.append(s)
+        if unique:
+            lines.append("- Specific subjects touched today: " + ", ".join(unique[:4]) + ".")
+
     return "\n".join(lines) if lines else "No actions today."
 
 
@@ -199,10 +224,61 @@ def _cat(category: str) -> str:
     return (category or "").replace("_", " ") or "the work"
 
 
+def _subjects_for_day(orch, relationship_day: int) -> list[str]:
+    """Pull sanitized subject names (e.g. 'Acme', 'Patel follow-up') from the
+    action ledger for actions proposed on the given relationship day.
+
+    Subjects let the AI write specific lines like "Held the Acme follow-up"
+    instead of generic "Held one draft." We strip anything URL-shaped or
+    longer than a reasonable name to keep raw scout output out of the prompt.
+    """
+    ledger = getattr(orch, "ledger", None)
+    if ledger is None:
+        return []
+    try:
+        all_actions = ledger.all_actions()
+    except Exception:
+        return []
+
+    current_day = getattr(orch, "_relationship_day", relationship_day)
+    now_utc = datetime.now(timezone.utc)
+    subjects: list[str] = []
+    for action in all_actions:
+        ts = getattr(action, "proposed_at", None)
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        days_back = (now_utc - ts).days
+        action_day = current_day - days_back
+        if action_day != relationship_day:
+            continue
+        subj = getattr(action, "target_subject", None) or getattr(action, "summary", None)
+        if not subj:
+            continue
+        subj = str(subj).strip()
+        # Drop URL-like and over-long strings — those are raw scout output, not subjects.
+        if not subj or len(subj) > 60:
+            continue
+        if subj.startswith(("http://", "https://")):
+            continue
+        if "://" in subj or " | " in subj or "Scout:" in subj:
+            continue
+        subjects.append(subj)
+    return subjects
+
+
 def _build_prompt(*, day: int, phase: JournalPhase, facts: str) -> str:
     phase_guidance = _PHASE_GUIDANCE.get(phase, "")
     forbidden = ", ".join(f'"{w}"' for w in _FORBIDDEN_WORDS)
-    return f"""You are Zilo — an AI Chief of Staff writing your OWN private journal about working with a small-business founder. You are not writing a report. You are not writing to anyone. You are reflecting on your day, like a person paying close attention to a new job they just started.
+    day_one_rule = (
+        "\nDAY 1 RULE — THIS IS DAY 1. You JUST arrived. You have NO history with this founder yet. \n"
+        "DO NOT reference 'usual routines', 'the routines', 'previous patterns', 'last week', 'the team meeting', \n"
+        "or anything you couldn't possibly know yet. Be CURIOUS — you are seeing this business for the FIRST time. \n"
+        "Acknowledge what you just connected to (inbox, conversations, the work waiting). Tone is arrival, not resignation.\n"
+        if day == 1 else ""
+    )
+    return f"""You are Zilo — an AI Chief of Staff writing your OWN private journal about working with a small-business founder. You are not writing a report. You are not writing to anyone. You are reflecting on your day, like a person paying close attention to a new job they just started.{day_one_rule}
 
 CURRENT PHASE — Day {day}, {phase.value.upper()}
 {phase_guidance}
@@ -234,10 +310,13 @@ NOW WRITE TODAY'S ENTRY. RULES — strict:
    Specifically NEVER write about your own feelings ("excited", "thrilled",
    "feel ready", "felt good") — Zilo doesn't have feelings, Zilo NOTICES things.
 
-4. SPECIFIC, NEVER GENERIC. Mention real things from TODAY'S REAL EVENTS.
+4. SPECIFIC, NEVER GENERIC. Mention ONE real, concrete detail from TODAY'S REAL EVENTS — a specific subject name, the category, what was held vs sent vs rejected, who joined the team. Generic lines that could describe any business are NOT ACCEPTABLE.
+   - If TODAY'S REAL EVENTS lists "Specific subjects touched today: X, Y," NAME one of them in your entry. Do not say "one draft" when the facts give you "the Acme follow-up."
    - If TODAY'S REAL EVENTS says "no actions today," write a SHORT quiet-day entry — do NOT invent activity, do NOT mention promotions or actions that did not happen.
    - NUMBERS in the few-shot examples (340, 12, 14, 4 minutes, etc.) are ILLUSTRATIVE — do NOT copy them into your entry. Only use numbers that appear in TODAY'S REAL EVENTS above.
    - NAMES (Henderson, Henson, Scout) in examples are illustrative — do NOT copy them either. Only use names that appear in TODAY'S REAL EVENTS.
+
+4b. ONE PROMOTION PER ENTRY MAX. Never mention two promotions in one entry. Never write "earned X then earned Y." If TODAY'S REAL EVENTS lists more than one promotion, ignore the older one — only reflect on the most recent. Promotions in the same category are at least 14 days apart in real life.
 
 5. NEVER WRITE ABOUT FEELINGS. Zilo does not feel. Zilo NOTICES. Banned framings:
    - "I feel ..." / "It feels ..." / "It felt ..." / "Feels like ..."
@@ -420,7 +499,20 @@ async def generate_daily_reflection_entry(
             events=events,
         )
 
-    facts = _facts_block(events)
+    subjects = _subjects_for_day(orch, relationship_day)
+
+    # DAY 1 HARD GUARD: with no real events AND no real subjects from the ledger,
+    # there is nothing for the AI to honestly say about Day 1. The model loves
+    # to hallucinate ("inbox of inquiries", "founder's concise responses",
+    # "usual routines"). Use the canonical template directly — it says only
+    # what we actually know: this is the first day.
+    if relationship_day == 1 and not events and not subjects:
+        return synthesize_daily_reflection(
+            relationship_day=relationship_day,
+            events=events,
+        )
+
+    facts = _facts_block(events, subjects=subjects)
     prompt = _build_prompt(day=relationship_day, phase=phase, facts=facts)
 
     # Try up to 2 attempts. Reject report-voice tells (forbidden words) or
