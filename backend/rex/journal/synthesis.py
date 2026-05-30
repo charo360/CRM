@@ -303,6 +303,20 @@ def list_overnight_ephemera(orch: Orchestrator) -> list[dict[str, Any]]:
     if len(ephemera) < 3:
         synthetics = [
             {
+                "id": "synth-task-reddit-scout",
+                "action_id": "action-reddit-scout-outreach",
+                "category": "leads",
+                "summary": "Scout found someone on Reddit complaining about their current sales tool.\nLooks like a warm switch opportunity.\nOutreach drafted.",
+                "kind": "background_action",
+                "timestamp": (now - timedelta(hours=1)).isoformat(),
+                "status": "pending",
+                "details": [
+                    "Reddit User: u/sales_seeker in r/verizon",
+                    "Post: 'Service issues are making us lose deals. Need a new CRM ASAP!'",
+                    "Outreach Draft: 'Saw you are having issues with your sales tool. Zilo CRM can help...'"
+                ]
+            },
+            {
                 "id": "synth-task-1",
                 "action_id": "action-leads-scanned",
                 "category": "leads",
@@ -355,19 +369,6 @@ def list_overnight_ephemera(orch: Orchestrator) -> list[dict[str, Any]]:
                 "details": [
                     "Meridian Group Deal (Moved to Negotiation)",
                     "Karanja Partners (Moved to Negotiation)"
-                ]
-            },
-            {
-                "id": "synth-task-5",
-                "action_id": "action-acme-proposal",
-                "category": "outreach",
-                "summary": "Prepared customized follow-up proposal draft for Acme",
-                "kind": "outreach",
-                "timestamp": (now - timedelta(hours=2)).isoformat(),
-                "status": "pending",
-                "details": [
-                    "Draft: Acme - enterprise pricing terms & custom ROI calculation",
-                    "Attached: Acme Case Study presentation (Month 1 results)"
                 ]
             }
         ]

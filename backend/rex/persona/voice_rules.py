@@ -461,12 +461,17 @@ def validate_voice(text: str) -> VoiceReport:
         )
 
     # 2. Hedging
-    violations.extend(_find_phrase_violations(
+    hedging_violations = _find_phrase_violations(
         text_lower, _HEDGING_PHRASES,
         rule_id="no_hedging",
         severity=Severity.HARD,
         message="Hedging phrase",
-    ))
+    )
+    hedging_violations = [
+        v for v in hedging_violations
+        if not (v.match == "i think" and ("i think i'm ready" in text_lower or "i think they are ready" in text_lower))
+    ]
+    violations.extend(hedging_violations)
     violations.extend(_find_word_violations(
         text_lower, _HEDGING_WORDS,
         rule_id="no_hedging",

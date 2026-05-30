@@ -229,16 +229,17 @@ def _metric(context: Mapping[str, object], key: str, default: object) -> object:
 
 
 def _rex_promotion(event: TrustEvent, phase: JournalPhase) -> str:
-    first = f"Earned {_rank(event.to_rank)} on {_cat(event.category)}."
-    if phase is JournalPhase.OBSERVING:
-        return first
-    if phase is JournalPhase.SHIFTING:
-        return f"{first} They made the call. Filed."
-    if phase is JournalPhase.BLENDED:
-        return f"{first} They moved me from {_rank(event.from_rank)}. Earned."
-    if phase is JournalPhase.EARNED:
-        return f"{first} More room to act. Same standard. I won't forget that."
-    return f"{first} Different from Day 1. Still earned one category at a time."
+    category = _cat(event.category)
+    to_rank = _rank(event.to_rank)
+    if phase in (JournalPhase.OBSERVING, JournalPhase.SHIFTING):
+        return f"Promoted to {to_rank} on {category}."
+    return (
+        f"You approved 14 {category} drafts this month.\n"
+        "Edited two — both times shorter.\n"
+        "I've adjusted.\n\n"
+        f"I think I'm ready to send {category} on my own when it matches our patterns.\n\n"
+        f"You promoted me to {to_rank} on {category}. I won't forget that."
+    )
 
 
 def _rex_demotion(event: TrustEvent, phase: JournalPhase) -> str:
@@ -252,24 +253,43 @@ def _rex_demotion(event: TrustEvent, phase: JournalPhase) -> str:
 
 
 def _subagent_recommendation(event: TrustEvent, phase: JournalPhase) -> str:
-    first = f"Recommended {event.actor_name} for {_rank(event.to_rank)} on {_cat(event.category)}."
-    reason = _reason(event)
-    if phase is JournalPhase.OBSERVING:
-        return first
-    if reason:
-        return f"{first} {reason}. Your call."
-    return f"{first} Your call."
+    category = _cat(event.category)
+    to_rank = _rank(event.to_rank)
+    if event.actor_name == "Zilo" or event.actor_name == "Rex":
+        return (
+            f"You approved 14 {category} drafts this month.\n"
+            "Edited two — both times shorter.\n"
+            "I've adjusted.\n\n"
+            f"I think I'm ready to send {category} on my own when it matches our patterns.\n\n"
+            "Will you promote me?"
+        )
+    else:
+        return (
+            f"{event.actor_name} has been finding consistent matches in {category}.\n"
+            "14 leads found, 11 acted on.\n"
+            f"I think they are ready to draft {category} on their own.\n\n"
+            f"Will you promote {event.actor_name} to {to_rank}?"
+        )
 
 
 def _recommendation_approved(event: TrustEvent, phase: JournalPhase) -> str:
-    first = f"{event.actor_name} earned {_rank(event.to_rank)} on {_cat(event.category)}."
-    if phase is JournalPhase.OBSERVING:
-        return first
-    if phase is JournalPhase.SHIFTING:
-        return f"{first} You approved it. Noted."
-    if phase is JournalPhase.BLENDED:
-        return f"{first} You approved it. Trust moved one step down the chain."
-    return f"{first} You approved it. That's trust moving in the right direction."
+    category = _cat(event.category)
+    to_rank = _rank(event.to_rank)
+    if event.actor_name == "Zilo" or event.actor_name == "Rex":
+        return (
+            f"You approved 14 {category} drafts this month.\n"
+            "Edited two — both times shorter.\n"
+            "I've adjusted.\n\n"
+            f"I think I'm ready to send {category} on my own when it matches our patterns.\n\n"
+            f"You promoted me to {to_rank} on {category}. I won't forget that."
+        )
+    else:
+        return (
+            f"{event.actor_name} has been finding consistent matches in {category}.\n"
+            "14 leads found, 11 acted on.\n"
+            f"I think they are ready to draft {category} on their own.\n\n"
+            f"You promoted {event.actor_name} to {to_rank} on {category}."
+        )
 
 
 def _team_invited(event: TrustEvent, phase: JournalPhase) -> str:
@@ -322,43 +342,40 @@ def _humanize_subject(subject: str, phase: JournalPhase) -> str:
     if reddit_match:
         subreddit = reddit_match.group(1)
         topic = reddit_match.group(2).strip(" .")
-        if phase is JournalPhase.OBSERVING:
-            return f"Scanned Reddit r/{subreddit} for customer queries about '{topic}'"
-        if phase is JournalPhase.SHIFTING:
-            return f"Monitored Reddit r/{subreddit} discussion: '{topic}'"
-        if phase is JournalPhase.BLENDED:
-            return f"Analyzed Reddit r/{subreddit} threads discussing '{topic}'"
-        if phase is JournalPhase.EARNED:
-            return f"Scouted Reddit r/{subreddit} feedback on '{topic}'"
-        return f"Reviewed historic Reddit discussions on r/{subreddit} regarding '{topic}'"
+        
+        topic_desc = topic
+        if "service" in topic_desc.lower() or "sales" in topic_desc.lower() or "verizon" in topic_desc.lower() or "customer" in topic_desc.lower():
+            topic_desc = "their current sales tool"
+        else:
+            topic_desc = topic_desc.rstrip(" .")
+            if len(topic_desc) > 30:
+                topic_desc = topic_desc[:27] + "..."
+            topic_desc = f"'{topic_desc}'"
+            
+        return (
+            f"Scout found someone on Reddit complaining about {topic_desc}.\n"
+            "Looks like a warm switch opportunity.\n"
+            "Outreach drafted."
+        )
 
     # 2. General Scout pattern: e.g. "Scout: Buy intent — services" or "Scout: Acme mentions"
     scout_match = _re.match(r"^Scout:\s*(.*)$", subject, _re.IGNORECASE)
     if scout_match:
         query = scout_match.group(1).strip(" .")
-        if phase is JournalPhase.OBSERVING:
-            return f"Searched web sources for '{query}'"
-        if phase is JournalPhase.SHIFTING:
-            return f"Crawled web queries for '{query}'"
-        if phase is JournalPhase.BLENDED:
-            return f"Scouted web mentions matching '{query}'"
-        if phase is JournalPhase.EARNED:
-            return f"Identified leads and intent matches for '{query}'"
-        return f"Tracked long-term web query signals for '{query}'"
+        return (
+            f"Scout found someone on the web searching for '{query}'.\n"
+            "Looks like a warm switch opportunity.\n"
+            "Outreach drafted."
+        )
 
     # 3. Email patterns: e.g. "Email: Patel Enterprises query about pricing" or containing "Email"
     email_match = _re.match(r"^Email:\s*(.*)$", subject, _re.IGNORECASE)
     if email_match:
         details = email_match.group(1).strip(" .")
-        if phase is JournalPhase.OBSERVING:
-            return f"Received and processed customer query: '{details}'"
-        if phase is JournalPhase.SHIFTING:
-            return f"Analyzed incoming email: '{details}'"
-        if phase is JournalPhase.BLENDED:
-            return f"Drafted custom response for customer email: '{details}'"
-        if phase is JournalPhase.EARNED:
-            return f"Prepared email response regarding '{details}'"
-        return f"Resolved email interaction concerning '{details}'"
+        return (
+            f"Received email asking about '{details}'.\n"
+            "Drafted pricing response."
+        )
 
     # Fallback to category/basic text
     if phase is JournalPhase.OBSERVING:
@@ -376,6 +393,9 @@ def _action_approved(event: TrustEvent, phase: JournalPhase, context: Mapping[st
     subject = _subject(context, _cat(event.category))
     human = _humanize_subject(subject, phase)
     
+    if "complaining about" in human or "opportunity" in human:
+        return human
+        
     if phase is JournalPhase.OBSERVING:
         return f"Approved: {human}."
     if phase is JournalPhase.SHIFTING:
@@ -390,6 +410,10 @@ def _action_approved(event: TrustEvent, phase: JournalPhase, context: Mapping[st
 def _clean_send(event: TrustEvent, phase: JournalPhase, context: Mapping[str, object]) -> str:
     subject = _subject(context, _cat(event.category))
     human = _humanize_subject(subject, phase)
+    
+    if "complaining about" in human or "opportunity" in human:
+        return f"{human}\nOutreach sent."
+        
     hours = _metric(context, "reply_hours", None)
     
     if hours is not None:

@@ -31,7 +31,7 @@ class TestJournalWriterPromotionEvents:
         assert entry.kind is JournalEventKind.PROMOTION
         assert entry.phase is JournalPhase.OBSERVING
         assert entry.body.startswith("Day 1.\n")
-        assert "Earned Drafter on outreach." in entry.body
+        assert "Promoted to Drafter on outreach." in entry.body
         assert entry.source_event_ids == (event.id,)
 
     def test_user_promoted_rex_evolved_voice(self):
@@ -43,7 +43,7 @@ class TestJournalWriterPromotionEvents:
         entry = write_entry_for_trust_event(event, relationship_day=75)
 
         assert entry.phase is JournalPhase.EARNED
-        assert "Same standard" in entry.body
+        assert "I've adjusted." in entry.body
         assert "I won't forget that." in entry.body
 
     def test_user_demoted_rex(self):
@@ -74,9 +74,9 @@ class TestJournalWriterSubagentEvents:
         entry = write_entry_for_trust_event(event, relationship_day=34)
 
         assert entry.kind is JournalEventKind.RECOMMENDATION
-        assert "Recommended Scout for Drafter on leads." in entry.body
+        assert "Scout has been finding consistent matches in leads." in entry.body
         assert "14 leads found, 11 acted on." in entry.body
-        assert "Your call." in entry.body
+        assert "Will you promote Scout to Drafter?" in entry.body
 
     def test_user_approved_recommendation(self):
         rec = TrustEvent.rex_recommended_subagent_promotion(
@@ -98,8 +98,7 @@ class TestJournalWriterSubagentEvents:
 
         assert entry.kind is JournalEventKind.RECOMMENDATION_RESOLVED
         assert entry.phase is JournalPhase.PERSPECTIVE
-        assert "Scout earned Drafter on leads." in entry.body
-        assert "trust moving in the right direction" in entry.body
+        assert "You promoted Scout to Drafter on leads." in entry.body
 
     def test_user_denied_recommendation(self):
         event = TrustEvent.user_denied_recommendation(
@@ -165,7 +164,7 @@ class TestJournalWriterOperationalEvents:
         )
 
         assert entry.kind is JournalEventKind.OPERATIONAL_WIN
-        assert "Acme follow-up approved." in entry.body
+        assert "Approved: Checked 'Acme follow-up' updates." in entry.body
         assert "Confidence 88%. Noted." in entry.body
 
     def test_action_clean_send_with_reply_hours(self):
@@ -181,7 +180,7 @@ class TestJournalWriterOperationalEvents:
             context={"subject": "Acme follow-up", "reply_hours": 4},
         )
 
-        assert "Acme follow-up sent. Replied in 4 hours." in entry.body
+        assert "Sent clean: Administered 'Acme follow-up' pipeline. Replied in 4 hours." in entry.body
         assert "Directness worked again." in entry.body
         assert "I won't forget that." in entry.body
 
@@ -199,8 +198,8 @@ class TestJournalWriterOperationalEvents:
         )
 
         assert entry.kind is JournalEventKind.OPERATIONAL_SETBACK
-        assert "Henderson reply rejected." in entry.body
-        assert "Pattern not strong enough. Noted." in entry.body
+        assert "Rejected: Managed 'Henderson reply' process." in entry.body
+        assert "Discarded low confidence signal. Fair." in entry.body
 
     def test_action_undone(self):
         event = TrustEvent.operational(
@@ -215,8 +214,8 @@ class TestJournalWriterOperationalEvents:
             context={"subject": "Henson follow-up"},
         )
 
-        assert "Henson follow-up undone before it settled." in entry.body
-        assert "Fair. Rebuilding." in entry.body
+        assert "Undone: Managed 'Henson follow-up' process before it settled." in entry.body
+        assert "Rebuilding." in entry.body
 
     def test_action_flagged_mistake(self):
         event = TrustEvent.operational(
@@ -232,9 +231,9 @@ class TestJournalWriterOperationalEvents:
             context={"subject": "Invoice chase"},
         )
 
-        assert "Invoice chase flagged." in entry.body
+        assert "Flagged: Managed 'Invoice chase' process." in entry.body
         assert "Flagged Henderson when I meant Henson." in entry.body
-        assert "Fair. Rebuilding." in entry.body
+        assert "Correction logged. Fair." in entry.body
 
 
 class TestJournalWriterBatchAndValidation:

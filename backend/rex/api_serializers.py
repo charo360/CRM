@@ -307,4 +307,5 @@ def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
             ],
         },
         "entries": [_entry_dict(e) for e in ordered],
+        "pending_recommendations": list(orch.engine.pending_recommendations.keys()),
     }

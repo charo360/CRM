@@ -240,6 +240,7 @@ def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
             ),
         )
 
+    orch.engine = RankEngine.from_events(orch.event_store)
     orch._demo_relationship_day = relationship_day  # type: ignore[attr-defined]
     orch._relationship_day = relationship_day  # type: ignore[attr-defined]
     return orch

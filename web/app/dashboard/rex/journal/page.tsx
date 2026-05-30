@@ -186,6 +186,12 @@ export default function ZiloJournalPage() {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [activeTab, setActiveTab] = useState<"timeline" | "status">("timeline");
 
+  const [approvedActions, setApprovedActions] = useState<Set<string>>(new Set());
+  const [dismissedActions, setDismissedActions] = useState<Set<string>>(new Set());
+  const [promotedCategories, setPromotedCategories] = useState<Set<string>>(new Set());
+  const [declinedRecommendations, setDeclinedRecommendations] = useState<Set<string>>(new Set());
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -229,6 +235,63 @@ export default function ZiloJournalPage() {
     } finally {
       setUndoing(null);
     }
+  }, []);
+
+  const handleApprove = useCallback(async (actionId: string) => {
+    setActionBusy(actionId);
+    setToast(null);
+    try {
+      await api.post(`/rex/actions/${actionId}/approve`, {});
+      setApprovedActions((prev) => new Set([...prev, actionId]));
+      setToast({ message: "Action approved and outreach sent.", type: "success" });
+    } catch (e) {
+      setToast({
+        message: e instanceof Error ? e.message : "Failed to approve action.",
+        type: "error",
+      });
+    } finally {
+      setActionBusy(null);
+    }
+  }, []);
+
+  const handleDismiss = useCallback(async (actionId: string) => {
+    setActionBusy(actionId);
+    setToast(null);
+    try {
+      await api.post(`/rex/actions/${actionId}/dismiss`, {});
+      setDismissedActions((prev) => new Set([...prev, actionId]));
+      setToast({ message: "Action dismissed.", type: "success" });
+    } catch (e) {
+      setToast({
+        message: e instanceof Error ? e.message : "Failed to dismiss action.",
+        type: "error",
+      });
+    } finally {
+      setActionBusy(null);
+    }
+  }, []);
+
+  const handlePromoteCategory = useCallback(async (category: string, recommendationId: string) => {
+    setActionBusy(recommendationId);
+    setToast(null);
+    try {
+      await api.post("/rex/promote", { category });
+      setPromotedCategories((prev) => new Set([...prev, category]));
+      setDeclinedRecommendations((prev) => new Set([...prev, recommendationId]));
+      setToast({ message: "Zilo promoted successfully!", type: "success" });
+    } catch (e) {
+      setToast({
+        message: e instanceof Error ? e.message : "Failed to promote.",
+        type: "error",
+      });
+    } finally {
+      setActionBusy(null);
+    }
+  }, []);
+
+  const handleDeclinePromotion = useCallback((recommendationId: string) => {
+    setDeclinedRecommendations((prev) => new Set([...prev, recommendationId]));
+    setToast({ message: "Promotion deferred.", type: "success" });
   }, []);
 
   const normalizedEntries = useMemo<JournalEntry[]>(() => {
@@ -381,6 +444,15 @@ export default function ZiloJournalPage() {
                           undoneActions={undoneActions}
                           undoing={undoing}
                           onUndo={handleUndo}
+                          approvedActions={approvedActions}
+                          dismissedActions={dismissedActions}
+                          declinedRecommendations={declinedRecommendations}
+                          actionBusy={actionBusy}
+                          onApprove={handleApprove}
+                          onDismiss={handleDismiss}
+                          onPromote={handlePromoteCategory}
+                          onDeclinePromotion={handleDeclinePromotion}
+                          pendingRecommendationIds={data?.pending_recommendations || []}
                         />
                       ))}
                     </div>
@@ -631,12 +703,30 @@ function DaySection({
   undoneActions,
   undoing,
   onUndo,
+  approvedActions,
+  dismissedActions,
+  declinedRecommendations,
+  actionBusy,
+  onApprove,
+  onDismiss,
+  onPromote,
+  onDeclinePromotion,
+  pendingRecommendationIds,
 }: {
   day: number;
   entries: JournalEntry[];
   undoneActions: Set<string>;
   undoing: string | null;
   onUndo: (actionId: string) => void;
+  approvedActions: Set<string>;
+  dismissedActions: Set<string>;
+  declinedRecommendations: Set<string>;
+  actionBusy: string | null;
+  onApprove: (actionId: string) => void;
+  onDismiss: (actionId: string) => void;
+  onPromote: (category: string, recommendationId: string) => void;
+  onDeclinePromotion: (recommendationId: string) => void;
+  pendingRecommendationIds: string[];
 }) {
   return (
     <section>
@@ -653,6 +743,15 @@ function DaySection({
             isUndone={e.action_id ? undoneActions.has(e.action_id) : false}
             isUndoing={e.action_id ? undoing === e.action_id : false}
             onUndo={onUndo}
+            approvedActions={approvedActions}
+            dismissedActions={dismissedActions}
+            declinedRecommendations={declinedRecommendations}
+            actionBusy={actionBusy}
+            onApprove={onApprove}
+            onDismiss={onDismiss}
+            onPromote={onPromote}
+            onDeclinePromotion={onDeclinePromotion}
+            pendingRecommendationIds={pendingRecommendationIds}
           />
         ))}
       </ul>
@@ -665,11 +764,29 @@ function EntryCard({
   isUndone,
   isUndoing,
   onUndo,
+  approvedActions,
+  dismissedActions,
+  declinedRecommendations,
+  actionBusy,
+  onApprove,
+  onDismiss,
+  onPromote,
+  onDeclinePromotion,
+  pendingRecommendationIds,
 }: {
   entry: JournalEntry;
   isUndone: boolean;
   isUndoing: boolean;
   onUndo: (actionId: string) => void;
+  approvedActions: Set<string>;
+  dismissedActions: Set<string>;
+  declinedRecommendations: Set<string>;
+  actionBusy: string | null;
+  onApprove: (actionId: string) => void;
+  onDismiss: (actionId: string) => void;
+  onPromote: (category: string, recommendationId: string) => void;
+  onDeclinePromotion: (recommendationId: string) => void;
+  pendingRecommendationIds: string[];
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const Icon = KIND_ICON[entry.kind] ?? BookOpen;
@@ -695,6 +812,10 @@ function EntryCard({
     : isAnchor
     ? "mt-1.5 whitespace-pre-wrap text-[14px] italic leading-relaxed text-slate-500"
     : `mt-1.5 whitespace-pre-wrap text-[14px] leading-relaxed text-slate-850 ${isUndone ? "line-through text-slate-400" : ""}`;
+
+  const recId = entry.source_event_ids[0];
+  const isPendingRec = entry.kind === "recommendation" && pendingRecommendationIds.includes(recId) && !declinedRecommendations.has(recId);
+  const isPendingAction = entry.action_id && !approvedActions.has(entry.action_id) && !dismissedActions.has(entry.action_id) && !isUndone && (entry.kind === "background_action" || entry.kind === "recommendation" || entry.kind === "operational_win" || entry.id.includes("reddit-scout"));
 
   return (
     <li className={cardClass}>
@@ -731,6 +852,82 @@ function EntryCard({
           </div>
           <p className={bodyClass}>{cleanBody}</p>
 
+          {/* Interactive buttons for Pending Actions (Send it / Not now) */}
+          {entry.action_id && isPendingAction && !isPendingRec && (
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                disabled={actionBusy === entry.action_id}
+                onClick={() => onApprove(entry.action_id!)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0d2818] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#1b4d2c] transition disabled:opacity-50"
+              >
+                {actionBusy === entry.action_id ? <Loader2 size={11} className="animate-spin" /> : null}
+                Send it
+              </button>
+              <button
+                type="button"
+                disabled={actionBusy === entry.action_id}
+                onClick={() => onDismiss(entry.action_id!)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition disabled:opacity-50"
+              >
+                Not now
+              </button>
+            </div>
+          )}
+
+          {/* Interactive buttons for Pending Promotion Recommendations (Yes / Not yet) */}
+          {isPendingRec && (
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                disabled={actionBusy === recId}
+                onClick={() => onPromote(entry.category, recId)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0d2818] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#1b4d2c] transition disabled:opacity-50"
+              >
+                {actionBusy === recId ? <Loader2 size={11} className="animate-spin" /> : null}
+                Yes — you&apos;ve earned it
+              </button>
+              <button
+                type="button"
+                disabled={actionBusy === recId}
+                onClick={() => onDeclinePromotion(recId)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition disabled:opacity-50"
+              >
+                Not yet
+              </button>
+            </div>
+          )}
+
+          {/* Static state feedback badges for completed interactive events */}
+          {entry.action_id && approvedActions.has(entry.action_id) && (
+            <div className="mt-2.5">
+              <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200">
+                ✓ Sent
+              </span>
+            </div>
+          )}
+          {entry.action_id && dismissedActions.has(entry.action_id) && (
+            <div className="mt-2.5">
+              <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500 border border-slate-200">
+                Not now
+              </span>
+            </div>
+          )}
+          {entry.kind === "recommendation" && !pendingRecommendationIds.includes(recId) && (
+            <div className="mt-2.5">
+              <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 border border-emerald-200">
+                ✓ Promoted
+              </span>
+            </div>
+          )}
+          {entry.kind === "recommendation" && pendingRecommendationIds.includes(recId) && declinedRecommendations.has(recId) && (
+            <div className="mt-2.5">
+              <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700 border border-amber-200">
+                Not yet
+              </span>
+            </div>
+          )}
+
           {entry.details && entry.details.length > 0 && (
             <div className="mt-2">
               <button
@@ -752,8 +949,7 @@ function EntryCard({
                   ))}
 
                   {entry.action_id && (
-                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                      <span className="text-[10px] text-slate-400">Action: {entry.action_id.split("-")[0]}</span>
+                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
                       {isUndone ? (
                         <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
                           Undone
@@ -778,12 +974,6 @@ function EntryCard({
                 </div>
               )}
             </div>
-          )}
-
-          {!isAnchor && (
-            <p className="mt-2 text-[11px] text-slate-400">
-              {entry.word_count} words · {new Date(entry.created_at).toLocaleString()}
-            </p>
           )}
         </div>
       </div>
