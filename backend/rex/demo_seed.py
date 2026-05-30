@@ -77,92 +77,95 @@ def _record_sent(orch: Orchestrator, action: Action) -> None:
 def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
     """Append a small arc of trust events so the Journal page has substance.
 
-    Spaces events across the relationship arc so the user sees voice phases
-    shifting from OBSERVING → BLENDED (or whatever phase they're in).
+    Each event is anchored at the day it should have happened on. If
+    ``relationship_day`` is too young for an event's target day, skip the
+    event — don't clamp it to "today" (that's what caused 7+ entries to pile
+    on Day 3 in the original implementation).
     """
     now = datetime.now(timezone.utc)
 
-    # Day 3 — early operational note
-    e1 = TrustEvent.operational(
-        type=EventType.ACTION_APPROVED,
-        actor_name="Zilo",
-        category="outreach",
-        confidence=0.78,
-    )
-    e1 = dc_replace(e1, timestamp=now - timedelta(days=max(0, relationship_day - 3)))
+    # (target_day, factory) — only seed events whose target_day <= relationship_day.
+    seed_plan = [
+        (3, lambda: TrustEvent.operational(
+            type=EventType.ACTION_APPROVED,
+            actor_name="Zilo",
+            category="outreach",
+            confidence=0.78,
+        )),
+        (7, lambda: TrustEvent.operational(
+            type=EventType.ACTION_CLEAN_SEND,
+            actor_name="Zilo",
+            category="outreach",
+            confidence=0.82,
+        )),
+        (12, lambda: TrustEvent.operational(
+            type=EventType.ACTION_REJECTED,
+            actor_name="Zilo",
+            category="replies",
+            reason="Tone too warm",
+        )),
+        (20, lambda: TrustEvent.rex_recommended_subagent_promotion(
+            subagent="Scout",
+            category="leads",
+            from_rank=Rank.OBSERVER,
+            to_rank=Rank.DRAFTER,
+            reason="14 leads found, 11 acted on",
+            confidence=0.91,
+        )),
+        # Day 18 — first promotion (Drafter on outreach). Min 14 days per spec
+        # rule: "Promotions happen after real approval history — minimum 14 days".
+        (18, lambda: TrustEvent.user_promoted_rex(
+            category="outreach",
+            from_rank=Rank.OBSERVER,
+            to_rank=Rank.DRAFTER,
+        )),
+        (35, lambda: TrustEvent.operational(
+            type=EventType.ACTION_CLEAN_SEND,
+            actor_name="Zilo",
+            category="outreach",
+            confidence=0.94,
+        )),
+        # Day 34 — Sender promotion only after Drafter has had real history.
+        (34, lambda: TrustEvent.user_promoted_rex(
+            category="outreach",
+            from_rank=Rank.DRAFTER,
+            to_rank=Rank.SENDER,
+            reason="14 clean sends in a row",
+        )),
+    ]
 
-    # Day 7 — first clean send
-    e2 = TrustEvent.operational(
-        type=EventType.ACTION_CLEAN_SEND,
-        actor_name="Zilo",
-        category="outreach",
-        confidence=0.82,
-    )
-    e2 = dc_replace(e2, timestamp=now - timedelta(days=max(0, relationship_day - 7)))
-
-    # Day 12 — a setback
-    e3 = TrustEvent.operational(
-        type=EventType.ACTION_REJECTED,
-        actor_name="Zilo",
-        category="replies",
-        reason="Tone too warm",
-    )
-    e3 = dc_replace(e3, timestamp=now - timedelta(days=max(0, relationship_day - 12)))
-
-    # Day 20 — subagent recommendation
-    e4 = TrustEvent.rex_recommended_subagent_promotion(
-        subagent="Scout",
-        category="leads",
-        from_rank=Rank.OBSERVER,
-        to_rank=Rank.DRAFTER,
-        reason="14 leads found, 11 acted on",
-        confidence=0.91,
-    )
-    e4 = dc_replace(e4, timestamp=now - timedelta(days=max(0, relationship_day - 20)))
-
-    # Day 25 — recommendation approved
-    e5 = TrustEvent.user_approved_recommendation(
-        subagent="Scout",
-        category="leads",
-        from_rank=Rank.OBSERVER,
-        to_rank=Rank.DRAFTER,
-        recommendation_id=e4.id,
-    )
-    e5 = dc_replace(e5, timestamp=now - timedelta(days=max(0, relationship_day - 25)))
-
-    # Day 35 — another clean send
-    e6 = TrustEvent.operational(
-        type=EventType.ACTION_CLEAN_SEND,
-        actor_name="Zilo",
-        category="outreach",
-        confidence=0.94,
-    )
-    e6 = dc_replace(e6, timestamp=now - timedelta(days=max(0, relationship_day - 35)))
-
-    # Most recent — a promotion (rank already updated by _promote_rex; this is the journal record)
-    e7 = TrustEvent.user_promoted_rex(
-        category="replies",
-        from_rank=Rank.DRAFTER,
-        to_rank=Rank.SENDER,
-        reason="Three clean sends in a row",
-    )
-    e7 = dc_replace(e7, timestamp=now - timedelta(days=1))
-
-    for ev in (e1, e2, e3, e4, e5, e6, e7):
-        # Only seed events whose simulated date is on or after Day 1.
-        days_back = (now - ev.timestamp).days
-        if days_back > relationship_day:
+    pending_recommendation_id: str | None = None
+    for target_day, factory in seed_plan:
+        if target_day > relationship_day:
             continue
+        ev = factory()
+        ev = dc_replace(ev, timestamp=now - timedelta(days=relationship_day - target_day))
         orch.event_store.append(ev)
+        if ev.type is EventType.REX_RECOMMENDED_SUBAGENT_PROMOTION:
+            pending_recommendation_id = ev.id
+
+    # Day 25 — recommendation approved (only if the recommendation itself was seeded).
+    if pending_recommendation_id and 25 <= relationship_day:
+        e_approved = TrustEvent.user_approved_recommendation(
+            subagent="Scout",
+            category="leads",
+            from_rank=Rank.OBSERVER,
+            to_rank=Rank.DRAFTER,
+            recommendation_id=pending_recommendation_id,
+        )
+        e_approved = dc_replace(e_approved, timestamp=now - timedelta(days=relationship_day - 25))
+        orch.event_store.append(e_approved)
 
 
 def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
     """Orchestrator seeded to match the Rex morning-briefing mock."""
     orch = Orchestrator()
     orch.register_executor(_DemoExecutor())
-    _promote_rex(orch, "outreach")
-    _promote_rex(orch, "replies")
+    # Seed events first — promotions in the seed plan will move Zilo through
+    # the rank ladder in the correct order (Observer → Drafter at day 18,
+    # Drafter → Sender at day 34). No unconditional Day-0 promotions.
     _seed_journal_events(orch, relationship_day=relationship_day)
+    orch.engine = RankEngine.from_events(orch.event_store)
 
     meridian_mem = orch.notebook.add(
         bucket=Bucket.PEOPLE,

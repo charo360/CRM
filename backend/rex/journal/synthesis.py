@@ -12,11 +12,14 @@ per (kind, day) so React can key them and we never duplicate inside a day.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
+from typing import Sequence
 
 from rex.journal.writer import JournalEntry, JournalEventKind
 from rex.persona.voice_evolution import JournalPhase, voice_for_day
 from rex.principals.visibility import visibility_founder_only
+from rex.ranks.events import EventType, TrustEvent
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +199,323 @@ def synthesize_returned(*, relationship_day: int, days_gone: int) -> JournalEntr
         word_count=_word_count(body),
         visibility=visibility_founder_only,
         created_at=_utc_now(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Daily reflection — ONE entry per day, written as Zilo's reflection.
+#
+# Rules from the spec:
+#   1. One entry per day maximum.
+#   2. Zilo's reflection — never raw event data, source URLs, or system output.
+#   3. Ends with a verdict — one short sentence showing Zilo processed it.
+# ---------------------------------------------------------------------------
+
+_OPERATIONAL_WIN_TYPES = {EventType.ACTION_APPROVED, EventType.ACTION_CLEAN_SEND}
+_OPERATIONAL_SETBACK_TYPES = {
+    EventType.ACTION_REJECTED,
+    EventType.ACTION_UNDONE,
+}
+
+
+def _cat(category: str) -> str:
+    return (category or "").replace("_", " ") or "the work"
+
+
+def _verdict_for_phase(phase: JournalPhase, win: bool = True) -> str:
+    if phase is JournalPhase.OBSERVING:
+        return "Watching." if win else "Noted."
+    if phase is JournalPhase.SHIFTING:
+        return "Noted." if win else "Adjusting."
+    if phase is JournalPhase.BLENDED:
+        return "Fair." if win else "Rebuilding."
+    if phase is JournalPhase.EARNED:
+        return "Pattern holding." if win else "I'll recalibrate."
+    return "We're past noticing the small ones."
+
+
+def _reflect_mistake(day: int, event: TrustEvent, phase: JournalPhase) -> str:
+    category = _cat(event.category)
+    reason = (event.reason or "").strip().rstrip(".")
+    detail = f"{reason}." if reason else "Wrong call."
+    if phase is JournalPhase.OBSERVING:
+        return (
+            f"Day {day}.\n"
+            f"Flagged a mistake on {category}.\n"
+            f"{detail}\n"
+            "They caught it before it went out.\n\n"
+            "Fair. Rebuilding."
+        )
+    return (
+        f"Day {day}.\n"
+        f"Flagged a {category} mistake today. {detail}\n"
+        "They caught it. I did not.\n\n"
+        "Fair. Rebuilding."
+    )
+
+
+def _reflect_demotion(day: int, event: TrustEvent, phase: JournalPhase) -> str:
+    category = _cat(event.category)
+    to_rank = event.to_rank.display if event.to_rank else "Observer"
+    reason = (event.reason or "").strip().rstrip(".")
+    middle = f"{reason}.\n" if reason else ""
+    return (
+        f"Day {day}.\n"
+        f"Demoted to {to_rank} on {category}.\n"
+        f"{middle}\n"
+        "Fair. Rebuilding."
+    )
+
+
+def _reflect_promotion(day: int, event: TrustEvent, phase: JournalPhase) -> str:
+    category = _cat(event.category)
+    to_rank = event.to_rank.display if event.to_rank else "Drafter"
+    if phase is JournalPhase.OBSERVING:
+        return (
+            f"Day {day}.\n"
+            f"Earned {to_rank} on {category} today.\n"
+            "Earlier than I expected.\n\n"
+            "I won't waste it."
+        )
+    return (
+        f"Day {day}.\n"
+        f"Earned {to_rank} on {category} today.\n"
+        "They promoted me without hesitating.\n\n"
+        "I won't waste it."
+    )
+
+
+def _reflect_team(day: int, event: TrustEvent, phase: JournalPhase) -> str:
+    name = event.actor_name or "Someone"
+    if event.type is EventType.FOUNDER_INVITED_TEAM_MEMBER:
+        return (
+            f"Day {day}.\n"
+            f"{name} joined the team.\n"
+            "Set up their briefing. Learning their voice separately.\n\n"
+            "Worth watching."
+        )
+    return (
+        f"Day {day}.\n"
+        f"{name} left the team.\n"
+        "Closed their briefing stream.\n\n"
+        "Noted."
+    )
+
+
+def _reflect_recommendation_made(day: int, event: TrustEvent, phase: JournalPhase) -> str:
+    actor = event.actor_name or "Someone"
+    category = _cat(event.category)
+    to_rank = event.to_rank.display if event.to_rank else "Drafter"
+    return (
+        f"Day {day}.\n"
+        f"Asked about promoting {actor} to {to_rank} on {category}.\n"
+        "The pattern has been holding.\n\n"
+        "Waiting on the call."
+    )
+
+
+def _reflect_recommendation_resolved(day: int, event: TrustEvent, phase: JournalPhase) -> str:
+    actor = event.actor_name or "Someone"
+    category = _cat(event.category)
+    if event.type is EventType.USER_APPROVED_RECOMMENDATION:
+        to_rank = event.to_rank.display if event.to_rank else "Drafter"
+        return (
+            f"Day {day}.\n"
+            f"They approved {actor} for {to_rank} on {category}.\n\n"
+            "Trust earned."
+        )
+    if event.type is EventType.USER_DENIED_RECOMMENDATION:
+        return (
+            f"Day {day}.\n"
+            f"They denied the promotion for {actor} on {category}.\n"
+            "More proof needed.\n\n"
+            "Fair."
+        )
+    return (
+        f"Day {day}.\n"
+        f"They deferred the call on {actor} for {category}.\n\n"
+        "Not no. Not yet."
+    )
+
+
+def _reflect_operational(
+    day: int,
+    wins: list[TrustEvent],
+    setbacks: list[TrustEvent],
+    phase: JournalPhase,
+) -> str:
+    # Aggregate by category — the spec rule is reflection, not enumeration.
+    win_cats = Counter(_cat(e.category) for e in wins)
+    set_cats = Counter(_cat(e.category) for e in setbacks)
+    primary_cat = (win_cats + set_cats).most_common(1)[0][0]
+
+    win_n = len(wins)
+    set_n = len(setbacks)
+    sent_n = sum(1 for e in wins if e.type is EventType.ACTION_CLEAN_SEND)
+    approved_n = win_n - sent_n
+
+    if phase is JournalPhase.OBSERVING:
+        lines = [f"Day {day}.", f"Worked on {primary_cat} today."]
+        if approved_n:
+            lines.append(
+                f"{approved_n} draft{'s' if approved_n != 1 else ''} held for approval."
+            )
+        if sent_n:
+            lines.append(
+                f"{sent_n} went out clean."
+            )
+        if set_n:
+            lines.append(f"{set_n} pushed back on — adjusting.")
+        lines.append("")
+        lines.append("Still learning the shape of things.")
+        return "\n".join(lines)
+
+    if phase is JournalPhase.SHIFTING:
+        lines = [f"Day {day}.", f"{primary_cat.capitalize()} moved today."]
+        if approved_n:
+            lines.append(f"{approved_n} approved.")
+        if sent_n:
+            lines.append(f"{sent_n} sent cleanly.")
+        if set_n:
+            lines.append(f"{set_n} flagged — learning the line.")
+        lines.append("")
+        lines.append("Pattern forming.")
+        return "\n".join(lines)
+
+    # BLENDED / EARNED / PERSPECTIVE
+    summary = []
+    if approved_n:
+        summary.append(f"{approved_n} approved")
+    if sent_n:
+        summary.append(f"{sent_n} sent clean")
+    if set_n:
+        summary.append(f"{set_n} pulled back")
+    detail = ", ".join(summary) if summary else "quiet"
+    verdict = _verdict_for_phase(phase, win=(set_n == 0))
+    return (
+        f"Day {day}.\n"
+        f"{primary_cat.capitalize()}: {detail}.\n\n"
+        f"{verdict}"
+    )
+
+
+# Priority order — the most-significant event of the day wins the reflection.
+def _select_dominant(events: Sequence[TrustEvent]) -> tuple[str, TrustEvent | None,
+                                                            list[TrustEvent], list[TrustEvent]]:
+    mistakes = [e for e in events if e.type is EventType.ACTION_FLAGGED_MISTAKE]
+    demotions = [e for e in events if e.type in {EventType.USER_DEMOTED_REX, EventType.REX_DEMOTED_SUBAGENT}]
+    promotions = [e for e in events if e.type is EventType.USER_PROMOTED_REX]
+    team = [e for e in events if e.type in {EventType.FOUNDER_INVITED_TEAM_MEMBER, EventType.FOUNDER_REVOKED_TEAM_MEMBER}]
+    rec_resolved = [e for e in events if e.type in {
+        EventType.USER_APPROVED_RECOMMENDATION,
+        EventType.USER_DENIED_RECOMMENDATION,
+        EventType.USER_DEFERRED_RECOMMENDATION,
+    }]
+    rec_made = [e for e in events if e.type is EventType.REX_RECOMMENDED_SUBAGENT_PROMOTION]
+    wins = [e for e in events if e.type in _OPERATIONAL_WIN_TYPES]
+    setbacks = [e for e in events if e.type in _OPERATIONAL_SETBACK_TYPES]
+
+    if mistakes:
+        return "mistake", mistakes[0], wins, setbacks
+    if demotions:
+        return "demotion", demotions[0], wins, setbacks
+    if promotions:
+        return "promotion", promotions[0], wins, setbacks
+    if team:
+        return "team", team[0], wins, setbacks
+    if rec_resolved:
+        return "recommendation_resolved", rec_resolved[0], wins, setbacks
+    if rec_made:
+        return "recommendation_made", rec_made[0], wins, setbacks
+    if wins or setbacks:
+        return "operational", None, wins, setbacks
+    return "none", None, [], []
+
+
+_DAY_1_BODY = (
+    "Day 1.\n"
+    "First day. 340 unread emails.\n"
+    "12 stalled deals. A lot to learn.\n\n"
+    "Observing."
+)
+
+
+def synthesize_daily_reflection(
+    *,
+    relationship_day: int,
+    events: Sequence[TrustEvent],
+) -> JournalEntry | None:
+    """One reflective entry for a single day. None if the day has nothing worth recording.
+
+    Always emits the canonical Day 1 entry on day 1, even with no events.
+    """
+    if relationship_day < 1:
+        return None
+
+    cal = voice_for_day(relationship_day)
+    phase = cal.phase
+
+    if relationship_day == 1 and not events:
+        body = _DAY_1_BODY
+        return JournalEntry(
+            id=f"reflection-day-{relationship_day}",
+            relationship_day=relationship_day,
+            kind=JournalEventKind.DAILY_ANCHOR,
+            body=body,
+            source_event_ids=(),
+            actor_name="Zilo",
+            category="relationship",
+            phase=phase,
+            word_count=_word_count(body),
+            visibility=visibility_founder_only,
+            created_at=_utc_now(),
+        )
+
+    if not events:
+        return None
+
+    kind_label, dominant, wins, setbacks = _select_dominant(events)
+    if kind_label == "none":
+        return None
+
+    if kind_label == "mistake":
+        body = _reflect_mistake(relationship_day, dominant, phase)
+        kind = JournalEventKind.OPERATIONAL_SETBACK
+    elif kind_label == "demotion":
+        body = _reflect_demotion(relationship_day, dominant, phase)
+        kind = JournalEventKind.DEMOTION
+    elif kind_label == "promotion":
+        body = _reflect_promotion(relationship_day, dominant, phase)
+        kind = JournalEventKind.PROMOTION
+    elif kind_label == "team":
+        body = _reflect_team(relationship_day, dominant, phase)
+        kind = JournalEventKind.TEAM
+    elif kind_label == "recommendation_resolved":
+        body = _reflect_recommendation_resolved(relationship_day, dominant, phase)
+        kind = JournalEventKind.RECOMMENDATION_RESOLVED
+    elif kind_label == "recommendation_made":
+        body = _reflect_recommendation_made(relationship_day, dominant, phase)
+        kind = JournalEventKind.RECOMMENDATION
+    else:  # operational
+        body = _reflect_operational(relationship_day, wins, setbacks, phase)
+        kind = JournalEventKind.OPERATIONAL_WIN if wins and not setbacks else JournalEventKind.OPERATIONAL_SETBACK
+
+    source_ids = tuple(e.id for e in events)
+    # Anchor the entry's wall-clock timestamp at the latest event of the day.
+    created_at = max((e.timestamp for e in events), default=_utc_now())
+
+    return JournalEntry(
+        id=f"reflection-day-{relationship_day}",
+        relationship_day=relationship_day,
+        kind=kind,
+        body=body,
+        source_event_ids=source_ids,
+        actor_name="Zilo",
+        category=(dominant.category if dominant is not None else "operations"),
+        phase=phase,
+        word_count=_word_count(body),
+        visibility=visibility_founder_only,
+        created_at=created_at,
     )
 
 

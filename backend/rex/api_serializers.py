@@ -7,14 +7,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from rex.actions.rendering import inspect_rows, story_render
-from rex.journal.writer import JournalEntry, JournalEventKind, write_entries_for_events
+from rex.journal.writer import JournalEntry, JournalEventKind
 from rex.journal.synthesis import (
     phase_for_milestone,
     synthesize_daily_anchor,
+    synthesize_daily_reflection,
     synthesize_milestone,
     synthesize_returned,
     synthesize_ambient_thought,
-    list_overnight_ephemera,
     compute_autopilot_progress,
     list_active_learnings,
 )
@@ -213,69 +213,53 @@ def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
     # Snapshot prev_day BEFORE updating visit state — milestone detection needs it.
     prev_day = getattr(orch, "_journal_last_visit_day", None)
 
-    real_entries = write_entries_for_events(
-        orch.event_store.all_events(),
-        relationship_day=day,
-    )
+    # Group events by the day they actually happened on — NOT today.
+    # Spec rule #1: one entry per day max. We aggregate the day's events
+    # into one reflection via synthesize_daily_reflection.
+    now_utc = datetime.now(timezone.utc)
+    events_by_day: dict[int, list] = {}
+    for ev in orch.event_store.all_events():
+        ev_ts = ev.timestamp
+        if ev_ts.tzinfo is None:
+            ev_ts = ev_ts.replace(tzinfo=timezone.utc)
+        days_back = (now_utc - ev_ts).days
+        event_day = day - days_back
+        if event_day < 1 or event_day > day:
+            continue
+        events_by_day.setdefault(event_day, []).append(ev)
+
+    # Always ensure Day 1 has an entry (spec: "First day Zilo starts — Day 1 entry — always").
+    if 1 not in events_by_day and day >= 1:
+        events_by_day[1] = []
+
+    real_entries: list[JournalEntry] = []
+    for entry_day, day_events in events_by_day.items():
+        reflection = synthesize_daily_reflection(
+            relationship_day=entry_day,
+            events=day_events,
+        )
+        if reflection is not None:
+            real_entries.append(reflection)
 
     streak, gap = _update_visit_state(orch, day)
 
-    # Synthetic entries — order: milestone (if crossed) > returned (if gap) > daily anchor (if quiet today)
+    # Synthetic entries — milestone (if crossed) > returned (if gap).
+    # Daily anchor only on a quiet "today" without any reflection.
     synthetic: list[JournalEntry] = []
 
     milestone = _maybe_milestone(orch, day, prev_day)
-    if milestone is not None:
+    if milestone is not None and not any(e.relationship_day == day for e in real_entries):
         synthetic.append(milestone)
 
     if gap >= 2:
-        synthetic.append(
-            synthesize_returned(relationship_day=day, days_gone=gap)
-        )
+        synthetic.append(synthesize_returned(relationship_day=day, days_gone=gap))
 
-    # Daily anchor: only if no TrustEvent happened in the last 24 hours of wall-clock
-    # time, AND we haven't already added another synthetic for today. Synthetic IDs
-    # are stable per day, so refreshing the page surfaces the same anchor.
-    from datetime import timedelta as _td
-    now_utc = datetime.now(timezone.utc)
-    has_real_today = any(
-        (now_utc - e.created_at) < _td(hours=24) for e in real_entries
-    )
-    if not has_real_today and not synthetic:
+    has_real_today = any(e.relationship_day == day for e in real_entries)
+    if not has_real_today and not synthetic and day > 1:
         synthetic.append(synthesize_daily_anchor(relationship_day=day))
 
-    # Convert overnight ephemera to background action journal entries
-    background_entries = []
-    ephemera_tasks = list_overnight_ephemera(orch)
-    from rex.principals.visibility import visibility_founder_only
-    for task in ephemera_tasks:
-        try:
-            dt = datetime.fromisoformat(task["timestamp"])
-        except Exception:
-            dt = datetime.now(timezone.utc)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-
-        body = f"Day {day}.\n{task['summary']}"
-        background_entries.append(
-            JournalEntry(
-                id=task["id"],
-                relationship_day=day,
-                kind=JournalEventKind.BACKGROUND_ACTION,
-                body=body,
-                source_event_ids=(task["action_id"],) if task.get("action_id") else (),
-                actor_name="Zilo",
-                category=task["category"],
-                phase=voice_for_day(day).phase,
-                word_count=len(body.split()),
-                visibility=visibility_founder_only,
-                created_at=dt,
-                action_id=task.get("action_id"),
-                details=tuple(task.get("details", ())),
-            )
-        )
-
-    combined = list(real_entries) + synthetic + background_entries
-    ordered = sorted(combined, key=lambda e: e.created_at, reverse=True)
+    combined = real_entries + synthetic
+    ordered = sorted(combined, key=lambda e: e.relationship_day, reverse=True)
 
     by_kind = Counter(e.kind.value for e in ordered)
     by_category = Counter(e.category for e in ordered)
