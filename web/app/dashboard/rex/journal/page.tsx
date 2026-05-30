@@ -20,7 +20,7 @@ type JournalPayload = {
 const DAY_1_FALLBACK: JournalEntry = {
   id: "fallback-day-1",
   kind: "daily_anchor",
-  body: "Day 1.\nFirst day. 340 unread emails.\n12 stalled deals. A lot to learn.\nObserving.",
+  body: "Day 1.\nFirst day. Just getting started.\nA lot to learn.\nObserving.",
   relationship_day: 1,
   created_at: new Date().toISOString(),
 };

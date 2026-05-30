@@ -11,13 +11,13 @@ from rex.journal.writer import JournalEntry, JournalEventKind
 from rex.journal.synthesis import (
     phase_for_milestone,
     synthesize_daily_anchor,
-    synthesize_daily_reflection,
     synthesize_milestone,
     synthesize_returned,
     synthesize_ambient_thought,
     compute_autopilot_progress,
     list_active_learnings,
 )
+from rex.journal.ai_reflection import generate_daily_reflection_entry
 from rex.loop import Orchestrator
 from rex.memory.buckets import Bucket
 from rex.persistence.codec import _dt_iso
@@ -207,15 +207,15 @@ def _entry_dict(e: JournalEntry) -> dict[str, Any]:
     }
 
 
-def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
+async def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
     day = getattr(orch, "_relationship_day", 1)
 
     # Snapshot prev_day BEFORE updating visit state — milestone detection needs it.
     prev_day = getattr(orch, "_journal_last_visit_day", None)
 
     # Group events by the day they actually happened on — NOT today.
-    # Spec rule #1: one entry per day max. We aggregate the day's events
-    # into one reflection via synthesize_daily_reflection.
+    # Spec rule #1: one entry per day max. The day's real events become one
+    # AI-written reflection (with template fallback if AI is unavailable).
     now_utc = datetime.now(timezone.utc)
     events_by_day: dict[int, list] = {}
     for ev in orch.event_store.all_events():
@@ -234,7 +234,8 @@ def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
 
     real_entries: list[JournalEntry] = []
     for entry_day, day_events in events_by_day.items():
-        reflection = synthesize_daily_reflection(
+        reflection = await generate_daily_reflection_entry(
+            orch=orch,
             relationship_day=entry_day,
             events=day_events,
         )

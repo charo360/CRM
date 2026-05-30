@@ -434,8 +434,8 @@ def _select_dominant(events: Sequence[TrustEvent]) -> tuple[str, TrustEvent | No
 
 _DAY_1_BODY = (
     "Day 1.\n"
-    "First day. 340 unread emails.\n"
-    "12 stalled deals. A lot to learn.\n\n"
+    "First day. A lot to learn.\n"
+    "A lot of cold conversations to read.\n\n"
     "Observing."
 )
 

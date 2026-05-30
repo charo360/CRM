@@ -498,7 +498,7 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     @router.get("/journal")
     async def rex_journal(user=Depends(get_current_user)):
         orch = await _get_orchestrator(user, db, refresh=False)
-        payload = serialize_journal(orch)  # mutates streak + shown_milestones
+        payload = await serialize_journal(orch)  # mutates streak + shown_milestones
         await _persist(user, db, orch)
         return payload
 
