@@ -18,6 +18,8 @@ from rex.persona.voice_evolution import JournalPhase, voice_for_day
 from rex.persona.voice_rules import validate_voice
 from rex.ranks.events import EventType, Rank, TrustEvent
 from rex.principals.visibility import Visibility, visibility_founder_only
+import re as _re
+
 
 
 class JournalEventKind(str, Enum):
@@ -311,54 +313,149 @@ def _probation_lifted(event: TrustEvent, phase: JournalPhase) -> str:
     return f"{first} The pattern held. Filed."
 
 
+def _humanize_subject(subject: str, phase: JournalPhase) -> str:
+    """Translate raw technical subjects into clean human descriptions in Zilo's voice phase."""
+    subject = subject.strip()
+    
+    # 1. Reddit Scout pattern: e.g. "Scout: r/customerexperience on Reddit: What Are the Biggest Cu"
+    reddit_match = _re.match(r"^Scout:\s*r/([a-zA-Z0-9_-]+)\s+on\s+Reddit:\s*(.*)$", subject, _re.IGNORECASE)
+    if reddit_match:
+        subreddit = reddit_match.group(1)
+        topic = reddit_match.group(2).strip(" .")
+        if phase is JournalPhase.OBSERVING:
+            return f"Scanned Reddit r/{subreddit} for customer queries about '{topic}'"
+        if phase is JournalPhase.SHIFTING:
+            return f"Monitored Reddit r/{subreddit} discussion: '{topic}'"
+        if phase is JournalPhase.BLENDED:
+            return f"Analyzed Reddit r/{subreddit} threads discussing '{topic}'"
+        if phase is JournalPhase.EARNED:
+            return f"Scouted Reddit r/{subreddit} feedback on '{topic}'"
+        return f"Reviewed historic Reddit discussions on r/{subreddit} regarding '{topic}'"
+
+    # 2. General Scout pattern: e.g. "Scout: Buy intent — services" or "Scout: Acme mentions"
+    scout_match = _re.match(r"^Scout:\s*(.*)$", subject, _re.IGNORECASE)
+    if scout_match:
+        query = scout_match.group(1).strip(" .")
+        if phase is JournalPhase.OBSERVING:
+            return f"Searched web sources for '{query}'"
+        if phase is JournalPhase.SHIFTING:
+            return f"Crawled web queries for '{query}'"
+        if phase is JournalPhase.BLENDED:
+            return f"Scouted web mentions matching '{query}'"
+        if phase is JournalPhase.EARNED:
+            return f"Identified leads and intent matches for '{query}'"
+        return f"Tracked long-term web query signals for '{query}'"
+
+    # 3. Email patterns: e.g. "Email: Patel Enterprises query about pricing" or containing "Email"
+    email_match = _re.match(r"^Email:\s*(.*)$", subject, _re.IGNORECASE)
+    if email_match:
+        details = email_match.group(1).strip(" .")
+        if phase is JournalPhase.OBSERVING:
+            return f"Received and processed customer query: '{details}'"
+        if phase is JournalPhase.SHIFTING:
+            return f"Analyzed incoming email: '{details}'"
+        if phase is JournalPhase.BLENDED:
+            return f"Drafted custom response for customer email: '{details}'"
+        if phase is JournalPhase.EARNED:
+            return f"Prepared email response regarding '{details}'"
+        return f"Resolved email interaction concerning '{details}'"
+
+    # Fallback to category/basic text
+    if phase is JournalPhase.OBSERVING:
+        return f"Monitored '{subject}' details"
+    if phase is JournalPhase.SHIFTING:
+        return f"Checked '{subject}' updates"
+    if phase is JournalPhase.BLENDED:
+        return f"Managed '{subject}' process"
+    if phase is JournalPhase.EARNED:
+        return f"Administered '{subject}' pipeline"
+    return f"Maintained '{subject}' flow"
+
+
 def _action_approved(event: TrustEvent, phase: JournalPhase, context: Mapping[str, object]) -> str:
     subject = _subject(context, _cat(event.category))
-    first = f"{subject} approved."
+    human = _humanize_subject(subject, phase)
+    
     if phase is JournalPhase.OBSERVING:
-        return first
-    return f"{first} Confidence {int(round((event.confidence or 0) * 100))}%. Noted."
+        return f"Approved: {human}."
+    if phase is JournalPhase.SHIFTING:
+        return f"Approved: {human}. Confidence {int(round((event.confidence or 0) * 100))}%. Noted."
+    if phase is JournalPhase.BLENDED:
+        return f"Approved: {human}. Staged action confirmed. Fair."
+    if phase is JournalPhase.EARNED:
+        return f"Approved: {human}. Staged action executed. Directness works."
+    return f"Approved: {human}. That's the system working."
 
 
 def _clean_send(event: TrustEvent, phase: JournalPhase, context: Mapping[str, object]) -> str:
     subject = _subject(context, _cat(event.category))
+    human = _humanize_subject(subject, phase)
     hours = _metric(context, "reply_hours", None)
+    
     if hours is not None:
-        first = f"{subject} sent. Replied in {hours} hours."
+        first = f"Sent clean: {human}. Replied in {hours} hours."
     else:
-        first = f"{subject} sent clean."
+        first = f"Sent clean: {human}."
+        
     if phase is JournalPhase.OBSERVING:
         return first
+    if phase is JournalPhase.SHIFTING:
+        return f"{first} Automatic send complete. Noted."
+    if phase is JournalPhase.BLENDED:
+        return f"{first} No issues found. Fair."
     if phase is JournalPhase.EARNED:
         return f"{first} Directness worked again. I won't forget that."
-    if phase is JournalPhase.PERSPECTIVE:
-        return f"{first} That's the pattern now."
-    return f"{first} Noted."
+    return f"{first} That's the pattern now."
 
 
 def _action_rejected(event: TrustEvent, phase: JournalPhase, context: Mapping[str, object]) -> str:
     subject = _subject(context, _cat(event.category))
+    human = _humanize_subject(subject, phase)
+    
     if phase is JournalPhase.OBSERVING:
-        return f"{subject} rejected."
-    return f"{subject} rejected. Pattern not strong enough. Noted."
+        return f"Rejected: {human}."
+    if phase is JournalPhase.SHIFTING:
+        return f"Rejected: {human}. Pattern not strong enough. Noted."
+    if phase is JournalPhase.BLENDED:
+        return f"Rejected: {human}. Discarded low confidence signal. Fair."
+    if phase is JournalPhase.EARNED:
+        return f"Rejected: {human}. Dropped. Did not match our criteria."
+    return f"Rejected: {human}. Auto-dismissed noise."
 
 
 def _action_undone(event: TrustEvent, phase: JournalPhase, context: Mapping[str, object]) -> str:
     subject = _subject(context, _cat(event.category))
-    if phase in {JournalPhase.OBSERVING, JournalPhase.SHIFTING}:
-        return f"{subject} undone. Rebuilding."
-    return f"{subject} undone before it settled. Fair. Rebuilding."
+    human = _humanize_subject(subject, phase)
+    
+    if phase is JournalPhase.OBSERVING:
+        return f"Undone: {human}. Rebuilding."
+    if phase is JournalPhase.SHIFTING:
+        return f"Undone: {human}. Rollback requested. Noted."
+    if phase is JournalPhase.BLENDED:
+        return f"Undone: {human} before it settled. Rebuilding."
+    if phase is JournalPhase.EARNED:
+        return f"Undone: {human}. You intervened. I'll recalibrate."
+    return f"Undone: {human}. Backed off action. Resuming posture."
 
 
 def _mistake(event: TrustEvent, phase: JournalPhase, context: Mapping[str, object]) -> str:
     subject = _subject(context, _cat(event.category))
+    human = _humanize_subject(subject, phase)
     reason = _reason(event)
+    
     if reason:
-        first = f"{subject} flagged. {reason}."
+        first = f"Flagged: {human}. {reason}."
     else:
-        first = f"{subject} flagged."
+        first = f"Flagged: {human}."
+        
     if phase in {JournalPhase.OBSERVING, JournalPhase.SHIFTING}:
         return f"{first} Rebuilding."
-    return f"{first} Fair. Rebuilding."
+    if phase is JournalPhase.BLENDED:
+        return f"{first} Correction logged. Fair."
+    if phase is JournalPhase.EARNED:
+        return f"{first} My error. I won't repeat that."
+    return f"{first} Recalibrating logic."
+
 
 
 def _word_count(text: str) -> int:
