@@ -184,6 +184,7 @@ export default function ZiloJournalPage() {
   const [undoneActions, setUndoneActions] = useState<Set<string>>(new Set());
   const [undoing, setUndoing] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [activeTab, setActiveTab] = useState<"timeline" | "status">("timeline");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -259,11 +260,12 @@ export default function ZiloJournalPage() {
   }, [filteredEntries]);
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-6 py-8 animate-fadeIn">
+      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-dark/60">Zilo</p>
-          <h1 className="mt-1 text-3xl font-semibold text-slate-900">Journal</h1>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-[#0d2818]/60">Zilo Autopilot</p>
+          <h1 className="mt-1 text-3xl font-semibold text-slate-900">Journal & Progress</h1>
           <p className="mt-2 max-w-xl text-sm text-slate-600">
             Zilo&apos;s diary of his own growth — written in his voice, evolving as the
             relationship deepens. Not a log of what you did. A log of what he became.
@@ -272,16 +274,16 @@ export default function ZiloJournalPage() {
         <button
           type="button"
           onClick={() => setShowExplainer((v) => !v)}
-          className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
         >
           <Info size={13} />
-          How this works
+          {showExplainer ? "Hide Help" : "How this works"}
         </button>
       </div>
 
       {showExplainer && (
-        <div className="mt-4 rounded-xl border border-brand/30 bg-brand/5 p-5 text-sm text-slate-700">
-          <p className="font-semibold text-brand-dark">What you&apos;re reading</p>
+        <div className="mt-4 rounded-xl border border-brand/30 bg-brand/5 p-5 text-sm text-slate-700 animate-slideDown">
+          <p className="font-semibold text-[#0d2818]">What you&apos;re reading</p>
           <ul className="mt-2 space-y-1.5 list-disc list-inside text-slate-600">
             <li>Every <strong>trust event</strong> (promotion, approval, mistake, clean send) becomes one short entry.</li>
             <li>The <strong>voice changes over time</strong> — terse and observational early, more confident later.</li>
@@ -300,130 +302,172 @@ export default function ZiloJournalPage() {
 
       {!loading && data && (
         <>
-          {data.phase && (
-            <PhaseBanner
-              phase={data.phase}
-              day={data.relationship_day}
-              engagement={data.engagement}
-              autopilotProgress={data.autopilot_progress}
-            />
-          )}
-
-          {data.ambient_thought && (
-            <div className="mt-6 rounded-xl border border-[#0d2818]/15 bg-gradient-to-r from-[#eefaf2] to-white p-5 shadow-sm">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-[#0d2818]/70">Zilo&apos;s Daily Ambient Thought</p>
-              <blockquote className="mt-2 text-base italic font-serif leading-relaxed text-slate-800 border-l-2 border-[#0d2818] pl-3">
-                &ldquo;{data.ambient_thought}&rdquo;
-              </blockquote>
+          {/* Quick Stats Bar */}
+          <div className="mt-6 grid grid-cols-3 gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-center">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Relationship</p>
+              <p className="mt-1 text-base font-bold text-slate-800">Day {data.relationship_day}</p>
             </div>
-          )}
+            <div className="text-center border-x border-slate-100">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Voice Phase</p>
+              <p className="mt-1 text-base font-bold text-[#0d2818]">
+                {data.phase ? PHASE_LABEL[data.phase.phase] ?? data.phase.phase : "Observing"}
+              </p>
+            </div>
+            <div className="text-center">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Daily Streak</p>
+              <p className="mt-1 text-base font-bold text-amber-600 flex items-center justify-center gap-1">
+                <Flame size={14} className="fill-amber-500 text-amber-500" />
+                {data.engagement?.streak_days ?? 0} Days
+              </p>
+            </div>
+          </div>
 
+          {/* Tab Navigation */}
+          <div className="mt-6 flex border-b border-slate-200">
+            <button
+              type="button"
+              onClick={() => setActiveTab("timeline")}
+              className={`pb-3 text-sm font-semibold transition-all border-b-2 px-4 ${
+                activeTab === "timeline"
+                  ? "border-[#0d2818] text-slate-900"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              Timeline Logs
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("status")}
+              className={`pb-3 text-sm font-semibold transition-all border-b-2 px-4 ${
+                activeTab === "status"
+                  ? "border-[#0d2818] text-slate-900"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              System Progress & Learnings
+            </button>
+          </div>
 
+          <div className="mt-6">
+            {activeTab === "timeline" ? (
+              <>
+                {data.ambient_thought && (
+                  <div className="mb-6 rounded-xl border border-[#0d2818]/15 bg-gradient-to-r from-[#eefaf2] to-white p-5 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#0d2818]/70">Zilo&apos;s Daily Ambient Thought</p>
+                    <blockquote className="mt-2 text-base italic font-serif leading-relaxed text-slate-800 border-l-2 border-[#0d2818] pl-3">
+                      &ldquo;{data.ambient_thought}&rdquo;
+                    </blockquote>
+                  </div>
+                )}
 
-
-          {data.active_learnings && data.active_learnings.length > 0 && (
-            <div className="mt-8">
-              <div className="flex items-center gap-2">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                </span>
-                <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Zilo&apos;s Active Learning Loop</h3>
-              </div>
-              
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                {data.active_learnings.map((learning) => {
-                  const isApplied = learning.status === "applied";
-                  const isMuted = learning.status === "muted";
-                  const statusLabel = isApplied 
-                    ? "Applied to Autopilot" 
-                    : isMuted 
-                    ? "Alert Muted" 
-                    : "Observing Style";
-                  const statusColor = isApplied
-                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                    : isMuted
-                    ? "bg-amber-50 text-amber-700 border-amber-200"
-                    : "bg-blue-50 text-blue-700 border-blue-200";
-                  
-                  return (
-                    <div 
-                      key={learning.id} 
-                      className="group relative rounded-xl border border-slate-100 bg-white p-5 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-md hover:border-blue-100/50"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <span className="inline-flex rounded-full bg-slate-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-slate-500">
-                          {formatCategory(learning.category)}
-                        </span>
-                        <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold ${statusColor}`}>
-                          {isApplied && <CheckCircle2 size={10} />}
-                          {learning.status === "observing" && <Loader2 size={10} className="animate-spin" />}
-                          {statusLabel}
-                        </span>
-                      </div>
-                      
-                      <div className="mt-3.5 space-y-2.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Interaction</span>
-                            <p className="text-xs text-slate-700 font-medium truncate">{learning.observation}</p>
-                          </div>
-                          <div className="shrink-0 text-right">
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Source</span>
-                            <p className="text-[10px] font-medium text-slate-500">{learning.source}</p>
-                          </div>
-                        </div>
-                        
-                        <div className="border-t border-slate-50 pt-2.5 bg-gradient-to-r from-blue-50/20 to-transparent p-2 rounded-lg border border-blue-500/5">
-                          <span className="text-[9px] font-bold uppercase tracking-wider text-blue-600">Lesson Extracted</span>
-                          <p className="text-xs font-semibold text-slate-900 leading-normal">{learning.lesson}</p>
-                        </div>
-                        
-                        <div className="rounded-lg bg-slate-50/50 p-2.5 border border-slate-100/50 flex justify-between items-center gap-2">
-                          <div className="min-w-0 flex-1">
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Autopilot Impact</span>
-                            <p className="text-[11px] text-slate-600 font-medium truncate">{learning.impact}</p>
-                          </div>
-                          {learning.applied_to && (
-                            <div className="shrink-0 text-right">
-                              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">System Path</span>
-                              <p className="text-[10px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/50">{learning.applied_to}</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                {(data.entries?.length ?? 0) === 0 ? (
+                  <EmptyState />
+                ) : (
+                  <>
+                    {data.summary && data.summary.by_kind.length > 0 && (
+                      <FilterChips
+                        summary={data.summary}
+                        selected={kindFilter}
+                        onSelect={setKindFilter}
+                      />
+                    )}
+                    <div className="mt-6 space-y-6">
+                      {entriesByDay.map(([day, entries]) => (
+                        <DaySection
+                          key={day}
+                          day={day}
+                          entries={entries}
+                          undoneActions={undoneActions}
+                          undoing={undoing}
+                          onUndo={handleUndo}
+                        />
+                      ))}
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {(data.entries?.length ?? 0) === 0 ? (
-            <EmptyState />
-          ) : (
-            <>
-              {data.summary && data.summary.by_kind.length > 0 && (
-                <FilterChips
-                  summary={data.summary}
-                  selected={kindFilter}
-                  onSelect={setKindFilter}
-                />
-              )}
-              <div className="mt-6 space-y-8">
-                {entriesByDay.map(([day, entries]) => (
-                  <DaySection
-                    key={day}
-                    day={day}
-                    entries={entries}
-                    undoneActions={undoneActions}
-                    undoing={undoing}
-                    onUndo={handleUndo}
+                  </>
+                )}
+              </>
+            ) : (
+              <div className="space-y-6 animate-fadeIn">
+                {data.phase && (
+                  <PhaseBanner
+                    phase={data.phase}
+                    day={data.relationship_day}
+                    engagement={data.engagement}
+                    autopilotProgress={data.autopilot_progress}
                   />
-                ))}
+                )}
+
+                {data.active_learnings && data.active_learnings.length > 0 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 pt-2">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                      </span>
+                      <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Active Learning Loop</h3>
+                    </div>
+                    
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {data.active_learnings.map((learning) => {
+                        const isApplied = learning.status === "applied";
+                        const isMuted = learning.status === "muted";
+                        const statusLabel = isApplied 
+                          ? "Applied" 
+                          : isMuted 
+                          ? "Muted" 
+                          : "Observing";
+                        const statusColor = isApplied
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : isMuted
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          : "bg-blue-50 text-blue-700 border-blue-200";
+                        
+                        return (
+                          <div 
+                            key={learning.id} 
+                            className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-all hover:shadow-md"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="inline-flex rounded bg-slate-50 border border-slate-200 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-slate-600">
+                                {formatCategory(learning.category)}
+                              </span>
+                              <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold ${statusColor}`}>
+                                {isApplied && <CheckCircle2 size={10} />}
+                                {learning.status === "observing" && <Loader2 size={10} className="animate-spin" />}
+                                {statusLabel}
+                              </span>
+                            </div>
+                            
+                            <div className="mt-3 space-y-3">
+                              <div>
+                                <p className="text-xs font-semibold text-slate-800 leading-normal">&ldquo;{learning.observation}&rdquo;</p>
+                                <p className="mt-1 text-[9px] text-slate-400">Observed from {learning.source}</p>
+                              </div>
+                              
+                              <div className="rounded-lg bg-blue-50/40 border border-blue-100 p-2.5">
+                                <p className="text-[9px] font-bold text-blue-600 uppercase tracking-wider">Lesson</p>
+                                <p className="mt-0.5 text-xs font-medium text-slate-850 leading-relaxed">{learning.lesson}</p>
+                              </div>
+                              
+                              <div className="flex justify-between items-center text-[11px] text-slate-500 pt-1">
+                                <span>Impact: {learning.impact}</span>
+                                {learning.applied_to && (
+                                  <span className="text-[9px] font-semibold bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded text-slate-700">
+                                    {learning.applied_to}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
-            </>
-          )}
+            )}
+          </div>
         </>
       )}
 
@@ -439,7 +483,7 @@ export default function ZiloJournalPage() {
 
       <Link
         href="/dashboard"
-        className="mt-10 inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-ink hover:bg-brand-light"
+        className="mt-10 inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-ink hover:bg-brand-light transition"
       >
         Back to Briefing
       </Link>
@@ -459,94 +503,84 @@ function PhaseBanner({
   autopilotProgress?: AutopilotProgress;
 }) {
   const label = PHASE_LABEL[phase.phase] ?? phase.phase;
-  const streak = engagement?.streak_days ?? 0;
   const nextDays = phase.next_phase_in_days;
   const nextLabel = phase.next_phase ? PHASE_LABEL[phase.next_phase] ?? phase.next_phase : null;
   return (
-    <div className="mt-6 rounded-2xl border border-slate-200 bg-gradient-to-br from-[#071a10] to-[#0d2818] p-6 text-white shadow-lg">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">Relationship</p>
-          <p className="mt-1 text-3xl font-semibold">Day {day}</p>
-          {streak > 0 && (
-            <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-400/20 px-2.5 py-0.5 text-xs font-semibold text-amber-200">
-              <Flame size={12} />
-              {streak}-day streak
-            </p>
-          )}
-        </div>
-        <div className="text-right">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">Voice Phase</p>
-          <p className="mt-1 text-xl font-semibold text-brand-light">{label}</p>
-          <p className="mt-1 text-[11px] text-slate-300">{PHASE_HINT[phase.phase] ?? ""}</p>
-        </div>
-      </div>
-
-      <div className="mt-5">
-        <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
-          <div
-            className="h-full bg-gradient-to-r from-brand to-amber-300 transition-all"
-            style={{ width: `${phase.progress_pct}%` }}
-          />
-        </div>
-        <div className="mt-2 flex items-center justify-between text-[11px] text-slate-300">
-          <span>
+    <div className="space-y-6">
+      {/* Voice Phase Card */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="text-sm font-bold text-slate-800 font-sans">Voice Phase: {label}</h4>
+            <p className="mt-1 text-xs text-slate-500">{PHASE_HINT[phase.phase] ?? ""}</p>
+          </div>
+          <span className="rounded bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-600">
             Day {phase.day_range_lo}
             {phase.day_range_hi != null ? `–${phase.day_range_hi}` : "+"}
           </span>
-          {nextLabel && nextDays != null ? (
-            <span>
-              <strong className="text-white">{nextLabel}</strong> unlocks in {nextDays} day
-              {nextDays === 1 ? "" : "s"}
-            </span>
-          ) : (
-            <span>Final phase</span>
-          )}
+        </div>
+
+        <div className="mt-4">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full bg-gradient-to-r from-emerald-500 to-teal-600 transition-all"
+              style={{ width: `${phase.progress_pct}%` }}
+            />
+          </div>
+          <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500">
+            <span>{phase.progress_pct}% Phase Progress</span>
+            {nextLabel && nextDays != null ? (
+              <span>
+                Next Phase: <strong className="text-slate-700">{nextLabel}</strong> in {nextDays} day{nextDays === 1 ? "" : "s"}
+              </span>
+            ) : (
+              <span>Final Phase Achieved</span>
+            )}
+          </div>
+        </div>
+
+        {phase.tease && (
+          <div className="mt-4 rounded-lg bg-amber-50/50 border border-amber-200/50 p-3 text-xs italic text-amber-800 font-sans">
+            &ldquo;{phase.tease}&rdquo;
+          </div>
+        )}
+
+        <div className="mt-4 rounded-lg bg-slate-50 border border-slate-100 p-3">
+          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+            Writing Sample Today
+          </p>
+          <p className="mt-1 text-xs italic text-slate-600">&ldquo;{phase.example}&rdquo;</p>
         </div>
       </div>
 
-      {phase.tease && (
-        <p className="mt-4 text-sm italic text-amber-200/90">
-          &ldquo;{phase.tease}&rdquo;
-        </p>
-      )}
-
+      {/* Autopilot Rank Progression Card */}
       {autopilotProgress && (
-        <div className="mt-5 border-t border-white/10 pt-4">
+        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">Autopilot Rank Progression</p>
-              <p className="mt-1 text-sm font-semibold text-white">
-                {autopilotProgress.current_rank} &rarr; <span className="text-brand-light">{autopilotProgress.target_rank}</span> ({formatCategory(autopilotProgress.category)})
+              <h4 className="text-sm font-bold text-slate-800">Autopilot Rank Progression</h4>
+              <p className="mt-1 text-xs text-slate-500">
+                Current: <strong className="text-slate-700">{autopilotProgress.current_rank}</strong> &rarr; Target: <strong className="text-emerald-600">{autopilotProgress.target_rank}</strong> ({formatCategory(autopilotProgress.category)})
               </p>
             </div>
-            <div className="text-right">
-              <span className="inline-flex items-center gap-1 rounded-full bg-brand/20 px-2 py-0.5 text-[10px] font-bold text-brand-light border border-brand/30">
-                <Star size={10} className="animate-pulse text-amber-300" />
-                {autopilotProgress.progress_pct}% Earned
-              </span>
-            </div>
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-xs font-bold text-emerald-700">
+              <Star size={12} className="fill-emerald-500 text-emerald-500" />
+              {autopilotProgress.progress_pct}% Complete
+            </span>
           </div>
-          <div className="mt-2.5">
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+          <div className="mt-4">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
               <div
-                className="h-full bg-gradient-to-r from-brand to-emerald-400 transition-all"
+                className="h-full bg-gradient-to-r from-emerald-500 to-teal-600 transition-all"
                 style={{ width: `${autopilotProgress.progress_pct}%` }}
               />
             </div>
-            <p className="mt-1.5 text-[11px] text-slate-300">
+            <p className="mt-2 text-xs text-slate-600 leading-relaxed">
               {autopilotProgress.text}
             </p>
           </div>
         </div>
       )}
-
-      <div className="mt-5 rounded-xl border border-white/10 bg-white/5 p-3">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/60">
-          How Zilo writes today
-        </p>
-        <p className="mt-1 text-sm italic text-slate-200">&ldquo;{phase.example}&rdquo;</p>
-      </div>
     </div>
   );
 }
@@ -565,7 +599,7 @@ function FilterChips({
       <button
         type="button"
         onClick={() => onSelect(null)}
-        className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+        className={`rounded-full border px-3 py-1 text-xs font-medium transition-all ${
           selected === null
             ? "border-brand bg-brand text-brand-ink"
             : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
@@ -578,7 +612,7 @@ function FilterChips({
           key={k.kind}
           type="button"
           onClick={() => onSelect(k.kind === selected ? null : k.kind)}
-          className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+          className={`rounded-full border px-3 py-1 text-xs font-medium transition-all ${
             selected === k.kind
               ? "border-brand bg-brand text-brand-ink"
               : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
@@ -649,7 +683,7 @@ function EntryCard({
   const isReturned = entry.kind === "returned";
 
   const cardClass = isMilestone
-    ? "rounded-xl border-2 border-amber-300 bg-gradient-to-br from-amber-50 via-white to-white p-5 shadow-md ring-1 ring-amber-200/50 transition hover:shadow-lg"
+    ? "rounded-xl border-2 border-amber-300 bg-gradient-to-br from-amber-50 via-white to-white p-5 shadow-md ring-1 ring-amber-200/50 transition hover:shadow-lg animate-fadeIn"
     : isAnchor
     ? "rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm transition hover:bg-slate-50"
     : isReturned
@@ -657,10 +691,10 @@ function EntryCard({
     : `rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md ${isUndone ? "opacity-75" : ""}`;
 
   const bodyClass = isMilestone
-    ? `mt-1.5 whitespace-pre-wrap text-[17px] font-medium leading-relaxed text-slate-900 ${isUndone ? "line-through text-slate-400" : ""}`
+    ? `mt-1.5 whitespace-pre-wrap text-[16px] font-medium leading-relaxed text-slate-900 ${isUndone ? "line-through text-slate-400" : ""}`
     : isAnchor
     ? "mt-1.5 whitespace-pre-wrap text-[14px] italic leading-relaxed text-slate-500"
-    : `mt-1.5 whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800 ${isUndone ? "line-through text-slate-400" : ""}`;
+    : `mt-1.5 whitespace-pre-wrap text-[14px] leading-relaxed text-slate-850 ${isUndone ? "line-through text-slate-400" : ""}`;
 
   return (
     <li className={cardClass}>
@@ -698,7 +732,7 @@ function EntryCard({
           <p className={bodyClass}>{cleanBody}</p>
 
           {entry.details && entry.details.length > 0 && (
-            <div className="mt-2.5">
+            <div className="mt-2">
               <button
                 type="button"
                 onClick={() => setIsExpanded(!isExpanded)}
@@ -709,17 +743,17 @@ function EntryCard({
               </button>
 
               {isExpanded && (
-                <div className="mt-2.5 rounded-lg border border-slate-100 bg-slate-50/50 p-3 text-xs text-slate-700 space-y-1.5">
+                <div className="mt-2 rounded-lg border border-slate-150 bg-slate-50/50 p-3 text-xs text-slate-700 space-y-1.5">
                   {entry.details.map((detail, idx) => (
                     <div key={idx} className="flex items-center gap-2">
-                      <span className="h-1.5 w-1.5 rounded-full bg-slate-400"></span>
+                      <span className="h-1 w-1 rounded-full bg-slate-400"></span>
                       <span className={isUndone ? "line-through text-slate-400" : ""}>{detail}</span>
                     </div>
                   ))}
 
                   {entry.action_id && (
                     <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                      <span className="text-[10px] text-slate-400">Action ID: {entry.action_id}</span>
+                      <span className="text-[10px] text-slate-400">Action: {entry.action_id.split("-")[0]}</span>
                       {isUndone ? (
                         <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
                           Undone
@@ -729,7 +763,7 @@ function EntryCard({
                           type="button"
                           disabled={isUndoing}
                           onClick={() => onUndo(entry.action_id!)}
-                          className="inline-flex items-center gap-1 rounded bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-200 transition disabled:opacity-50"
+                          className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-50 transition disabled:opacity-50"
                         >
                           {isUndoing ? (
                             <Loader2 size={10} className="animate-spin" />
