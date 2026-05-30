@@ -377,16 +377,9 @@ def _humanize_subject(subject: str, phase: JournalPhase) -> str:
             "Drafted pricing response."
         )
 
-    # Fallback to category/basic text
-    if phase is JournalPhase.OBSERVING:
-        return f"Monitored '{subject}' details"
-    if phase is JournalPhase.SHIFTING:
-        return f"Checked '{subject}' updates"
-    if phase is JournalPhase.BLENDED:
-        return f"Managed '{subject}' process"
-    if phase is JournalPhase.EARNED:
-        return f"Administered '{subject}' pipeline"
-    return f"Maintained '{subject}' flow"
+    # Fallback — bare noun phrase. Callers add the verb ("Approved:", "Sent clean:")
+    # and the verdict. Avoid processed verbs that read like a system log.
+    return subject
 
 
 def _action_approved(event: TrustEvent, phase: JournalPhase, context: Mapping[str, object]) -> str:

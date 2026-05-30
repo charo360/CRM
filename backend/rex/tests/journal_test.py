@@ -164,7 +164,7 @@ class TestJournalWriterOperationalEvents:
         )
 
         assert entry.kind is JournalEventKind.OPERATIONAL_WIN
-        assert "Approved: Checked 'Acme follow-up' updates." in entry.body
+        assert "Approved: Acme follow-up." in entry.body
         assert "Confidence 88%. Noted." in entry.body
 
     def test_action_clean_send_with_reply_hours(self):
@@ -180,7 +180,7 @@ class TestJournalWriterOperationalEvents:
             context={"subject": "Acme follow-up", "reply_hours": 4},
         )
 
-        assert "Sent clean: Administered 'Acme follow-up' pipeline. Replied in 4 hours." in entry.body
+        assert "Sent clean: Acme follow-up. Replied in 4 hours." in entry.body
         assert "Directness worked again." in entry.body
         assert "I won't forget that." in entry.body
 
@@ -198,7 +198,7 @@ class TestJournalWriterOperationalEvents:
         )
 
         assert entry.kind is JournalEventKind.OPERATIONAL_SETBACK
-        assert "Rejected: Managed 'Henderson reply' process." in entry.body
+        assert "Rejected: Henderson reply." in entry.body
         assert "Discarded low confidence signal. Fair." in entry.body
 
     def test_action_undone(self):
@@ -214,7 +214,7 @@ class TestJournalWriterOperationalEvents:
             context={"subject": "Henson follow-up"},
         )
 
-        assert "Undone: Managed 'Henson follow-up' process before it settled." in entry.body
+        assert "Undone: Henson follow-up before it settled." in entry.body
         assert "Rebuilding." in entry.body
 
     def test_action_flagged_mistake(self):
@@ -231,7 +231,7 @@ class TestJournalWriterOperationalEvents:
             context={"subject": "Invoice chase"},
         )
 
-        assert "Flagged: Managed 'Invoice chase' process." in entry.body
+        assert "Flagged: Invoice chase." in entry.body
         assert "Flagged Henderson when I meant Henson." in entry.body
         assert "Correction logged. Fair." in entry.body
 
