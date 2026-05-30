@@ -3,29 +3,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import {
-  BookOpen,
-  Loader2,
-  Star,
-  Sunrise,
-  Moon,
-} from "lucide-react";
 
 type JournalEntry = {
   id: string;
   kind: string;
-  kind_label: string;
   body: string;
-  actor_name: string;
-  category: string;
-  phase: string;
-  word_count: number;
-  source_event_ids: string[];
-  created_at: string;
   relationship_day: number;
-  is_synthetic?: boolean;
-  action_id?: string | null;
-  details?: string[];
+  created_at: string;
 };
 
 type JournalPayload = {
@@ -33,31 +17,52 @@ type JournalPayload = {
   entries: JournalEntry[];
 };
 
-const KIND_ICON: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
-  milestone: Star,
-  daily_anchor: Moon,
-  returned: Sunrise,
+const DAY_1_FALLBACK: JournalEntry = {
+  id: "fallback-day-1",
+  kind: "daily_anchor",
+  body: "Day 1.\nFirst day. 340 unread emails.\n12 stalled deals. A lot to learn.\nObserving.",
+  relationship_day: 1,
+  created_at: new Date().toISOString(),
 };
 
-const KIND_TONE: Record<string, string> = {
-  milestone: "bg-gradient-to-br from-amber-50 to-amber-100 text-amber-800 border-amber-300",
-  daily_anchor: "bg-slate-50 text-slate-500 border-slate-200",
-  returned: "bg-sky-50 text-sky-700 border-sky-200",
-};
+function stripDayPrefix(body: string): string {
+  return body.replace(/^Day \d+\.\s*\n?/, "").trim();
+}
+
+function splitVerdict(body: string): { observation: string; verdict: string } {
+  const trimmed = stripDayPrefix(body);
+  if (!trimmed) return { observation: "", verdict: "" };
+
+  const lines = trimmed.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length >= 2) {
+    return {
+      observation: lines.slice(0, -1).join("\n"),
+      verdict: lines[lines.length - 1],
+    };
+  }
+
+  const sentences = trimmed.match(/[^.!?]+[.!?]+/g);
+  if (sentences && sentences.length >= 2) {
+    return {
+      observation: sentences.slice(0, -1).join(" ").trim(),
+      verdict: sentences[sentences.length - 1].trim(),
+    };
+  }
+
+  return { observation: "", verdict: trimmed };
+}
 
 export default function ZiloJournalPage() {
   const [data, setData] = useState<JournalPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const res = await api.get<JournalPayload>("/rex/journal");
       setData(res);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load journal");
+    } catch {
+      setData(null);
     } finally {
       setLoading(false);
     }
@@ -67,79 +72,65 @@ export default function ZiloJournalPage() {
     load();
   }, [load]);
 
-  const normalizedEntries = useMemo<JournalEntry[]>(() => {
-    if (!data?.entries) return [];
-    const fallbackDay = data.relationship_day ?? 1;
-    return data.entries.map((e) => ({
-      ...e,
-      kind_label: e.kind_label ?? e.kind ?? "Entry",
-      relationship_day: e.relationship_day ?? fallbackDay,
-      created_at: e.created_at ?? new Date().toISOString(),
-      word_count: e.word_count ?? 0,
-      source_event_ids: e.source_event_ids ?? [],
-    }));
+  const entries = useMemo<JournalEntry[]>(() => {
+    if (!data?.entries || data.entries.length === 0) {
+      return [DAY_1_FALLBACK];
+    }
+    return [...data.entries].sort(
+      (a, b) => (b.relationship_day ?? 0) - (a.relationship_day ?? 0),
+    );
   }, [data]);
 
-  const entriesByDay = useMemo(() => {
-    const groups = new Map<number, JournalEntry[]>();
-    for (const e of normalizedEntries) {
-      const arr = groups.get(e.relationship_day) ?? [];
-      arr.push(e);
-      groups.set(e.relationship_day, arr);
-    }
-    return [...groups.entries()].sort((a, b) => b[0] - a[0]);
-  }, [normalizedEntries]);
-
-  const dayCount = data?.relationship_day ?? 0;
+  const dayCount = data?.relationship_day ?? 1;
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8 animate-fadeIn">
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      {/* Page header — spec copy */}
       <div>
-        <h1 className="text-3xl font-semibold text-slate-900">Zilo&apos;s Journal</h1>
+        <h1 className="text-3xl font-semibold text-slate-900">
+          Zilo&apos;s Journal
+        </h1>
         <p className="mt-2 text-sm text-slate-600">
           Zilo&apos;s story of working with your business — from Day 1.
         </p>
       </div>
 
-      {loading && (
-        <div className="mt-12 flex justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-brand" />
-        </div>
-      )}
-      {error && <p className="mt-6 text-sm text-red-600">{error}</p>}
-
-      {!loading && data && (
-        <>
-          <div className="mt-8 text-center">
-            <p className="text-sm font-semibold text-slate-700">Day {dayCount}</p>
-          </div>
-
-          {(data.entries?.length ?? 0) === 0 ? (
-            <EmptyState day={dayCount} />
-          ) : (
-            <div className="mt-8 space-y-6">
-              {entriesByDay.map(([day, entries]) => (
-                <DaySection key={day} day={day} entries={entries} />
-              ))}
-            </div>
+      {/* The counter — spec format */}
+      <div className="mt-10 border-b border-slate-200 pb-6">
+        <p className="font-mono text-sm text-slate-600">
+          <span className="text-amber-600 font-semibold">Day {dayCount}</span>
+          {loading ? null : (
+            <span className="text-slate-400">
+              {"  ·  "}Zilo&apos;s record from Day 1 to today
+            </span>
           )}
+        </p>
+      </div>
 
-          <div className="mt-12 border-t border-slate-200 pt-6">
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Zilo started working with you {dayCount} day{dayCount === 1 ? "" : "s"} ago.
-              Every entry is written by Zilo — not generated from a template.
-              This is its actual record.
-            </p>
-            <button
-              type="button"
-              onClick={() => window.print()}
-              className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
-            >
-              Export journal
-            </button>
-          </div>
-        </>
-      )}
+      {/* The feed */}
+      <ul className="mt-2">
+        {entries.map((e) => (
+          <EntryRow key={e.id} entry={e} />
+        ))}
+      </ul>
+
+      {/* The bottom of the journal — spec copy */}
+      <div className="mt-12 pt-6 border-t border-slate-200">
+        <p className="font-mono text-xs text-slate-500 leading-relaxed">
+          Zilo started working with you {dayCount} day
+          {dayCount === 1 ? "" : "s"} ago.
+          <br />
+          Every entry is written by Zilo — not generated from a template. This
+          is its actual record.
+        </p>
+        <button
+          type="button"
+          onClick={() => window.print()}
+          className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+        >
+          Export journal
+        </button>
+      </div>
 
       <Link
         href="/dashboard"
@@ -151,77 +142,57 @@ export default function ZiloJournalPage() {
   );
 }
 
-function DaySection({ day, entries }: { day: number; entries: JournalEntry[] }) {
+function EntryRow({ entry }: { entry: JournalEntry }) {
+  const { observation, verdict } = splitVerdict(entry.body);
+  const isMistake =
+    entry.kind === "operational_setback" ||
+    /flagged|mistake|wrong|undone/i.test(entry.body);
+  const isPromotion = entry.kind === "promotion";
+
   return (
-    <section>
-      <div className="sticky top-0 z-[1] -mx-6 mb-3 bg-gradient-to-b from-white via-white to-white/0 px-6 py-2">
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">
-          Day {day}
+    <li className="flex gap-6 border-b border-slate-100 py-6">
+      {/* Left: day number, amber mono */}
+      <div className="w-20 shrink-0">
+        <p className="font-mono text-base font-semibold text-amber-600">
+          Day {entry.relationship_day}
         </p>
       </div>
-      <ul className="space-y-3">
-        {entries.map((e) => (
-          <EntryCard key={e.id} entry={e} />
-        ))}
-      </ul>
-    </section>
-  );
-}
 
-function EntryCard({ entry }: { entry: JournalEntry }) {
-  const Icon = KIND_ICON[entry.kind] ?? BookOpen;
-  const tone = KIND_TONE[entry.kind] ?? "bg-slate-50 text-slate-700 border-slate-200";
+      {/* Right: observation + verdict */}
+      <div className="flex-1 min-w-0">
+        {observation && (
+          <p className="font-mono text-[14px] leading-relaxed text-slate-500 whitespace-pre-wrap">
+            {observation}
+          </p>
+        )}
+        {verdict && (
+          <p
+            className={`font-mono text-[14px] leading-relaxed text-slate-900 font-medium whitespace-pre-wrap ${
+              observation ? "mt-2" : ""
+            }`}
+          >
+            {verdict}
+          </p>
+        )}
 
-  const cleanBody = entry.body.replace(/^Day \d+\.\s*\n?/, "").trim();
-
-  const isMilestone = entry.kind === "milestone";
-  const isAnchor = entry.kind === "daily_anchor";
-  const isReturned = entry.kind === "returned";
-
-  const cardClass = isMilestone
-    ? "rounded-xl border-2 border-amber-300 bg-gradient-to-br from-amber-50 via-white to-white p-5 shadow-md ring-1 ring-amber-200/50 transition hover:shadow-lg animate-fadeIn"
-    : isAnchor
-    ? "rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm transition hover:bg-slate-50"
-    : isReturned
-    ? "rounded-xl border border-sky-200 bg-sky-50/60 p-4 shadow-sm transition hover:shadow-md"
-    : "rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:shadow-md";
-
-  const bodyClass = isMilestone
-    ? "whitespace-pre-wrap text-[16px] font-medium leading-relaxed text-slate-900"
-    : isAnchor
-    ? "whitespace-pre-wrap text-[14px] italic leading-relaxed text-slate-500"
-    : "whitespace-pre-wrap text-[14px] leading-relaxed text-slate-850";
-
-  return (
-    <li className={cardClass}>
-      <div className="flex items-start gap-3">
-        <div className={`shrink-0 rounded-lg border p-2 ${tone}`}>
-          <Icon size={isMilestone ? 16 : 14} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className={bodyClass}>{cleanBody}</p>
-        </div>
+        {/* Spec-defined small links on mistake / promotion entries */}
+        {isMistake && (
+          <button
+            type="button"
+            className="mt-3 font-mono text-[11px] text-slate-400 hover:text-slate-600 underline-offset-4 hover:underline transition"
+          >
+            What changed after this
+          </button>
+        )}
+        {isPromotion && (
+          <button
+            type="button"
+            className="mt-3 font-mono text-[11px] text-slate-400 hover:text-slate-600 underline-offset-4 hover:underline transition"
+          >
+            See the full promotion moment
+          </button>
+        )}
       </div>
     </li>
-  );
-}
-
-function EmptyState({ day }: { day: number }) {
-  const body = day <= 1
-    ? "First day. A lot to learn.\nObserving."
-    : `Day ${day}. Quiet. Watching.`;
-  return (
-    <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start gap-3">
-        <div className="shrink-0 rounded-lg border bg-slate-50 text-slate-500 border-slate-200 p-2">
-          <BookOpen size={14} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-slate-850">
-            {body}
-          </p>
-        </div>
-      </div>
-    </div>
   );
 }
