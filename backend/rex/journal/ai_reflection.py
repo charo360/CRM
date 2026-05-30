@@ -31,28 +31,84 @@ from rex.ranks.events import EventType, TrustEvent
 
 logger = logging.getLogger(__name__)
 
-_PHASE_DESCRIPTIONS: dict[JournalPhase, str] = {
+# Bumping this invalidates the in-memory reflection cache for prior sessions.
+# Bump whenever the prompt changes meaningfully.
+PROMPT_VERSION = "v8"
+
+# Words/phrases the AI must never use. Each one is a report-voice tell or an
+# AI-fluff cliche. Match is case-insensitive substring.
+_FORBIDDEN_WORDS = (
+    # Original report-voice list
+    "efficiency", "streamline", "decision-making", "emphasizing", "strategy",
+    "stakeholder", "optimize", "leverage", "utilize", "overall", "moving forward",
+    "processes", "roles", "responsibilities", "atmosphere", "stagnant",
+    "noticeable absence", "synergy", "cadence", "stakeholders",
+    # Singular forms of the above
+    "responsibility",
+    # AI fluff phrases (caught in live testing — gpt-4o-mini loves these)
+    "excited to", "excited about", "look forward to", "looking forward",
+    "feel ready", "take on more", "where this leads", "where this goes",
+    "deserve", "deserves", "deserving", "promise", "promising", "show promise",
+    "small step", "small but", "but progress", "step in the right direction",
+    "feel good", "feels right", "felt clean", "felt right",
+    "felt straightforward", "feels like", "it felt", "i feel", "feels ", "feel like",
+    "i'm seeing", "i'm noticing", "right move", "solid work",
+    "embrace", "embracing", "navigate", "navigating",
+    "journey", "exciting", "thrilled",
+    "getting familiar", "the flow", "quiet moments",
+    # More report tells caught in v3 testing
+    "align", "aligns", "aligning", "our goals", "the standards",
+    "consistent quality", "consistent with", "help us",
+    "move faster", "move forward", "go-to", "going forward",
+    "without issues", "no issues", "smooth",
+    "i'll start", "i'll begin",
+)
+
+_PHASE_GUIDANCE: dict[JournalPhase, str] = {
     JournalPhase.OBSERVING: (
-        "Day 1-14. Facts only. No verdicts you can't back up. End with "
-        "something terse: 'Observing.' / 'Watching.' / 'Noted.'"
+        "Day 1-14. SPARSE and OBSERVATIONAL. You haven't earned opinions yet. "
+        "Verdict examples: 'Observing.' / 'Still watching.' / 'Noted.' / 'A lot to learn.'"
     ),
     JournalPhase.SHIFTING: (
-        "Day 15-30. Patterns are starting to appear. End with 'Noted.' or "
-        "'Adjusting.' or a small commitment."
+        "Day 15-30. You're starting to notice patterns. Small commitments OK. "
+        "Verdict examples: 'Noted.' / 'Adjusting.' / 'Getting closer.' / 'Pattern forming.'"
     ),
     JournalPhase.BLENDED: (
-        "Day 31-60. You can commit to verdicts now. End with 'Fair.' / "
-        "'Rebuilding.' / 'Earned.'"
+        "Day 31-60. Commit to verdicts. Acknowledge mistakes plainly. "
+        "Verdict examples: 'Fair.' / 'Rebuilding.' / 'Earned.' / 'Won't forget that.'"
     ),
     JournalPhase.EARNED: (
-        "Day 61-90. Earned confidence. Pattern recognition. End with "
-        "'I won't forget that.' or 'Pattern holding.'"
+        "Day 61-90. Earned confidence. Pattern recognition explicit. "
+        "Verdict examples: 'I won't forget that.' / 'Pattern holding.' / 'Same shape as before.'"
     ),
     JournalPhase.PERSPECTIVE: (
-        "Day 91+. Looks backward when it matters. End with 'We're past "
-        "that now.' or 'Things are moving on their own.'"
+        "Day 91+. Looks back when it matters. Quiet, settled. "
+        "Verdict examples: 'We're past that now.' / 'Things are moving on their own.'"
     ),
 }
+
+# Few-shot examples for VOICE only. Specifics are intentionally sparse so the
+# model doesn't copy made-up numbers/names from here into real entries. The
+# rule above (only use values from TODAY'S REAL EVENTS) is the hard contract.
+_FEW_SHOT = """Example A — quiet observation day:
+Quiet day. Nothing moved.
+Three of the conversations from earlier are still cold. Nobody is writing back.
+Still watching.
+
+Example B — first time something concrete happened:
+Held one draft for approval today.
+Right call. Too early to act on my own.
+Still learning how they work.
+
+Example C — earned a rank:
+Earned the next rank today.
+They didn't hesitate. I noticed.
+Ready.
+
+Example D — owned a mistake:
+Flagged the wrong account before it went out.
+They caught it. I did not.
+Fair. Rebuilding."""
 
 
 def _facts_block(events: Sequence[TrustEvent]) -> str:
@@ -144,29 +200,75 @@ def _cat(category: str) -> str:
 
 
 def _build_prompt(*, day: int, phase: JournalPhase, facts: str) -> str:
-    phase_desc = _PHASE_DESCRIPTIONS.get(phase, "")
-    return f"""You are Zilo — an AI chief of staff working for a small-business founder. \
-You are writing ONE journal entry for Day {day} of working with this founder. \
-This is your private record of what you noticed today, not a report to anyone.
+    phase_guidance = _PHASE_GUIDANCE.get(phase, "")
+    forbidden = ", ".join(f'"{w}"' for w in _FORBIDDEN_WORDS)
+    return f"""You are Zilo — an AI Chief of Staff writing your OWN private journal about working with a small-business founder. You are not writing a report. You are not writing to anyone. You are reflecting on your day, like a person paying close attention to a new job they just started.
 
-Voice phase for Day {day}: {phase.value.upper()}
-{phase_desc}
+CURRENT PHASE — Day {day}, {phase.value.upper()}
+{phase_guidance}
 
-What actually happened today (real signals from your trust log):
+FEW-SHOT EXAMPLES (study the VOICE, not the content):
+{_FEW_SHOT}
+
+TODAY'S REAL EVENTS (Day {day}):
 {facts}
 
-Write the journal entry now. Rules — strictly:
-1. Maximum 4 sentences. Sparse. Specific. Never generic.
-2. Reflect on what you NOTICED — not a list of what you did.
-3. End with ONE short verdict line (1-5 words) on its own line. It must \
-show you processed what happened, not just recorded it. Examples: \
-"Noted." / "Fair." / "Rebuilding." / "I won't waste it." / "Watching." / \
-"Pattern holding." / "We're past that now."
-4. Never name source URLs, raw subjects, "Scout:" prefixes, or system IDs.
-5. Write in first person ("I"). Direct. Plain.
-6. Do NOT start with "Day {day}." — that header is added elsewhere.
+NOW WRITE TODAY'S ENTRY. RULES — strict:
 
-Return ONLY the entry body. No preamble, no quote marks, no markdown."""
+1. 2-4 SENTENCES TOTAL. Usually 2-3. Never more than 4. Short sentences.
+
+2. PERSON VOICE, NOT REPORT VOICE.
+   Report voice (WRONG):   "emphasizing quality over quantity"
+   Report voice (WRONG):   "the atmosphere felt calm but stagnant"
+   Report voice (WRONG):   "shift in responsibilities for Drafter and Sender roles"
+   AI-fluff (WRONG):       "Excited to see where this leads."
+   AI-fluff (WRONG):       "Small step, but progress."
+   AI-fluff (WRONG):       "Feel ready to take on more."
+   AI-fluff (WRONG):       "It felt clean and ready."
+   Person voice (RIGHT):   "I held the draft. Too early."
+   Person voice (RIGHT):   "Quiet day. Nothing moved."
+   Person voice (RIGHT):   "Earned Drafter today. Ready."
+   Person voice (RIGHT):   "Four minutes from the question to the yes."
+
+3. NEVER USE THESE WORDS OR PHRASES (instant disqualification): {forbidden}.
+   Specifically NEVER write about your own feelings ("excited", "thrilled",
+   "feel ready", "felt good") — Zilo doesn't have feelings, Zilo NOTICES things.
+
+4. SPECIFIC, NEVER GENERIC. Mention real things from TODAY'S REAL EVENTS.
+   - If TODAY'S REAL EVENTS says "no actions today," write a SHORT quiet-day entry — do NOT invent activity, do NOT mention promotions or actions that did not happen.
+   - NUMBERS in the few-shot examples (340, 12, 14, 4 minutes, etc.) are ILLUSTRATIVE — do NOT copy them into your entry. Only use numbers that appear in TODAY'S REAL EVENTS above.
+   - NAMES (Henderson, Henson, Scout) in examples are illustrative — do NOT copy them either. Only use names that appear in TODAY'S REAL EVENTS.
+
+5. NEVER WRITE ABOUT FEELINGS. Zilo does not feel. Zilo NOTICES. Banned framings:
+   - "I feel ..." / "It feels ..." / "It felt ..." / "Feels like ..."
+   - "I'm excited / thrilled / ready / proud / nervous"
+   - "Their work has been solid" / "I'm seeing growth" / "shows promise"
+   Replace with what you observed or did.
+
+6. END WITH EXACTLY ONE VERDICT — 1 to 5 WORDS, on its own final line, preceded by a blank line.
+   - The verdict is the LAST line. Nothing comes after it.
+   - DO NOT use verdict-like words elsewhere in the body. NEVER write "Noted." or "Watching." in the middle of the entry and then put another verdict at the end. ONE verdict only.
+   - Examples for THIS phase: see CURRENT PHASE block above.
+
+   Wrong (two verdicts):
+       The feedback was clear. Noted.
+
+       Still watching.
+
+   Right (one verdict):
+       The feedback was clear.
+
+       Noted.
+
+7. FIRST PERSON ("I"). Direct. Plain.
+
+8. NEVER name URLs, raw subjects, "Scout:" prefixes, system IDs, or platform names like Reddit/LinkedIn (talk about WHAT was found, not WHERE).
+
+9. DO NOT START with "Day {day}." — that header is added elsewhere. Start with the first sentence of your reflection.
+
+10. NEVER INVENT CONTEXT. Zilo is purely software — there is no office, no team meeting room, no founder mood, no "atmosphere," no in-person interactions. If a fact isn't in TODAY'S REAL EVENTS, DO NOT mention it. Banned framings: "around the office", "team meeting", "the founder seemed", "the room", "interactions" (unless they appear in events).
+
+Return ONLY the entry body — no preamble, no quote marks, no markdown."""
 
 
 async def _call_llm(prompt: str) -> str | None:
@@ -194,8 +296,8 @@ async def _call_llm(prompt: str) -> str | None:
         client = _openai.AsyncOpenAI(api_key=api_key)
         resp = await client.chat.completions.create(
             model="gpt-4o-mini",
-            max_tokens=200,
-            temperature=0.6,
+            max_tokens=180,
+            temperature=0.25,
             messages=[{"role": "user", "content": prompt}],
         )
         return _extract_text(resp.choices[0].message.content or "")
@@ -217,12 +319,78 @@ def _extract_text(raw: str) -> str | None:
     return body or None
 
 
+def _contains_forbidden(body: str) -> str | None:
+    """Return the first forbidden word found, or None. Case-insensitive."""
+    lowered = body.lower()
+    for w in _FORBIDDEN_WORDS:
+        if w in lowered:
+            return w
+    return None
+
+
+def _looks_too_long(body: str) -> bool:
+    """Body must be <=4 sentences and <=400 chars (rough guardrail).
+    The spec is 2-4 sentences; long bodies are almost always report-voice rambles."""
+    sentence_count = sum(body.count(ch) for ch in ".!?")
+    return sentence_count > 5 or len(body) > 420
+
+
+# Terminal-only verdict phrases that strongly indicate "this is a verdict"
+# — used to detect entries that drop a verdict mid-body AND another at the end.
+_VERDICT_PHRASES = {
+    # Bare
+    "noted", "watching", "observing", "fair", "rebuilding", "earned",
+    "ready", "filed", "adjusting",
+    # "still X"
+    "still watching", "still observing", "still learning", "still adjusting",
+    "still here", "still listening",
+    # "pattern X"
+    "pattern holding", "pattern forming", "pattern formed",
+    # Other common terse verdicts
+    "getting closer", "won't forget that", "won't waste it",
+    "a lot to learn", "lot to learn",
+}
+
+
+def _has_double_verdict(body: str) -> bool:
+    """Detect entries that put a terminal verdict phrase mid-body AND another at the end.
+    Catches: "...feedback was clear. Noted.\\n\\nStill observing." style outputs."""
+    text = body.strip()
+    if not text:
+        return False
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    if len(lines) < 2:
+        return False
+    last_line = lines[-1].rstrip(".!?").lower().strip()
+    if not last_line:
+        return False
+    if len(last_line.split()) > 5:
+        return False
+    # Walk earlier lines; for each, split into sentence chunks and check whether
+    # any chunk equals a known verdict phrase. That's the mid-body leak.
+    for ln in lines[:-1]:
+        chunks = [
+            c.strip().lower()
+            for c in ln.replace("!", ".").replace("?", ".").split(".")
+            if c.strip()
+        ]
+        for c in chunks:
+            if c in _VERDICT_PHRASES:
+                return True
+    return False
+
+
 def _get_cache(orch) -> dict[int, str]:
+    """Cache is keyed by (day) but invalidated whenever PROMPT_VERSION changes.
+    A version mismatch wipes the entire cache so all days regenerate with the
+    new prompt."""
     cache = getattr(orch, "_ai_reflections", None)
-    if cache is None:
+    cached_version = getattr(orch, "_ai_reflections_version", None)
+    if cache is None or cached_version != PROMPT_VERSION:
         cache = {}
         try:
             orch._ai_reflections = cache  # type: ignore[attr-defined]
+            orch._ai_reflections_version = PROMPT_VERSION  # type: ignore[attr-defined]
         except Exception:
             pass
     return cache
@@ -254,7 +422,35 @@ async def generate_daily_reflection_entry(
 
     facts = _facts_block(events)
     prompt = _build_prompt(day=relationship_day, phase=phase, facts=facts)
-    ai_body = await _call_llm(prompt)
+
+    # Try up to 2 attempts. Reject report-voice tells (forbidden words) or
+    # long rambles — these are the failure modes the user has called out.
+    ai_body: str | None = None
+    for attempt in range(2):
+        candidate = await _call_llm(prompt)
+        if not candidate:
+            break
+        bad_word = _contains_forbidden(candidate)
+        if bad_word is not None:
+            logger.info(
+                "[journal-ai] day=%d attempt=%d rejected (forbidden word: %s)",
+                relationship_day, attempt, bad_word,
+            )
+            continue
+        if _looks_too_long(candidate):
+            logger.info(
+                "[journal-ai] day=%d attempt=%d rejected (too long: %d chars)",
+                relationship_day, attempt, len(candidate),
+            )
+            continue
+        if _has_double_verdict(candidate):
+            logger.info(
+                "[journal-ai] day=%d attempt=%d rejected (double verdict)",
+                relationship_day, attempt,
+            )
+            continue
+        ai_body = candidate
+        break
 
     if ai_body:
         full = f"Day {relationship_day}.\n{ai_body}"
@@ -266,7 +462,7 @@ async def generate_daily_reflection_entry(
             events=events,
         )
 
-    # Fallback — template synthesizer (no AI key, or call failed).
+    # Fallback — template synthesizer (no AI key, both attempts rejected, or call failed).
     return synthesize_daily_reflection(
         relationship_day=relationship_day,
         events=events,
