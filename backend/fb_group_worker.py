@@ -59,8 +59,25 @@ async def _run_due_scans(db) -> None:
         if not has_fb_groups and not has_marketplace:
             continue
 
+        # Get user's custom interval from their briefing session
+        session = await db["zilo_sessions"].find_one({"user_id": uid})
+        fb_interval = session.get("fb_group_interval", "6h") if session else "6h"
+        
+        # Convert to hours
+        interval_hours = {
+            "1h": 1,
+            "2h": 2,
+            "6h": 6,
+            "12h": 12,
+            "24h": 24,
+            "daily": 24,
+            "weekly": 168,
+        }.get(fb_interval, 6)
+        
+        user_cutoff = datetime.utcnow() - timedelta(hours=interval_hours)
+        
         last = doc.get("last_sc_scan_at")
-        if last and last > cutoff:
+        if last and last > user_cutoff:
             continue
 
         biz = await db.users.find_one({"_id": uid}) or {}

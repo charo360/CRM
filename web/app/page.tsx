@@ -19,16 +19,16 @@ export default async function HomePage({
 }: {
   searchParams: Promise<{ shop?: string; hmac?: string; timestamp?: string; locale?: string }>;
 }) {
-  const params = await searchParams;
+  const sp = await searchParams;
   // Shopify App Store install: forward to the backend install handler
-  if (params.shop && params.hmac) {
+  if (sp.shop && sp.hmac) {
     const apiBase = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/api$/, "").replace(/\/$/, "");
     const backendBase = apiBase || "https://crm-1-pnfo.onrender.com";
     const qs = new URLSearchParams({
-      shop: params.shop,
-      hmac: params.hmac,
-      ...(params.timestamp ? { timestamp: params.timestamp } : {}),
-      ...(params.locale ? { locale: params.locale } : {}),
+      shop: sp.shop,
+      hmac: sp.hmac,
+      ...(sp.timestamp ? { timestamp: sp.timestamp } : {}),
+      ...(sp.locale ? { locale: sp.locale } : {}),
     }).toString();
     redirect(`${backendBase}/api/shopify/install?${qs}`);
   }

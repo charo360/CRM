@@ -13159,7 +13159,15 @@ async def startup_tasks():
 
         # Customers — most queried collection
         await db.customers.create_index("user_id")
-        await db.customers.create_index([("user_id", 1), ("phone_number", 1)], unique=True)
+        try:
+            await db.customers.drop_index("user_id_1_phone_number_1")
+        except Exception:
+            pass
+        await db.customers.create_index(
+            [("user_id", 1), ("phone_number", 1)],
+            unique=True,
+            partialFilterExpression={"phone_number": {"$type": "string", "$gt": ""}}
+        )
         await db.customers.create_index([("user_id", 1), ("last_contacted", 1)])
         await db.customers.create_index([("user_id", 1), ("tags", 1)])
         await db.customers.create_index([("user_id", 1), ("created_at", -1)])
@@ -13252,8 +13260,10 @@ async def startup_tasks():
         await db.seo_agent_conversations.create_index([("user_id", 1), ("created_at", -1)])
         await db.seo_serp_rankings.create_index([("user_id", 1), ("keyword", 1), ("domain", 1)])
         await db.seo_serp_rankings.create_index([("user_id", 1), ("checked_at", -1)])
-        # TTL policy: auto-delete SERP rankings older than 1 year
-        await db.seo_serp_rankings.create_index("checked_at", expireAfterSeconds=31536000)
+        # Action Mode Queue indexes to optimize email and whatsapp background sweeps
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("metadata.thread_id", 1)])
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("metadata.customer_id", 1)])
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("action_type", 1)])
 
         logging.info("Database indexes ensured successfully")
     except Exception as e:
@@ -13466,7 +13476,7 @@ async def _email_sync_runner(db) -> None:
             for u in users:
                 uid = str(u.get("business_id") or u["_id"])
                 try:
-                    await sync_emails_for_user(uid, db, max_results=10)
+                    await sync_emails_for_user(uid, db, max_results=10, trigger_briefing_ingest=True)
                 except Exception as e:
                     logging.warning(f"[email-sync] Failed for user {uid}: {e}")
                 await _asyncio.sleep(5)  # space out users to keep backend responsive
@@ -14446,7 +14456,7 @@ async def email_db_sync(user=Depends(get_current_user)):
     await ensure_indexes(db)
 
     # Quick sync — get latest emails from Gmail + Outlook
-    result = await sync_emails_for_user(user_id, db, max_results=10)
+    result = await sync_emails_for_user(user_id, db, max_results=10, trigger_briefing_ingest=True)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
 
@@ -17829,6 +17839,14 @@ try:
     logging.info("[gmail-filters] routes mounted at /api/gmail/filters/*")
 except Exception as _gfe:
     logging.error("[gmail-filters] failed to mount routes: %s", _gfe)
+
+# ── Rex (Phase 11+ Day 0 Onboarding, future Briefing/Notebook/Journal/Ledger) ─
+try:
+    from rex_routes import init_rex_routes
+    app.include_router(init_rex_routes(get_current_user, db))
+    logging.info("[rex] routes mounted at /api/rex/*")
+except Exception as _rxe:
+    logging.error("[rex] failed to mount routes: %s", _rxe)
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)

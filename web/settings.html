@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings — AI Scout</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    /* ---- Settings Container ---- */
+    .settings-container {
+      max-width: 700px;
+      margin: 0 auto;
+      padding: 20px 24px;
+    }
+
+    .settings-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 16px;
+    }
+
+    /* ---- Toggle Row ---- */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toggle-row:last-child {
+      border-bottom: none;
+    }
+
+    .toggle-info {
+      flex: 1;
+    }
+
+    .toggle-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 3px;
+    }
+
+    .toggle-desc {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 48px;
+      height: 26px;
+      background: var(--border);
+      border-radius: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch.active {
+      background: var(--green);
+    }
+
+    .toggle-knob {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+
+    .toggle-switch.active .toggle-knob {
+      transform: translateX(22px);
+    }
+
+    /* ---- Form Elements ---- */
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .form-textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--text);
+      resize: vertical;
+      transition: all 0.15s;
+    }
+
+    .form-textarea:focus {
+      outline: none;
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+    }
+
+    .form-textarea::placeholder {
+      color: var(--muted);
+    }
+
+    /* ---- Mode Selector ---- */
+    .mode-selector {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .mode-option {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 600;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .mode-option:hover {
+      border-color: var(--border2);
+      background: var(--surface2);
+    }
+
+    .mode-option.active {
+      border-color: var(--green);
+      background: var(--gdim);
+      color: var(--green);
+    }
+
+    /* ---- Save Button ---- */
+    .btn-save {
+      width: 100%;
+      padding: 12px 20px;
+      background: var(--green);
+      color: white;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.15s;
+    }
+
+    .btn-save:hover {
+      background: #047857;
+    }
+
+    .btn-save:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* ---- Agent List ---- */
+    .agent-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .agent-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      background: var(--surface2);
+      border-radius: var(--radius);
+      transition: background 0.15s;
+    }
+
+    .agent-item:hover {
+      background: #E2E8F0;
+    }
+
+    .agent-info {
+      flex: 1;
+    }
+
+    .agent-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 2px;
+    }
+
+    .agent-desc {
+      font-size: 11px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <a class="brand" href="#">
+      <div class="brand-dot"></div>
+      <span class="brand-name">AI Scout</span>
+    </a>
+    <div class="top-chips">
+      <div class="chip"><strong>302</strong>&nbsp;scanned</div>
+      <div class="chip"><strong>3</strong>&nbsp;agents live</div>
+      <div class="chip"><strong>KES 0</strong>&nbsp;spent</div>
+      <div class="live-badge"><div class="live-dot"></div> LIVE</div>
+    </div>
+    <div class="avatar">SM</div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Leads</div>
+    <a class="nav-item" href="hunt.html">
+      <i class="ti ti-target nav-icon"></i> Hunt
+      <span class="nav-badge red">7</span>
+    </a>
+    <a class="nav-item" href="pulse.html">
+      <i class="ti ti-radar nav-icon"></i> Pulse
+    </a>
+    <div class="nav-section">Intelligence</div>
+    <a class="nav-item" href="funding.html">
+      <i class="ti ti-moneybag nav-icon"></i> Funding
+      <span class="nav-badge grn">2</span>
+    </a>
+    <a class="nav-item" href="radar.html">
+      <i class="ti ti-trending-up nav-icon"></i> Market radar
+      <span class="nav-badge blu">5</span>
+    </a>
+    <div class="nav-section">Automation</div>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-adjustments-horizontal nav-icon"></i> Scouts setup
+    </a>
+    <a class="nav-item" href="autopilot.html">
+      <i class="ti ti-robot nav-icon"></i> Autopilot
+      <span class="nav-badge red">3</span>
+    </a>
+    <div class="sidebar-bottom">
+      <a class="nav-item active" href="settings.html">
+        <i class="ti ti-settings nav-icon"></i> Settings
+      </a>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+    <!-- Page header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">AI Scout Settings</div>
+        <div class="page-subtitle">Configure how AI Scout works for your business</div>
+      </div>
+    </div>
+
+    <!-- Main scroll -->
+    <div class="main-scroll">
+      <div class="settings-container">
+
+        <!-- Main Toggle -->
+        <div class="settings-card">
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <div class="toggle-label">AI Scout Active</div>
+              <div class="toggle-desc">Scouts run automatically on your schedule</div>
+            </div>
+            <div class="toggle-switch" id="toggle-enabled" onclick="toggleEnabled()">
+              <div class="toggle-knob"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Business Goals -->
+        <div class="settings-card">
+          <div class="card-title">Business Goals</div>
+          <div class="form-group">
+            <label class="form-label">What should AI Scout help you achieve?</label>
+            <textarea 
+              class="form-textarea" 
+              id="goals-input"
+              placeholder="e.g. Find bulk buyers for construction materials in Nairobi. Looking for B2B customers spending $500+/month. Target office furniture buyers and property developers."
+            ></textarea>
+          </div>
+        </div>
+
+        <!-- Built-in Agents -->
+        <div class="settings-card">
+          <div class="card-title">Built-in Agents</div>
+          <div class="agent-list">
+            <div class="agent-item">
+              <div class="agent-info">
+                <div class="agent-name">Funding Hunter</div>
+                <div class="agent-desc">VCs, grants & accelerators</div>
+              </div>
+              <div class="toggle-switch active" id="toggle-funding_hunter" onclick="toggleAgent('funding_hunter')">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="agent-item">
+              <div class="agent-info">
+                <div class="agent-name">Lead Generation</div>
+                <div class="agent-desc">Potential customers & buyers</div>
+              </div>
+              <div class="toggle-switch active" id="toggle-lead_gen" onclick="toggleAgent('lead_gen')">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="agent-item">
+              <div class="agent-info">
+                <div class="agent-name">Social Scout</div>
+                <div class="agent-desc">Social conversations & intent</div>
+              </div>
+              <div class="toggle-switch active" id="toggle-social_scout" onclick="toggleAgent('social_scout')">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="agent-item">
+              <div class="agent-info">
+                <div class="agent-name">Admin Autopilot</div>
+                <div class="agent-desc">Reminders & re-engagement</div>
+              </div>
+              <div class="toggle-switch" id="toggle-admin_autopilot" onclick="toggleAgent('admin_autopilot')">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scan Mode -->
+        <div class="settings-card">
+          <div class="card-title">Scan Mode</div>
+          <div class="form-group">
+            <label class="form-label">How should AI Scout handle new leads?</label>
+            <div class="mode-selector">
+              <div class="mode-option active" id="mode-review" onclick="selectMode('review')">
+                Review first
+              </div>
+              <div class="mode-option" id="mode-auto" onclick="selectMode('auto')">
+                Auto-act
+              </div>
+              <div class="mode-option" id="mode-notify" onclick="selectMode('notify')">
+                Notify only
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Save Button -->
+        <button class="btn-save" onclick="saveSettings()" id="save-btn">
+          <i class="ti ti-check"></i>
+          Save Settings
+        </button>
+
+      </div><!-- /settings-container -->
+    </div><!-- /main-scroll -->
+  </main>
+
+</div><!-- /shell -->
+
+<script src="api-client.js"></script>
+<script>
+  let settings = {
+    enabled: false,
+    goals: '',
+    agents: {
+      funding_hunter: true,
+      lead_gen: true,
+      social_scout: true,
+      admin_autopilot: false
+    }
+  };
+
+  let socialSettings = {
+    mode: 'review'
+  };
+
+  // Load settings on page load
+  document.addEventListener('DOMContentLoaded', loadSettings);
+
+  async function loadSettings() {
+    try {
+      const data = await scoutApi.loadAll();
+      settings = data.settings || settings;
+      socialSettings = data.socialSettings || socialSettings;
+      
+      renderSettings();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  function renderSettings() {
+    // Main toggle
+    const enabledToggle = document.getElementById('toggle-enabled');
+    if (settings.enabled) {
+      enabledToggle.classList.add('active');
+    } else {
+      enabledToggle.classList.remove('active');
+    }
+
+    // Goals
+    document.getElementById('goals-input').value = settings.goals || '';
+
+    // Agents
+    Object.keys(settings.agents).forEach(agentId => {
+      const toggle = document.getElementById(`toggle-${agentId}`);
+      if (toggle) {
+        if (settings.agents[agentId]) {
+          toggle.classList.add('active');
+        } else {
+          toggle.classList.remove('active');
+        }
+      }
+    });
+
+    // Mode
+    document.querySelectorAll('.mode-option').forEach(el => {
+      el.classList.remove('active');
+    });
+    const modeEl = document.getElementById(`mode-${socialSettings.mode}`);
+    if (modeEl) {
+      modeEl.classList.add('active');
+    }
+  }
+
+  function toggleEnabled() {
+    settings.enabled = !settings.enabled;
+    renderSettings();
+  }
+
+  function toggleAgent(agentId) {
+    settings.agents[agentId] = !settings.agents[agentId];
+    renderSettings();
+  }
+
+  function selectMode(mode) {
+    socialSettings.mode = mode;
+    renderSettings();
+  }
+
+  async function saveSettings() {
+    const saveBtn = document.getElementById('save-btn');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="ti ti-loader"></i> Saving...';
+
+    try {
+      // Get goals from textarea
+      settings.goals = document.getElementById('goals-input').value;
+
+      // Save both settings
+      await Promise.all([
+        scoutApi.updateSettings(settings),
+        scoutApi.updateSocialSettings(socialSettings)
+      ]);
+
+      showToast('Settings saved successfully', 'success');
+      saveBtn.innerHTML = '<i class="ti ti-check"></i> Saved!';
+      
+      setTimeout(() => {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="ti ti-check"></i> Save Settings';
+      }, 2000);
+    } catch (error) {
+      showToast(error.message, 'error');
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = '<i class="ti ti-check"></i> Save Settings';
+    }
+  }
+</script>
+</body>
+</html>

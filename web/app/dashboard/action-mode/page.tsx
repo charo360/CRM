@@ -9,7 +9,7 @@ import {
   Radio, Search, Eye, Loader2, ChevronRight, Bell, MessageCircle, X,
   BarChart3, Antenna, Calendar, Hash, MapPin, CheckCircle2, SkipForward,
   AlertTriangle, Clock, Building2, Briefcase, Megaphone, Filter,
-  ShoppingBag, Mail, Phone, Copy, Menu,
+  ShoppingBag, Mail, Phone, Copy,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -71,16 +71,6 @@ interface SocialSettings {
   morning_brief_language?: string;
   marketplace_lat?: number;
   marketplace_lng?: number;
-}
-
-interface CustomAgent {
-  _id: string;
-  name: string;
-  emoji: string;
-  description: string;
-  schedule: "daily" | "weekly" | "on_demand";
-  enabled: boolean;
-  created_at: string;
 }
 
 interface ReconItem {
@@ -406,12 +396,10 @@ function daysUntil(iso: string) {
 
 export default function ActionModePage() {
   const [section, setSection] = useState<Section>("hunt");
-  const [navOpen, setNavOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>({ enabled: false, goals: "", agents: {} });
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [customAgents, setCustomAgents] = useState<CustomAgent[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [recon, setRecon] = useState<ReconItem[]>([]);
@@ -427,7 +415,6 @@ export default function ActionModePage() {
 
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
-  const [runningAgent, setRunningAgent] = useState<string | null>(null);
   const [runningScoutId, setRunningScoutId] = useState<string | null>(null);
   const [runningSocial, setRunningSocial] = useState(false);
   const [runningFusion, setRunningFusion] = useState(false);
@@ -451,14 +438,26 @@ export default function ActionModePage() {
   const [shopifyAdded, setShopifyAdded] = useState<Set<string>>(new Set());
   const [shopifyAdding, setShopifyAdding] = useState<string | null>(null);
 
-  // Business leads search
-  const [bizKeyword, setBizKeyword] = useState("");
-  const [bizLocation, setBizLocation] = useState("");
-  const [bizSearching, setBizSearching] = useState(false);
-  const [bizLeads, setBizLeads] = useState<BusinessLead[]>([]);
-  const [bizSearched, setBizSearched] = useState(false);
-  const [bizAdded, setBizAdded] = useState<Set<string>>(new Set());
-  const [bizAdding, setBizAdding] = useState<string | null>(null);
+  // Funding Finder
+  type FundingOpp = {
+    title: string;
+    url: string;
+    snippet: string;
+    score: number;
+    source?: string;
+    status?: "open" | "closed" | "rolling" | "unknown";
+    deadline?: string | null;   // ISO date YYYY-MM-DD
+    amount?: string | null;
+  };
+  const [fundSector,    setFundSector]    = useState("");
+  const [fundLocation,  setFundLocation]  = useState("");
+  const [fundStage,     setFundStage]     = useState("");
+  const [fundKeywords,  setFundKeywords]  = useState("");
+  const [fundTypes,     setFundTypes]     = useState<Set<string>>(new Set(["grant","vc","accelerator"]));
+  const [fundSearching, setFundSearching] = useState(false);
+  const [fundResults,   setFundResults]   = useState<FundingOpp[]>([]);
+  const [fundSaving,    setFundSaving]    = useState(false);
+  const [fundSavedUrls, setFundSavedUrls] = useState<Set<string>>(new Set());
 
   // LinkedIn Leads — URL discovery (via search) + Email Finder enricher
   const [liSearchTitle,    setLiSearchTitle]    = useState("");
@@ -511,14 +510,6 @@ export default function ActionModePage() {
   const [newCompetitor, setNewCompetitor] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Custom Agent Creation state
-  const [isAddAgentOpen, setIsAddAgentOpen] = useState(false);
-  const [newAgentName, setNewAgentName] = useState("");
-  const [newAgentDescription, setNewAgentDescription] = useState("");
-  const [newAgentEmoji, setNewAgentEmoji] = useState("🤖");
-  const [newAgentSchedule, setNewAgentSchedule] = useState<"on_demand" | "daily" | "weekly">("on_demand");
-  const [creatingAgent, setCreatingAgent] = useState(false);
-
   // Live ticker
   const [isLive, setIsLive] = useState(false);
   const [livePhase, setLivePhase] = useState("");
@@ -537,13 +528,12 @@ export default function ActionModePage() {
         setTimeout(() => reject(new Error("Connection request timed out. Please check if your backend server and MongoDB database are running.")), 10000)
       );
 
-      const [s, f, q, o, ca, ss, cl, pr, rc, ia, sc, pl] = await Promise.race([
+      const [s, f, q, o, ss, cl, pr, rc, ia, sc, pl] = await Promise.race([
         Promise.all([
           api.get<Settings>("/action-mode/settings"),
           api.get<{ items: FeedItem[] }>("/action-mode/feed"),
           api.get<{ items: QueueItem[] }>("/action-mode/queue"),
           api.get<{ opportunities: Opportunity[] }>("/action-mode/opportunities"),
-          api.get<{ agents: CustomAgent[] }>("/action-mode/agents"),
           api.get<SocialSettings>("/action-mode/social/settings"),
           api.get<{ clusters: Cluster[] }>("/action-mode/clusters"),
           api.get<{ predictions: Prediction[] }>("/action-mode/predictions"),
@@ -558,7 +548,6 @@ export default function ActionModePage() {
       setFeed(f.items);
       setQueue(q.items);
       setOpportunities(o.opportunities);
-      setCustomAgents(ca.agents);
       setSocialSettings(ss);
       setClusters(cl.clusters);
       setPredictions(pr.predictions);
@@ -603,7 +592,6 @@ export default function ActionModePage() {
     setTimeout(async () => {
       setIsLive(false);
       setRunning(false);
-      setRunningAgent(null);
       await load();
     }, ms);
   }
@@ -620,13 +608,26 @@ export default function ActionModePage() {
     startLive(40000);
     try {
       await api.post("/action-mode/run-social", {});
-      toast.success("Social scan started — leads appear below");
+      toast.success("Scan started — leads appear below");
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed");
       setIsLive(false);
     } finally {
       setRunningSocial(false);
     }
+  }
+
+  function stopScan() {
+    // Releases the UI immediately. Background work that already started will
+    // finish on the server; the next /load() will pick up whatever it found.
+    setRunningSocial(false);
+    setRunning(false);
+    setIsLive(false);
+    // Best-effort: tell the backend the user gave up so it can stop early
+    // if the runners are checking for the flag (no-op otherwise).
+    api.post("/action-mode/run/cancel", {}).catch(() => { /* silent */ });
+    void load();
+    toast.info("Scan stopped");
   }
 
   async function runScout(id: string) {
@@ -681,53 +682,6 @@ export default function ActionModePage() {
       setExpandedItem(null);
     } catch { toast.error("Action failed"); }
     finally { setProcessing(p => ({ ...p, [item._id]: false })); }
-  }
-
-  async function handleAddAgent() {
-    if (!newAgentName.trim() || !newAgentDescription.trim()) {
-      toast.error("Please fill out name and description");
-      return;
-    }
-    setCreatingAgent(true);
-    try {
-      const res = await api.post<CustomAgent>("/action-mode/agents", {
-        name: newAgentName.trim(),
-        emoji: newAgentEmoji,
-        description: newAgentDescription.trim(),
-        schedule: newAgentSchedule,
-        enabled: true,
-      });
-      setCustomAgents(prev => [...prev, res]);
-      setIsAddAgentOpen(false);
-      setNewAgentName("");
-      setNewAgentDescription("");
-      setNewAgentEmoji("🤖");
-      setNewAgentSchedule("on_demand");
-      toast.success("Custom Agent created successfully!");
-    } catch {
-      toast.error("Failed to create agent");
-    } finally {
-      setCreatingAgent(false);
-    }
-  }
-
-  async function runCustomAgent(agent: CustomAgent) {
-    setRunningAgent(agent._id);
-    toast.success(`Agent ${agent.name} is running scans...`);
-    try {
-      await api.post(`/action-mode/agents/${agent._id}/run`, {});
-      setTimeout(async () => {
-        await load();
-        setRunningAgent(null);
-        toast.success(`Agent ${agent.name} completed run!`);
-      }, 7000);
-    } catch {
-      setTimeout(async () => {
-        await load();
-        setRunningAgent(null);
-        toast.success(`Agent ${agent.name} completed run!`);
-      }, 7000);
-    }
   }
 
   async function saveSocialSettings(next: SocialSettings) {
@@ -834,65 +788,79 @@ export default function ActionModePage() {
     }
   }
 
-  async function searchBusinessLeads() {
-    if (!bizKeyword.trim()) { toast.error("Enter a keyword or business type"); return; }
-    setBizSearching(true);
-    setBizLeads([]);
-    setBizSearched(false);
+  // ─── Funding Finder ────────────────────────────────────────────────────────
+
+  function fundDeadlineLabel(opp: FundingOpp): { text: string; tone: "open"|"closed"|"rolling"|"unknown"|"urgent" } {
+    const status = opp.status ?? "unknown";
+    if (status === "rolling") return { text: "Rolling — apply anytime", tone: "rolling" };
+    if (status === "closed")  return { text: opp.deadline ? `Closed ${new Date(opp.deadline).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}` : "Closed", tone: "closed" };
+    if (!opp.deadline) return { text: status === "open" ? "Open — deadline TBA" : "Status unknown", tone: status === "open" ? "open" : "unknown" };
+    const d = new Date(opp.deadline);
+    const days = Math.ceil((d.getTime() - Date.now()) / 86_400_000);
+    if (days < 0)   return { text: `Closed ${d.toLocaleDateString()}`, tone: "closed" };
+    const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    if (days <= 14) return { text: `Closes ${dateStr} · ${days}d left`, tone: "urgent" };
+    return { text: `Closes ${dateStr}`, tone: "open" };
+  }
+
+  function toggleFundType(t: string) {
+    setFundTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t); else next.add(t);
+      return next;
+    });
+  }
+
+  async function searchFunding() {
+    const types = Array.from(fundTypes);
+    if (!fundSector.trim() && !fundLocation.trim() && !fundKeywords.trim() && types.length === 0) {
+      toast.error("Enter a sector, location, or pick at least one funding type");
+      return;
+    }
+    setFundSearching(true);
+    setFundResults([]);
     try {
-      const res = await api.post<{ leads: BusinessLead[] }>("/action-mode/business-leads/search", {
-        keyword: bizKeyword.trim(),
-        location: bizLocation.trim(),
-      });
-      setBizLeads(res.leads ?? []);
-      setBizSearched(true);
-      if (!res.leads?.length) toast.info("No businesses found — try a different keyword or location");
-    } catch (e: any) {
-      toast.error(e?.message ?? "Search failed");
+      const res = await api.post<{ opportunities: FundingOpp[]; total: number }>(
+        "/action-mode/funding/search",
+        {
+          sector:        fundSector.trim(),
+          location:      fundLocation.trim(),
+          funding_types: types,
+          stage:         fundStage,
+          keywords:      fundKeywords.trim(),
+          limit:         30,
+        }
+      );
+      setFundResults(res.opportunities ?? []);
+      if (!res.opportunities?.length) toast.info("No funding opportunities found — try broader criteria");
+      else toast.success(`Found ${res.opportunities.length} opportunit${res.opportunities.length === 1 ? "y" : "ies"}`);
+    } catch (e) {
+      toast.error("Search failed: " + ((e as Error).message ?? ""));
     } finally {
-      setBizSearching(false);
+      setFundSearching(false);
     }
   }
 
-  async function addBusinessLeadToCRM(lead: BusinessLead) {
-    const key = lead.domain || lead.name.toLowerCase();
-    setBizAdding(key);
+  async function saveFundingOpps(opps: FundingOpp[]) {
+    const fresh = opps.filter(o => !fundSavedUrls.has(o.url));
+    if (!fresh.length) { toast.info("Nothing new to save"); return; }
+    setFundSaving(true);
     try {
-      // Duplicate check
-      const check = await api.get<{ exists: boolean; name: string }>(
-        `/customers/duplicate-check?email=${encodeURIComponent(lead.email || "")}&domain=${encodeURIComponent(lead.domain || "")}`
+      const res = await api.post<{ saved: number; skipped: number }>(
+        "/action-mode/funding/save",
+        { opportunities: fresh }
       );
-      if (check.exists) {
-        toast.info(`${check.name || lead.name} is already in your CRM`);
-        setBizAdded(prev => new Set(prev).add(key));
-        return;
-      }
-      const notes = [
-        lead.address ? `Address: ${lead.address}` : "",
-        lead.category ? `Category: ${lead.category}` : "",
-        lead.website ? `Website: ${lead.website}` : "",
-        lead.rating ? `Google Rating: ${lead.rating} (${lead.reviews ?? 0} reviews)` : "",
-        lead.place_id ? `Google Maps: https://www.google.com/maps/place/?q=place_id:${lead.place_id}` : "",
-        `Found via: ${lead.keyword}`,
-      ].filter(Boolean).join("\n");
-      const payload: any = {
-        name: lead.name,
-        email: lead.email || undefined,
-        phone_number: lead.phone || undefined,
-        notes,
-        tags: ["Business Lead", lead.category || "Business"].filter(Boolean),
-      };
-      if (!payload.phone_number && !payload.email) {
-        const seed = lead.name.replace(/[^0-9]/g, "").slice(0, 7).padEnd(7, "0");
-        payload.phone_number = `+1555${seed}`;
-      }
-      await api.post("/customers", payload);
-      setBizAdded(prev => new Set(prev).add(key));
-      toast.success(`${lead.name} added to CRM`);
-    } catch {
-      toast.error("Failed to add to CRM");
+      toast.success(`Saved ${res.saved} opportunit${res.saved === 1 ? "y" : "ies"}${res.skipped > 0 ? ` (${res.skipped} already saved)` : ""}`);
+      setFundSavedUrls(prev => {
+        const next = new Set(prev);
+        fresh.forEach(o => next.add(o.url));
+        return next;
+      });
+      await load();
+    } catch (e) {
+      toast.error("Save failed: " + ((e as Error).message ?? ""));
     } finally {
-      setBizAdding(null);
+      setFundSaving(false);
     }
   }
 
@@ -1277,15 +1245,6 @@ export default function ActionModePage() {
     { id: "hunt", label: "Hunt", icon: Target, badge: hotCount || undefined },
     { id: "pulse", label: "Pulse", icon: Radio },
     { id: "funding", label: "Funding", icon: DollarSign, badge: fundingOpps.length || undefined },
-    // Inject Custom Agents dynamically
-    ...customAgents
-      .filter(a => a.enabled)
-      .map(a => ({
-        id: `custom_${a._id}` as Section,
-        label: a.name,
-        icon: (props: any) => <span className="w-4 h-4 flex items-center justify-center text-sm select-none pr-0.5">{a.emoji || "🤖"}</span>,
-        badge: opportunities.filter(o => o.agent_name === a.name).length || undefined,
-      })),
     { id: "shopify_leads", label: "Shopify Leads", icon: ShoppingBag },
     { id: "business_leads", label: "LinkedIn Leads", icon: Briefcase },
     { id: "lead_scouts", label: "Lead Scouts", icon: Antenna, badge: inboxLeads.length || undefined },
@@ -1294,11 +1253,6 @@ export default function ActionModePage() {
     { id: "autopilot", label: "Autopilot", icon: Zap, badge: (pendingQueue + pendingInstant) || undefined },
     { id: "settings", label: "Settings", icon: Settings2 },
   ];
-
-  const goToSection = (id: Section) => {
-    setSection(id);
-    setNavOpen(false);
-  };
 
   // ─── Loading ────────────────────────────────────────────────────────────────
 
@@ -1314,24 +1268,11 @@ export default function ActionModePage() {
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-[calc(100dvh-3.5rem)] bg-slate-50 overflow-hidden lg:h-[calc(100vh-4rem)]">
-
-      {navOpen && (
-        <button
-          type="button"
-          aria-label="Close AI Scout menu"
-          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-          onClick={() => setNavOpen(false)}
-        />
-      )}
+    <div className="flex h-[calc(100vh-64px)] bg-slate-50 overflow-hidden">
 
       {/* ── Sidebar ── */}
-      <aside
-        className={`fixed top-14 bottom-0 left-0 z-50 flex w-[min(13rem,82vw)] flex-col border-r border-slate-100 bg-white transition-transform duration-200 ease-out lg:relative lg:top-auto lg:bottom-auto lg:z-auto lg:w-52 lg:translate-x-0 ${
-          navOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
-        }`}
-      >
-        <div className="flex items-center justify-between border-b border-slate-100 p-4 lg:block">
+      <aside className="w-52 bg-white border-r border-slate-100 flex flex-col flex-shrink-0">
+        <div className="p-4 border-b border-slate-100">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-emerald-600 flex items-center justify-center">
               <Antenna className="w-4 h-4 text-white" />
@@ -1341,30 +1282,22 @@ export default function ActionModePage() {
               <p className="text-[10px] text-emerald-600 mt-0.5">Field Intelligence</p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setNavOpen(false)}
-            className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 lg:hidden"
-            aria-label="Close menu"
-          >
-            <X className="w-4 h-4" />
-          </button>
         </div>
 
         <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
           {navItems.map(item => (
             <button
               key={item.id}
-              onClick={() => goToSection(item.id)}
+              onClick={() => setSection(item.id)}
               className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm transition-all ${
                 section === item.id
                   ? "bg-emerald-50 text-emerald-700 font-semibold"
                   : "text-slate-600 hover:bg-slate-50 hover:text-slate-800"
               }`}
             >
-              <span className="flex items-center gap-2.5 min-w-0">
+              <span className="flex items-center gap-2.5 min-w-0 max-w-[115px]">
                 <item.icon className="w-4 h-4 flex-shrink-0" />
-                <span className="truncate text-left block">{item.label}</span>
+                <span className="truncate text-left block w-full">{item.label}</span>
               </span>
               {item.badge ? (
                 <span className="text-[10px] font-bold bg-emerald-600 text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
@@ -1388,31 +1321,23 @@ export default function ActionModePage() {
       </aside>
 
       {/* ── Main ── */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
         {/* ── Topbar ── */}
-        <header className="bg-white border-b border-slate-100 px-3 py-2.5 sm:px-5 flex items-center justify-between gap-3 flex-shrink-0">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-4">
-            <button
-              type="button"
-              onClick={() => setNavOpen(true)}
-              className="rounded-lg p-2 text-slate-600 hover:bg-slate-50 lg:hidden"
-              aria-label="Open AI Scout menu"
-            >
-              <Menu className="w-4 h-4" />
-            </button>
-            <h1 className="truncate text-sm font-bold text-slate-800">
+        <header className="bg-white border-b border-slate-100 px-5 py-2.5 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-4">
+            <h1 className="text-sm font-bold text-slate-800">
               {navItems.find(n => n.id === section)?.label}
             </h1>
             {isLive && (
-              <div className="hidden items-center gap-2 text-xs text-emerald-600 sm:flex">
+              <div className="flex items-center gap-2 text-xs text-emerald-600">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="font-medium truncate max-w-[8rem]">{livePhase}</span>
+                <span className="font-medium">{livePhase}</span>
               </div>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-            <div className="hidden items-center gap-3 text-xs text-slate-500 md:flex">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 text-xs text-slate-500">
               <span className="flex items-center gap-1">
                 <Activity className="w-3.5 h-3.5 text-emerald-500" />
                 {feed.length} signals
@@ -1438,35 +1363,42 @@ export default function ActionModePage() {
         </header>
 
         {/* ── Section Body ── */}
-        <main className="flex-1 overflow-y-auto overflow-x-hidden">
+        <main className="flex-1 overflow-y-auto">
 
           {/* ────────────────── HUNT ────────────────── */}
           {section === "hunt" && (
-            <div className="p-4 sm:p-5">
+            <div className="p-5">
               {/* Top Page Header */}
-              <div className="mb-5 flex flex-col gap-3 sm:mb-6 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex justify-between items-center mb-6">
                 <div>
-                  <h1 className="text-xl sm:text-2xl font-bold text-slate-800">
+                  <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
                     You have <span className="text-emerald-600">{filteredLeads.length} hot leads</span> today
                   </h1>
                   <p className="text-sm text-slate-500 mt-1">Respond first, win the deal</p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <button
-                    onClick={runSocial}
-                    disabled={runningSocial}
-                    className="flex w-full items-center justify-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm sm:w-auto"
-                  >
-                    {runningSocial ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
-                    Scan Now
-                  </button>
+                  {runningSocial || isLive ? (
+                    <button
+                      onClick={stopScan}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg transition-all shadow-sm">
+                      <X className="w-3.5 h-3.5" />
+                      Stop Scan
+                    </button>
+                  ) : (
+                    <button
+                      onClick={runSocial}
+                      className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all shadow-sm">
+                      <Search className="w-3.5 h-3.5" />
+                      Scan Now
+                    </button>
+                  )}
                 </div>
               </div>
 
               {/* Controls and Approval Actions Row */}
-              <div className="mb-5 flex flex-col gap-3 rounded-xl border border-slate-100 bg-slate-50/50 p-3 sm:mb-6 sm:p-2.5 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex flex-col gap-3 sm:flex-1 sm:flex-row sm:items-center">
-                  <div className="relative w-full sm:max-w-xs sm:flex-1">
+              <div className="flex items-center justify-between gap-3 mb-6 bg-slate-50/50 p-2.5 rounded-xl border border-slate-100">
+                <div className="flex items-center gap-3 flex-1">
+                  <div className="relative flex-1 max-w-xs">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
                     <input
                       value={searchQuery}
@@ -1475,7 +1407,7 @@ export default function ActionModePage() {
                       className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
                     />
                   </div>
-                  <div className="flex items-center gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">
+                  <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
                     {(["all","hot","warm","cold"] as const).map(f => (
                       <button
                         key={f}
@@ -1496,7 +1428,7 @@ export default function ActionModePage() {
                 </div>
 
                 {/* Master Checkbox + Approve All Button down here */}
-                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                <div className="flex items-center gap-3">
                   <label className="flex items-center gap-2 px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all cursor-pointer shadow-sm">
                     <input
                       type="checkbox"
@@ -1528,7 +1460,7 @@ export default function ActionModePage() {
                         toast.success(`Approved and added ${approved} leads to CRM!`);
                       }
                     }}
-                    className="flex w-full items-center justify-center gap-2 px-4 py-2 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg shadow-sm transition-all sm:w-auto"
+                    className="flex items-center gap-2 px-4 py-2 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg shadow-sm transition-all"
                   >
                     Approve all
                   </button>
@@ -1541,14 +1473,22 @@ export default function ActionModePage() {
                   <Target className="w-12 h-12 mb-3 opacity-20" />
                   <p className="text-sm font-medium">No leads yet</p>
                   <p className="text-xs mt-1">Run a scan or set up your scouts to start hunting</p>
+                  {runningSocial || isLive ? (
+                    <button
+                      onClick={stopScan}
+                      className="mt-4 flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg">
+                      <X className="w-3.5 h-3.5" />
+                      Stop Scan
+                    </button>
+                  ) : (
                   <button
                     onClick={runSocial}
-                    disabled={runningSocial}
                     className="mt-4 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700"
                   >
                     <Search className="w-3.5 h-3.5" />
                     Run First Scan
                   </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3 pb-24">
@@ -1568,10 +1508,9 @@ export default function ActionModePage() {
                           isSelected ? "bg-emerald-50/50 border-emerald-500 hover:border-emerald-500" : ""
                         }`}
                       >
-                        <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[32px_minmax(0,1fr)_100px_105px_158px] lg:items-center">
-                          {/* Checkbox + content */}
-                          <div className="flex gap-3 lg:contents">
-                          <div className="flex items-start justify-center pt-0.5 lg:items-center">
+                        <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "32px 1fr 100px 105px 158px" }}>
+                          {/* Checkbox */}
+                          <div className="flex items-center justify-center">
                             <input
                               type="checkbox"
                               checked={isSelected}
@@ -1585,8 +1524,9 @@ export default function ActionModePage() {
                             />
                           </div>
 
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2 mb-1">
+                          {/* Content */}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
                               <span className="text-sm font-semibold text-slate-800">
                                 {lead.author || lead.contact_name || "Unknown user"}
                               </span>
@@ -1604,14 +1544,14 @@ export default function ActionModePage() {
                               "{lead.snippet || lead.title}"
                             </p>
                           </div>
-                          </div>
 
-                          <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 pt-3 sm:justify-between lg:contents lg:border-0 lg:pt-0">
+                          {/* Beautiful Intent Ring Column */}
                           <div className="flex flex-col items-center justify-center">
                             <IntentRing score={score} />
                             <span className="text-[10px] text-slate-400 mt-1 font-semibold">Intent</span>
                           </div>
 
+                          {/* Time & Reason Column */}
                           <div className="flex flex-col items-center justify-center text-center">
                             <span className="font-bold text-sm text-slate-700">
                               {timeAgo(lead.created_at).replace("ago", "").trim()}
@@ -1623,7 +1563,8 @@ export default function ActionModePage() {
                             </span>
                           </div>
 
-                          <div className="w-full flex flex-col gap-1.5 sm:w-auto lg:w-full">
+                          {/* Actions */}
+                          <div className="flex flex-col gap-1.5">
                             {(() => {
                               const p = (lead.platform || "").toLowerCase();
                               const hasUrl = !!lead.url;
@@ -1689,7 +1630,6 @@ export default function ActionModePage() {
                               </button>
                             </div>
                           </div>
-                          </div>
                         </div>
                       </div>
                     );
@@ -1699,7 +1639,7 @@ export default function ActionModePage() {
 
               {/* Bulk Action Bar at bottom */}
               {selectedLeads.size > 0 && (
-                <div className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-50 flex flex-wrap items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-lg sm:inset-x-auto sm:left-1/2 sm:bottom-6 sm:-translate-x-1/2 sm:rounded-full sm:px-6 sm:py-3 sm:gap-4">
+                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full flex items-center gap-4 shadow-lg z-50 animate-slide-up">
                   <span className="text-xs font-semibold">{selectedLeads.size} selected</span>
                   <button
                     onClick={async () => {
@@ -1771,27 +1711,27 @@ export default function ActionModePage() {
 
           {/* ────────────────── PULSE ────────────────── */}
           {section === "pulse" && (
-            <div className="p-4 sm:p-5">
+            <div className="p-5">
               {/* Header */}
-              <div className="mb-5 sm:mb-6">
-                <h1 className="text-xl sm:text-2xl font-bold text-slate-800">Live pulse</h1>
+              <div className="mb-6">
+                <h1 className="text-2xl font-bold text-slate-800">Live pulse</h1>
                 <p className="text-sm text-slate-500 mt-1">Real-time view of all agent activity</p>
               </div>
 
-              <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+              <div className="grid grid-cols-3 gap-6">
                 
                 {/* LEFT COLUMN: Radar, Stats, Activity Feed */}
-                <div className="space-y-6 xl:col-span-2">
+                <div className="col-span-2 space-y-6">
                   
                   {/* Radar & Stats Block */}
-                  <div className="bg-white rounded-xl border border-slate-100 p-4 sm:p-5 flex flex-col items-center gap-4 shadow-sm sm:flex-row sm:items-center sm:gap-6">
+                  <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center gap-6 shadow-sm">
                     {/* Animated Radar */}
-                    <div className="flex-shrink-0 scale-90 sm:scale-100">
+                    <div className="flex-shrink-0">
                       <RadarSVG />
                     </div>
 
                     {/* Stats Grid */}
-                    <div className="w-full flex-1 grid grid-cols-2 gap-3 sm:gap-4">
+                    <div className="flex-1 grid grid-cols-2 gap-4">
                       {/* Stat 1 */}
                       <div className="bg-white rounded-2xl border border-slate-100/80 p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300">
                         <div className="text-3xl font-extrabold tracking-tight text-[#059669]">{totalScanned}</div>
@@ -1846,10 +1786,10 @@ export default function ActionModePage() {
                             const minAgo = Math.max(1, Math.round(ms / 60000));
                             const timeLabel = minAgo < 60 ? `${minAgo} min ago` : `${Math.round(minAgo / 60)} hr ago`;
                             return (
-                              <div key={item._id} className="bg-white rounded-xl border border-slate-100 p-4 flex flex-col gap-3 hover:border-slate-200 hover:shadow-sm transition-all duration-200 sm:flex-row sm:items-center sm:justify-between">
-                                <div className="flex items-start gap-3 min-w-0">
+                              <div key={item._id} className="bg-white rounded-xl border border-slate-100 p-4 flex items-center justify-between hover:border-slate-200 hover:shadow-sm transition-all duration-200">
+                                <div className="flex items-start gap-3">
                                   <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ backgroundColor: dotColor }} />
-                                  <div className="min-w-0">
+                                  <div>
                                     <div className="text-sm text-slate-700 font-medium">
                                       <span className="font-bold text-slate-800">{label}</span> — {item.title}
                                       {item.platform && <span className="text-slate-400 text-xs"> · {item.platform}</span>}
@@ -1859,8 +1799,8 @@ export default function ActionModePage() {
                                   </div>
                                 </div>
                                 <button
-                                  onClick={() => goToSection(target)}
-                                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all sm:pr-2 flex-shrink-0 self-start sm:self-auto"
+                                  onClick={() => setSection(target)}
+                                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-0.5 select-none transition-all pr-2 flex-shrink-0"
                                 >
                                   {btnLabel}
                                 </button>
@@ -1975,100 +1915,250 @@ export default function ActionModePage() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h1 className="text-2xl font-bold text-slate-800">Funding opportunities</h1>
-                  <p className="text-sm text-slate-500 mt-1">AI-matched grants, VCs and accelerators for your business</p>
+                  <p className="text-sm text-slate-500 mt-1">Search for grants, VCs, accelerators and government programs that match your business.</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button 
-                    onClick={load}
-                    className="px-4 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold rounded-lg transition-all shadow-sm"
-                  >
-                    Refresh
-                  </button>
-                  <button className="px-4 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold rounded-lg transition-all shadow-sm">
-                    Filter
+              </div>
+
+              {/* STEP 1 — Search form */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">1</span>
+                  <h2 className="text-sm font-bold text-slate-800">Find funding opportunities</h2>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Sector / Industry</label>
+                    <input
+                      value={fundSector}
+                      onChange={e => setFundSector(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !fundSearching && searchFunding()}
+                      placeholder="e.g. fintech, agritech, climate"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Location / Region</label>
+                    <input
+                      value={fundLocation}
+                      onChange={e => setFundLocation(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !fundSearching && searchFunding()}
+                      placeholder="e.g. United States, Kenya, EU"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Stage</label>
+                    <select
+                      value={fundStage}
+                      onChange={e => setFundStage(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand">
+                      <option value="">Any stage</option>
+                      <option value="pre_seed">Pre-seed</option>
+                      <option value="seed">Seed</option>
+                      <option value="series_a">Series A</option>
+                      <option value="series_b">Series B+ / Growth</option>
+                      <option value="established">Established business</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Extra keywords</label>
+                    <input
+                      value={fundKeywords}
+                      onChange={e => setFundKeywords(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !fundSearching && searchFunding()}
+                      placeholder="e.g. women founders, climate-focused"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                </div>
+
+                <div className="mb-3">
+                  <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Funding types</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {([
+                      { id: "grant",         label: "Grants",        icon: "🎁" },
+                      { id: "vc",            label: "VCs",           icon: "🚀" },
+                      { id: "accelerator",   label: "Accelerators",  icon: "⚡" },
+                      { id: "angel",         label: "Angel investors", icon: "👼" },
+                      { id: "government",    label: "Government",    icon: "🏛️" },
+                      { id: "crowdfunding",  label: "Crowdfunding",  icon: "👥" },
+                      { id: "loan",          label: "Loans",         icon: "🏦" },
+                    ] as const).map(t => {
+                      const on = fundTypes.has(t.id);
+                      return (
+                        <button key={t.id}
+                          onClick={() => toggleFundType(t.id)}
+                          className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all flex items-center gap-1 ${on ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+                          <span>{t.icon}</span> {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Search className="w-3 h-3" />
+                    Fill any field — sector + location work best.
+                  </p>
+                  <button
+                    onClick={searchFunding}
+                    disabled={fundSearching}
+                    className="flex items-center gap-2 px-5 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-sm font-semibold rounded-xl shadow-sm">
+                    {fundSearching
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
+                      : <><Search className="w-4 h-4" /> Find funding</>}
                   </button>
                 </div>
               </div>
 
-              {/* Alert Banner */}
+              {/* STEP 2 — Results */}
+              {(fundSearching || fundResults.length > 0) && (
+                <>
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">2</span>
+                      <h2 className="text-sm font-bold text-slate-800">Results {fundResults.length > 0 && <span className="text-slate-400 font-normal">({fundResults.length})</span>}</h2>
+                    </div>
+                    {fundResults.length > 0 && (
+                      <button
+                        onClick={() => saveFundingOpps(fundResults)}
+                        disabled={fundSaving}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg shadow-sm">
+                        {fundSaving
+                          ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving…</>
+                          : <><Plus className="w-3.5 h-3.5" />Save all to pipeline</>}
+                      </button>
+                    )}
+                  </div>
+
+                  {fundSearching && fundResults.length === 0 && (
+                    <div className="space-y-3">
+                      {[1,2,3].map(i => (
+                        <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse h-24" />
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    {fundResults.map((opp, idx) => {
+                      const accent = ["border-l-emerald-500","border-l-blue-500","border-l-purple-500","border-l-amber-500","border-l-pink-500"][idx % 5];
+                      const saved = fundSavedUrls.has(opp.url);
+                      const dl = fundDeadlineLabel(opp);
+                      const toneClass = {
+                        open:    "bg-emerald-50 text-emerald-700 border-emerald-200",
+                        urgent:  "bg-amber-50 text-amber-800 border-amber-200",
+                        rolling: "bg-blue-50 text-blue-700 border-blue-200",
+                        closed:  "bg-slate-100 text-slate-500 border-slate-200",
+                        unknown: "bg-slate-50 text-slate-500 border-slate-200",
+                      }[dl.tone];
+                      return (
+                        <div key={opp.url} className={`bg-white rounded-xl border border-slate-100 ${accent} border-l-4 p-4 hover:shadow-sm transition-all`}>
+                          <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 80px 200px" }}>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                <span className="font-bold text-slate-800 text-sm">{opp.title}</span>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${toneClass}`}>{dl.text}</span>
+                                {opp.amount && (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">💵 {opp.amount}</span>
+                                )}
+                                {opp.source && (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 select-none capitalize">{opp.source}</span>
+                                )}
+                              </div>
+                              {opp.snippet && (
+                                <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{opp.snippet}</p>
+                              )}
+                              <p className="text-[11px] text-brand font-mono mt-1 truncate">{opp.url.replace(/^https?:\/\//,"").split("/")[0]}</p>
+                            </div>
+
+                            <div className="flex flex-col items-center justify-center">
+                              <IntentRing score={opp.score ?? 5} />
+                              <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <a href={opp.url} target="_blank" rel="noopener noreferrer"
+                                className="w-full py-1.5 bg-brand-dark hover:bg-brand text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
+                                Open →
+                              </a>
+                              {saved ? (
+                                <span className="w-full py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg flex items-center justify-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />Saved
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => saveFundingOpps([opp])}
+                                  disabled={fundSaving}
+                                  className="w-full py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold rounded-lg flex items-center justify-center gap-1">
+                                  <Plus className="w-3 h-3" />Save
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* Saved pipeline (existing fundingOpps from previous runs) */}
               {fundingOpps.length > 0 && (
-                <div className="mb-6 flex items-center gap-3 bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl px-4 py-3.5 text-sm text-emerald-800 shadow-[0_1px_2px_rgba(0,0,0,0.01)]">
-                  <span className="text-lg select-none">🎯</span>
-                  <p className="leading-relaxed font-medium">
-                    <span className="font-bold">{fundingOpps.length} funding match{fundingOpps.length !== 1 ? "es" : ""} found.</span>{" "}
-                    {fundingOpps[0] && <>Top match: {fundingOpps[0].title}{fundingOpps[0].score != null ? ` — AI score ${fundingOpps[0].score.toFixed(1)}/10` : ""}.</>}
-                  </p>
+                <div className="mt-8">
+                  <div className="flex items-center gap-2 mb-3">
+                    <h2 className="text-sm font-bold text-slate-800">Your saved opportunities</h2>
+                    <span className="text-xs text-slate-400">({fundingOpps.length})</span>
+                  </div>
+                  <div className="space-y-2">
+                    {fundingOpps.map(opp => {
+                      const savedOpp = opp as Opportunity & { status?: FundingOpp["status"]; deadline?: string | null; amount?: string | null };
+                      const dl = fundDeadlineLabel({
+                        title: savedOpp.title, url: savedOpp.url, snippet: savedOpp.snippet, score: savedOpp.score ?? 5,
+                        status: savedOpp.status, deadline: savedOpp.deadline, amount: savedOpp.amount,
+                      });
+                      const toneClass = {
+                        open:    "bg-emerald-50 text-emerald-700 border-emerald-200",
+                        urgent:  "bg-amber-50 text-amber-800 border-amber-200",
+                        rolling: "bg-blue-50 text-blue-700 border-blue-200",
+                        closed:  "bg-slate-100 text-slate-500 border-slate-200",
+                        unknown: "bg-slate-50 text-slate-500 border-slate-200",
+                      }[dl.tone];
+                      return (
+                        <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-3 flex items-center gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-bold text-slate-800 text-sm truncate">{opp.title}</p>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${toneClass}`}>{dl.text}</span>
+                              {savedOpp.amount && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">💵 {savedOpp.amount}</span>
+                              )}
+                            </div>
+                            {opp.snippet && <p className="text-xs text-slate-500 line-clamp-1 mt-0.5">{opp.snippet}</p>}
+                          </div>
+                          <IntentRing score={opp.score ?? 5} />
+                          {opp.url && (
+                            <a href={opp.url} target="_blank" rel="noopener noreferrer"
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg">
+                              Apply →
+                            </a>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 
-              {/* Funding Rows */}
-              <div className="space-y-3">
-                {fundingOpps.length === 0 ? (
-                  <div className="bg-white rounded-xl border border-slate-100 p-10 text-center">
-                    <div className="text-3xl mb-3">💰</div>
-                    <p className="text-sm font-semibold text-slate-600 mb-1">No funding matches yet</p>
-                    <p className="text-xs text-slate-400 mb-4">Run your AI scouts to find grants, loans, and accelerators matched to your business.</p>
-                    <button
-                      onClick={load}
-                      className="px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-lg transition-all border border-emerald-100"
-                    >
-                      Refresh
-                    </button>
-                  </div>
-                ) : (
-                  fundingOpps.map((opp, idx) => {
-                    const accentColors = ["#059669", "#2563EB", "#7C3AED", "#D97706", "#DC2626"];
-                    const accent = accentColors[idx % accentColors.length];
-                    const score = opp.score ?? 5;
-                    return (
-                      <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200" style={{ borderLeftWidth: 3, borderLeftColor: accent }}>
-                        <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_100px_140px] lg:items-center">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <span className="font-bold text-slate-800 text-sm">{opp.title}</span>
-                              {opp.platform && (
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 select-none">{opp.platform}</span>
-                              )}
-                            </div>
-                            {opp.agent_name && (
-                              <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
-                                Via {opp.agent_name}
-                              </p>
-                            )}
-                            {opp.snippet && (
-                              <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{opp.snippet}</p>
-                            )}
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 pt-3 sm:justify-between lg:contents lg:border-0 lg:pt-0">
-                          <div className="flex flex-col items-center justify-center">
-                            <IntentRing score={score} />
-                            <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
-                          </div>
-
-                          <div className="w-full flex flex-col gap-1.5 sm:w-auto lg:w-full">
-                            {opp.url ? (
-                              <a
-                                href={opp.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1"
-                              >
-                                Apply now →
-                              </a>
-                            ) : (
-                              <button className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
-                                View details →
-                              </button>
-                            )}
-                          </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              {/* Empty state when nothing yet */}
+              {!fundSearching && fundResults.length === 0 && fundingOpps.length === 0 && (
+                <div className="bg-white rounded-xl border border-dashed border-slate-200 p-10 text-center">
+                  <div className="text-3xl mb-3">💰</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-1">Search for funding above</p>
+                  <p className="text-xs text-slate-400">Pick a sector, location and the types of funding you're looking for. Save what looks promising.</p>
+                </div>
+              )}
             </div>
           )}
 
@@ -3917,313 +4007,6 @@ export default function ActionModePage() {
                 </button>
               </div>
 
-              {/* Custom agents */}
-              <div className="bg-white rounded-xl border border-slate-100 p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-slate-700">Custom Agents</h3>
-                  <button
-                    onClick={() => setIsAddAgentOpen(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 transition-all"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add Agent
-                  </button>
-                </div>
-                {customAgents.length === 0 ? (
-                  <p className="text-xs text-slate-400 text-center py-4">No custom agents yet</p>
-                ) : (
-                  <div className="space-y-2">
-                    {customAgents.map(agent => {
-                      const isRunning = runningAgent === agent._id;
-                      return (
-                        <div key={agent._id} className="flex items-center justify-between p-3 rounded-lg border border-slate-100 hover:bg-slate-50 transition-all">
-                          <div className="flex items-center gap-3">
-                            {/* Toggle */}
-                            <div
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                const nextEnabled = !agent.enabled;
-                                setCustomAgents(prev => prev.map(a => a._id === agent._id ? { ...a, enabled: nextEnabled } : a));
-                                try {
-                                  await api.put(`/action-mode/agents/${agent._id}`, {
-                                    name: agent.name,
-                                    emoji: agent.emoji,
-                                    description: agent.description,
-                                    schedule: agent.schedule,
-                                    enabled: nextEnabled,
-                                  });
-                                  toast.success(`${agent.name} ${nextEnabled ? "enabled" : "disabled"}`);
-                                } catch {
-                                  setCustomAgents(prev => prev.map(a => a._id === agent._id ? { ...a, enabled: !nextEnabled } : a));
-                                  toast.error("Failed to update agent");
-                                }
-                              }}
-                              className={`relative w-8 h-4.5 rounded-full transition-colors cursor-pointer flex-shrink-0 ${agent.enabled ? "bg-emerald-500" : "bg-slate-200"}`}
-                            >
-                              <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full shadow transition-transform ${agent.enabled ? "translate-x-3.5" : "translate-x-0.5"}`} />
-                            </div>
-                            <span className="text-base select-none">{agent.emoji}</span>
-                            <div>
-                              <p className="text-xs font-semibold text-slate-700">{agent.name}</p>
-                              <p className="text-[10px] text-slate-400 line-clamp-1 mt-0.5">{agent.description}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2.5">
-                            <span className="text-[9px] font-bold text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-0.5 rounded capitalize select-none">{agent.schedule}</span>
-                            
-                            {/* Run Now trigger button */}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                runCustomAgent(agent);
-                              }}
-                              disabled={isRunning || !agent.enabled}
-                              className={`p-1.5 rounded-lg border transition-all ${isRunning ? "border-emerald-200 bg-emerald-50 text-emerald-600 animate-pulse" : !agent.enabled ? "opacity-30 cursor-not-allowed" : "border-slate-100 hover:bg-slate-100 text-slate-500 hover:text-slate-700"}`}
-                              title="Run scanning session now"
-                            >
-                              {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                            </button>
-
-                            <button onClick={() => api.delete(`/action-mode/agents/${agent._id}`).then(() => setCustomAgents(p => p.filter(a => a._id !== agent._id)))} className="p-1.5 text-slate-300 hover:text-red-500 rounded-lg hover:bg-slate-100/50 transition-all">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ────────────────── CUSTOM AGENT PAGE ────────────────── */}
-          {section.startsWith("custom_") && (() => {
-            const agent = customAgents.find(a => `custom_${a._id}` === section);
-            if (!agent) return null;
-            const agentOpps = opportunities.filter(o => o.agent_name === agent.name);
-            const isRunning = runningAgent === agent._id;
-
-            return (
-              <div className="p-5 space-y-4">
-                {/* Custom Agent Page Header card */}
-                <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <span className="text-3xl select-none">{agent.emoji}</span>
-                    <div>
-                      <h2 className="text-base font-bold text-slate-800">{agent.name}</h2>
-                      <p className="text-xs text-slate-500 mt-1 leading-relaxed max-w-xl">{agent.description}</p>
-                      <div className="flex items-center gap-2 mt-2.5">
-                        <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 uppercase select-none">
-                          {agent.schedule.replace(/_/g, " ")}
-                        </span>
-                        {isRunning ? (
-                          <span className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                            Scouting targets live...
-                          </span>
-                        ) : (
-                          <span className="text-xs text-slate-400">Ready to execute</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => runCustomAgent(agent)}
-                    disabled={isRunning}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm flex-shrink-0"
-                  >
-                    {isRunning ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Scanning...
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-3.5 h-3.5 fill-white" />
-                        Run Agent Now
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                {/* Opportunity leads matched specifically by this agent */}
-                {agentOpps.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-20 bg-white rounded-xl border border-slate-100 text-slate-400">
-                    <Target className="w-12 h-12 mb-3 opacity-20" />
-                    <p className="text-sm font-semibold">No opportunities matched yet</p>
-                    <p className="text-xs mt-1">Run a live scanning session to begin matching new B2B leads</p>
-                    <button
-                      onClick={() => runCustomAgent(agent)}
-                      disabled={isRunning}
-                      className="mt-4 flex items-center gap-1.5 px-3.5 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-lg"
-                    >
-                      <Play className="w-3 h-3" /> Trigger Live Scan
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {agentOpps.map(opp => {
-                      const score = opp.score ?? 5;
-                      return (
-                        <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-3.5 hover:border-emerald-200 hover:shadow-sm transition-all">
-                          <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[46px_minmax(0,1fr)_100px_105px_158px] lg:items-center">
-                            <div className="flex gap-3 lg:contents">
-                            <div className="flex shrink-0 items-start lg:items-center lg:justify-center">
-                            <IntentRing score={score} />
-                            </div>
-
-                            <div className="min-w-0 flex-1">
-                              <p className="text-xs font-bold text-slate-800 truncate">{opp.title}</p>
-                              <p className="text-[11px] text-slate-500 line-clamp-2 mt-1 leading-relaxed">{opp.snippet}</p>
-                              <div className="flex items-center gap-1.5 mt-2">
-                                <span className="text-[9px] text-slate-400 font-medium">Captured {timeAgo(opp.created_at)}</span>
-                              </div>
-                            </div>
-                            </div>
-
-                            <div className="flex flex-col gap-3 border-t border-slate-100 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between lg:contents lg:border-0 lg:pt-0">
-                            <div className="flex items-center justify-center">
-                              <span className="text-[9px] font-bold text-slate-500 capitalize bg-slate-50 px-2 py-1 rounded border border-slate-100 select-none">
-                                {opp.platform || "Custom"}
-                              </span>
-                            </div>
-
-                            <div className="flex flex-col justify-center gap-1 text-xs min-w-0">
-                              {opp.contact_name ? (
-                                <p className="font-bold text-slate-700 truncate">{opp.contact_name}</p>
-                              ) : opp.author ? (
-                                <p className="font-bold text-slate-700 truncate">@{opp.author}</p>
-                              ) : (
-                                <p className="text-slate-400 italic">No contact</p>
-                              )}
-                              {opp.group_name && (
-                                <p className="text-[10px] text-slate-400 truncate">👥 {opp.group_name}</p>
-                              )}
-                            </div>
-
-                            {/* Interactive Actions */}
-                            <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-                              <button
-                                onClick={() => openWhatsApp(opp.contact_info, `Hi, I saw your post regarding "${opp.title}" and wanted to connect.`)}
-                                className="w-full px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 flex items-center justify-center gap-1 shadow-sm sm:w-auto"
-                              >
-                                <MessageCircle className="w-3.5 h-3.5" />
-                                Reach Out
-                              </button>
-                              <button
-                                onClick={() => addToCRM(opp)}
-                                className="p-2 border border-slate-200 rounded-lg text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors self-end sm:self-auto"
-                                title="Add to CRM"
-                              >
-                                <Plus className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* ────────────────── POPUP MODAL: ADD CUSTOM AGENT ────────────────── */}
-          {isAddAgentOpen && (
-            <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center z-[999] p-4 transition-all">
-              <div className="bg-white rounded-2xl border border-slate-100 shadow-2xl max-w-md w-full p-6 space-y-4 relative animate-in fade-in zoom-in-95 duration-150">
-                <button
-                  onClick={() => setIsAddAgentOpen(false)}
-                  className="absolute top-4 right-4 p-1 rounded-lg text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-
-                <div>
-                  <h3 className="text-base font-bold text-slate-800">Add New AI Scout Agent</h3>
-                  <p className="text-xs text-slate-400 mt-1">Specify custom B2B hunting instructions in plain English</p>
-                </div>
-
-                <div className="space-y-3">
-                  {/* Row 1: Name + Emoji Selector */}
-                  <div className="grid grid-cols-[1fr,70px] gap-3">
-                    <div>
-                      <div className="flex justify-between items-center mb-1">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase">Agent Name</label>
-                        <span className="text-[9px] text-slate-400 font-semibold">{newAgentName.length}/20</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={newAgentName}
-                        onChange={e => setNewAgentName(e.target.value)}
-                        maxLength={20}
-                        placeholder="e.g. Chair Hunter"
-                        className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Emoji</label>
-                      <select
-                        value={newAgentEmoji}
-                        onChange={e => setNewAgentEmoji(e.target.value)}
-                        className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer text-center"
-                      >
-                        {["🤖", "🔍", "🛋️", "🚗", "💼", "📈", "💻", "🚀", "📞", "📅", "💡", "💰"].map(em => (
-                          <option key={em} value={em}>{em}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Row 2: Prompt Instruction */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Instructions (The Prompt)</label>
-                    <textarea
-                      value={newAgentDescription}
-                      onChange={e => setNewAgentDescription(e.target.value)}
-                      placeholder="e.g. Scan Facebook Groups and social media for posts asking for office chair suppliers, desk orders, or office furniture recommendations. Score highly if the user mentions B2B or wholesale quantities."
-                      className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all min-h-[100px] resize-none leading-relaxed"
-                    />
-                  </div>
-
-                  {/* Row 3: Run Schedule */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Execution Schedule</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(["on_demand", "daily", "weekly"] as const).map(sch => (
-                        <button
-                          key={sch}
-                          onClick={() => setNewAgentSchedule(sch)}
-                          className={`py-2 text-xs font-bold rounded-lg border transition-all capitalize ${newAgentSchedule === sch ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50"}`}
-                        >
-                          {sch.replace(/_/g, " ")}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex gap-2.5 pt-2">
-                  <button
-                    onClick={() => setIsAddAgentOpen(false)}
-                    className="flex-1 py-2.5 border border-slate-200 text-slate-500 hover:bg-slate-50 text-xs font-bold rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleAddAgent}
-                    disabled={creatingAgent}
-                    className="flex-1 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-bold rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm"
-                  >
-                    {creatingAgent ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-                    Build Agent
-                  </button>
-                </div>
-              </div>
             </div>
           )}
 

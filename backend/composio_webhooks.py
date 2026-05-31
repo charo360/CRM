@@ -187,7 +187,7 @@ async def process_gmail_trigger(event: Dict[str, Any], db: Any) -> Dict[str, Any
         # sync pipeline that normalizes + stores Gmail/Outlook into email_db.
         try:
             from email_sync import sync_emails_for_user
-            result = await sync_emails_for_user(user_id, db, max_results=10)
+            result = await sync_emails_for_user(user_id, db, max_results=10, trigger_briefing_ingest=True)
             logger.info(
                 "✅ Gmail webhook sync for %s → threads=%s messages=%s",
                 user.get("email", user_id),
