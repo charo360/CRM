@@ -15449,7 +15449,7 @@ async def ae_oauth_callback(code: str = "", state: str = "", error: str = ""):
 <pre style="font-family:monospace;padding:24px">AliExpress OAuth: {'success' if ok else 'FAILED'}
 {msg}</pre>
 <script>
-if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},window.location.origin);window.close();}}
+if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},"*");window.close();}}
 else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}&msg={encoded_msg}";}}
 </script></body></html>""")
 

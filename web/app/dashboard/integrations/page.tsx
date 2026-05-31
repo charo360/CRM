@@ -6,7 +6,7 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections } from "@/lib/api";
+import { API_BASE, telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
@@ -693,7 +693,7 @@ function IntegrationsPageInner() {
     setAeBusy(true);
     try {
       const token = getToken();
-      const res = await fetch("/api/aliexpress/oauth/start", {
+      const res = await fetch(`${API_BASE}/aliexpress/oauth/start`, {
         headers: { Authorization: `Bearer ${token ?? ""}` },
       });
       if (!res.ok) {
