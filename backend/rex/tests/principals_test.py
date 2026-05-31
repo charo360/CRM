@@ -131,6 +131,8 @@ class TestScopedHomeScreen:
             confidence=0.9,
             visibility=visibility_team_shared,
         )
+        import dataclasses
+        a1 = dataclasses.replace(a1, proposed_at=_utc())
         orch.ledger.record_proposal(a1)
         orch.ledger.transition(action_id=a1.id, to_state=ActionState.STAGED, actor_name="Zilo")
 
@@ -150,6 +152,7 @@ class TestScopedHomeScreen:
             confidence=0.85,
             visibility=visibility_founder_only,
         )
+        a2 = dataclasses.replace(a2, proposed_at=_utc())
         orch.ledger.record_proposal(a2)
         orch.ledger.transition(action_id=a2.id, to_state=ActionState.STAGED, actor_name="Zilo")
 

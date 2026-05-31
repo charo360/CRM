@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bumping this invalidates the in-memory reflection cache for prior sessions.
 # Bump whenever the prompt changes meaningfully.
-PROMPT_VERSION = "v10"
+PROMPT_VERSION = "v11"
 
 # Words/phrases the AI must never use. Each one is a report-voice tell or an
 # AI-fluff cliche. Match is case-insensitive substring.
@@ -202,12 +202,12 @@ def _facts_block(
         for cat, n in by_cat.items():
             lines.append(f"- {n} {cat} action{'s' if n != 1 else ''} undone.")
 
-    # Specific subjects from the action ledger — the one detail Zilo can
+    # Real subject names from the action ledger — the one detail Zilo can
     # honestly mention to make the entry feel real ("the Acme follow-up",
     # "the Patel reply") instead of generic ("one draft").
+    # Kept terse so the AI integrates the names rather than quoting the label.
     if subjects:
         clean = [s.strip() for s in subjects if s and s.strip()]
-        # de-dupe while preserving order
         seen: set[str] = set()
         unique = []
         for s in clean:
@@ -215,7 +215,7 @@ def _facts_block(
                 seen.add(s.lower())
                 unique.append(s)
         if unique:
-            lines.append("- Specific subjects touched today: " + ", ".join(unique[:4]) + ".")
+            lines.append("- Names today: " + ", ".join(unique[:4]) + ".")
 
     return "\n".join(lines) if lines else "No actions today."
 
@@ -311,7 +311,7 @@ NOW WRITE TODAY'S ENTRY. RULES — strict:
    "feel ready", "felt good") — Zilo doesn't have feelings, Zilo NOTICES things.
 
 4. SPECIFIC, NEVER GENERIC. Mention ONE real, concrete detail from TODAY'S REAL EVENTS — a specific subject name, the category, what was held vs sent vs rejected, who joined the team. Generic lines that could describe any business are NOT ACCEPTABLE.
-   - If TODAY'S REAL EVENTS lists "Specific subjects touched today: X, Y," NAME one of them in your entry. Do not say "one draft" when the facts give you "the Acme follow-up."
+   - If TODAY'S REAL EVENTS lists "Names today: X, Y," NAME one of them naturally inside your sentence — for example "the Acme follow-up", "the Patel reply", "Henderson's note". Do NOT echo the label "Names today" verbatim. Do not say "one draft" when you have a real name.
    - If TODAY'S REAL EVENTS says "no actions today," write a SHORT quiet-day entry — do NOT invent activity, do NOT mention promotions or actions that did not happen.
    - NUMBERS in the few-shot examples (340, 12, 14, 4 minutes, etc.) are ILLUSTRATIVE — do NOT copy them into your entry. Only use numbers that appear in TODAY'S REAL EVENTS above.
    - NAMES (Henderson, Henson, Scout) in examples are illustrative — do NOT copy them either. Only use names that appear in TODAY'S REAL EVENTS.

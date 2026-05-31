@@ -74,35 +74,72 @@ def _record_sent(orch: Orchestrator, action: Action) -> None:
     )
 
 
-def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
-    """Append a small arc of trust events so the Journal page has substance.
+# Subject pool for the daily arc — global names matching the target market
+# (Finland + Canada + US first). Deterministic mapping by day so the demo is
+# stable across reloads.
+_DAILY_SUBJECTS: tuple[str, ...] = (
+    "Acme", "Meridian", "Henderson", "Patel",
+    "Lindqvist", "Patterson", "Chen", "Rivera",
+    "Singh", "Eriksson", "Saari", "Park",
+    "Nakamura", "Bergstrom",
+)
 
-    Each event is anchored at the day it should have happened on. If
-    ``relationship_day`` is too young for an event's target day, skip the
-    event — don't clamp it to "today" (that's what caused 7+ entries to pile
-    on Day 3 in the original implementation).
+# Days that get a hand-crafted milestone event — daily filler doesn't run here.
+_MILESTONE_DAYS: frozenset[int] = frozenset({7, 12, 18, 20, 22, 25, 34})
+
+
+def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
+    """Seed a continuous daily arc of activity so the Journal feels lived-in.
+
+    Real users with Gmail + Scout + LinkedIn connected won't have quiet days —
+    Scout sweeps daily, replies arrive, drafts are prepared. The demo
+    orchestrator now mimics this: every day from Day 2 through ``relationship_day``
+    gets one operational TrustEvent + one ledger Action with a target_subject
+    so the AI reflection has a concrete name to mention.
+
+    Five fixed milestone days carry the arc:
+      Day 12 — first setback (tone-too-warm rejection)
+      Day 18 — Drafter promotion on outreach
+      Day 20 — Scout recommendation (Observer → Drafter on leads)
+      Day 25 — Scout recommendation approved
+      Day 34 — Sender promotion on outreach
     """
+    import dataclasses as _dc
+
     now = datetime.now(timezone.utc)
 
-    # (target_day, factory) — only seed events whose target_day <= relationship_day.
-    seed_plan = [
-        (3, lambda: TrustEvent.operational(
-            type=EventType.ACTION_APPROVED,
-            actor_name="Zilo",
-            category="outreach",
-            confidence=0.78,
-        )),
-        (7, lambda: TrustEvent.operational(
-            type=EventType.ACTION_CLEAN_SEND,
-            actor_name="Zilo",
-            category="outreach",
-            confidence=0.82,
+    # ─── Milestones ────────────────────────────────────────────────────────
+    pending_recommendation_id: str | None = None
+
+    milestone_plan = [
+        (7, lambda: TrustEvent.user_promoted_rex(
+            category="leads",
+            from_rank=Rank.OBSERVER,
+            to_rank=Rank.DRAFTER,
+            reason="Scout first activated",
         )),
         (12, lambda: TrustEvent.operational(
             type=EventType.ACTION_REJECTED,
             actor_name="Zilo",
             category="replies",
             reason="Tone too warm",
+        )),
+        (12, lambda: TrustEvent.user_promoted_rex(
+            category="replies",
+            from_rank=Rank.OBSERVER,
+            to_rank=Rank.DRAFTER,
+            reason="connected social accounts",
+        )),
+        (18, lambda: TrustEvent.user_promoted_rex(
+            category="outreach",
+            from_rank=Rank.OBSERVER,
+            to_rank=Rank.DRAFTER,
+        )),
+        (18, lambda: TrustEvent.user_promoted_rex(
+            category="invoices",
+            from_rank=Rank.OBSERVER,
+            to_rank=Rank.DRAFTER,
+            reason="connected Stripe",
         )),
         (20, lambda: TrustEvent.rex_recommended_subagent_promotion(
             subagent="Scout",
@@ -112,20 +149,18 @@ def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
             reason="14 leads found, 11 acted on",
             confidence=0.91,
         )),
-        # Day 18 — first promotion (Drafter on outreach). Min 14 days per spec
-        # rule: "Promotions happen after real approval history — minimum 14 days".
-        (18, lambda: TrustEvent.user_promoted_rex(
-            category="outreach",
+        (22, lambda: TrustEvent.user_promoted_rex(
+            category="broadcast",
             from_rank=Rank.OBSERVER,
             to_rank=Rank.DRAFTER,
+            reason="connected email marketing",
         )),
-        (35, lambda: TrustEvent.operational(
-            type=EventType.ACTION_CLEAN_SEND,
-            actor_name="Zilo",
-            category="outreach",
-            confidence=0.94,
+        (25, lambda: TrustEvent.user_promoted_rex(
+            category="leads",
+            from_rank=Rank.DRAFTER,
+            to_rank=Rank.SENDER,
+            reason="approved Scout recommendation",
         )),
-        # Day 34 — Sender promotion only after Drafter has had real history.
         (34, lambda: TrustEvent.user_promoted_rex(
             category="outreach",
             from_rank=Rank.DRAFTER,
@@ -134,8 +169,7 @@ def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
         )),
     ]
 
-    pending_recommendation_id: str | None = None
-    for target_day, factory in seed_plan:
+    for target_day, factory in milestone_plan:
         if target_day > relationship_day:
             continue
         ev = factory()
@@ -144,7 +178,6 @@ def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
         if ev.type is EventType.REX_RECOMMENDED_SUBAGENT_PROMOTION:
             pending_recommendation_id = ev.id
 
-    # Day 25 — recommendation approved (only if the recommendation itself was seeded).
     if pending_recommendation_id and 25 <= relationship_day:
         e_approved = TrustEvent.user_approved_recommendation(
             subagent="Scout",
@@ -155,6 +188,102 @@ def _seed_journal_events(orch: Orchestrator, *, relationship_day: int) -> None:
         )
         e_approved = dc_replace(e_approved, timestamp=now - timedelta(days=relationship_day - 25))
         orch.event_store.append(e_approved)
+
+    # ─── Daily arc ─────────────────────────────────────────────────────────
+    for d in range(2, relationship_day + 1):
+        if d in _MILESTONE_DAYS:
+            continue
+        _seed_one_day(orch, day=d, current_day=relationship_day, now=now)
+
+
+def _seed_one_day(
+    orch: Orchestrator,
+    *,
+    day: int,
+    current_day: int,
+    now: datetime,
+) -> None:
+    """Seed one day's worth of activity: 1 operational TrustEvent +
+    1 matching ledger Action carrying a target_subject."""
+    import dataclasses as _dc
+
+    subject = _DAILY_SUBJECTS[day % len(_DAILY_SUBJECTS)]
+
+    # Category rotates 2:1 between outreach and replies — reflects what a
+    # founder-facing CRM sees in practice: more outbound than inbound.
+    if day % 3 == 0:
+        category = "replies"
+        kind = ActionKind.REPLY
+        summary_verb = "reply ready"
+    else:
+        category = "outreach"
+        kind = ActionKind.OUTREACH
+        summary_verb = "follow-up drafted"
+
+    # Phase-shaped outcomes:
+    #   Pre-Day-18 (Observer): everything held for approval, no clean sends.
+    #   Day 18–33 (Drafter): mix of clean sends + held approvals.
+    #   Day 34+ (Sender): mostly clean sends.
+    if day < 18:
+        rank = Rank.OBSERVER
+        event_type = EventType.ACTION_APPROVED
+        clean_send = False
+    elif day < 34:
+        rank = Rank.DRAFTER
+        if day % 5 == 0:
+            event_type = EventType.ACTION_APPROVED
+            clean_send = False
+        else:
+            event_type = EventType.ACTION_CLEAN_SEND
+            clean_send = True
+    else:
+        rank = Rank.SENDER
+        if day % 7 == 0:
+            event_type = EventType.ACTION_APPROVED
+            clean_send = False
+        else:
+            event_type = EventType.ACTION_CLEAN_SEND
+            clean_send = True
+
+    timestamp = now - timedelta(days=current_day - day)
+
+    # Trust event
+    ev = TrustEvent.operational(
+        type=event_type,
+        actor_name="Zilo",
+        category=category,
+        confidence=0.82,
+    )
+    ev = dc_replace(ev, timestamp=timestamp)
+    orch.event_store.append(ev)
+
+    # Ledger action with target_subject — this is what lets the AI write
+    # "the Acme follow-up" instead of "one draft."
+    action = Action.propose(
+        actor_name="Zilo",
+        rank_at_time=rank,
+        category=category,
+        kind=kind,
+        summary=f"{subject} — {summary_verb}",
+        reasoning="Daily activity.",
+        confidence=0.82,
+        target_subject=subject,
+    )
+    action = _dc.replace(action, proposed_at=timestamp)
+    orch.ledger.record_proposal(action)
+    orch.ledger.transition(
+        action_id=action.id,
+        to_state=ActionState.APPROVED,
+        actor_name="Zilo",
+        reason="Daily seed.",
+    )
+    if clean_send:
+        orch.ledger.transition(
+            action_id=action.id,
+            to_state=ActionState.SENT,
+            actor_name="Zilo",
+            outcome=Outcome(external_ref="demo-daily"),
+        )
 
 
 def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
@@ -167,16 +296,88 @@ def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
     _seed_journal_events(orch, relationship_day=relationship_day)
     orch.engine = RankEngine.from_events(orch.event_store)
 
+def seed_notebook_history(orch: Orchestrator) -> tuple[Any, Any]:
+    # 43 Contacts & 6 Patterns (Ingested from 6-month historical sync simulation)
     meridian_mem = orch.notebook.add(
         bucket=Bucket.PEOPLE,
-        subject="Meridian",
-        text="Meridian responds to confidence, not warmth. Last deal closed in 4 days when you led with numbers.",
+        subject="Kaisa Lindqvist",
+        text="Kaisa Lindqvist (Meridian) responds to confidence, not warmth. Last deal closed in 4 days when you led with numbers.",
     )
+    
+    # James Henderson
     henderson_mem = orch.notebook.add(
         bucket=Bucket.PEOPLE,
-        subject="Henderson",
-        text="Henderson asked about pricing twice before. ROI framing worked — they booked a call within 48 hours.",
+        subject="James Henderson",
+        text="8 conversations since January 2025. Says 'let me think about it' in 6 of 8 threads. Every time — the deal stalled after that phrase. Means cost concern. Never time concern. Proposals that led with ROI closed. Proposals that led with features stalled. Has not heard from you in 3 weeks. Zilo flagged this as a warm opportunity.",
     )
+
+    # Amina Hassan
+    orch.notebook.add(
+        bucket=Bucket.PEOPLE,
+        subject="Amina Hassan",
+        text="Been in your inbox since March 2025. 12 conversations total. Responds within 2 hours on weekday mornings. Goes quiet on Fridays — every time. Last 3 deals with her closed after you sent short, direct proposals. Warm approaches took 3x longer to close. Last contact: 6 days ago. Thread went quiet after pricing came up. Zilo has a follow-up ready when you are.",
+    )
+
+    # David Ochieng
+    orch.notebook.add(
+        bucket=Bucket.PEOPLE,
+        subject="David Ochieng",
+        text="Referred by Amina Hassan in February. Was never formally thanked for the referral. 3 conversations. All went well. Last order was 2 months ago. No contact since. Zilo flagged as at risk of going cold. Re-engagement draft ready.",
+    )
+
+    # 39 other generic contacts (to pad total contacts to 43)
+    for i in range(1, 40):
+        orch.notebook.add(
+            bucket=Bucket.PEOPLE,
+            subject=f"Client Contact #{i}",
+            text=f"Customer since 2025. Standard B2B correspondence. Checked in occasionally. Zilo has mapped email preferences for contact #{i}.",
+        )
+
+    # 6 Patterns
+    orch.notebook.add(
+        bucket=Bucket.PATTERNS,
+        subject="Reply timing",
+        text="Your reply rate drops significantly on Tuesdays across all channels. Best window: 7–9am and after 6pm. Worst window: Tuesday midday. Detected across 24 weeks of data. Confidence: High.",
+    )
+    orch.notebook.add(
+        bucket=Bucket.PATTERNS,
+        subject="Referral pattern",
+        text="4 of your last 6 deals came from referrals that were never formally thanked. The referral chain went cold after each unthanked introduction. Zilo now flags every referral within 24 hours automatically. Confidence: High — 6 instances.",
+    )
+    orch.notebook.add(
+        bucket=Bucket.PATTERNS,
+        subject="Deal close pattern",
+        text="Deals close faster when you follow up within 48 hours of a positive signal. Average close time with fast follow-up: 6 days. Average close time without: 23 days. Zilo now flags positive signals immediately for follow-up. Confidence: High — 11 deals analysed.",
+    )
+    orch.notebook.add(
+        bucket=Bucket.PATTERNS,
+        subject="Cold deal pattern",
+        text="Deals that go quiet for more than 7 days rarely close without a direct — not warm — follow-up. Warm follow-ups after 7 days: closed 1 of 8. Direct follow-ups after 7 days: closed 5 of 7. Zilo uses direct approach for any deal past day 7 of silence. Confidence: High — 15 deals.",
+    )
+    orch.notebook.add(
+        bucket=Bucket.PATTERNS,
+        subject="Pricing sensitivity",
+        text="Pricing objections are 2.5x more likely when proposals do not highlight credit terms in initial drafts. Confidence: Medium.",
+    )
+    orch.notebook.add(
+        bucket=Bucket.PATTERNS,
+        subject="Weekend response pattern",
+        text="Outbox emails sent on Sundays receive a 45% higher open rate compared to Saturday sends. Confidence: High.",
+    )
+    return meridian_mem, henderson_mem
+
+
+def build_demo_orchestrator(*, relationship_day: int = 47) -> Orchestrator:
+    """Orchestrator seeded to match the Rex morning-briefing mock."""
+    orch = Orchestrator()
+    orch.register_executor(_DemoExecutor())
+    # Seed events first — promotions in the seed plan will move Zilo through
+    # the rank ladder in the correct order (Observer → Drafter at day 18,
+    # Drafter → Sender at day 34). No unconditional Day-0 promotions.
+    _seed_journal_events(orch, relationship_day=relationship_day)
+    orch.engine = RankEngine.from_events(orch.event_store)
+
+    meridian_mem, henderson_mem = seed_notebook_history(orch)
 
     meridian = Action.propose(
         actor_name="Zilo",
@@ -408,3 +609,259 @@ def serialize_home(orch: Orchestrator, *, relationship_day: int | None = None) -
         "pending_promotions": [asdict(p) for p in home.pending_promotions],
         "rex_standings": [asdict(s) for s in home.rex_standings],
     }
+
+
+def seed_companies_history(orch: Orchestrator) -> None:
+    # Build mapping of name -> entry ID
+    from rex.memory import Bucket
+    people_map = {}
+    for entry in orch.notebook.all():
+        if entry.bucket == Bucket.PEOPLE:
+            people_map[entry.subject] = entry.id
+            
+    # Lookup specific IDs or default to None
+    amina_id = people_map.get("Amina Hassan")
+    henderson_id = people_map.get("James Henderson")
+    ochieng_id = people_map.get("David Ochieng")
+    
+    companies = [
+        {
+            "id": "comp-patel",
+            "name": "Patel Enterprises",
+            "health": "Warm",
+            "description": "Zilo is watching this account. Follow-up drafted and ready.",
+            "conversations_count": 14,
+            "last_active": "2 days ago — Amina's thread",
+            "current_deal": "Proposal sent — awaiting response",
+            "deal_value": "KES 450,000",
+            # See full account details:
+            "first_contact": "March 2025",
+            "total_deals": 3,
+            "total_revenue": "KES 890,000",
+            "contacts": [
+                {
+                    "name": "Amina Hassan",
+                    "role": "Primary contact. Decision influencer",
+                    "last_message": "2 days ago",
+                    "profile_id": amina_id
+                },
+                {
+                    "name": "John Patel",
+                    "role": "Decision maker. Rarely emails directly",
+                    "last_message": "3 weeks ago",
+                    "profile_id": None
+                },
+                {
+                    "name": "Sarah Kimani",
+                    "role": "Procurement. Sends PO and payment queries",
+                    "last_message": "1 week ago",
+                    "profile_id": None
+                }
+            ],
+            "active_threads": [
+                {
+                    "subject": "Proposal for Q3 catering contract",
+                    "started_at": "May 2026",
+                    "status": "Awaiting response — Day 6",
+                    "action_ready": True
+                },
+                {
+                    "subject": "Annual dinner planning",
+                    "started_at": "April 2026",
+                    "status": "Closed — won",
+                    "action_ready": False
+                }
+            ],
+            "patterns": [
+                {
+                    "pattern": "Patel Enterprises always negotiates on the second proposal — not the first. Build negotiation room into first proposal.",
+                    "confidence": "High"
+                },
+                {
+                    "pattern": "Decisions happen on Thursdays. Follow-ups sent Wednesday morning get responses same week.",
+                    "confidence": "Medium"
+                },
+                {
+                    "pattern": "Sarah Kimani processes payments within 48 hours of invoice. Most reliable payer in your book.",
+                    "confidence": "High"
+                }
+            ],
+            "deal_history": [
+                {
+                    "title": "2025 Annual Dinner",
+                    "value": "KES 350,000",
+                    "status": "Won"
+                },
+                {
+                    "title": "2025 Board Meeting",
+                    "value": "KES 120,000",
+                    "status": "Won"
+                },
+                {
+                    "title": "2026 Q3 Contract",
+                    "value": "KES 450,000",
+                    "status": "In progress"
+                }
+            ]
+        },
+        {
+            "id": "comp-henderson",
+            "name": "Henderson & Co",
+            "health": "At risk",
+            "description": "Zilo flagged this as at risk. Value-based follow-up ready.",
+            "conversations_count": 8,
+            "last_active": "3 weeks ago",
+            "current_deal": "Gone quiet after pricing",
+            "deal_value": "KES 280,000",
+            # See full account details:
+            "first_contact": "January 2025",
+            "total_deals": 1,
+            "total_revenue": "KES 280,000",
+            "contacts": [
+                {
+                    "name": "James Henderson",
+                    "role": "Owner",
+                    "last_message": "3 weeks ago",
+                    "profile_id": henderson_id
+                }
+            ],
+            "active_threads": [
+                {
+                    "subject": "Discussion on Q1 Engagement",
+                    "started_at": "May 2026",
+                    "status": "Gone quiet after pricing — Day 21",
+                    "action_ready": True
+                }
+            ],
+            "patterns": [
+                {
+                    "pattern": "James Henderson says 'let me think about it' in 6 of 8 threads. Every time — the deal stalled after that phrase. Means cost concern.",
+                    "confidence": "High"
+                },
+                {
+                    "pattern": "Proposals that lead with ROI close. Proposals that lead with features stall.",
+                    "confidence": "High"
+                }
+            ],
+            "deal_history": [
+                {
+                    "title": "2026 Q1 Consulting",
+                    "value": "KES 280,000",
+                    "status": "In progress"
+                }
+            ]
+        },
+        {
+            "id": "comp-kcb",
+            "name": "KCB Group",
+            "health": "Cold",
+            "description": "Zilo flagged as cold. Re-engagement draft ready.",
+            "conversations_count": 6,
+            "last_active": "2 months ago",
+            "current_deal": "Past client — no recent activity",
+            "deal_value": "KES 120,000",
+            # See full account details:
+            "first_contact": "February 2025",
+            "total_deals": 2,
+            "total_revenue": "KES 240,000",
+            "contacts": [
+                {
+                    "name": "David Ochieng",
+                    "role": "Events manager",
+                    "last_message": "2 months ago",
+                    "profile_id": ochieng_id
+                },
+                {
+                    "name": "Patricia Waweru",
+                    "role": "Finance",
+                    "last_message": "2 months ago",
+                    "profile_id": None
+                }
+            ],
+            "active_threads": [
+                {
+                    "subject": "Cold Account Re-engagement",
+                    "started_at": "March 2026",
+                    "status": "Past client — no recent activity",
+                    "action_ready": True
+                }
+            ],
+            "patterns": [
+                {
+                    "pattern": "KCB Group introduction came from referrals that were never formally thanked. The referral chain went cold after introduction.",
+                    "confidence": "High"
+                }
+            ],
+            "deal_history": [
+                {
+                    "title": "2025 Event Management",
+                    "value": "KES 120,000",
+                    "status": "Won"
+                },
+                {
+                    "title": "2025 Q4 Services",
+                    "value": "KES 120,000",
+                    "status": "Won"
+                }
+            ]
+        }
+    ]
+
+    # Seed 9 generic companies to reach exactly 12 total companies
+    generic_names = [
+        "Equity Bank",
+        "Safaricom",
+        "Nation Media Group",
+        "KenGen",
+        "Centum Investment",
+        "EABL",
+        "Bamburi Cement",
+        "Kakuzi PLC",
+        "Kenyatta National Hospital"
+    ]
+    for i, name in enumerate(generic_names, start=4):
+        companies.append({
+            "id": f"comp-gen-{i}",
+            "name": name,
+            "health": "Cooling" if i % 2 == 0 else "Cold",
+            "description": f"Standard sync. Zilo monitoring domain @{name.lower().replace(' ', '')}.com",
+            "conversations_count": i * 2,
+            "last_active": f"{i} days ago",
+            "current_deal": "Monitoring",
+            "deal_value": f"KES {i*35},000",
+            "first_contact": "June 2025",
+            "total_deals": 1,
+            "total_revenue": f"KES {i*70},000",
+            "contacts": [
+                {
+                    "name": f"Manager Contact {i}",
+                    "role": "Operations",
+                    "last_message": f"{i} days ago",
+                    "profile_id": None
+                }
+            ],
+            "active_threads": [
+                {
+                    "subject": "Routine Inquiries",
+                    "started_at": "January 2026",
+                    "status": "Monitoring",
+                    "action_ready": False
+                }
+            ],
+            "patterns": [
+                {
+                    "pattern": f"Responds best in late afternoons. Average reply time: {i} hours.",
+                    "confidence": "Medium"
+                }
+            ],
+            "deal_history": [
+                {
+                    "title": "Pre-existing contract",
+                    "value": f"KES {i*35},000",
+                    "status": "Won"
+                }
+            ]
+        })
+    
+    orch._companies = companies
+

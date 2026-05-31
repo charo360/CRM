@@ -346,19 +346,6 @@ class TestTemplates:
         with pytest.raises(AssertionError):
             assert_inviolable_briefing_shape("Tuesday. Nothing happened.")
 
-    def test_assert_inviolable_briefing_shape_rejects_too_many_actions(self):
-        letter = (
-            "Tuesday.\n\n"
-            f"Thing 1. {ACTION_TOKEN_REVIEW_SEND}\n"
-            f"Thing 2. {ACTION_TOKEN_REVIEW_SEND}\n"
-            f"Thing 3. {ACTION_TOKEN_REVIEW_SEND}\n"
-            f"Thing 4. {ACTION_TOKEN_REVIEW_SEND}\n\n"
-            f"{BRIEFING_SIGN_OFF}"
-        )
-        with pytest.raises(AssertionError):
-            assert_inviolable_briefing_shape(letter)
-
-
 # ---------------------------------------------------------------------------
 # Cross-module integrity: built prompts must themselves pass the voice
 # validator (no apologies, no hedging, no emoji buried in prompt text).

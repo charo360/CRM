@@ -71,6 +71,10 @@ const ZILO_NAV = [
   { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
   { href: "/dashboard/rex/journal", label: "Journal", icon: BookOpen },
   { href: "/dashboard/rex/notebook", label: "Notebook", icon: NotebookPen },
+] as const;
+
+/** Rarely-used Zilo utility links — shown near logout, not in main nav */
+const ZILO_UTILITY_NAV = [
   { href: "/dashboard/rex/ledger", label: "Action Log", icon: ListChecks },
   { href: "/dashboard/rex/team", label: "Zilo's team", icon: Users },
 ] as const;
@@ -290,6 +294,25 @@ export default function Sidebar() {
           <span className="flex-1">Ask Zilo anything…</span>
           <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">⌘K</kbd>
         </button>
+
+        {/* Utility links — Action Log & Team, rarely used */}
+        <div className="border-t border-white/10 pt-2 space-y-0.5">
+          {ZILO_UTILITY_NAV.map(({ href, label, icon: Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                linkActive(href)
+                  ? "bg-brand/20 text-brand-light"
+                  : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
+              )}
+            >
+              <Icon size={13} />
+              {label}
+            </Link>
+          ))}
+        </div>
 
         {/* Logout */}
         <button

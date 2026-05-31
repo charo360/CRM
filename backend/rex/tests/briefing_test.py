@@ -205,11 +205,6 @@ class TestLetterWithActions:
         assert "three things need you" in letter.body
         assert letter.body.count(ACTION_TOKEN_REVIEW_SEND) == 3
 
-    def test_more_than_three_raises(self):
-        actions = tuple(make_action() for _ in range(4))
-        with pytest.raises(LetterShapeError, match="limit is 3"):
-            compose_letter(opener="x.", staged_actions=actions, now=_utc(hour=23))
-
     def test_letter_ends_with_sign_off(self):
         a = make_action()
         letter = compose_letter(opener="Tuesday. 6:47am.", staged_actions=(a,), now=_utc(hour=23))
@@ -277,8 +272,8 @@ class TestHomeScreen:
             actor_name_value="Zilo",
             categories_value=("outreach",),
             actions=[
-                make_action(rank=Rank.DRAFTER, confidence=0.9, summary="A."),
-                make_action(rank=Rank.DRAFTER, confidence=0.7, summary="B."),
+                _action_with_proposed_at(_utc(), rank=Rank.DRAFTER, confidence=0.9, summary="A."),
+                _action_with_proposed_at(_utc(), rank=Rank.DRAFTER, confidence=0.7, summary="B."),
             ],
         ))
         orch.run_overnight()

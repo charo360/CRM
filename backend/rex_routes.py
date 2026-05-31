@@ -227,6 +227,15 @@ class RankChangeRequest(BaseModel):
     to_rank: Optional[str] = None  # display name like "Sender"; defaults to one step up/down
 
 
+class EditNotebookEntryRequest(BaseModel):
+    text: str
+
+
+class EditCompanyRequest(BaseModel):
+    description: str
+
+
+
 # ── Router factory ────────────────────────────────────────────────────────
 
 def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
@@ -489,6 +498,106 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     async def rex_notebook(user=Depends(get_current_user)):
         orch = await _get_orchestrator(user, db, refresh=False)
         return serialize_notebook(orch)
+
+    @router.post("/notebook/{entry_id}")
+    async def edit_notebook_entry(
+        entry_id: str,
+        body: EditNotebookEntryRequest,
+        user=Depends(get_current_user),
+    ):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        try:
+            orch.notebook.update_text(entry_id, body.text, by_user=True)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Notebook entry not found")
+        await _persist(user, db, orch)
+        return {"ok": True, "notebook": serialize_notebook(orch)}
+
+    @router.delete("/notebook/{entry_id}")
+    async def delete_notebook_entry(
+        entry_id: str,
+        user=Depends(get_current_user),
+    ):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        deleted = orch.notebook.delete(entry_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Notebook entry not found")
+        await _persist(user, db, orch)
+        return {"ok": True, "notebook": serialize_notebook(orch)}
+
+    @router.post("/companies/{company_id}")
+    async def edit_company(
+        company_id: str,
+        body: EditCompanyRequest,
+        user=Depends(get_current_user),
+    ):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        companies = getattr(orch, "_companies", [])
+        found = False
+        for c in companies:
+            if c.get("id") == company_id:
+                c["description"] = body.description
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail="Company not found")
+        await _persist(user, db, orch)
+        return {"ok": True, "notebook": serialize_notebook(orch)}
+
+    @router.delete("/companies/{company_id}")
+    async def delete_company(
+        company_id: str,
+        user=Depends(get_current_user),
+    ):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        companies = getattr(orch, "_companies", [])
+        filtered = [c for c in companies if c.get("id") != company_id]
+        if len(filtered) == len(companies):
+            raise HTTPException(status_code=404, detail="Company not found")
+        orch._companies = filtered
+        await _persist(user, db, orch)
+        return {"ok": True, "notebook": serialize_notebook(orch)}
+
+
+    @router.post("/notebook/clear")
+    async def clear_notebook(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        for entry in list(orch.notebook.all()):
+            orch.notebook.delete(entry.id)
+        await _persist(user, db, orch)
+        return {"ok": True, "notebook": serialize_notebook(orch)}
+
+    @router.post("/notebook/refresh")
+    async def refresh_notebook(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        for entry in list(orch.notebook.all()):
+            orch.notebook.delete(entry.id)
+        if hasattr(orch, "_companies"):
+            orch._companies = []
+        from rex.persistence.extractor import extract_and_populate_notebook
+        uid = _uid(user)
+        bid = _business_id(user)
+        try:
+            await extract_and_populate_notebook(db, uid, orch)
+        except Exception as e:
+            logger.exception("[zilo-session] failed during manual refresh: %s", e)
+        await _persist(user, db, orch)
+        return {"ok": True, "notebook": serialize_notebook(orch)}
+
+    @router.get("/notebook/export")
+    async def export_notebook(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        data = serialize_notebook(orch)
+        import json
+        from fastapi import Response
+        content = json.dumps(data, indent=2)
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": "attachment; filename=zilo_notebook_export.json"
+            }
+        )
 
     @router.get("/ledger")
     async def rex_ledger(user=Depends(get_current_user)):

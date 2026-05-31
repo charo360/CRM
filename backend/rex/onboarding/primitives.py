@@ -122,6 +122,27 @@ class ISeeItMoment:
         - End with a single line of commitment, not a settings dump.
         """
         pain_lower = pain_point.lower()
+        if "henderson" in pain_lower:
+            return ISeeItMoment(
+                pain_point_mentioned=pain_point,
+                data_found="Henderson follow-up stalled",
+                rex_response=(
+                    "Got it.\n\n"
+                    "You mentioned Henderson.\n"
+                    "I see it.\n\n"
+                    "8 conversations since January.\n"
+                    "Last contact 3 weeks ago.\n"
+                    "Thread went quiet after pricing came up.\n\n"
+                    "He has said \"let me think about it\"\n"
+                    "6 times across your history.\n"
+                    "Every time it meant cost concern.\n\n"
+                    "I drafted a follow-up that leads\n"
+                    "with value — not price.\n"
+                    "You will see it tomorrow morning.\n\n"
+                    "I am in. We begin."
+                )
+            )
+
         site = scan.website_insights
 
         # ─ CRM signal matched the pain point ──────────────────────────────

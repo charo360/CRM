@@ -82,7 +82,7 @@ class ZiloSessionStore:
         # Journal engagement state
         orch._journal_last_visit_day = doc.get("journal_last_visit_day")  # type: ignore[attr-defined]
         orch._journal_streak = int(doc.get("journal_streak") or 0)  # type: ignore[attr-defined]
-        orch._journal_shown_milestones = list(doc.get("journal_shown_milestones") or [])  # type: ignore[attr-defined]
+        orch._companies = doc.get("companies") or []
         return orch
 
     async def load(self, user_id: str, *, business_id: str) -> Orchestrator:
@@ -94,6 +94,31 @@ class ZiloSessionStore:
         if doc:
             orch = self._orch_from_doc(doc)
             self._cache[user_id] = orch
+            
+            # ONLY seed mock data if we are in demo mode (live_mode is False)
+            if not getattr(orch, "_live_mode", True):
+                notebook_seeded = False
+                if len(orch.notebook.all()) == 0:
+                    from rex.demo_seed import seed_notebook_history
+                    seed_notebook_history(orch)
+                    notebook_seeded = True
+                    
+                if not getattr(orch, "_companies", None):
+                    from rex.demo_seed import seed_companies_history
+                    seed_companies_history(orch)
+                    await self.save(user_id, business_id=business_id, orch=orch)
+                elif notebook_seeded:
+                    await self.save(user_id, business_id=business_id, orch=orch)
+            else:
+                # For live mode, dynamically extract and populate notebook if empty
+                if len(orch.notebook.all()) == 0 or not getattr(orch, "_companies", None):
+                    try:
+                        from rex.persistence.extractor import extract_and_populate_notebook
+                        await extract_and_populate_notebook(self._db, user_id, orch)
+                        await self.save(user_id, business_id=business_id, orch=orch)
+                    except Exception as e:
+                        logger.exception("[zilo-session] failed during dynamic extraction: %s", e)
+                
             return orch
 
         orch = Orchestrator()
@@ -105,6 +130,14 @@ class ZiloSessionStore:
         orch._fb_group_interval = "6h"
         orch._metrics = {}  # type: ignore[attr-defined]
         orch._live_mode = True  # type: ignore[attr-defined]
+        
+        # Try to extract and populate notebook from connected accounts on creation
+        try:
+            from rex.persistence.extractor import extract_and_populate_notebook
+            await extract_and_populate_notebook(self._db, user_id, orch)
+        except Exception as e:
+            logger.exception("[zilo-session] failed during fresh dynamic extraction: %s", e)
+
         await self.save(user_id, business_id=business_id, orch=orch)
         return orch
 
@@ -112,6 +145,11 @@ class ZiloSessionStore:
         orch = build_demo_orchestrator()
         orch._live_mode = False  # type: ignore[attr-defined]
         orch._metrics = {}  # type: ignore[attr-defined]
+        
+        # Seed companies for demo mode
+        from rex.demo_seed import seed_companies_history
+        seed_companies_history(orch)
+        
         self._cache[user_id] = orch
         await self._save_doc(
             user_id,
@@ -223,6 +261,7 @@ class ZiloSessionStore:
             "actions": [codec.action_to_dict(a) for a in orch.ledger.all_actions()],
             "changes": [codec.change_to_dict(c) for c in orch.ledger._store.all_changes()],  # noqa: SLF001
             "notebook": [codec.notebook_entry_to_dict(e) for e in orch.notebook.all()],
+            "companies": getattr(orch, "_companies", []),
             "swept_ids": list(orch._swept_ids),
             "disabled_categories": list(getattr(orch, "_disabled_categories", set())),
             "lead_scout_interval": getattr(orch, "_lead_scout_interval", "24h"),

@@ -14,8 +14,14 @@ import {
   TrendingUp,
   TrendingDown,
   Award,
+  ChevronDown,
+  ChevronUp,
+  Moon,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/* ─── Types ─────────────────────────────────────────────────────────────── */
 
 type Deputy = {
   id: string;
@@ -46,25 +52,6 @@ type StandingsPayload = {
   max_rank_value: number;
 };
 
-const TIER_LABEL: Record<number, string> = {
-  1: "Core",
-  2: "Operations",
-  3: "Growth",
-  4: "Acquisition",
-  5: "Customer",
-  6: "Pipeline",
-  7: "Commerce",
-  8: "Team ops",
-};
-
-const RANK_TONE: Record<string, string> = {
-  Observer: "bg-slate-100 text-slate-700 border-slate-200",
-  Drafter: "bg-blue-50 text-blue-700 border-blue-200",
-  Sender: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  Operator: "bg-violet-50 text-violet-700 border-violet-200",
-  "Chief of Staff": "bg-amber-50 text-amber-800 border-amber-200",
-};
-
 type TeamPayload = {
   chief: {
     name: string;
@@ -80,6 +67,21 @@ type TeamPayload = {
   chat_total: number;
 };
 
+/* ─── Helpers ────────────────────────────────────────────────────────────── */
+
+const RANK_TONE: Record<string, string> = {
+  Observer:       "bg-slate-100 text-slate-600 border-slate-200",
+  Drafter:        "bg-blue-50 text-blue-700 border-blue-200",
+  Sender:         "bg-emerald-50 text-emerald-700 border-emerald-200",
+  Operator:       "bg-violet-50 text-violet-700 border-violet-200",
+  "Chief of Staff":"bg-amber-50 text-amber-800 border-amber-200",
+};
+
+const TIER_LABEL: Record<number, string> = {
+  1: "Core", 2: "Operations", 3: "Growth", 4: "Acquisition",
+  5: "Customer", 6: "Pipeline", 7: "Commerce", 8: "Team ops",
+};
+
 function chatUrl(agentId: string, prompt?: string) {
   const q = new URLSearchParams();
   if (prompt) q.set("template_message", prompt);
@@ -87,7 +89,21 @@ function chatUrl(agentId: string, prompt?: string) {
   return `/dashboard/assistant${s ? `?${s}` : ""}`;
 }
 
-function AgentCard({
+/* Deduplicate specialists — keep one entry per unique label, merge dual roles */
+function deduplicateAgents(agents: ChatAgent[]): ChatAgent[] {
+  const seen = new Map<string, ChatAgent>();
+  for (const a of agents) {
+    const key = a.label.toLowerCase().replace(/\s+/g, "-");
+    if (!seen.has(key)) {
+      seen.set(key, a);
+    }
+  }
+  return Array.from(seen.values());
+}
+
+/* ─── Specialist Card ────────────────────────────────────────────────────── */
+
+function SpecialistCard({
   id,
   label,
   description,
@@ -95,6 +111,7 @@ function AgentCard({
   onProbation,
   chatAgentId,
   href,
+  compact = false,
 }: {
   id: string;
   label: string;
@@ -103,6 +120,7 @@ function AgentCard({
   onProbation?: boolean;
   chatAgentId?: string | null;
   href?: string;
+  compact?: boolean;
 }) {
   const persona = chatAgentId ? getAgentPersona(chatAgentId) : null;
   const openChat = chatAgentId
@@ -110,75 +128,175 @@ function AgentCard({
     : href || null;
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-brand/30">
-      <div className="flex items-start justify-between gap-2">
+    <div
+      className={cn(
+        "group rounded-xl border border-slate-200 bg-white transition-all hover:border-brand/40 hover:shadow-sm",
+        compact ? "p-3" : "p-4"
+      )}
+    >
+      <div className="flex items-start gap-3">
+        {persona && (
+          <div
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
+              persona.cls
+            )}
+          >
+            {persona.firstName[0]}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-semibold text-slate-900">{label}</span>
             {persona && (
               <span
                 className={cn(
-                  "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                  "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
                   persona.cls
                 )}
               >
-                {persona.firstName} · {personaBadgeLabel(chatAgentId!)}
+                {persona.firstName}
+              </span>
+            )}
+            {rank && rank !== "—" && (
+              <span
+                className={cn(
+                  "inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                  RANK_TONE[rank] ?? "bg-slate-100 text-slate-600 border-slate-200"
+                )}
+              >
+                {rank}
+                {onProbation ? " · probation" : ""}
               </span>
             )}
           </div>
-          <p className="mt-2 text-xs leading-relaxed text-slate-600 line-clamp-3">{description}</p>
-          {rank && rank !== "—" && (
-            <p className="mt-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">
-              Rank: {rank}
-              {onProbation ? " · probation" : ""}
-            </p>
+          <p className={cn("mt-1.5 text-xs leading-relaxed text-slate-500", compact ? "line-clamp-2" : "line-clamp-3")}>
+            {description}
+          </p>
+          {openChat && (
+            <Link
+              href={openChat}
+              className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-brand-dark hover:text-brand"
+            >
+              <MessageSquare className="h-3 w-3" />
+              Open in Zilo Chat
+            </Link>
+          )}
+          {!openChat && href && (
+            <Link
+              href={href}
+              className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-brand-dark hover:text-brand"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Open
+            </Link>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ─── Overnight Operations Card ─────────────────────────────────────────── */
+
+function OvernightCard({
+  label,
+  description,
+  chatAgentId,
+  href,
+}: {
+  label: string;
+  description: string;
+  chatAgentId?: string | null;
+  href?: string;
+}) {
+  const openChat = chatAgentId
+    ? chatUrl(chatAgentId, `I want to work with ${label}.`)
+    : href || null;
+
+  return (
+    <div className="rounded-xl border border-[#1a3a28] bg-[#0d2818] p-4 transition hover:border-brand/40">
+      <div className="flex items-center gap-2">
+        <span className="h-2 w-2 rounded-full bg-brand animate-pulse" />
+        <span className="text-sm font-semibold text-white">{label}</span>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-slate-400">{description}</p>
       {openChat && (
         <Link
           href={openChat}
-          className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-brand-dark hover:text-brand"
+          className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-brand-light hover:text-brand"
         >
-          <MessageSquare className="h-3.5 w-3.5" />
-          Open in Zilo Chat
-        </Link>
-      )}
-      {!openChat && href && (
-        <Link
-          href={href}
-          className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-brand-dark hover:text-brand"
-        >
-          <ExternalLink className="h-3.5 w-3.5" />
-          Open
+          <ExternalLink className="h-3 w-3" />
+          View in Action Mode
         </Link>
       )}
     </div>
   );
 }
 
-function Section({
+/* ─── Collapsible Group ─────────────────────────────────────────────────── */
+
+function CollapsibleGroup({
   title,
   subtitle,
   icon: Icon,
+  count,
+  defaultOpen = false,
   children,
 }: {
   title: string;
-  subtitle?: string;
+  subtitle: string;
   icon: React.ElementType;
+  count: number;
+  defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
+
   return (
-    <section className="mt-10">
-      <div className="flex items-center gap-2">
-        <Icon className="h-4 w-4 text-brand-dark" />
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-800">{title}</h2>
-      </div>
-      {subtitle && <p className="mt-1 text-xs text-slate-500">{subtitle}</p>}
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
-    </section>
+    <div className="mt-6 rounded-2xl border border-slate-200 bg-white overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-5 py-4 text-left transition hover:bg-slate-50"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100">
+            <Icon className="h-4 w-4 text-slate-600" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                {count}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-slate-500">{subtitle}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {!open && (
+            <span className="hidden text-[11px] text-slate-400 sm:block">
+              Click to expand
+            </span>
+          )}
+          {open ? (
+            <ChevronUp className="h-4 w-4 text-slate-400" />
+          ) : (
+            <ChevronDown className="h-4 w-4 text-slate-400" />
+          )}
+        </div>
+      </button>
+      {open && (
+        <div className="border-t border-slate-100 px-5 pb-5 pt-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
+        </div>
+      )}
+    </div>
   );
 }
+
+/* ─── Trust Ladder ───────────────────────────────────────────────────────── */
 
 function TrustLadder({
   data,
@@ -202,7 +320,6 @@ function TrustLadder({
     return a.tier - b.tier;
   });
 
-  // By default show only categories Zilo has actually earned a rank on, plus Tier 1.
   const visible = showAll
     ? sorted
     : sorted.filter((s) => s.rank_value > 0 || s.tier === 1);
@@ -215,45 +332,51 @@ function TrustLadder({
   };
 
   return (
-    <section className="mt-10">
-      <div className="flex items-center gap-2">
-        <Award className="h-4 w-4 text-brand-dark" />
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-800">
-          Trust ladder
-        </h2>
-      </div>
-      <p className="mt-1 max-w-2xl text-xs text-slate-500">
-        Zilo earns a rank per category. Promote him when his work proves out; demote him when
-        the trust has to be re-earned. Each change is recorded in the Journal in his voice.
-      </p>
-
-      <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-500">
-        <span>Ladder:</span>
-        {data.ranks.map((r, i) => (
-          <span key={r} className="flex items-center gap-1.5">
-            <span
-              className={cn(
-                "inline-block rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-                RANK_TONE[r] ?? "bg-slate-100 text-slate-700 border-slate-200"
+    <div className="mt-6 rounded-2xl border border-slate-200 bg-white overflow-hidden">
+      <div className="border-b border-slate-100 px-5 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-50">
+            <Award className="h-4 w-4 text-amber-600" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900">Trust ladder</h2>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Zilo earns trust one lane at a time. Promote when the work proves out.
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          {data.ranks.map((r, i) => (
+            <span key={r} className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  "inline-block rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                  RANK_TONE[r] ?? "bg-slate-100 text-slate-600 border-slate-200"
+                )}
+              >
+                {r}
+              </span>
+              {i < data.ranks.length - 1 && (
+                <span className="text-slate-300 text-xs">›</span>
               )}
-            >
-              {r}
             </span>
-            {i < data.ranks.length - 1 && <span className="text-slate-300">›</span>}
-          </span>
-        ))}
+          ))}
+        </div>
       </div>
 
-      <ul className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
+      <ul className="divide-y divide-slate-100">
         {visible.map((s) => {
-          const tone = RANK_TONE[s.rank] ?? "bg-slate-100 text-slate-700 border-slate-200";
+          const tone = RANK_TONE[s.rank] ?? "bg-slate-100 text-slate-600 border-slate-200";
           const atTop = s.rank_value >= data.max_rank_value;
           const atBottom = s.rank_value <= 0;
           const isBusy = busyCategory === s.category;
           const isDemoting = demoteFor === s.category;
 
           return (
-            <li key={s.category} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <li
+              key={s.category}
+              className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"
+            >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <p className="text-sm font-medium text-slate-900">{s.display}</p>
@@ -261,7 +384,7 @@ function TrustLadder({
                     {TIER_LABEL[s.tier] ?? `Tier ${s.tier}`}
                   </span>
                 </div>
-                <div className="mt-1.5 flex items-center gap-2">
+                <div className="mt-1 flex items-center gap-2">
                   <span
                     className={cn(
                       "inline-block rounded-full border px-2 py-0.5 text-[10px] font-semibold",
@@ -299,10 +422,7 @@ function TrustLadder({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setDemoteFor(null);
-                        setDemoteReason("");
-                      }}
+                      onClick={() => { setDemoteFor(null); setDemoteReason(""); }}
                       className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
                     >
                       Cancel
@@ -314,10 +434,7 @@ function TrustLadder({
                   <button
                     type="button"
                     disabled={atBottom || isBusy}
-                    onClick={() => {
-                      setDemoteFor(s.category);
-                      setDemoteReason("");
-                    }}
+                    onClick={() => { setDemoteFor(s.category); setDemoteReason(""); }}
                     title={atBottom ? "Already Observer" : `Demote on ${s.display}`}
                     className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -327,10 +444,7 @@ function TrustLadder({
                   <button
                     type="button"
                     disabled={atTop || isBusy}
-                    onClick={async () => {
-                      await promote(s.category);
-                      onChange();
-                    }}
+                    onClick={async () => { await promote(s.category); onChange(); }}
                     title={atTop ? "Already Chief of Staff" : `Promote on ${s.display}`}
                     className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-brand-ink hover:bg-brand-light disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -344,27 +458,31 @@ function TrustLadder({
         })}
       </ul>
 
-      {sorted.length > visible.length && (
-        <button
-          type="button"
-          onClick={() => setShowAll(true)}
-          className="mt-3 text-xs font-medium text-brand-dark hover:underline"
-        >
-          Show all {sorted.length} categories →
-        </button>
-      )}
-      {showAll && (
-        <button
-          type="button"
-          onClick={() => setShowAll(false)}
-          className="mt-3 text-xs font-medium text-slate-500 hover:underline"
-        >
-          Hide unearned categories
-        </button>
-      )}
-    </section>
+      <div className="border-t border-slate-100 px-5 py-3">
+        {sorted.length > visible.length && !showAll && (
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            className="text-xs font-medium text-brand-dark hover:underline"
+          >
+            Show all {sorted.length} categories →
+          </button>
+        )}
+        {showAll && (
+          <button
+            type="button"
+            onClick={() => setShowAll(false)}
+            className="text-xs font-medium text-slate-500 hover:underline"
+          >
+            Hide unearned categories
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
+
+/* ─── Page ───────────────────────────────────────────────────────────────── */
 
 export default function ZiloTeamPage() {
   const [data, setData] = useState<TeamPayload | null>(null);
@@ -394,44 +512,34 @@ export default function ZiloTeamPage() {
   const refreshStandings = useCallback(async () => {
     try {
       setStandings(await api.get<StandingsPayload>("/rex/standings"));
-    } catch {
-      // keep previous standings
+    } catch { /* keep previous */ }
+  }, []);
+
+  const promote = useCallback(async (category: string, reason?: string) => {
+    setBusyCategory(category);
+    setRankError(null);
+    try {
+      await api.post("/rex/promote", { category, reason });
+    } catch (e) {
+      setRankError(e instanceof Error ? e.message : "Promotion failed");
+    } finally {
+      setBusyCategory(null);
     }
   }, []);
 
-  const promote = useCallback(
-    async (category: string, reason?: string) => {
-      setBusyCategory(category);
-      setRankError(null);
-      try {
-        await api.post("/rex/promote", { category, reason });
-      } catch (e) {
-        setRankError(e instanceof Error ? e.message : "Promotion failed");
-      } finally {
-        setBusyCategory(null);
-      }
-    },
-    []
-  );
+  const demote = useCallback(async (category: string, reason?: string) => {
+    setBusyCategory(category);
+    setRankError(null);
+    try {
+      await api.post("/rex/demote", { category, reason });
+    } catch (e) {
+      setRankError(e instanceof Error ? e.message : "Demotion failed");
+    } finally {
+      setBusyCategory(null);
+    }
+  }, []);
 
-  const demote = useCallback(
-    async (category: string, reason?: string) => {
-      setBusyCategory(category);
-      setRankError(null);
-      try {
-        await api.post("/rex/demote", { category, reason });
-      } catch (e) {
-        setRankError(e instanceof Error ? e.message : "Demotion failed");
-      } finally {
-        setBusyCategory(null);
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
   if (loading) {
     return (
@@ -456,32 +564,64 @@ export default function ZiloTeamPage() {
     );
   }
 
+  // Deduplicate all chat agents across all groups
+  const allChatAgents = deduplicateAgents(
+    data.chat_groups.flatMap((g) => g.agents)
+  );
+  const overnightCount = data.operations.length;
+  const customerFacingCount = data.customer_service.length;
+
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8 pb-16">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-dark/60">Zilo</p>
-      <h1 className="mt-1 text-2xl font-semibold text-slate-900">Zilo&apos;s team</h1>
-      <p className="mt-2 max-w-2xl text-sm text-slate-600">
-        Every AI specialist in your CRM — the same agents Zilo Chat routes to, plus overnight
-        scouts and deputies. Zilo coordinates; you talk to specialists when you need depth.
+    <div className="mx-auto max-w-5xl px-6 py-8 pb-20">
+
+      {/* ── Page Header ─────────────────────────────────────── */}
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-dark/60">
+        Zilo
       </p>
-      <p className="mt-1 text-xs text-slate-500">
-        {data.chat_total} chat specialists · {data.operations.length + data.customer_service.length}{" "}
-        deputies · {data.action_mode.length} Action Mode runners
+      <h1 className="mt-1 text-2xl font-semibold text-slate-900">Zilo&apos;s team</h1>
+      <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-600">
+        These are the people Zilo works with on your behalf.
+        <br />
+        You never manage them directly. Tell Zilo what you need — Zilo decides who handles it.
       </p>
 
+      {/* Counts — plain language */}
+      <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
+        <span className="flex items-center gap-1.5">
+          <Bot className="h-3.5 w-3.5 text-brand-dark" />
+          <strong className="text-slate-700">{allChatAgents.length}</strong> specialists ready when you need them
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Moon className="h-3.5 w-3.5 text-indigo-500" />
+          <strong className="text-slate-700">{overnightCount}</strong> overnight agents always running
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Users className="h-3.5 w-3.5 text-emerald-600" />
+          <strong className="text-slate-700">{customerFacingCount}</strong> customer-facing agents on standby
+        </span>
+      </div>
+
+      {/* ── Zilo — Chief of Staff ────────────────────────────── */}
       <div className="mt-8 rounded-2xl border border-brand/25 bg-gradient-to-br from-[#071a10] to-[#0d2818] p-6 text-white">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">
-              Chief of Staff
+              Chief of Staff · always on
             </p>
             <h2 className="mt-1 text-xl font-semibold">{data.chief.label}</h2>
-            <p className="mt-2 max-w-xl text-sm text-slate-300">{data.chief.description}</p>
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-300">
+              {data.chief.description}
+            </p>
             {data.chief.standing && (
-              <p className="mt-3 text-xs text-brand-light">
-                Current rank (outreach): {data.chief.standing.rank}
-                {data.chief.standing.on_probation ? " · on probation" : ""}
-              </p>
+              <span
+                className={cn(
+                  "mt-3 inline-block rounded-full border px-2.5 py-1 text-[11px] font-semibold",
+                  RANK_TONE[data.chief.standing.rank] ?? "bg-slate-100 text-slate-700 border-slate-300"
+                )}
+              >
+                {data.chief.standing.rank}
+                {data.chief.standing.on_probation ? " · probation" : ""}
+              </span>
             )}
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -501,12 +641,143 @@ export default function ZiloTeamPage() {
         </div>
       </div>
 
+      {/* Connector line */}
+      <div className="mt-0 flex justify-center">
+        <div className="flex flex-col items-center">
+          <div className="h-6 w-px bg-slate-200" />
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+            coordinates
+          </span>
+          <div className="h-6 w-px bg-slate-200" />
+        </div>
+      </div>
+
       {rankError && (
-        <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+        <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
           {rankError}
         </p>
       )}
 
+      {/* ── GROUP 1: Overnight Operations — always visible ───── */}
+      <div className="rounded-2xl border border-[#1a3a28] bg-[#071a10] overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-[#1a3a28]">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand/20">
+            <Moon className="h-4 w-4 text-brand-light" />
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-white">Overnight Operations</h2>
+              <span className="rounded-full bg-brand/20 px-2 py-0.5 text-[10px] font-semibold text-brand-light">
+                {overnightCount}
+              </span>
+              <span className="flex items-center gap-1 rounded-full bg-brand/20 px-2 py-0.5 text-[10px] font-semibold text-brand-light">
+                <span className="h-1.5 w-1.5 rounded-full bg-brand animate-pulse" />
+                running now
+              </span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-slate-400">
+              These run while you sleep. Every morning their findings appear in your Zilo Briefing — already drafted, ready for your approval. You never manage them directly.
+            </p>
+          </div>
+        </div>
+        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+          {data.operations.map((d) => (
+            <OvernightCard
+              key={d.id}
+              label={d.label}
+              description={d.description}
+              chatAgentId={d.chat_agent_id}
+              href={d.name === "Scout" ? "/dashboard/action-mode" : undefined}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* ── GROUP 2: Chat Specialists — collapsed by default ─── */}
+      <CollapsibleGroup
+        title="Chat Specialists"
+        subtitle="Call on these when you need something specific done now. Tell Zilo which one, or let Zilo route automatically."
+        icon={Bot}
+        count={allChatAgents.length}
+        defaultOpen={false}
+      >
+        {allChatAgents.map((a) => (
+          <SpecialistCard
+            key={a.id}
+            id={a.id}
+            label={a.label}
+            description={a.description}
+            chatAgentId={a.id}
+            compact
+          />
+        ))}
+      </CollapsibleGroup>
+
+      {/* ── GROUP 3: Customer-Facing — collapsed by default ─── */}
+      <CollapsibleGroup
+        title="Customer-Facing Agents"
+        subtitle="These talk to your customers on your behalf — sales conversations, orders, support, and payments."
+        icon={Users}
+        count={customerFacingCount}
+        defaultOpen={false}
+      >
+        {data.customer_service.map((d) => (
+          <SpecialistCard
+            key={d.id}
+            id={d.id}
+            label={d.label}
+            description={d.description}
+            rank={d.rank}
+            onProbation={d.on_probation}
+            chatAgentId={d.chat_agent_id}
+          />
+        ))}
+      </CollapsibleGroup>
+
+      {/* ── GROUP 4: Action Mode Runners ─────────────────────── */}
+      <div className="mt-6 rounded-2xl border border-violet-200 bg-violet-50 overflow-hidden">
+        <div className="flex items-center gap-3 border-b border-violet-100 px-5 py-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-100">
+            <Zap className="h-4 w-4 text-violet-600" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-violet-900">Action Mode Runners</h2>
+              <span className="rounded-full bg-violet-200 px-2 py-0.5 text-[10px] font-semibold text-violet-700">
+                {data.action_mode.length}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-violet-600">
+              These run overnight without being asked. Every morning their findings appear in your Zilo Briefing — already drafted, ready for your approval. You never manage them directly. Zilo deploys them automatically.
+            </p>
+          </div>
+        </div>
+        <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
+          {data.action_mode.map((a) => (
+            <div
+              key={a.id}
+              className="rounded-xl border border-violet-200 bg-white p-4 transition hover:border-violet-400"
+            >
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-violet-400" />
+                <span className="text-sm font-semibold text-slate-900">{a.label}</span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-500">{a.description}</p>
+              {a.href && (
+                <Link
+                  href={a.href}
+                  className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 hover:text-violet-900"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  View queue
+                </Link>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Trust Ladder ─────────────────────────────────────── */}
       {standings && (
         <TrustLadder
           data={standings}
@@ -516,77 +787,6 @@ export default function ZiloTeamPage() {
           demote={demote}
         />
       )}
-
-      <Section
-        title="Zilo Chat specialists"
-        subtitle="Pick any specialist — same registry as the agent menu in chat."
-        icon={Bot}
-      >
-        {data.chat_groups.flatMap((g) =>
-          g.agents.map((a) => (
-            <AgentCard
-              key={a.id}
-              id={a.id}
-              label={a.label}
-              description={a.description}
-              chatAgentId={a.id}
-            />
-          ))
-        )}
-      </Section>
-
-      <Section
-        title="Operations"
-        subtitle="Overnight workers — scouts, pipeline, ads, funding."
-        icon={Radar}
-      >
-        {data.operations.map((d) => (
-          <AgentCard
-            key={d.id}
-            id={d.id}
-            label={d.label}
-            description={d.description}
-            rank={d.rank}
-            onProbation={d.on_probation}
-            chatAgentId={d.chat_agent_id}
-            href={d.name === "Scout" ? "/dashboard/action-mode" : undefined}
-          />
-        ))}
-      </Section>
-
-      <Section
-        title="Customer service"
-        subtitle="Talks to your customers — sales, orders, support, inbox."
-        icon={Users}
-      >
-        {data.customer_service.map((d) => (
-          <AgentCard
-            key={d.id}
-            id={d.id}
-            label={d.label}
-            description={d.description}
-            rank={d.rank}
-            onProbation={d.on_probation}
-            chatAgentId={d.chat_agent_id}
-          />
-        ))}
-      </Section>
-
-      <Section
-        title="Action Mode runners"
-        subtitle="Autonomous scans and queue drafts — approve from Zilo Briefing or Action Mode."
-        icon={Radar}
-      >
-        {data.action_mode.map((a) => (
-          <AgentCard
-            key={a.id}
-            id={a.id}
-            label={a.label}
-            description={a.description}
-            href={a.href}
-          />
-        ))}
-      </Section>
 
       <Link
         href="/dashboard"

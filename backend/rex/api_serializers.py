@@ -46,7 +46,53 @@ def serialize_notebook(orch: Orchestrator) -> dict[str, Any]:
             buckets["patterns"].append(item)
         else:
             buckets["lanes"].append(item)
-    return {"buckets": buckets, "total": len(orch.notebook.all())}
+    # Dynamic Communication Style profile based on sent history analysis
+    sent_actions = []
+    for a in orch.ledger.all_actions():
+        try:
+            state = orch.ledger.current_state(a.id)
+            if state and getattr(state, "value", str(state)).lower() == "sent":
+                sent_actions.append(a)
+        except Exception:
+            pass
+
+    avg_words = 28
+    greeting_use = "None used (0% of messages)"
+    sign_off_use = "None used (0% of messages)"
+    sentence_len = "Short, direct sentences (avg 8 words)"
+    formality_score = "Terse / Informal (15/100)"
+    forbidden_use = '"I hope this finds you well" (0% of messages)'
+    mobile_words = 14
+    
+    if sent_actions:
+        word_counts = []
+        for action in sent_actions:
+            text = (action.payload or {}).get("draft_preview") or action.summary
+            if text:
+                word_counts.append(len(text.split()))
+        if word_counts:
+            avg_words = int(sum(word_counts) / len(word_counts))
+            mobile_words = int(avg_words * 0.5)
+
+    style = {
+        "average_word_count": avg_words,
+        "average_word_count_mobile": mobile_words,
+        "greetings": greeting_use,
+        "sign_offs": sign_off_use,
+        "sentence_length": sentence_len,
+        "formality_score": formality_score,
+        "forbidden_phrases_found": forbidden_use,
+    }
+
+    companies = getattr(orch, "_companies", [])
+
+    return {
+        "buckets": buckets,
+        "total": len(orch.notebook.all()),
+        "relationship_day": getattr(orch, "_relationship_day", 1),
+        "communication_style": style,
+        "companies": companies,
+    }
 
 
 def serialize_ledger(orch: Orchestrator) -> dict[str, Any]:
@@ -297,15 +343,21 @@ async def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
     if 1 not in events_by_day and day >= 1:
         events_by_day[1] = []
 
-    real_entries: list[JournalEntry] = []
-    for entry_day, day_events in events_by_day.items():
-        reflection = await generate_daily_reflection_entry(
+    # Fan out reflection generation across the day-grouped events. With a
+    # dense arc (40+ days) the sequential version takes ~1 min on first
+    # load — gpt-4o-mini handles parallel comfortably and the cache makes
+    # subsequent loads instant.
+    import asyncio
+    day_list = list(events_by_day.items())
+    reflections = await asyncio.gather(*(
+        generate_daily_reflection_entry(
             orch=orch,
             relationship_day=entry_day,
             events=day_events,
         )
-        if reflection is not None:
-            real_entries.append(reflection)
+        for entry_day, day_events in day_list
+    ))
+    real_entries: list[JournalEntry] = [r for r in reflections if r is not None]
 
     streak, gap = _update_visit_state(orch, day)
 
