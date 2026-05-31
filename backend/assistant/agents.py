@@ -355,6 +355,7 @@ GENERAL_TOOLS: FrozenSet[str] = (
         "switch_to_agent",
         # CRM write ops
         "create_customer", "update_customer", "delete_customer",
+        "shopify_partner_create_store",
         "create_product", "update_product", "delete_product",
         "update_order_status", "record_sale",
         # Follow-ups & broadcasts
@@ -419,7 +420,7 @@ SHOPIFY_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "import_aliexpress_product_to_shopify",
     "aliexpress_fulfill_order", "aliexpress_get_order_status", "aliexpress_sync_tracking_to_shopify",
     "get_market_trends", "find_winning_products", "search_facebook_ads",
-    "shopify_product_analytics",
+    "shopify_product_analytics", "shopify_partner_create_store",
 })
 SHOPIFY_ORDERS_TOOLS: FrozenSet[str] = _SHOPIFY_BASE | frozenset({
     "list_shopify_orders", "shopify_fulfill_order", "shopify_cancel_order",

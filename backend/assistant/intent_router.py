@@ -318,6 +318,8 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "connect shopify", "shopify sync", "shopify autopilot",
         "run shopify", "shopify discount", "create discount shopify",
         "abandoned cart", "cart recovery", "shopify win-back",
+        "create shopify", "create shop", "build shopify", "build store",
+        "create store", "create a shop", "create a store",
     ],
 
     # ── Payments ──────────────────────────────────────────────────────────────

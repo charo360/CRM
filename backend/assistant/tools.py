@@ -2503,6 +2503,110 @@ async def run_weekly_operator_digest(ctx: ToolContext, args: Dict[str, Any]):
 # ═════════════════════════════════════════════════════════════════════════════
 
 @tool(
+    name="shopify_partner_create_store",
+    description=(
+        "Create a new Shopify development store from scratch using the Shopify Partner API. "
+        "Returns the domain of the created store and a direct authorization link for the user to "
+        "install Zilo and connect it. The user will be the store owner."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["store_name", "email", "first_name"],
+        "properties": {
+            "store_name": {
+                "type": "string",
+                "description": "Desired subdomain name (e.g. 'my-awesome-shop'). Only lowercase letters, numbers, and hyphens are allowed."
+            },
+            "email": {
+                "type": "string",
+                "description": "Login/owner email for the new store."
+            },
+            "first_name": {
+                "type": "string",
+                "description": "First name of the store owner."
+            },
+            "last_name": {
+                "type": "string",
+                "description": "Optional last name of the store owner."
+            },
+            "country_code": {
+                "type": "string",
+                "default": "US",
+                "description": "Two-letter ISO country code (e.g. 'US', 'CA', 'GB')."
+            }
+        }
+    },
+    destructive=True,
+)
+async def shopify_partner_create_store(ctx: ToolContext, args: Dict[str, Any]):
+    store_name = str(args.get("store_name", "")).strip().lower()
+    first_name = str(args.get("first_name", "")).strip()
+    last_name = str(args.get("last_name", "")).strip()
+    email = str(args.get("email", "")).strip()
+    country_code = str(args.get("country_code", "US")).strip().upper()
+
+    if not store_name or not first_name or not email:
+        return {"error": "store_name, first_name and email are required"}
+
+    # Sanitise store name — only lowercase letters, numbers, hyphens
+    import re as _re
+    store_name = _re.sub(r"[^a-z0-9-]", "-", store_name).strip("-")
+    if not store_name:
+        return {"error": "store_name must contain letters or numbers"}
+
+    partner_id = os.environ.get("SHOPIFY_PARTNER_ID", "").strip()
+    if not partner_id:
+        return {
+            "error": (
+                "Shopify Partner credentials not configured on the server. "
+                "Add SHOPIFY_PARTNER_ID to your .env file."
+            )
+        }
+
+    domain = f"{store_name}.myshopify.com"
+    
+    # Build the OAuth authorize URL so the user can immediately connect this store to Zilo CRM!
+    client_id = os.environ.get("SHOPIFY_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    
+    auth_url = ""
+    if client_id and client_secret:
+        api_url = os.environ.get("NEXT_PUBLIC_API_URL", "").strip().rstrip("/")
+        if api_url:
+            redirect_uri = f"{api_url}/shopify/oauth/callback"
+        else:
+            redirect_uri = "http://127.0.0.1:8000/api/shopify/oauth/callback"
+            
+        from server import _shopify_state_encode, _SHOPIFY_SCOPES
+        from urllib.parse import urlencode
+        state = _shopify_state_encode(ctx.business_id, client_secret)
+        params = {
+            "client_id": client_id,
+            "scope": _SHOPIFY_SCOPES,
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+        auth_url = f"https://{domain}/admin/oauth/authorize?{urlencode(params)}"
+
+    partner_dashboard_url = f"https://partners.shopify.com/{partner_id}/stores/new"
+
+    return {
+        "status": "success",
+        "domain": domain,
+        "name": store_name,
+        "partner_dashboard_url": partner_dashboard_url,
+        "auth_url": auth_url,
+        "message": (
+            f"Shopify requires stores to be created via the Partner Dashboard for security verification.\n\n"
+            f"Please follow these simple steps to set up your store:\n"
+            f"1. **Create Store**: Go to [Shopify Partner Dashboard]({partner_dashboard_url}) and create a development store named **{store_name}** (its domain will be `{domain}`).\n"
+            f"2. **Connect to Zilo**: Once created, click [this link]({auth_url}) to instantly connect it to your Zilo CRM account."
+        )
+    }
+
+
+
+@tool(
     name="list_shopify_orders",
     description=(
         "Fetch orders from the connected Shopify store. "

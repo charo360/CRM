@@ -11210,83 +11210,22 @@ async def shopify_partner_create_store(request: Request, user=Depends(get_curren
         raise HTTPException(422, "store_name must contain letters or numbers")
 
     partner_id    = os.environ.get("SHOPIFY_PARTNER_ID",           "").strip()
-    partner_token = os.environ.get("SHOPIFY_PARTNER_ACCESS_TOKEN", "").strip()
-    if not partner_id or not partner_token:
+    if not partner_id:
         raise HTTPException(503,
             "Shopify Partner credentials not configured. "
-            "Add SHOPIFY_PARTNER_ID and SHOPIFY_PARTNER_ACCESS_TOKEN to your .env file."
+            "Add SHOPIFY_PARTNER_ID to your .env file."
         )
 
-    mutation = """
-    mutation CreateDevStore($input: ShopifyDevStoreInput!) {
-      shopifyDevStoreCreate(input: $input) {
-        shop {
-          id
-          myshopifyDomain
-          name
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-    """
-    variables = {
-        "input": {
-            "storeName":   store_name,
-            "storeType":   "DEVELOPMENT",
-            "login":       email,
-            "firstName":   first_name,
-            "lastName":    last_name or first_name,
-            "countryCode": country_code,
-        }
-    }
-
-    import httpx as _httpx
-    gql_url = f"https://partners.shopify.com/{partner_id}/api/2024-10/graphql.json"
-    try:
-        async with _httpx.AsyncClient(timeout=20) as hc:
-            r = await hc.post(
-                gql_url,
-                json={"query": mutation, "variables": variables},
-                headers={
-                    "X-Shopify-Access-Token": partner_token,
-                    "Content-Type": "application/json",
-                },
-            )
-    except Exception as exc:
-        logging.error("[partner/create-store] network error: %s", exc)
-        raise HTTPException(502, f"Could not reach Shopify Partners API: {exc}")
-
-    if r.status_code == 401:
-        raise HTTPException(401, "Invalid SHOPIFY_PARTNER_ACCESS_TOKEN")
-    if r.status_code >= 400:
-        raise HTTPException(502, f"Shopify Partners API returned {r.status_code}: {r.text[:300]}")
-
-    try:
-        data = r.json()
-    except Exception:
-        raise HTTPException(502, f"Non-JSON response from Shopify: {r.text[:300]}")
-
-    result = data.get("data", {}).get("shopifyDevStoreCreate", {})
-    user_errors = result.get("userErrors", [])
-    if user_errors:
-        msg = "; ".join(f"{e.get('field','')}: {e.get('message','')}" for e in user_errors)
-        raise HTTPException(422, f"Shopify error: {msg}")
-
-    shop = result.get("shop")
-    if not shop:
-        raise HTTPException(502, f"Unexpected response from Shopify Partners API: {data}")
-
-    domain = shop.get("myshopifyDomain", f"{store_name}.myshopify.com")
-    logging.info("[partner/create-store] created store=%s user=%s", domain, user.get("_id"))
+    domain = f"{store_name}.myshopify.com"
+    logging.info("[partner/create-store] guided setup initiated store=%s user=%s", domain, user.get("_id"))
 
     return {
-        "ok":     True,
-        "domain": domain,
-        "name":   shop.get("name", store_name),
+        "ok":          True,
+        "domain":      domain,
+        "name":        store_name,
+        "partner_id":  partner_id,
     }
+
 
 
 @api_router.get("/shopify/install")
