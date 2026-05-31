@@ -15424,7 +15424,7 @@ async def ae_oauth_start(user=Depends(get_current_user)):
     ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     auth_url = (
-        "https://oauth.aliexpress.com/authorize"
+        "https://oauth.taobao.com/authorize"
         f"?response_type=code"
         f"&client_id={app_key}"
         f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
