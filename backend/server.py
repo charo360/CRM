@@ -12352,6 +12352,85 @@ async def get_products(
         for p in products
     ])
 
+
+# ── Unified compare endpoint (AE + CJ in one call) ───────────────────────────
+@api_router.get("/products/compare")
+async def compare_products(
+    keyword: str,
+    max_price: Optional[float] = None,
+    sort: str = "price_asc",
+    user=Depends(get_current_user),
+):
+    """Search both AliExpress and CJ simultaneously and return a unified list."""
+    try:
+        from aliexpress.client import ae_ds_search
+        from cj_dropship.client import cj_get
+    except ImportError as exc:
+        raise HTTPException(503, f"Supplier module not available: {exc}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    variants = await _ae_expand_keywords(keyword)
+
+    async def _ae_one(kw: str) -> list[dict]:
+        try:
+            data = await ae_ds_search(keyword=kw, max_price=max_price, page_size=50,
+                                       sort="LAST_VOLUME_DESC", creds=ae_creds)
+            return _parse_ae_products(data)
+        except Exception as e:
+            logging.warning("[compare/ae] '%s': %s", kw, e)
+            return []
+
+    async def _cj_one(kw: str) -> list[dict]:
+        params: dict = {"pageNum": 1, "pageSize": 50, "productNameEn": kw}
+        if max_price is not None:
+            params["maxPrice"] = max_price
+        try:
+            data = await cj_get("/product/list", params, creds=cj_creds)
+            return _parse_cj_products(data)
+        except Exception as e:
+            logging.warning("[compare/cj] '%s': %s", kw, e)
+            return []
+
+    all_tasks = [_ae_one(kw) for kw in variants] + [_cj_one(kw) for kw in variants]
+    batches = await asyncio.gather(*all_tasks)
+
+    # Normalise to a unified schema and deduplicate
+    seen: set[str] = set()
+    unified: list[dict] = []
+    for batch in batches:
+        for p in batch:
+            source = p.get("source", "ae")
+            uid = f"{source}:{p.get('ae_pid') or p.get('cj_pid', '')}"
+            if uid in seen:
+                continue
+            seen.add(uid)
+            unified.append({
+                "source":           source,
+                "id":               p.get("ae_pid") or p.get("cj_pid", ""),
+                "title":            p.get("title", ""),
+                "image_url":        p.get("image_url", ""),
+                "category":         p.get("category", ""),
+                "cost_price":       p.get("cost_price", 0),
+                "suggested_price":  p.get("suggested_price", 0),
+                "popularity":       p.get("orders_count") or p.get("listed_count") or 0,
+                "is_free_shipping": p.get("is_free_shipping", False),
+                "shipping_time":    p.get("shipping_time", ""),
+                "store_name":       p.get("store_name", "") or p.get("supplier", ""),
+            })
+
+    if sort == "price_asc":
+        unified.sort(key=lambda p: p["cost_price"])
+    elif sort == "price_desc":
+        unified.sort(key=lambda p: p["cost_price"], reverse=True)
+    elif sort == "popular":
+        unified.sort(key=lambda p: p["popularity"], reverse=True)
+
+    return {"products": unified[:300], "total": len(unified)}
+
+
 @api_router.get("/products/{product_id}")
 async def get_product(product_id: str, user = Depends(get_current_user)):
     """Get a single product"""
@@ -15790,83 +15869,6 @@ async def ae_search_products(
     merged.sort(key=lambda p: p["orders_count"], reverse=True)
     return {"products": merged[:200], "total": len(merged)}
 
-
-# ── Unified compare endpoint (AE + CJ in one call) ───────────────────────────
-@api_router.get("/products/compare")
-async def compare_products(
-    keyword: str,
-    max_price: Optional[float] = None,
-    sort: str = "price_asc",
-    user=Depends(get_current_user),
-):
-    """Search both AliExpress and CJ simultaneously and return a unified list."""
-    try:
-        from aliexpress.client import ae_ds_search
-        from cj_dropship.client import cj_get
-    except ImportError as exc:
-        raise HTTPException(503, f"Supplier module not available: {exc}")
-
-    business_id = user.get("business_id") or str(user["_id"])
-    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
-    cj_creds = await _get_supplier_creds(business_id, "cj")
-
-    variants = await _ae_expand_keywords(keyword)
-
-    async def _ae_one(kw: str) -> list[dict]:
-        try:
-            data = await ae_ds_search(keyword=kw, max_price=max_price, page_size=50,
-                                       sort="LAST_VOLUME_DESC", creds=ae_creds)
-            return _parse_ae_products(data)
-        except Exception as e:
-            logging.warning("[compare/ae] '%s': %s", kw, e)
-            return []
-
-    async def _cj_one(kw: str) -> list[dict]:
-        params: dict = {"pageNum": 1, "pageSize": 50, "productNameEn": kw}
-        if max_price is not None:
-            params["maxPrice"] = max_price
-        try:
-            data = await cj_get("/product/list", params, creds=cj_creds)
-            return _parse_cj_products(data)
-        except Exception as e:
-            logging.warning("[compare/cj] '%s': %s", kw, e)
-            return []
-
-    all_tasks = [_ae_one(kw) for kw in variants] + [_cj_one(kw) for kw in variants]
-    batches = await asyncio.gather(*all_tasks)
-
-    # Normalise to a unified schema and deduplicate
-    seen: set[str] = set()
-    unified: list[dict] = []
-    for batch in batches:
-        for p in batch:
-            source = p.get("source", "ae")
-            uid = f"{source}:{p.get('ae_pid') or p.get('cj_pid', '')}"
-            if uid in seen:
-                continue
-            seen.add(uid)
-            unified.append({
-                "source":           source,
-                "id":               p.get("ae_pid") or p.get("cj_pid", ""),
-                "title":            p.get("title", ""),
-                "image_url":        p.get("image_url", ""),
-                "category":         p.get("category", ""),
-                "cost_price":       p.get("cost_price", 0),
-                "suggested_price":  p.get("suggested_price", 0),
-                "popularity":       p.get("orders_count") or p.get("listed_count") or 0,
-                "is_free_shipping": p.get("is_free_shipping", False),
-                "shipping_time":    p.get("shipping_time", ""),
-                "store_name":       p.get("store_name", "") or p.get("supplier", ""),
-            })
-
-    if sort == "price_asc":
-        unified.sort(key=lambda p: p["cost_price"])
-    elif sort == "price_desc":
-        unified.sort(key=lambda p: p["cost_price"], reverse=True)
-    elif sort == "popular":
-        unified.sort(key=lambda p: p["popularity"], reverse=True)
-
-    return {"products": unified[:300], "total": len(unified)}
 
 
 @api_router.get("/ae/categories")
