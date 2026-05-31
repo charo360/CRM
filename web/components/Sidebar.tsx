@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import {
+  X,
   Sun,
   BookOpen,
   ListChecks,
@@ -111,7 +112,12 @@ const BUSINESS_NAV_BASE = [
 
 const DISPLAY_NAV = [{ href: "/dashboard/kds", label: "KDS Display", icon: Monitor }] as const;
 
-export default function Sidebar() {
+type SidebarProps = {
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+};
+
+export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [ziloStagedCount, setZiloStagedCount] = useState(0);
@@ -226,12 +232,27 @@ export default function Sidebar() {
     return pathname.startsWith(href);
   }
 
-  return (
-    <aside className="flex flex-col w-56 min-h-screen bg-[#071a10] text-slate-100 shrink-0 border-r border-brand-dark/25">
+  const asideClassName =
+    "flex flex-col w-56 min-h-screen bg-[#071a10] text-slate-100 shrink-0 border-r border-brand-dark/25";
+
+  const navContent = (
+    <>
       {/* Logo - Sticky Header */}
-      <div className="sticky top-0 z-10 flex items-center gap-1 px-5 py-4 border-b border-white/10 bg-[#071a10]">
-        <ZiloLogo size={28} className="shrink-0" />
-        <span className="font-semibold text-sm tracking-tight">Zilo</span>
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-1 px-5 py-4 border-b border-white/10 bg-[#071a10]">
+        <div className="flex items-center gap-1 min-w-0">
+          <ZiloLogo size={28} className="shrink-0" />
+          <span className="font-semibold text-sm tracking-tight">Zilo</span>
+        </div>
+        {onMobileClose && (
+          <button
+            type="button"
+            onClick={onMobileClose}
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-slate-100 lg:hidden"
+            aria-label="Close menu"
+          >
+            <X size={18} />
+          </button>
+        )}
       </div>
 
       {ziloStagedCount > 0 && (
@@ -323,6 +344,22 @@ export default function Sidebar() {
           Log out
         </button>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      <aside className={cn(asideClassName, "hidden lg:flex")}>{navContent}</aside>
+      <aside
+        className={cn(
+          asideClassName,
+          "fixed inset-y-0 left-0 z-50 h-[100dvh] w-[min(18rem,85vw)] transform transition-transform duration-200 ease-out lg:hidden",
+          mobileOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"
+        )}
+        aria-hidden={!mobileOpen}
+      >
+        {navContent}
+      </aside>
+    </>
   );
 }
