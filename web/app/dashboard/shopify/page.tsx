@@ -1241,6 +1241,7 @@ function ProductsTab() {
           compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
           tags:         `dropship,cj,${p.category.toLowerCase()}`,
           variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+          images:       p.image_url ? [{ src: p.image_url }] : [],
         },
       });
       setCjImportedIdxs((prev) => new Set(prev).add(idx));
@@ -1294,6 +1295,7 @@ function ProductsTab() {
           compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
           tags:         `dropship,aliexpress,${p.category.toLowerCase()}`,
           variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+          images:       p.image_url ? [{ src: p.image_url }] : [],
         },
       });
       setAeImportedIdxs((prev) => new Set(prev).add(idx));
@@ -1348,6 +1350,7 @@ function ProductsTab() {
           compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
           tags:             `${tag},${p.category.toLowerCase()}`,
           variants:         [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+          images:           p.image_url ? [{ src: p.image_url }] : [],
         },
       });
       setCmpImportedIds((prev) => new Set(prev).add(uid));

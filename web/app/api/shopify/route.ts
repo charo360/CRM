@@ -477,6 +477,7 @@ export async function POST(req: NextRequest) {
       tags?: string;
       vendor?: string;
       variants?: { title: string; price: string; compare_at_price?: string; inventory_quantity?: number }[];
+      images?: { src: string }[];
     };
     // product deletion
     productId?: string;
@@ -642,6 +643,7 @@ export async function POST(req: NextRequest) {
           status: "active",
           tags: p.tags ?? "",
           variants,
+          ...(p.images ? { images: p.images } : {}),
         },
       };
       const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/products.json`, payload) as { product: { id: number; title: string; handle: string; admin_graphql_api_id: string } };
