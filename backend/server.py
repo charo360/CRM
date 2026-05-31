@@ -15359,12 +15359,17 @@ async def disconnect_cj(user=Depends(get_current_user)):
 async def connect_aliexpress(body: AEConnectBody, user=Depends(get_current_user)):
     """Save and test AliExpress credentials for this user."""
     business_id = user.get("business_id") or str(user["_id"])
+    app_key = body.app_key.strip() or os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    app_secret = body.app_secret.strip() or os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
+    access_token = body.access_token.strip()
+    if not app_key or not app_secret or not access_token:
+        raise HTTPException(400, "App Key, App Secret, and Access Token are all required (either in request or server environment).")
     try:
         from aliexpress.client import ae_get_categories
         creds = {
-            "app_key":      body.app_key.strip(),
-            "app_secret":   body.app_secret.strip(),
-            "access_token": body.access_token.strip(),
+            "app_key":      app_key,
+            "app_secret":   app_secret,
+            "access_token": access_token,
         }
         await ae_get_categories(creds=creds)
     except Exception as e:
@@ -15376,9 +15381,9 @@ async def connect_aliexpress(body: AEConnectBody, user=Depends(get_current_user)
             "user_id":      business_id,
             "supplier":     "aliexpress",
             "credentials":  {
-                "app_key":      body.app_key.strip(),
-                "app_secret":   body.app_secret.strip(),
-                "access_token": body.access_token.strip(),
+                "app_key":      app_key,
+                "app_secret":   app_secret,
+                "access_token": access_token,
             },
             "connected_at": _dt.utcnow(),
         }},

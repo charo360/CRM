@@ -664,6 +664,10 @@ function IntegrationsPageInner() {
   const [cjApiKey, setCjApiKey] = useState("");
   const [cjBusy, setCjBusy] = useState(false);
   const [aeBusy, setAeBusy] = useState(false);
+  const [aeAppKey, setAeAppKey] = useState("");
+  const [aeAppSecret, setAeAppSecret] = useState("");
+  const [aeAccessToken, setAeAccessToken] = useState("");
+  const [aeManualOpen, setAeManualOpen] = useState(false);
 
   const refreshSuppliers = useCallback(() => {
     supplierApi.connections().then(setSupplierStatus).catch(() => {});
@@ -726,6 +730,20 @@ function IntegrationsPageInner() {
     setAeBusy(true);
     try { await supplierApi.disconnectAliExpress(); refreshSuppliers(); }
     catch { /* ignore */ } finally { setAeBusy(false); }
+  }
+
+  async function connectAEManual() {
+    if (!aeAccessToken.trim()) return;
+    setAeBusy(true);
+    try {
+      await supplierApi.connectAliExpress(aeAppKey.trim(), aeAppSecret.trim(), aeAccessToken.trim());
+      setAeAppKey(""); setAeAppSecret(""); setAeAccessToken("");
+      setAeManualOpen(false);
+      refreshSuppliers();
+      setBanner({ type: "success", msg: "AliExpress manually connected." });
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to manually connect AliExpress." });
+    } finally { setAeBusy(false); }
   }
 
   const searchParams = useSearchParams();
@@ -1605,11 +1623,41 @@ function IntegrationsPageInner() {
                   {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
                 </button>
               </div>
+            ) : aeManualOpen ? (
+              <div className="space-y-1.5">
+                <input type="text" value={aeAppKey} onChange={e => setAeAppKey(e.target.value)}
+                  placeholder="App Key (optional)" autoComplete="off"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#E62222]" />
+                <input type="password" value={aeAppSecret} onChange={e => setAeAppSecret(e.target.value)}
+                  placeholder="App Secret (optional)" autoComplete="off"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#E62222]" />
+                <input type="password" value={aeAccessToken} onChange={e => setAeAccessToken(e.target.value)}
+                  placeholder="Access Token (required)" autoComplete="off"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#E62222]" />
+                <div className="flex gap-1">
+                  <button type="button" onClick={() => void connectAEManual()} disabled={aeBusy || !aeAccessToken.trim()}
+                    className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-[#E62222] hover:bg-[#c71c1c] py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                    {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
+                  </button>
+                  <button type="button" onClick={() => setAeManualOpen(false)} disabled={aeBusy}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                    Cancel
+                  </button>
+                </div>
+              </div>
             ) : (
-              <button type="button" onClick={() => void connectAEOAuth()} disabled={aeBusy}
-                className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#E62222] hover:bg-[#c71c1c] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-                {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <><span>Connect AliExpress</span><ExternalLink size={9} /></>}
-              </button>
+              <div className="space-y-1.5">
+                <button type="button" onClick={() => void connectAEOAuth()} disabled={aeBusy}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#E62222] hover:bg-[#c71c1c] px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                  {aeBusy ? <Loader2 size={11} className="animate-spin" /> : <><span>Connect AliExpress</span><ExternalLink size={9} /></>}
+                </button>
+                <div className="text-center">
+                  <button type="button" onClick={() => setAeManualOpen(true)}
+                    className="text-[10px] text-slate-500 hover:text-[#E62222] hover:underline bg-transparent border-0 cursor-pointer">
+                    Connect manually with token
+                  </button>
+                </div>
+              </div>
             )}
           </SmallTile>
 
