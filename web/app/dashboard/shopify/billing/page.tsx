@@ -4,6 +4,9 @@ import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Check as CheckIcon } from "lucide-react";
 
+import { getToken } from "@/lib/auth";
+import { API_BASE } from "@/lib/api";
+
 interface Plan {
   id: string;
   name: string;
@@ -40,7 +43,7 @@ function BillingContent() {
   const [error, setError]         = useState(billingError || "");
 
   useEffect(() => {
-    fetch("/api/proxy?path=/shopify/billing/plans")
+    fetch(`${API_BASE}/shopify/billing/plans`)
       .then((r) => r.json())
       .then((data) => setPlans(data.plans || []))
       .catch(() => setError("Failed to load plans. Please refresh."))
@@ -51,11 +54,14 @@ function BillingContent() {
     setSubscribing(planId);
     setError("");
     try {
-      const res = await fetch("/api/proxy?path=/shopify/billing/create", {
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/shopify/billing/create`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
         body:    JSON.stringify({ plan_id: planId }),
-        credentials: "include",
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Subscription failed");
