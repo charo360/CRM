@@ -19090,3 +19090,127 @@ async def manage_gmail_filters(ctx: ToolContext, args: Dict[str, Any]) -> Dict[s
     except Exception as e:
         logger.exception("[manage_gmail_filters] error")
         return {"error": str(e)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# BROWSER AUTOMATION TOOLS (Chrome Extension Integration)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="browser_navigate",
+    description="Navigate the user's active browser window to a specific website/URL.",
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "The destination web address/URL (e.g. 'https://google.com')"}
+        }
+    }
+)
+async def browser_navigate(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        url = args["url"]
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"https://{url}"
+        result = await send_browser_command(ctx.user_id, "navigate", url=url)
+        return result
+    except Exception as e:
+        return {"error": f"Browser navigation tool error: {e}"}
+
+
+@tool(
+    name="browser_click",
+    description="Click an element matching the provided CSS or XPath selector inside the user's browser tab.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The target CSS selector, XPath, or 'text=Label' pattern (e.g. 'button.submit', '//div[@id=\"btn\"]', or 'text=Submit')"}
+        }
+    }
+)
+async def browser_click(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "click", selector=args["selector"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser click tool error: {e}"}
+
+
+@tool(
+    name="browser_type",
+    description="Focus and type text into an input or form field inside the user's browser tab.",
+    parameters={
+        "type": "object",
+        "required": ["selector", "text"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback pattern targeting the input element"},
+            "text": {"type": "string", "description": "The characters/text value to type into the field"}
+        }
+    }
+)
+async def browser_type(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "type", selector=args["selector"], text=args["text"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser typing tool error: {e}"}
+
+
+@tool(
+    name="browser_scroll",
+    description="Smoothly scroll the target element or page viewport into view.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback targeting the element to scroll to"}
+        }
+    }
+)
+async def browser_scroll(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "scroll", selector=args["selector"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser scroll tool error: {e}"}
+
+
+@tool(
+    name="browser_extract",
+    description="Extract raw text, values, HTML elements, or specific attribute contents from matching page elements.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback pattern targeting the element to extract from"},
+            "data_type": {
+                "type": "string",
+                "enum": ["text", "value", "html", "attribute"],
+                "default": "text",
+                "description": "What type of data to extract: 'text' (inner text content), 'value' (input form values), 'html' (outer HTML structure), or 'attribute' (custom node properties)"
+            },
+            "attribute_name": {
+                "type": "string",
+                "description": "The name of the attribute to extract (only needed when data_type is set to 'attribute' - e.g. 'href' or 'src')"
+            }
+        }
+    }
+)
+async def browser_extract(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(
+            ctx.user_id, 
+            "extract", 
+            selector=args["selector"], 
+            data_type=args.get("data_type", "text"),
+            text=args.get("attribute_name")
+        )
+        return result
+    except Exception as e:
+        return {"error": f"Browser extract tool error: {e}"}

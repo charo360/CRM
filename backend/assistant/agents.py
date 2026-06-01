@@ -358,6 +358,8 @@ GENERAL_TOOLS: FrozenSet[str] = (
     DOCUMENT_TOOLS
     | frozenset({
         "switch_to_agent",
+        # Browser Control
+        "browser_navigate", "browser_click", "browser_type", "browser_scroll", "browser_extract",
         # CRM write ops
         "create_customer", "update_customer", "delete_customer",
         "shopify_partner_create_store",

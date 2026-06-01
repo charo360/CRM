@@ -8440,6 +8440,21 @@ async def outlook_webhook(request: Request, background_tasks: BackgroundTasks, v
     return {"status": "accepted"}
 
 
+# ============ BROWSER CONTROL STATUS ============
+
+@api_router.get("/browser/status")
+async def browser_control_status(user = Depends(get_current_user)):
+    """
+    Check if the authenticated user has an active Zilo Browser Control session connected.
+    """
+    from browser_control.websocket import is_browser_connected
+    user_id = str(user.get("business_id") or user["_id"])
+    return {
+        "connected": is_browser_connected(user_id),
+        "user_id": user_id
+    }
+
+
 # ============ EVOLUTION API WEBHOOK ============
 
 async def _apply_inbound_routing_bg(
@@ -17068,6 +17083,16 @@ except Exception as _e:
 @api_router.get("/blog/debug")
 async def blog_debug():
     return {"mounted": not bool(_blog_mount_error), "error": _blog_mount_error or None}
+
+
+# ── Browser Control WebSocket ──────────────────────────────────────────────────
+try:
+    from browser_control.websocket import router as _browser_router
+    api_router.include_router(_browser_router)
+    logging.info("[browser-control] routes mounted at /api/browser/*")
+except Exception as _e:
+    logging.error(f"[browser-control] failed to mount routes: {_e}")
+
 
 # NOTE: app.include_router(api_router) is deferred to end of file so all routes and
 # sub-routers are registered first (avoids missing routes with uvicorn --reload on Windows).
