@@ -38,6 +38,7 @@ export default function MeetingOverlay() {
 
   const activeMeetingRef = useRef<Meeting | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const dismissedMeetingsRef = useRef<Set<string>>(new Set());
 
   // Auto-scroll live transcript
   useEffect(() => {
@@ -53,7 +54,7 @@ export default function MeetingOverlay() {
       const now = Date.now();
       for (const raw of res.meetings) {
         const m = raw as unknown as Meeting;
-        if (!m.meet_url) continue;
+        if (!m.meet_url || dismissedMeetingsRef.current.has(m.id)) continue;
         const startMs = new Date(m.start).getTime();
         const endMs   = new Date(m.end).getTime();
         if (now > endMs) continue;
@@ -108,6 +109,9 @@ export default function MeetingOverlay() {
   };
 
   const dismiss = () => {
+    if (meeting) {
+      dismissedMeetingsRef.current.add(meeting.id);
+    }
     rec.reset();
     setMeeting(null); setIsUpcoming(false);
     activeMeetingRef.current = null;
