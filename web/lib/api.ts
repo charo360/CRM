@@ -2104,7 +2104,15 @@ export const smartNotesApi = {
   list: () => api.get<{ notes: Record<string, unknown>[] }>("/smart-notes"),
   save: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes", body),
   get: (id: string) => api.get<Record<string, unknown>>(`/smart-notes/${id}`),
-  update: (id: string, body: { title?: string; summary?: string; action_items?: string[] }) => api.patch<Record<string, unknown>>(`/smart-notes/${id}`, body),
+  update: (id: string, body: { 
+    title?: string; 
+    summary?: string; 
+    action_items?: string[]; 
+    key_points?: string[]; 
+    decisions?: string[]; 
+    next_steps?: string; 
+    transcript?: string; 
+  }) => api.patch<Record<string, unknown>>(`/smart-notes/${id}`, body),
   delete: (id: string) => api.delete<{ ok: boolean }>(`/smart-notes/${id}`),
 };
 

@@ -42,6 +42,10 @@ class NoteUpdate(BaseModel):
     title: Optional[str] = None
     summary: Optional[str] = None
     action_items: Optional[List[str]] = None
+    key_points: Optional[List[str]] = None
+    decisions: Optional[List[str]] = None
+    next_steps: Optional[str] = None
+    transcript: Optional[str] = None
 
 
 # ── AssemblyAI helpers ─────────────────────────────────────────────────────────
@@ -458,6 +462,14 @@ Respond ONLY with valid JSON. No markdown fences."""
             updates["summary"] = body.summary
         if body.action_items is not None:
             updates["action_items"] = body.action_items
+        if body.key_points is not None:
+            updates["key_points"] = body.key_points
+        if body.decisions is not None:
+            updates["decisions"] = body.decisions
+        if body.next_steps is not None:
+            updates["next_steps"] = body.next_steps
+        if body.transcript is not None:
+            updates["transcript"] = body.transcript
 
         if not updates:
             return _ser(doc)
