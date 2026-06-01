@@ -32,6 +32,10 @@ export default function SmartNotesPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [deleting,      setDeleting]      = useState<string | null>(null);
   const [keytermsInput, setKeytermsInput] = useState(""); // e.g. "Zilo, Samuel, Mweni"
+  const [recordMicOnly, setRecordMicOnly] = useState(true); // Default to microphone-only for seamless recordings
+  const [editingTitle,  setEditingTitle]  = useState(false);
+  const [titleValue,    setTitleValue]    = useState("");
+  const [renaming,      setRenaming]      = useState(false);
 
   const rec = useMeetingRecorder();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -46,7 +50,10 @@ export default function SmartNotesPage() {
     if (rec.recordState === "done" && rec.savedNote) {
       const n = rec.savedNote as unknown as Note;
       setNotes(prev => [n, ...prev.filter(x => x.id !== n.id)]);
-      setSelected(rec.savedNote as unknown as NoteDetail);
+      const detail = rec.savedNote as unknown as NoteDetail;
+      setSelected(detail);
+      setTitleValue(detail.title);
+      setEditingTitle(false);
     }
   }, [rec.recordState, rec.savedNote]);
 
@@ -63,11 +70,33 @@ export default function SmartNotesPage() {
 
   const openNote = async (id: string) => {
     setDetailLoading(true);
+    setEditingTitle(false);
     try {
-      const doc = await smartNotesApi.get(id);
-      setSelected(doc as unknown as NoteDetail);
+      const doc = await smartNotesApi.get(id) as unknown as NoteDetail;
+      setSelected(doc);
+      setTitleValue(doc.title);
     } catch { /* ignore */ }
     finally { setDetailLoading(false); }
+  };
+
+  const saveTitle = async () => {
+    if (!selected || !titleValue.trim() || titleValue.trim() === selected.title) {
+      setEditingTitle(false);
+      return;
+    }
+    setRenaming(true);
+    try {
+      const updated = await smartNotesApi.update(selected.id, { title: titleValue.trim() });
+      const upDoc = updated as unknown as NoteDetail;
+      setSelected(upDoc);
+      setTitleValue(upDoc.title);
+      setNotes(prev => prev.map(n => n.id === upDoc.id ? { ...n, title: upDoc.title } : n));
+    } catch {
+      // ignore
+    } finally {
+      setRenaming(false);
+      setEditingTitle(false);
+    }
   };
 
   const deleteNote = async (id: string) => {
@@ -134,10 +163,19 @@ export default function SmartNotesPage() {
                   placeholder="Company, names to recognise… (e.g. Zilo, Samuel)"
                   className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 mb-2"
                 />
+                <label className="flex items-center gap-2 px-1 mb-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={recordMicOnly}
+                    onChange={e => setRecordMicOnly(e.target.checked)}
+                    className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3.5 h-3.5"
+                  />
+                  <span className="text-xs text-gray-500 font-medium">Record microphone only (no screen share)</span>
+                </label>
                 <button
                   onClick={() => {
                     const keyterms = keytermsInput.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
-                    rec.startRecording({ title: `Recording ${new Date().toLocaleDateString()}`, keyterms });
+                    rec.startRecording({ title: `Recording ${new Date().toLocaleDateString()}`, keyterms, recordMicOnly });
                   }}
                   className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
                 >
@@ -351,7 +389,40 @@ export default function SmartNotesPage() {
                   </button>
                   <span className="text-sm font-medium text-gray-500">Notes</span>
                 </div>
-                <h2 className="text-xl font-bold text-gray-900 sm:text-2xl">{selected.title}</h2>
+                {editingTitle ? (
+                  <input
+                    type="text"
+                    value={titleValue}
+                    onChange={e => setTitleValue(e.target.value)}
+                    onBlur={saveTitle}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") saveTitle();
+                      if (e.key === "Escape") {
+                        setTitleValue(selected.title);
+                        setEditingTitle(false);
+                      }
+                    }}
+                    autoFocus
+                    disabled={renaming}
+                    className="text-xl font-bold text-gray-900 sm:text-2xl border-b border-brand-dark/40 focus:outline-none focus:border-brand-dark pb-0.5 bg-transparent w-full"
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 group">
+                    <h2 
+                      onClick={() => setEditingTitle(true)}
+                      className="text-xl font-bold text-gray-900 sm:text-2xl cursor-pointer hover:text-brand-dark hover:underline decoration-brand-dark/30 underline-offset-4"
+                    >
+                      {selected.title}
+                    </h2>
+                    <button 
+                      onClick={() => setEditingTitle(true)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-brand-dark text-xs p-1 rounded transition-opacity"
+                      aria-label="Rename note"
+                    >
+                      ✏️
+                    </button>
+                  </div>
+                )}
                 <p className="text-sm text-gray-500 mt-1">
                   {fmtDate(selected.meeting_start)}
                   {selected.meeting_end && ` · ${fmtDuration(selected.meeting_start, selected.meeting_end)}`}

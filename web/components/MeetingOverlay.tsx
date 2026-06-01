@@ -34,6 +34,7 @@ export default function MeetingOverlay() {
   const [countdown,    setCountdown]    = useState("");
   const [expanded,     setExpanded]     = useState(false);
   const [keytermsInput,setKeytermsInput]= useState("");
+  const [recordMicOnly,setRecordMicOnly]= useState(false); // Default to false (screen audio capture) for active Zoom/Meet calendar invitations
 
   const activeMeetingRef = useRef<Meeting | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -102,6 +103,7 @@ export default function MeetingOverlay() {
       start: meeting.start, end: meeting.end,
       meet_url: meeting.meet_url, attendees: meeting.attendees,
       keyterms,
+      recordMicOnly,
     });
   };
 
@@ -188,8 +190,17 @@ export default function MeetingOverlay() {
                 value={keytermsInput}
                 onChange={e => setKeytermsInput(e.target.value)}
                 placeholder="e.g. Zilo, Samuel, Mweni"
-                className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 mb-2"
               />
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={recordMicOnly}
+                  onChange={e => setRecordMicOnly(e.target.checked)}
+                  className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3 h-3"
+                />
+                <span className="text-[10px] text-gray-500 font-medium">Record mic only (no screen share popup)</span>
+              </label>
             </div>
             <button
               onClick={handleJoinRecord}
@@ -197,7 +208,12 @@ export default function MeetingOverlay() {
             >
               Join &amp; Record
             </button>
-            <p className="text-[10px] text-gray-400 text-center">Opens meeting · captures mic + tab audio</p>
+            <p className="text-[10px] text-gray-400 text-center">
+              {recordMicOnly 
+                ? "Opens meeting · captures your microphone only" 
+                : "Opens meeting · captures mic + tab audio"
+              }
+            </p>
           </>
         )}
 
