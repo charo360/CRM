@@ -23,6 +23,11 @@ COLLECTION = "zilo_sessions"
 _INDEX_ENSURED = False
 
 
+class OptimisticLockError(Exception):
+    """Raised when an update fails because the document was modified concurrently."""
+    pass
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -93,6 +98,8 @@ class ZiloSessionStore:
         doc = await self._col.find_one({"user_id": user_id})
         if doc:
             orch = self._orch_from_doc(doc)
+            # Track the DB timestamp at load-time for optimistic-locking on save
+            orch._loaded_updated_at = doc.get("updated_at")  # type: ignore[attr-defined]
             self._cache[user_id] = orch
             
             # ONLY seed mock data if we are in demo mode (live_mode is False)
@@ -253,7 +260,7 @@ class ZiloSessionStore:
 
         doc: dict[str, Any] = {
             "business_id": business_id,
-            "updated_at": _utc_now(),
+            # updated_at is set below after now_ts is computed for the lock filter
             "relationship_day": rel_day,
             "last_sync_at": getattr(orch, "_last_sync_at", None),
             "metrics": metrics,
@@ -278,14 +285,38 @@ class ZiloSessionStore:
             "demo_mode": is_demo,
         }
 
-        await self._col.update_one(
-            {"user_id": user_id},
+        now_ts = _utc_now()
+        # Optimistic-locking filter: match the exact updated_at we loaded from DB.
+        # On a new document (upsert) there is no prior timestamp, so use user_id only.
+        loaded_ts = getattr(orch, "_loaded_updated_at", None)
+        if loaded_ts is not None:
+            filter_doc: dict[str, Any] = {"user_id": user_id, "updated_at": loaded_ts}
+        else:
+            filter_doc = {"user_id": user_id}
+
+        doc["updated_at"] = now_ts
+
+        result = await self._col.update_one(
+            filter_doc,
             {
                 "$set": doc,
                 "$setOnInsert": set_on_insert,
             },
-            upsert=True,
+            upsert=(loaded_ts is None),  # only upsert when creating for the first time
         )
+
+        if loaded_ts is not None and result.matched_count == 0:
+            logger.warning(
+                "[zilo-session] optimistic lock miss for user_id=%s — "
+                "another writer saved first; in-memory state may be stale.",
+                user_id,
+            )
+            raise OptimisticLockError(
+                f"Optimistic lock collision: session for user_id={user_id} was modified concurrently."
+            )
+        else:
+            # Update the tracked timestamp so subsequent saves use the new value
+            orch._loaded_updated_at = now_ts  # type: ignore[attr-defined]
 
     def invalidate_cache(self, user_id: str) -> None:
         self._cache.pop(user_id, None)

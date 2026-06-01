@@ -135,6 +135,10 @@ async def _get_orchestrator(
         await store.save(uid, business_id=bid, orch=orch)
         return orch
 
+    # Rate-limit forced sweeps: max 3 per 5 minutes per user (they are expensive)
+    from rate_limiter import check_sweep_cooldown
+    await check_sweep_cooldown(uid)
+
     await run_platform_sweep(db, user, orch, force=True)
     await store.save(uid, business_id=bid, orch=orch)
     return orch
@@ -292,6 +296,14 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
             orch = await store.reset(uid, business_id=bid, demo=body.demo)
             if not body.demo:
                 wire_action_mode_executor(orch, db, uid)
+                # Rate-limit: max 3 forced sweeps per 5 min; propagate 429 to caller
+                try:
+                    from rate_limiter import check_sweep_cooldown
+                    await check_sweep_cooldown(uid)
+                except HTTPException:
+                    raise
+                except Exception as _rl_exc:
+                    logger.warning("[rex] home/reset sweep rate-limit check failed: %s", _rl_exc)
                 await run_platform_sweep(db, user, orch, force=True)
                 await store.save(uid, business_id=bid, orch=orch)
             return {"ok": True, "demo": body.demo}
@@ -730,6 +742,12 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
             store = ZiloSessionStore(db)
             orch = await store.load(uid, business_id=bid)
             wire_action_mode_executor(orch, db, uid)
+            # Rate-limit: max 3 forced sweeps per 5 min (even in background)
+            try:
+                from rate_limiter import check_sweep_cooldown
+                await check_sweep_cooldown(uid)
+            except Exception as _rl_exc:
+                logger.warning("[rex] sync sweep rate-limit check failed: %s", _rl_exc)
             await run_platform_sweep(db, user, orch, force=True)
             await store.save(uid, business_id=bid, orch=orch)
             logger.info("[zilo] background /sync complete uid=%s", uid)
@@ -743,6 +761,11 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
             raise HTTPException(status_code=501, detail="CRM sync requires database")
         uid = _uid(user)
         bid = _business_id(user)
+        
+        # Enforce rate limit check before launching background task
+        from rate_limiter import check_sweep_cooldown
+        await check_sweep_cooldown(uid)
+        
         store = await _session_store()
         orch = await store.load(uid, business_id=bid)
         

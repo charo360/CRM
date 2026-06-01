@@ -1773,6 +1773,10 @@ List (briefly, 3-5 bullets) what still reads as obviously AI-generated — speci
         doc = await db.seo_blog_posts.find_one({"_id": payload.post_id, "user_id": tid})
         if not doc: raise HTTPException(404, "Post not found")
 
+        # Enforce plan subscription blogpost limits before publishing
+        from plan_enforcement import enforce_blogpost_limit
+        await enforce_blogpost_limit(db, tid)
+
         result: Dict[str, Any] = {"platform": payload.platform, "ok": False}
 
         if payload.platform == "wordpress":
@@ -1840,15 +1844,43 @@ List (briefly, 3-5 bullets) what still reads as obviously AI-generated — speci
             if not all([payload.shopify_domain, payload.shopify_token]):
                 raise HTTPException(400, "Shopify domain and access token required")
             try:
+                headers = {"X-Shopify-Access-Token": payload.shopify_token, "Content-Type": "application/json"}
                 async with httpx.AsyncClient(timeout=30) as hc:
+                    # 1. Fetch available blogs
+                    blogs_resp = await hc.get(
+                        f"https://{payload.shopify_domain}/admin/api/2024-01/blogs.json",
+                        headers=headers
+                    )
+                    blog_id = None
+                    if blogs_resp.status_code in (200, 201):
+                        blogs = blogs_resp.json().get("blogs", [])
+                        if blogs:
+                            blog_id = blogs[0]["id"]
+                    
+                    # 2. If no blogs exist, create a default "News" blog
+                    if not blog_id:
+                        new_blog_resp = await hc.post(
+                            f"https://{payload.shopify_domain}/admin/api/2024-01/blogs.json",
+                            headers=headers,
+                            json={"blog": {"title": "News"}}
+                        )
+                        if new_blog_resp.status_code in (200, 201):
+                            blog_id = new_blog_resp.json().get("blog", {}).get("id")
+                    
+                    if not blog_id:
+                        raise ValueError("No blogs found and failed to create a default blog")
+
+                    # 3. Post the article into the identified blog
                     resp = await hc.post(
-                        f"https://{payload.shopify_domain}/admin/api/2024-01/blogs/articles.json",
-                        headers={"X-Shopify-Access-Token": payload.shopify_token, "Content-Type": "application/json"},
+                        f"https://{payload.shopify_domain}/admin/api/2024-01/blogs/{blog_id}/articles.json",
+                        headers=headers,
                         json={"article": {"title": doc.get("title", ""), "body_html": _markdown_to_html(doc.get("content", "")), "published": True}},
                     )
                 if resp.status_code in (200, 201):
                     data = resp.json()
-                    result.update({"ok": True, "article_id": data.get("article", {}).get("id")})
+                    article_data = data.get("article", {})
+                    article_url = article_data.get("url") or f"/blogs/news/{article_data.get('handle', '')}"
+                    result.update({"ok": True, "article_id": article_data.get("id"), "article_url": article_url})
                 else:
                     result["error"] = resp.text[:300]
             except Exception as e:

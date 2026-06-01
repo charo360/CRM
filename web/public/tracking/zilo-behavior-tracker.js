@@ -100,6 +100,9 @@
       
       // Check for pending discount offers
       this.checkPendingOffers();
+
+      // Inject floating storefront customer support chat widget
+      this.injectChatWidget();
     },
     
     /**
@@ -410,6 +413,269 @@
           offer_type: offer.delivery_method,
         }),
       });
+    },
+
+    /**
+     * Inject floating storefront customer support chat widget
+     */
+    injectChatWidget: function() {
+      const self = this;
+      const configUrl = `${this.config.apiUrl}/shopify/store-chat-widget/config/${this.config.businessId}`;
+
+      fetch(configUrl)
+        .then(response => response.json())
+        .then(data => {
+          if (!data || !data.enabled) {
+            return; // Chat widget disabled by merchant
+          }
+          self.renderChatWidget(data);
+        })
+        .catch(error => {
+          console.error('[Zilo] Failed to fetch chat widget configuration:', error);
+        });
+    },
+
+    /**
+     * Render the chat widget UI elements
+     */
+    renderChatWidget: function(config) {
+      const self = this;
+      const brandColor = config.brand_color || '#10b981';
+      const welcomeMsg = config.welcome_message || 'Hi there! 👋 Welcome to our store. How can we help you today?';
+      const bizName = config.business_name || 'Support Team';
+      const whatsapp = config.whatsapp_number || '';
+
+      // 1. Create Floating Button (Bubble)
+      const bubble = document.createElement('div');
+      bubble.id = 'zilo-chat-bubble';
+      bubble.innerHTML = `
+        <button id="zilo-chat-bubble-btn" style="
+          position: fixed;
+          bottom: 24px;
+          right: 24px;
+          width: 60px;
+          height: 60px;
+          border-radius: 30px;
+          background: ${brandColor};
+          color: white;
+          border: none;
+          box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 999998;
+          transition: transform 0.2s ease-in-out, background 0.2s ease;
+        ">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width: 28px; height: 28px;">
+            <path fill-rule="evenodd" d="M4.848 2.771A49.144 49.144 0 0 1 12 2.25c2.43 0 4.817.178 7.152.52 1.978.292 3.348 2.024 3.348 3.97v6.02c0 1.946-1.37 3.678-3.348 3.97a48.901 48.901 0 0 1-3.476.383.39.39 0 0 0-.297.17l-2.755 4.13a.75.75 0 0 1-1.248 0l-2.755-4.13a.39.39 0 0 0-.297-.17 48.9 48.9 0 0 1-3.476-.384c-1.978-.29-3.348-2.024-3.348-3.97V6.741c0-1.946 1.37-3.68 3.348-3.97ZM6.75 8.25a.75.75 0 0 1 .75-.75h9a.75.75 0 0 1 0 1.5h-9a.75.75 0 0 1-.75-.75Zm.75 3.5a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5h-6Z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      `;
+
+      // 2. Create Chat Box Window Panel
+      const panel = document.createElement('div');
+      panel.id = 'zilo-chat-panel';
+      panel.style.cssText = `
+        position: fixed;
+        bottom: 96px;
+        right: 24px;
+        width: 360px;
+        max-width: calc(100vw - 48px);
+        height: 520px;
+        max-height: calc(100vh - 140px);
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+        display: none;
+        flex-direction: column;
+        overflow: hidden;
+        z-index: 999999;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        opacity: 0;
+        transform: translateY(20px) scale(0.95);
+      `;
+
+      panel.innerHTML = `
+        <!-- Panel Header -->
+        <div style="background: ${brandColor}; color: white; padding: 20px 24px; position: relative;">
+          <h4 style="margin: 0; font-size: 1.15rem; font-weight: 700;">${bizName} Support</h4>
+          <p style="margin: 4px 0 0; font-size: 0.85rem; opacity: 0.9; display: flex; align-items: center; gap: 6px;">
+            <span style="width: 8px; height: 8px; background: #22c55e; border-radius: 50%; display: inline-block;"></span>
+            We typically reply instantly
+          </p>
+          <button id="zilo-chat-close-btn" style="position: absolute; top: 18px; right: 18px; background: none; border: none; color: white; font-size: 1.5rem; cursor: pointer; opacity: 0.85; transition: opacity 0.2s;">&times;</button>
+        </div>
+
+        <!-- Panel Body -->
+        <div style="flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px;">
+          <!-- Welcome Message -->
+          <div style="background: #f1f5f9; border-radius: 12px; padding: 14px 16px; font-size: 0.95rem; color: #334155; line-height: 1.4;">
+            ${welcomeMsg}
+          </div>
+
+          <!-- CRM Contact Form -->
+          <div id="zilo-chat-form-container" style="display: flex; flex-direction: column; gap: 14px;">
+            <p style="margin: 0; font-size: 0.85rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em;">Start a Conversation</p>
+            
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <input type="text" id="zilo-chat-input-name" placeholder="Your Name" style="width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 14px; font-size: 0.9rem; box-sizing: border-box; outline: none; transition: border-color 0.2s;">
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <input type="text" id="zilo-chat-input-contact" placeholder="Email or Phone Number" style="width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 14px; font-size: 0.9rem; box-sizing: border-box; outline: none; transition: border-color 0.2s;">
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <textarea id="zilo-chat-input-message" placeholder="How can we help you?" rows="3" style="width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 14px; font-size: 0.9rem; box-sizing: border-box; resize: none; outline: none; transition: border-color 0.2s; font-family: inherit;"></textarea>
+            </div>
+
+            <!-- Submit Buttons -->
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
+              <button id="zilo-chat-submit-crm" style="width: 100%; background: ${brandColor}; color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; font-size: 0.95rem; cursor: pointer; transition: filter 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px;">
+                Send Message
+              </button>
+
+              ${whatsapp ? `
+                <div style="text-align: center; color: #94a3b8; font-size: 0.8rem; margin: 2px 0;">— OR —</div>
+                <button id="zilo-chat-submit-whatsapp" style="width: 100%; background: #25d366; color: white; border: none; border-radius: 8px; padding: 12px; font-weight: 600; font-size: 0.95rem; cursor: pointer; transition: background 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px;">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width: 18px; height: 18px;">
+                    <path fill-rule="evenodd" d="M1.5 5.625c0-1.036.84-1.875 1.875-1.875h17.25c1.035 0 1.875.84 1.875 1.875v12.75c0 1.035-.84 1.875-1.875 1.875H3.375A1.875 1.875 0 0 1 1.5 18.375V5.625ZM21 9.375V5.625a.375.375 0 0 0-.375-.375H3.375a.375.375 0 0 0-.375.375v3.75h18Zm0 1.5H3v7.5c0 .207.168.375.375.375h17.25c.207 0 .375-.168.375-.375v-7.5Z" />
+                  </svg>
+                  Chat on WhatsApp
+                </button>
+              ` : ''}
+            </div>
+          </div>
+
+          <!-- Successful State message (initially hidden) -->
+          <div id="zilo-chat-success-container" style="display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px 0; gap: 12px; animation: slideIn 0.3s ease;">
+            <div style="width: 48px; height: 48px; background: #dcfce7; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #22c55e; font-size: 1.5rem;">✓</div>
+            <h5 style="margin: 0; font-size: 1.1rem; color: #0f172a; font-weight: bold;">Message Sent!</h5>
+            <p style="margin: 0; font-size: 0.9rem; color: #64748b; line-height: 1.4;">Thank you for reaching out. Our customer support team has received your message and will respond shortly.</p>
+            <button id="zilo-chat-success-reset" style="margin-top: 8px; background: none; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 12px; font-size: 0.8rem; color: #64748b; cursor: pointer;">Send another message</button>
+          </div>
+        </div>
+
+        <!-- Panel Footer -->
+        <div style="background: #f8fafc; border-top: 1px solid #f1f5f9; padding: 12px; text-align: center; font-size: 0.75rem; color: #94a3b8;">
+          Powered by <a href="https://zilo.pro" target="_blank" style="color: ${brandColor}; text-decoration: none; font-weight: 600;">Zilo CRM</a>
+        </div>
+      `;
+
+      // 3. Append elements to body
+      document.body.appendChild(bubble);
+      document.body.appendChild(panel);
+
+      // 4. Toggle Actions & Listeners
+      const bubbleBtn = document.getElementById('zilo-chat-bubble-btn');
+      const closeBtn = document.getElementById('zilo-chat-close-btn');
+      const crmSubmit = document.getElementById('zilo-chat-submit-crm');
+      const waSubmit = document.getElementById('zilo-chat-submit-whatsapp');
+      const successReset = document.getElementById('zilo-chat-success-reset');
+
+      const nameInput = document.getElementById('zilo-chat-input-name');
+      const contactInput = document.getElementById('zilo-chat-input-contact');
+      const msgInput = document.getElementById('zilo-chat-input-message');
+      const formContainer = document.getElementById('zilo-chat-form-container');
+      const successContainer = document.getElementById('zilo-chat-success-container');
+
+      // Expand / Collapse logic
+      let isOpen = false;
+      function togglePanel() {
+        isOpen = !isOpen;
+        if (isOpen) {
+          panel.style.display = 'flex';
+          // Force layout refresh before opacity change
+          panel.offsetHeight; 
+          panel.style.opacity = '1';
+          panel.style.transform = 'translateY(0) scale(1)';
+          bubbleBtn.style.transform = 'scale(0.9) rotate(45deg)';
+        } else {
+          panel.style.opacity = '0';
+          panel.style.transform = 'translateY(20px) scale(0.95)';
+          bubbleBtn.style.transform = 'scale(1) rotate(0deg)';
+          setTimeout(() => {
+            if (!isOpen) panel.style.display = 'none';
+          }, 300);
+        }
+      }
+
+      bubbleBtn.addEventListener('click', togglePanel);
+      closeBtn.addEventListener('click', togglePanel);
+
+      // Focus effect styles
+      [nameInput, contactInput, msgInput].forEach(inp => {
+        inp.addEventListener('focus', () => { inp.style.borderColor = brandColor; });
+        inp.addEventListener('blur', () => { inp.style.borderColor = '#cbd5e1'; });
+      });
+
+      // Submit direct Inquiry to Zilo CRM Inbox
+      crmSubmit.addEventListener('click', function() {
+        const name = nameInput.value.trim();
+        const contact = contactInput.value.trim();
+        const message = msgInput.value.trim();
+
+        if (!name || !contact || !message) {
+          alert('Please fill out all fields before sending.');
+          return;
+        }
+
+        crmSubmit.disabled = true;
+        crmSubmit.innerHTML = 'Sending...';
+
+        const submitUrl = `${self.config.apiUrl}/shopify/store-chat-widget/message/${self.config.businessId}`;
+        fetch(submitUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, contact, message })
+        })
+        .then(response => response.json())
+        .then(res => {
+          crmSubmit.disabled = false;
+          crmSubmit.innerHTML = 'Send Message';
+          
+          if (res.status === 'success') {
+            // Switch to successful state
+            formContainer.style.display = 'none';
+            successContainer.style.display = 'flex';
+            // Clear message input
+            msgInput.value = '';
+          } else {
+            alert('Failed to send message. Please try again.');
+          }
+        })
+        .catch(err => {
+          console.error('[Zilo] Submit inquiry error:', err);
+          crmSubmit.disabled = false;
+          crmSubmit.innerHTML = 'Send Message';
+          alert('A connection error occurred. Please try again.');
+        });
+      });
+
+      // Reset form to send another message
+      if (successReset) {
+        successReset.addEventListener('click', function() {
+          successContainer.style.display = 'none';
+          formContainer.style.display = 'flex';
+        });
+      }
+
+      // WhatsApp Prefilled Redirect Link Action
+      if (waSubmit) {
+        waSubmit.addEventListener('click', function() {
+          const name = nameInput.value.trim();
+          const message = msgInput.value.trim();
+          
+          let text = `Hello! I'm visiting your website.`;
+          if (name) text += ` My name is ${name}.`;
+          if (message) text += ` ${message}`;
+
+          const waUrl = `https://wa.me/${whatsapp}?text=${encodeURIComponent(text)}`;
+          window.open(waUrl, '_blank');
+        });
+      }
     },
   };
   

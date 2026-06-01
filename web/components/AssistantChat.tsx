@@ -142,6 +142,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_owner_info:        "Getting business info…",
   list_design_library_assets: "Loading design assets…",
   // Shopify
+  shopify_partner_create_store: "Creating Shopify store…",
   list_shopify_orders:   "Fetching Shopify orders…",
   list_shopify_products: "Fetching Shopify products…",
   get_shopify_analytics: "Pulling Shopify analytics…",

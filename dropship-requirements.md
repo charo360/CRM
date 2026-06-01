@@ -77,6 +77,13 @@ CJ_API_KEY=your_cj_api_key
 # AliExpress (when ready)
 ALIEXPRESS_APP_KEY=
 ALIEXPRESS_APP_SECRET=
+
+# Shopify Partner API — required for "create a Shopify store from chat"
+# SHOPIFY_PARTNER_ID     — numeric org ID from partners.shopify.com → Settings
+# SHOPIFY_PARTNER_ACCESS_TOKEN — generate at partners.shopify.com → Settings → Partner API clients → Create access token
+#   Required scopes: "Manage stores" (developmentStoreV2Create mutation)
+SHOPIFY_PARTNER_ID=
+SHOPIFY_PARTNER_ACCESS_TOKEN=
 ```
 
 ---

@@ -150,9 +150,11 @@ async def extract_and_populate_notebook(db: Any, user_id: str, orch: Orchestrato
 
     logger.info("[zilo-extractor] starting dynamic data extraction for user_id=%s", user_id)
 
-    # 1. Fetch user email
+    # 1. Fetch user email — only the actual account owner's address(es).
+    # Never hardcode addresses here: doing so makes every account treat those
+    # people as "self", leaking one tenant's identity into another's notebook.
     user_doc = await db.users.find_one({"_id": user_id})
-    user_emails = {"newlife101au@gmail.com", "sarcharo@gmail.com"}
+    user_emails: set[str] = set()
     if user_doc and user_doc.get("email"):
         user_emails.add(user_doc["email"].lower().strip())
 

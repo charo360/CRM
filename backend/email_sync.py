@@ -413,6 +413,17 @@ async def deep_sync_user(user_id: str, db: Any) -> None:
     )
     logger.info("[email_sync] deep_sync COMPLETE user=%s %d threads %d messages", user_id, total_threads, total_messages)
 
+    # Auto-classify historical email contacts after deep sync complete
+    if total_messages > 0:
+        try:
+            from email_classifier import get_email_classifier
+            classifier = get_email_classifier(db)
+            classify_result = await classifier.classify_new_emails(user_id)
+            logger.info("[email_sync] deep_sync contact classification complete user=%s: %s", user_id, classify_result)
+        except Exception as e:
+            logger.warning("[email_sync] classification failed after deep sync for user %s: %s", user_id, e)
+
+
 
 # ── DB read helpers ────────────────────────────────────────────────────────────
 

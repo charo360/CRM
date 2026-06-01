@@ -2,8 +2,10 @@
 Task Scheduler for Daily Digests
 Sends notifications at 8 AM and 3 PM daily
 """
+from __future__ import annotations
 import logging
 import asyncio
+import uuid
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,6 +19,54 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
+async def _acquire_lock(redis, lock_key: str, ttl_seconds: int = 300) -> bool:
+    """Acquire a Redis distributed lock. Returns True if acquired."""
+    try:
+        result = await redis.set(lock_key, "1", nx=True, ex=ttl_seconds)
+        return result is not None
+    except Exception:
+        return True  # fail-open
+
+
+async def _release_lock(redis, lock_key: str) -> None:
+    try:
+        await redis.delete(lock_key)
+    except Exception:
+        pass
+
+
+async def _log_scheduler_run(db, job_name: str, status: str, details: dict = None) -> str:
+    try:
+        run_id = str(uuid.uuid4())
+        await db.scheduler_runs.insert_one({
+            "_id": run_id,
+            "job_name": job_name,
+            "status": status,
+            "details": details or {},
+            "timestamp": datetime.utcnow()
+        })
+        return run_id
+    except Exception as e:
+        logger.error(f"[scheduler] failed to write run log: {e}")
+        return ""
+
+
+async def _update_scheduler_run(db, run_id: str, status: str, details: dict = None) -> None:
+    if not run_id:
+        return
+    try:
+        await db.scheduler_runs.update_one(
+            {"_id": run_id},
+            {"$set": {
+                "status": status,
+                "completed_at": datetime.utcnow(),
+                "details": details or {}
+            }}
+        )
+    except Exception as e:
+        logger.error(f"[scheduler] failed to update run log: {e}")
+
+
 async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "morning"):
     """
     Send daily digest to all active users
@@ -25,6 +75,20 @@ async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "mornin
         db: MongoDB database instance
         digest_type: "morning" (8 AM) or "afternoon" (3 PM)
     """
+    from redis_client import get_redis
+    redis_client = await get_redis()
+    job_name = f"send_daily_digest_{digest_type}"
+    
+    if redis_client:
+        lock_key = f"scheduler:lock:{job_name}"
+        if not await _acquire_lock(redis_client, lock_key, ttl_seconds=1700):
+            logger.info(f"[scheduler] {job_name} already running on another instance, skipping")
+            return
+            
+    run_id = await _log_scheduler_run(db, job_name, "running")
+    sent_count = 0
+    failed_count = 0
+    
     try:
         logger.info(f"Starting {digest_type} digest delivery...")
         
@@ -35,9 +99,6 @@ async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "mornin
         
         digest_service = get_digest_service(db)
         notification_service = get_notification_service()
-        
-        sent_count = 0
-        failed_count = 0
         
         for user in users:
             try:
@@ -98,9 +159,14 @@ async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "mornin
                 failed_count += 1
         
         logger.info(f"{digest_type.capitalize()} digest complete: {sent_count} sent, {failed_count} failed")
+        await _update_scheduler_run(db, run_id, "completed", {"sent": sent_count, "failed": failed_count})
         
     except Exception as e:
         logger.error(f"Fatal error in {digest_type} digest job: {e}")
+        await _update_scheduler_run(db, run_id, "failed", {"error": str(e)})
+    finally:
+        if redis_client:
+            await _release_lock(redis_client, lock_key)
 
 
 async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = False):
@@ -111,8 +177,22 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
         db: MongoDB database instance
         is_monday: If True, sends Monday-specific motivation
     """
+    from redis_client import get_redis
+    redis_client = await get_redis()
+    day_name = "Monday" if is_monday else datetime.utcnow().strftime("%A")
+    job_name = f"send_motivation_message_{day_name.lower()}"
+    
+    if redis_client:
+        lock_key = f"scheduler:lock:{job_name}"
+        if not await _acquire_lock(redis_client, lock_key, ttl_seconds=1700):
+            logger.info(f"[scheduler] {job_name} already running on another instance, skipping")
+            return
+            
+    run_id = await _log_scheduler_run(db, job_name, "running")
+    sent_count = 0
+    failed_count = 0
+    
     try:
-        day_name = "Monday" if is_monday else datetime.utcnow().strftime("%A")
         logger.info(f"Starting {day_name} motivation delivery...")
         
         # Get all active users with notifications enabled
@@ -121,9 +201,6 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
         }).to_list(1000)
         
         motivation_service = get_motivation_service(db)
-        
-        sent_count = 0
-        failed_count = 0
         
         for user in users:
             try:
@@ -160,9 +237,46 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
                 failed_count += 1
         
         logger.info(f"{day_name} motivation complete: {sent_count} sent, {failed_count} failed")
+        await _update_scheduler_run(db, run_id, "completed", {"sent": sent_count, "failed": failed_count})
         
     except Exception as e:
         logger.error(f"Fatal error in motivation job: {e}")
+        await _update_scheduler_run(db, run_id, "failed", {"error": str(e)})
+    finally:
+        if redis_client:
+            await _release_lock(redis_client, lock_key)
+
+
+async def retry_dlq_job(db: AsyncIOMotorDatabase):
+    """Pick up and retry unresolved DLQ jobs."""
+    try:
+        from redis_client import get_redis
+        redis_client = await get_redis()
+        if not redis_client:
+            return
+            
+        lock_key = "scheduler:lock:retry_dlq_job"
+        if not await _acquire_lock(redis_client, lock_key, ttl_seconds=800):
+            logger.info("[scheduler] retry_dlq_job already running on another instance, skipping")
+            return
+            
+        run_id = await _log_scheduler_run(db, "retry_dlq_job", "running")
+        requeued_count = 0
+        try:
+            from rex.integrations.dead_letter import retry_dead_letter_jobs
+            from redis_client import QUEUE_BROADCAST, QUEUE_RECEIPT
+            r1 = await retry_dead_letter_jobs(db, redis_client, QUEUE_BROADCAST, limit=20)
+            r2 = await retry_dead_letter_jobs(db, redis_client, QUEUE_RECEIPT, limit=20)
+            requeued_count = r1 + r2
+            await _update_scheduler_run(db, run_id, "completed", {"requeued": requeued_count})
+        except Exception as e:
+            logger.error(f"[scheduler] retry_dlq_job failed: {e}")
+            await _update_scheduler_run(db, run_id, "failed", {"error": str(e)})
+        finally:
+            await _release_lock(redis_client, lock_key)
+            
+    except Exception as e:
+        logger.error(f"[scheduler] Fatal error in retry_dlq_job: {e}")
 
 
 def start_scheduler(db: AsyncIOMotorDatabase):
@@ -199,6 +313,16 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         args=[db, True],  # is_monday=True
         id="monday_motivation",
         name="Monday Motivation (9 AM)",
+        replace_existing=True
+    )
+    
+    # DLQ retry job every 15 minutes
+    scheduler.add_job(
+        retry_dlq_job,
+        CronTrigger(minute="*/15"),
+        args=[db],
+        id="retry_dlq_job",
+        name="Retry DLQ Jobs (every 15 min)",
         replace_existing=True
     )
     

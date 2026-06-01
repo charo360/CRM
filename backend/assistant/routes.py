@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
 import json
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .documents import delete_document, list_for_conversation, store_upload
@@ -119,6 +119,7 @@ def _extract_workspace_updates(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def _mk_router(db, get_current_user):
     """Factory — binds db + auth dep into the router. Call this from server.py."""
+    router = APIRouter(prefix="/assistant", tags=["assistant"])
 
     async def _load_accessible_conv(conv_id: str, user) -> Dict[str, Any]:
         from assistant.conversation_access import tenant_user_ids
@@ -1199,6 +1200,50 @@ def _mk_router(db, get_current_user):
             "created_at": r.get("created_at"),
         } for r in rows]
 
+    @router.get("/admin/audit/export")
+    async def audit_export(
+        start: Optional[str] = Query(None),
+        end: Optional[str] = Query(None),
+        event_type: Optional[str] = Query(None),
+        limit: int = Query(500),
+        user=Depends(get_current_user)
+    ):
+        """Export audit log records as NDJSON."""
+        user_id = user.get("business_id", user["_id"])
+        query: Dict[str, Any] = {"user_id": user_id}
+        
+        if start or end:
+            created_query: Dict[str, Any] = {}
+            if start:
+                try:
+                    created_query["$gte"] = datetime.fromisoformat(start)
+                except ValueError:
+                    raise HTTPException(400, "start must be a valid ISO date string")
+            if end:
+                try:
+                    created_query["$lte"] = datetime.fromisoformat(end)
+                except ValueError:
+                    raise HTTPException(400, "end must be a valid ISO date string")
+            query["created_at"] = created_query
+            
+        if event_type:
+            query["event_type"] = event_type
+            
+        limit_val = max(1, min(int(limit or 500), 5000))
+        
+        async def _generate_ndjson():
+            cursor = db.assistant_audit_log.find(query).sort("created_at", 1).limit(limit_val)
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                if isinstance(doc.get("created_at"), datetime):
+                    doc["created_at"] = doc["created_at"].isoformat()
+                yield json.dumps(doc, default=str) + "\n"
+                
+        return StreamingResponse(
+            _generate_ndjson(),
+            media_type="application/x-ndjson",
+        )
+
     @router.post("/ai-draft")
     async def ai_draft(req: Request, user=Depends(get_current_user)):
         """Lightweight single-turn LLM call for email drafts, classification, and summaries.
@@ -1249,6 +1294,34 @@ def _mk_router(db, get_current_user):
             "top_product": stats.get("top_product"),
             "total_revenue_window": stats.get("total_revenue_window"),
         }
+
+    @router.get("/usage")
+    async def assistant_usage(user=Depends(get_current_user)):
+        import os
+        from redis_client import get_redis
+        from assistant.quota_service import get_usage_summary
+        
+        redis = await get_redis()
+        business_id = user.get("business_id", user["_id"])
+        plan = user.get("plan", "free")
+        
+        # Determine provider based on default model
+        model = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-v4-pro")
+        provider = "deepseek"
+        if "openai" in model:
+            provider = "openai"
+        elif "anthropic" in model or "claude" in model:
+            provider = "anthropic"
+        elif "grok" in model:
+            provider = "grok"
+            
+        summary = await get_usage_summary(
+            redis=redis,
+            business_id=business_id,
+            plan=plan,
+            model_provider=provider,
+        )
+        return summary
 
     return router
 

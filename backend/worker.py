@@ -155,6 +155,7 @@ async def handle_receipt(job: dict, db) -> None:
         logging.info(f"[Worker][Receipt] Receipt sent for sale {job['sale_id']}")
     except Exception as e:
         logging.error(f"[Worker][Receipt] Failed for sale {job.get('sale_id')}: {e}")
+        raise
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -162,9 +163,37 @@ async def handle_receipt(job: dict, db) -> None:
 QUEUES = [QUEUE_BROADCAST, QUEUE_RECEIPT, QUEUE_AI_REPLY]
 
 
+def start_health_server(port: int = 8001):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status": "healthy"}')
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass  # Suppress standard logging
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logging.info(f"[Worker] Health check server started on port {port}")
+
+
 async def main():
     logging.info("[Worker] Starting — connecting to DB and Redis...")
     db = await _get_db()
+
+    # Start health check server
+    port = int(os.environ.get("WORKER_PORT") or os.environ.get("PORT") or "8001")
+    start_health_server(port)
 
     # Verify Redis connection
     r = await get_redis()
@@ -188,15 +217,31 @@ async def main():
             job_type = job.get("type", queue)
             logging.info(f"[Worker] Processing job type={job_type} queue={queue}")
 
-            try:
-                if queue == QUEUE_BROADCAST:
-                    await handle_broadcast(job, db)
-                elif queue == QUEUE_RECEIPT:
-                    await handle_receipt(job, db)
-                else:
-                    logging.warning(f"[Worker] No handler for queue {queue}")
-            except Exception as e:
-                logging.error(f"[Worker] Job failed (type={job_type}): {e}", exc_info=True)
+            # Main job execution with retry
+            MAX_JOB_ATTEMPTS = 3
+            for attempt in range(1, MAX_JOB_ATTEMPTS + 1):
+                try:
+                    if queue == QUEUE_BROADCAST:
+                        await handle_broadcast(job, db)
+                    elif queue == QUEUE_RECEIPT:
+                        await handle_receipt(job, db)
+                    else:
+                        logging.warning(f"[Worker] No handler for queue {queue}")
+                    break
+                except Exception as e:
+                    if attempt == MAX_JOB_ATTEMPTS:
+                        logging.error(f"[Worker] Job failed after {attempt} attempts, sending to DLQ: {e}", exc_info=True)
+                        from rex.integrations.dead_letter import enqueue_dead_letter
+                        await enqueue_dead_letter(
+                            db=db,
+                            queue=queue,
+                            job_payload=job,
+                            error=str(e),
+                            attempt=attempt,
+                        )
+                    else:
+                        logging.warning(f"[Worker] Job attempt {attempt}/{MAX_JOB_ATTEMPTS} failed: {e}")
+                        await asyncio.sleep(2 ** attempt)  # backoff
 
         except Exception as e:
             logging.error(f"[Worker] Unexpected error in main loop: {e}", exc_info=True)
