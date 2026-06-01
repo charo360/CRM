@@ -8416,6 +8416,30 @@ async def composio_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "accepted"}
 
 
+# ============ OUTLOOK WEBHOOK ============
+
+@api_router.post("/webhooks/outlook")
+async def outlook_webhook(request: Request, background_tasks: BackgroundTasks, validationToken: Optional[str] = None):
+    """
+    Microsoft Graph Webhook notification/validation endpoint for Outlook.
+    Validates subscriptions (via validationToken parameter) and processes incoming email events.
+    """
+    if validationToken:
+        logging.info(f"[outlook-webhook] Received subscription validation handshake: {validationToken}")
+        from fastapi import Response
+        return Response(content=validationToken, media_type="text/plain")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        logging.warning("[outlook-webhook] Invalid JSON payload received")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    from outlook_webhook_service import handle_outlook_notification
+    background_tasks.add_task(handle_outlook_notification, payload, db)
+    return {"status": "accepted"}
+
+
 # ============ EVOLUTION API WEBHOOK ============
 
 async def _apply_inbound_routing_bg(
@@ -15026,6 +15050,20 @@ async def email_db_sync_status(user=Depends(get_current_user)):
         "progress_pct":   status.get("progress_pct", 0),
         "completed_at":   str(status.get("completed_at", "")),
     }
+
+
+@api_router.post("/emails/outlook/subscribe")
+async def register_outlook_webhook(user = Depends(get_current_user)):
+    """
+    Manually register or re-register a Microsoft Graph push notification subscription
+    for Outlook Inbox changes.
+    """
+    user_id = str(user.get("business_id") or user["_id"])
+    from outlook_webhook_service import create_outlook_subscription
+    res = await create_outlook_subscription(user_id, db)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return {"status": "success", "subscription_id": res.get("subscription_id")}
 
 
 @api_router.get("/email-db/threads")

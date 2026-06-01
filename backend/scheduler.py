@@ -279,6 +279,34 @@ async def retry_dlq_job(db: AsyncIOMotorDatabase):
         logger.error(f"[scheduler] Fatal error in retry_dlq_job: {e}")
 
 
+async def renew_outlook_subscriptions_job(db: AsyncIOMotorDatabase):
+    """Pick up and renew Outlook webhook subscriptions nearing expiration."""
+    try:
+        from redis_client import get_redis
+        redis_client = await get_redis()
+        if not redis_client:
+            return
+            
+        lock_key = "scheduler:lock:renew_outlook_subscriptions"
+        if not await _acquire_lock(redis_client, lock_key, ttl_seconds=800):
+            logger.info("[scheduler] renew_outlook_subscriptions_job already running on another instance, skipping")
+            return
+            
+        run_id = await _log_scheduler_run(db, "renew_outlook_subscriptions_job", "running")
+        try:
+            from outlook_webhook_service import renew_outlook_subscriptions
+            res = await renew_outlook_subscriptions(db)
+            await _update_scheduler_run(db, run_id, "completed", res)
+        except Exception as e:
+            logger.error(f"[scheduler] renew_outlook_subscriptions_job failed: {e}")
+            await _update_scheduler_run(db, run_id, "failed", {"error": str(e)})
+        finally:
+            await _release_lock(redis_client, lock_key)
+            
+    except Exception as e:
+        logger.error(f"[scheduler] Fatal error in renew_outlook_subscriptions_job: {e}")
+
+
 def start_scheduler(db: AsyncIOMotorDatabase):
     """
     Start the scheduler with daily digest jobs
@@ -323,6 +351,16 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         args=[db],
         id="retry_dlq_job",
         name="Retry DLQ Jobs (every 15 min)",
+        replace_existing=True
+    )
+
+    # Outlook webhook subscription renewal every 6 hours
+    scheduler.add_job(
+        renew_outlook_subscriptions_job,
+        CronTrigger(hour="*/6"),
+        args=[db],
+        id="renew_outlook_subscriptions",
+        name="Renew Outlook Subscriptions (every 6 hours)",
         replace_existing=True
     )
     
