@@ -20,6 +20,11 @@ import {
   UserPlus,
   Wand2,
   Pencil,
+  Globe,
+  ShoppingBag,
+  CreditCard,
+  BadgePercent,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -97,6 +102,24 @@ const ACTION_LABELS: Record<string, string> = {
   escalate_to_human: "Escalate to human",
   wait: "Wait",
   if_no_reply: "If no reply",
+  shopify_fulfill_order: "Shopify: Fulfill order",
+  shopify_create_discount: "Shopify: Create discount",
+  shopify_send_recovery: "Shopify: Send recovery message",
+  browser_navigate: "Browser: Navigate tab",
+  browser_click: "Browser: Click element",
+  browser_type: "Browser: Type text",
+  browser_scroll: "Browser: Scroll to element",
+  browser_extract: "Browser: Extract data",
+  create_invoice_draft: "Billing: Create Invoice Draft",
+  social_publish_post: "Social: Publish Social Post",
+  design_and_publish_post: "AI Design: Generate & Publish Banner",
+  run_ai_specialist_agent: "AI Swarm: Run Specialist Agent",
+  gmail_send_email: "Gmail: Send customized email",
+  linkedin_send_outreach: "Social: Send automated outreach",
+  meta_pause_campaign: "Meta Ads: Pause underperforming ad",
+  run_funding_scan: "Grants: Scan funding opportunities",
+  generate_presentation_deck: "Slides: Compile presentation deck",
+  generate_business_forecast: "BI Analytics: Run urgency forecast",
 };
 
 function friendlyAction(action: string) {
@@ -217,6 +240,515 @@ const QUICK_TEMPLATES: {
       enabled: true,
     },
   },
+  {
+    id: "shopify_dropship_procure",
+    title: "Auto-order dropshipping",
+    blurb: "Auto order via Browser Companion",
+    icon: Globe,
+    aiHint:
+      "When a Shopify order is placed, use the browser companion tab to navigate to the supplier, type the shipping name and details, and extract the supplier order number to notify the owner.",
+    payload: {
+      name: "Auto dropship procurement",
+      description: "Triggers browser companion to place orders on supplier sites.",
+      trigger: { type: "shopify_order_created", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "browser_navigate",
+          params: {
+            url: "https://cjdropshipping.com/buy-now",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "browser_type",
+          params: {
+            selector: "input[name='shipping_name']",
+            text: "{customer_name}",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_3",
+          action: "browser_extract",
+          params: {
+            selector: ".supplier-order-id",
+            data_type: "text",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_4",
+          action: "notify_owner",
+          params: {
+            title: "Dropship order placed",
+            message: "Supplier order for {customer_name} placed! Ref: {extracted_text}",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "payhero_mpesa_confirm",
+    title: "M-Pesa payment receipts",
+    blurb: "Confirm payments & tag paid customer",
+    icon: CreditCard,
+    aiHint:
+      "When a PayHero M-Pesa payment is received, thank the customer on WhatsApp with the amount, tag them as paid_customer, and mark their pipeline stage as won.",
+    payload: {
+      name: "M-Pesa auto-receipts",
+      description: "Confirms payments received via PayHero and tags the customer.",
+      trigger: { type: "payhero_payment_received", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "send_message",
+          params: {
+            destination: "customer_whatsapp",
+            message: "Thank you {customer_name}! We have received your M-Pesa payment of Ksh. {amount}. Your order is now being processed.",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "tag_contact",
+          params: { tag: "paid_customer" },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_3",
+          action: "move_pipeline_stage",
+          params: { stage: "won" },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "shopify_abandoned_cart_recovery",
+    title: "Cart recovery sequence",
+    blurb: "Recover carts & send discount code",
+    icon: BadgePercent,
+    aiHint:
+      "When a Shopify cart is abandoned, auto-create a 10% discount, send an abandoned cart recovery WhatsApp message, wait 24 hours, and send a final follow-up if they have not replied.",
+    payload: {
+      name: "Cart recovery sequence",
+      description: "Recovers abandoned Shopify carts with a custom discount code.",
+      trigger: { type: "shopify_abandoned_cart", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "shopify_send_recovery",
+          params: {
+            message: "Hi {first_name}! We saved your cart. Use code {discount_code} for 10% off: {recovery_url}",
+            discount_value: 10,
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "wait",
+          params: { hours: 24 },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_3",
+          action: "if_no_reply",
+          params: {},
+          delay_minutes: 0,
+        },
+        {
+          id: "step_4",
+          action: "send_message",
+          params: {
+            destination: "customer_whatsapp",
+            message: "Hey {first_name}! Just a quick reminder that your 10% discount code {discount_code} is expiring soon. Click here to grab your items: {recovery_url}",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "shopify_vip_escalation",
+    title: "VIP onboarding",
+    blurb: "VIP Order alert & human handoff",
+    icon: ShoppingBag,
+    aiHint:
+      "When a high-value Shopify order is created (value > 200), tag them as vip_customer, send a welcome WhatsApp, alert the business owner, and escalate for human care.",
+    payload: {
+      name: "VIP high-value onboarding",
+      description: "Tags, alerts, and escalates high-value shopify customers.",
+      trigger: { type: "shopify_order_created", condition: "order_value > 200" },
+      steps: [
+        {
+          id: "step_1",
+          action: "tag_contact",
+          params: { tag: "vip_customer" },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "send_message",
+          params: {
+            destination: "customer_whatsapp",
+            message: "Hi {customer_name}! Thank you for your VIP order of {order_value}. Our premium preparation team is hand-packaging your items.",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_3",
+          action: "notify_owner",
+          params: {
+            title: "VIP Order Alert!",
+            message: "VIP Customer {customer_name} placed an order of {order_value}! Please initiate premium package prep.",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_4",
+          action: "escalate_to_human",
+          params: { reason: "VIP onboarding and custom hand-written thank you note requested." },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "shopify_low_stock_sourcing",
+    title: "Low stock auto-procure",
+    blurb: "Restock alert & browser navigate",
+    icon: AlertTriangle,
+    aiHint:
+      "When a Shopify product's stock drops below 5, send a notification to the business owner, and open the companion browser tab to the supplier inventory management portal.",
+    payload: {
+      name: "Low stock sourcing flow",
+      description: "Alerts low stock and pre-opens supplier portal on the browser companion.",
+      trigger: { type: "shopify_low_stock", condition: "quantity < 5" },
+      steps: [
+        {
+          id: "step_1",
+          action: "notify_owner",
+          params: {
+            title: "Low Stock Alert!",
+            message: "Product {product_name} is running low (only {quantity} left). Restock immediately.",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "browser_navigate",
+          params: { url: "https://cjdropshipping.com/my-products" },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "unified_mpesa_dropship_flow",
+    title: "Unified M-Pesa to Dropship",
+    blurb: "M-Pesa payment auto-sources items",
+    icon: Wand2,
+    aiHint:
+      "When a PayHero M-Pesa payment is received, thank the customer on WhatsApp, tag them as fully_paid, move them to won, navigate the browser to supplier, fill their details, extract order code, notify owner and schedule follow up.",
+    payload: {
+      name: "Omnichannel PayHero to CJdropship",
+      description: "Complete cross-system pipeline bridging M-Pesa, CRM, Browser Extension, Follow-ups & Notifications.",
+      trigger: { type: "payhero_payment_received", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "send_message",
+          params: {
+            destination: "customer_whatsapp",
+            message: "Thanks {customer_name}! Your M-Pesa payment of Ksh. {amount} is confirmed. We are procuring your item right now!",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "tag_contact",
+          params: { tag: "fully_paid" },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_3",
+          action: "move_pipeline_stage",
+          params: { stage: "won" },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_4",
+          action: "browser_navigate",
+          params: { url: "https://cjdropshipping.com/buy-now" },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_5",
+          action: "browser_type",
+          params: {
+            selector: "input[name='shipping_phone']",
+            text: "{phone}",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_6",
+          action: "browser_extract",
+          params: {
+            selector: ".supplier-order-id",
+            data_type: "text",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_7",
+          action: "notify_owner",
+          params: {
+            title: "Dropship order purchased",
+            message: "M-Pesa payment of Ksh.{amount} by {customer_name} auto-procured! CJ Ref: {extracted_text}",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_8",
+          action: "create_followup",
+          params: {
+            note: "Verify CJ shipment tracking for order {extracted_text} for client {customer_name}",
+            due_hours: 48,
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "billing_auto_delivery_flow",
+    title: "Onboarding invoice delivery",
+    blurb: "Auto-create & send invoice drafts",
+    icon: CreditCard,
+    aiHint:
+      "When a new customer is created, draft an invoice of KES 5000 for setup fees, and send a WhatsApp with the dynamic invoice_url.",
+    payload: {
+      name: "Onboarding Setup Retainer",
+      description: "Auto-creates a setup fee invoice draft and shares it on WhatsApp.",
+      trigger: { type: "customer_created", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "create_invoice_draft",
+          params: {
+            currency: "KES",
+            items: [
+              { name: "Setup retainer & workspace onboarding configuration", rate: 5000, qty: 1 }
+            ],
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "send_message",
+          params: {
+            destination: "customer_whatsapp",
+            message: "Hi {customer_name}! Your onboarding setup retainer is ready. Access the invoice here: {invoice_url}",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "social_celebrate_invoice_paid",
+    title: "Invoice paid social celebrator",
+    blurb: "Celebrate invoices paid on socials",
+    icon: Sparkles,
+    aiHint:
+      "When an invoice is paid, publish a celebratory social post welcoming the customer, and push notify the owner.",
+    payload: {
+      name: "Client welcome celebrator",
+      description: "Auto-welcomes paid clients on Facebook and LinkedIn, and triggers owner alert.",
+      trigger: { type: "invoice_paid", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "social_publish_post",
+          params: {
+            message: "We just onboarded a new customer! Shout out to {customer_name} for choosing {business_name}! Let's make great things happen together! 🎉🚀",
+            platforms: ["facebook", "linkedin"],
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "notify_owner",
+          params: {
+            title: "Celebrated on socials!",
+            message: "Successfully pushed social celebration post for {customer_name}'s payment of {amount}!",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "ai_design_and_publish_campaign",
+    title: "AI social media campaign",
+    blurb: "Design & publish to socials with AI",
+    icon: Wand2,
+    aiHint:
+      "When a Shopify order is marked as fulfilled, use Gemini AI to generate a highly polished custom design graphic celebrating the order, and automatically publish it on Facebook, Instagram, and LinkedIn.",
+    payload: {
+      name: "Fulfillment celebration campaign",
+      description: "Generates an elite Gemini graphic design and publishes it across all active channels.",
+      trigger: { type: "shopify_order_fulfilled", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "design_and_publish_post",
+          params: {
+            headline: "Another order shipped successfully!",
+            subtext: "Quality and speed are our brand guarantees. Enjoy premium delivery!",
+            cta: "Shop Now",
+            brand_color: "#4CD137",
+            style: "split horizon",
+            product_description: "Premium fulfillment and global dropshipping delivery services.",
+            platforms: ["facebook", "instagram", "linkedin"],
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "notify_owner",
+          params: {
+            title: "AI Post Published",
+            message: "Gemini successfully designed and published a congratulations post for your recent fulfillment!",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "auto_nda_document_generator",
+    title: "Autonomous contract generator",
+    blurb: "Draft complex agreements autonomously",
+    icon: Sparkles,
+    aiHint:
+      "When a new customer is created, deploy the autonomous Document specialist agent in the background to draft a professional Non-Disclosure Agreement (NDA) customized for them, and deliver the draft on WhatsApp.",
+    payload: {
+      name: "Autonomous NDA Generation",
+      description: "Deploys background agents to generate custom contracts and deliver drafts instantly.",
+      trigger: { type: "customer_created", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "run_ai_specialist_agent",
+          params: {
+            agent_id: "document",
+            task_description: "Draft a formal, concise Mutual Non-Disclosure Agreement (NDA) between our business ({business_name}) and customer {customer_name}. Include standard clauses for confidentiality, duration of 2 years, and governing law.",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "send_message",
+          params: {
+            destination: "customer_whatsapp",
+            message: "Hi {customer_name}! We are excited to partner with you. Our Zilo AI Document specialist has automatically drafted our Mutual Non-Disclosure Agreement (NDA) based on your details:\n\n{agent_result}\n\nPlease reply if you need any adjustments!",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "omnichannel_outreach_campaign",
+    title: "Omnichannel lead scout",
+    blurb: "Draft & dispatch social cold pitches",
+    icon: Wand2,
+    aiHint:
+      "When a new social lead is discovered on Facebook or LinkedIn, use a background Specialist agent to draft a highly customized, natural initial message, automatically post outreach, and queue a pitch email.",
+    payload: {
+      name: "Social Lead Auto-Outreach",
+      description: "Auto-reaches out to social leads via LinkedIn/Facebook and follows up on email.",
+      trigger: { type: "social_lead_discovered", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "run_ai_specialist_agent",
+          params: {
+            agent_id: "social",
+            task_description: "Write a short, engaging, non-salesy initial cold message to the lead {lead_author} who is interested in {keyword}. Reference their post text: '{lead_text}'",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "linkedin_send_outreach",
+          params: {
+            url: "{url}",
+            message: "{agent_result}",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_3",
+          action: "notify_owner",
+          params: {
+            title: "Outreach Sent!",
+            message: "Sent automated outreach pitch to {lead_author} on social media.",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
+  {
+    id: "meta_ads_budget_safeguard",
+    title: "Ad budget autopilot safeguard",
+    blurb: "Pause wasting ad campaigns instantly",
+    icon: Sparkles,
+    aiHint:
+      "When an ad performance threshold fails or CPC spikes, automatically pause the underperforming Facebook/Instagram campaign and send a mobile push alert.",
+    payload: {
+      name: "Ads Budget Safeguard",
+      description: "Auto-pauses losing Meta ad campaigns and push notifies you.",
+      trigger: { type: "meta_ad_health_alert", condition: "always" },
+      steps: [
+        {
+          id: "step_1",
+          action: "meta_pause_campaign",
+          params: {
+            campaign_id: "{campaign_id}",
+          },
+          delay_minutes: 0,
+        },
+        {
+          id: "step_2",
+          action: "notify_owner",
+          params: {
+            title: "🛑 Meta Ad Paused",
+            message: "Ad campaign {campaign_id} was automatically paused due to high CPC / poor return indicators to protect your budget.",
+          },
+          delay_minutes: 0,
+        },
+      ],
+      enabled: true,
+    },
+  },
 ];
 
 const EXAMPLE_PROMPTS = [
@@ -260,6 +792,17 @@ function TriggerBadge({ trigger }: { trigger: WorkflowTrigger }) {
     tag_added: "Tag added",
     customer_created: "New customer",
     pipeline_stage_changed: "Stage changed",
+    payhero_payment_received: "M-Pesa Paid",
+    shopify_order_created: "Shopify Order placed",
+    shopify_order_fulfilled: "Shopify Order fulfilled",
+    shopify_abandoned_cart: "Shopify Cart abandoned",
+    shopify_low_stock: "Shopify Low stock",
+    shopify_refund_created: "Shopify Refunded",
+    invoice_created: "Invoice Created",
+    invoice_paid: "Invoice Paid",
+    gmail_email_received: "Email received",
+    social_lead_discovered: "Lead discovered",
+    meta_ad_health_alert: "Ad health alert",
   };
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-[#009B3A] ring-1 ring-[#009B3A]/20">

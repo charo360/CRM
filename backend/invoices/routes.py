@@ -77,6 +77,30 @@ async def _auto_record_paid(db, doc: dict) -> None:
     except Exception as e:
         logger.warning(f"[invoices] finance entry failed: {e}")
 
+    # Fire workflow trigger
+    try:
+        from workflows.engine import fire_trigger
+        from workflows.models import WorkflowEvent
+        from whatsapp_service import get_whatsapp_service
+        ws = get_whatsapp_service(db)
+        event = WorkflowEvent(
+            trigger_type="invoice_paid",
+            user_id=tid,
+            customer_id=customer_id if customer_id != "walk-in" else None,
+            from_number=doc.get("customer_phone") or "",
+            data={
+                "invoice_id": inv_id,
+                "invoice_number": doc.get("number", ""),
+                "amount": total,
+                "currency": currency,
+                "customer_name": customer_name,
+            }
+        )
+        import asyncio
+        asyncio.create_task(fire_trigger(db, event, ws))
+    except Exception as e:
+        logger.warning(f"[invoices] fire_trigger paid failed: {e}")
+
 
 ALLOWED_STATUS = frozenset({"draft", "sent", "viewed", "paid", "partial", "overdue", "cancelled"})
 

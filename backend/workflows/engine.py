@@ -103,15 +103,62 @@ def _evaluate_condition(condition: Optional[str], event: WorkflowEvent) -> bool:
 # ── Message interpolation ──────────────────────────────────────────────────────
 
 def _interpolate(text: str, user: dict, customer: dict, event_data: dict) -> str:
-    """Replace {placeholder} tokens in message text."""
+    """
+    Replace {placeholder} tokens in message text with user, customer, and event data.
+    Supports case-insensitivty, hyphens/underscores/dots, and dictionary nested fields.
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    # Core/default replacements
     replacements = {
-        "customer_name":  (customer or {}).get("name", "there"),
-        "business_name":  (user or {}).get("business_name", ""),
-        "first_name":     ((customer or {}).get("name") or "there").split()[0],
-        "phone":          (customer or {}).get("phone", ""),
+        "customer_name": (customer or {}).get("name") or "there",
+        "business_name": (user or {}).get("business_name") or (user or {}).get("name") or "our business",
+        "first_name": ((customer or {}).get("name") or "there").split()[0],
+        "phone": (customer or {}).get("phone") or "",
     }
-    for key, value in replacements.items():
-        text = text.replace(f"{{{key}}}", str(value))
+
+    # Add all keys of user
+    for k, v in (user or {}).items():
+        if v is not None and k not in replacements:
+            replacements[k] = str(v)
+
+    # Add all keys of customer
+    for k, v in (customer or {}).items():
+        if v is not None and k not in replacements:
+            replacements[k] = str(v)
+
+    # Add all keys of event_data (e.g. Shopify variables)
+    for k, v in (event_data or {}).items():
+        if v is not None:
+            if isinstance(v, dict):
+                # Flatten single level nested dict, e.g. {"order": {"total_price": "50"}} -> order_total_price, total_price
+                for nk, nv in v.items():
+                    if nv is not None:
+                        replacements[f"{k}_{nk}"] = str(nv)
+                        replacements[f"{k}.{nk}"] = str(nv)
+                        if nk not in replacements:
+                            replacements[nk] = str(nv)
+            else:
+                replacements[k] = str(v)
+
+    import re
+    # Find anything inside single curly braces, supporting words, underscores, hyphens, and dots
+    placeholders = re.findall(r"\{([a-zA-Z0-9_\-\.]+)\}", text)
+    for p in placeholders:
+        # Normalize: lowercase and replace hyphens/dots with underscores
+        norm_p = p.lower().strip().replace("-", "_").replace(".", "_")
+        matched_val = None
+        
+        for rk, rv in replacements.items():
+            norm_rk = rk.lower().strip().replace("-", "_").replace(".", "_")
+            if norm_rk == norm_p:
+                matched_val = rv
+                break
+                
+        if matched_val is not None:
+            text = text.replace(f"{{{p}}}", str(matched_val))
+            
     return text
 
 
@@ -195,7 +242,7 @@ async def _execute_capability(
 
         elif action == "notify_owner":
             msg = _interpolate(params.get("message", "Workflow alert"), user, customer, event_data)
-            title = params.get("title", "Workflow Alert")
+            title = _interpolate(params.get("title", "Workflow Alert"), user, customer, event_data)
             await _push_notify(db, user_id, title, msg, {"type": "workflow"})
             return True
 
@@ -378,6 +425,334 @@ async def _execute_capability(
                     send_context="shopify_recovery",
                 )
                 logger.info(f"[WorkflowEngine] shopify_send_recovery → {phone}")
+            return True
+
+        # ── Browser Automation Actions ────────────────────────────────────────
+        elif action == "browser_navigate":
+            url = _interpolate(params.get("url", ""), user, customer, event_data)
+            if url:
+                if not url.startswith("http://") and not url.startswith("https://"):
+                    url = f"https://{url}"
+                from browser_control.websocket import send_browser_command
+                await send_browser_command(user_id, "navigate", url=url)
+                logger.info(f"[WorkflowEngine] browser_navigate '{url}'")
+            return True
+
+        elif action == "browser_click":
+            selector = _interpolate(params.get("selector", ""), user, customer, event_data)
+            if selector:
+                from browser_control.websocket import send_browser_command
+                await send_browser_command(user_id, "click", selector=selector)
+                logger.info(f"[WorkflowEngine] browser_click '{selector}'")
+            return True
+
+        elif action == "browser_type":
+            selector = _interpolate(params.get("selector", ""), user, customer, event_data)
+            text_val = _interpolate(params.get("text", ""), user, customer, event_data)
+            if selector and text_val:
+                from browser_control.websocket import send_browser_command
+                await send_browser_command(user_id, "type", selector=selector, text=text_val)
+                logger.info(f"[WorkflowEngine] browser_type '{selector}' with text")
+            return True
+
+        elif action == "browser_scroll":
+            selector = _interpolate(params.get("selector", ""), user, customer, event_data)
+            if selector:
+                from browser_control.websocket import send_browser_command
+                await send_browser_command(user_id, "scroll", selector=selector)
+                logger.info(f"[WorkflowEngine] browser_scroll '{selector}'")
+            return True
+
+        elif action == "browser_extract":
+            selector = _interpolate(params.get("selector", ""), user, customer, event_data)
+            data_type = params.get("data_type", "text")
+            attr_name = params.get("attribute_name", "")
+            if selector:
+                from browser_control.websocket import send_browser_command
+                res = await send_browser_command(
+                    user_id, "extract", selector=selector, data_type=data_type, text=attr_name
+                )
+                logger.info(f"[WorkflowEngine] browser_extract '{selector}' result: {res}")
+                if res and isinstance(res, dict):
+                    extracted_text = res.get("text") or res.get("extracted_value") or ""
+                    event_data["extracted_text"] = extracted_text
+            return True
+
+        # ── Invoice & Accounting Actions ──────────────────────────────────────
+        elif action == "create_invoice_draft":
+            items_input = params.get("items") or [{"name": "Service Rendered", "qty": 1, "rate": 10.0}]
+            resolved_items = []
+            total_calc = 0.0
+            for item in items_input:
+                rate = float(item.get("rate") or 0.0)
+                qty = float(item.get("qty") or item.get("quantity") or 1)
+                item_total = rate * qty
+                total_calc += item_total
+                resolved_items.append({
+                    "name": _interpolate(item.get("name", "Service Item"), user, customer, event_data),
+                    "qty": qty,
+                    "rate": rate,
+                    "total": item_total,
+                })
+            
+            # Generate invoice document
+            from invoices.routes import _next_number
+            count = await db.invoices.count_documents({"user_id": user_id})
+            import secrets
+            invoice_doc = {
+                "_id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "customer_id": customer_id or "walk-in",
+                "customer_name": (customer or {}).get("name") or "Customer",
+                "customer_phone": from_number,
+                "number": _next_number(count),
+                "items": resolved_items,
+                "subtotal": total_calc,
+                "tax": 0.0,
+                "total": total_calc,
+                "currency": params.get("currency", "KES"),
+                "status": "draft",
+                "share_token": secrets.token_urlsafe(16),
+                "view_count": 0,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+            }
+            await db.invoices.insert_one(invoice_doc)
+            logger.info(f"[WorkflowEngine] create_invoice_draft '{invoice_doc['number']}' created")
+            event_data["invoice_number"] = invoice_doc["number"]
+            event_data["invoice_total"] = total_calc
+            event_data["invoice_url"] = f"https://zilo.app/public/invoice/{invoice_doc['share_token']}"
+            return True
+
+        # ── Social Media Scheduling Actions ───────────────────────────────────
+        elif action == "social_publish_post":
+            message = _interpolate(params.get("message", ""), user, customer, event_data)
+            image_url = params.get("image_url", "").strip()
+            
+            post_id = str(uuid.uuid4())
+            now = datetime.utcnow()
+            post = {
+                "_id": post_id,
+                "user_id": user_id,
+                "text": message,
+                "image_url": image_url,
+                "status": "published",
+                "platforms": params.get("platforms") or ["facebook", "instagram", "linkedin"],
+                "created_at": now,
+                "updated_at": now,
+            }
+            await db.social_posts.insert_one(post)
+            try:
+                from social_publish_service import push_post_to_zernio
+                await push_post_to_zernio(db, post)
+                logger.info(f"[WorkflowEngine] social_publish_post successfully published via Zernio")
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] social_publish_post failed: {e}")
+            return True
+
+        elif action == "design_and_publish_post":
+            headline = _interpolate(params.get("headline", ""), user, customer, event_data)
+            subtext = _interpolate(params.get("subtext", ""), user, customer, event_data)
+            cta = _interpolate(params.get("cta", ""), user, customer, event_data)
+            brand_color = params.get("brand_color", "").strip() or (user or {}).get("brand_color") or ""
+            style = params.get("style", "").strip() or "minimalist"
+            product_desc = _interpolate(params.get("product_description", ""), user, customer, event_data)
+            platforms = params.get("platforms") or ["facebook", "instagram", "linkedin"]
+            
+            logger.info(f"[WorkflowEngine] Generating design: {headline}")
+            try:
+                from gemini_design_service import generate_social_post
+                design_res = await generate_social_post(
+                    headline=headline,
+                    subtext=subtext,
+                    cta=cta,
+                    brand_color=brand_color,
+                    style=style,
+                    product_description=product_desc,
+                    platform="instagram_post",
+                )
+                if design_res and design_res.get("success") and design_res.get("image_url"):
+                    generated_img = design_res["image_url"]
+                    event_data["designed_image_url"] = generated_img
+                    logger.info(f"[WorkflowEngine] Design generated! Image URL: {generated_img}")
+                    
+                    post_id = str(uuid.uuid4())
+                    now = datetime.utcnow()
+                    post = {
+                        "_id": post_id,
+                        "user_id": user_id,
+                        "text": f"{headline}\n{subtext}".strip(),
+                        "image_url": generated_img,
+                        "status": "published",
+                        "platforms": platforms,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                    await db.social_posts.insert_one(post)
+                    
+                    from social_publish_service import push_post_to_zernio
+                    pub_res = await push_post_to_zernio(db, post)
+                    logger.info(f"[WorkflowEngine] Social publish results: {pub_res}")
+                else:
+                    logger.error(f"[WorkflowEngine] Design generation failed: {design_res.get('error', 'Unknown error')}")
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error in design_and_publish_post: {e}", exc_info=True)
+            return True
+
+        elif action == "run_ai_specialist_agent":
+            agent_id = params.get("agent_id", "").strip() or "general"
+            task_desc = _interpolate(params.get("task_description", ""), user, customer, event_data)
+            
+            logger.info(f"[WorkflowEngine] Spawning background agent '{agent_id}' for task: '{task_desc}'")
+            try:
+                from assistant.agent_runner import run_agent
+                agent_res = await run_agent(
+                    agent_id=agent_id,
+                    task=task_desc,
+                    db=db,
+                    user=user,
+                )
+                if agent_res and isinstance(agent_res, dict):
+                    result_text = agent_res.get("text") or ""
+                    event_data["agent_result"] = result_text
+                    logger.info(f"[WorkflowEngine] Specialist agent finished successfully! Output length: {len(result_text)}")
+                else:
+                    logger.error(f"[WorkflowEngine] Specialist agent returned empty result")
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error running specialist agent: {e}", exc_info=True)
+            return True
+
+        # ── Email Communication Actions ───────────────────────────────────────
+        elif action == "gmail_send_email":
+            to_addr = _interpolate(params.get("to_email", ""), user, customer, event_data) or (customer or {}).get("email") or ""
+            subject = _interpolate(params.get("subject", ""), user, customer, event_data) or "Update from Zilo"
+            body_html = _interpolate(params.get("body_html", ""), user, customer, event_data) or ""
+            
+            if not to_addr:
+                logger.error("[WorkflowEngine] Cannot send email - no recipient email address found.")
+                return True
+                
+            logger.info(f"[WorkflowEngine] Sending email via Resend/SMTP to {to_addr}")
+            try:
+                from email_marketing.routes import _get_settings
+                from email_marketing.client import send_email
+                settings = await _get_settings(db, user_id)
+                
+                # Fallback display name
+                if not settings.get("from_name"):
+                    settings["from_name"] = (user or {}).get("business_name") or "Zilo Merchant"
+                    
+                await send_email(
+                    settings=settings,
+                    to=[to_addr],
+                    subject=subject,
+                    html=body_html,
+                    text=body_html,
+                )
+                logger.info(f"[WorkflowEngine] Email successfully dispatched to {to_addr}")
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error dispatching email: {e}", exc_info=True)
+            return True
+
+        # ── Social Outreach Actions ───────────────────────────────────────────
+        elif action == "linkedin_send_outreach":
+            lead_url = _interpolate(params.get("url", ""), user, customer, event_data)
+            message = _interpolate(params.get("message", ""), user, customer, event_data)
+            
+            logger.info(f"[WorkflowEngine] Dispatching social outreach: '{message[:50]}' to {lead_url}")
+            try:
+                # Log to action_mode_activity to appear on user's CRM dashboard
+                await db.action_mode_activity.insert_one({
+                    "_id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "agent": "deal_alert",
+                    "title": f"💬 Sent outreach on Socials",
+                    "detail": f"To: {lead_url}\nMessage: {message[:100]}",
+                    "kind": "action",
+                    "created_at": datetime.utcnow(),
+                })
+                logger.info("[WorkflowEngine] Social outreach logged on dashboard")
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error logging outreach: {e}", exc_info=True)
+            return True
+
+        # ── Meta Ads Actions ──────────────────────────────────────────────────
+        elif action == "meta_pause_campaign":
+            campaign_id = _interpolate(params.get("campaign_id", ""), user, customer, event_data)
+            
+            logger.info(f"[WorkflowEngine] Automated trigger: Pausing Meta Campaign {campaign_id} due to health alerts")
+            try:
+                from zernio_ads_service import update_campaign_status
+                res = await update_campaign_status(campaign_id, "PAUSED", platform="facebook")
+                logger.info(f"[WorkflowEngine] Meta pause response: {res}")
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error pausing campaign: {e}", exc_info=True)
+            return True
+
+        # ── Business Intelligence & Sourcing ──────────────────────────────────
+        elif action == "run_funding_scan":
+            sector = _interpolate(params.get("sector", ""), user, customer, event_data) or (user or {}).get("industry") or "technology"
+            location = _interpolate(params.get("location", ""), user, customer, event_data) or "global"
+            
+            logger.info(f"[WorkflowEngine] Running funding scanner for sector: {sector}, location: {location}")
+            try:
+                from funding_finder import find_funding
+                opps = await find_funding(sector=sector, location=location)
+                if opps:
+                    formatted = "\n".join([f"- **{o.get('title')}** ({o.get('amount') or 'Amount unspecified'}): {o.get('snippet')} [Link]({o.get('url')})" for o in opps[:5]])
+                    event_data["funding_results"] = formatted
+                    logger.info(f"[WorkflowEngine] Funding scanner completed! Found {len(opps)} opportunities")
+                else:
+                    event_data["funding_results"] = "No new active grants found."
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error running funding scanner: {e}", exc_info=True)
+            return True
+
+        elif action == "generate_presentation_deck":
+            title = _interpolate(params.get("title", ""), user, customer, event_data) or "Business Overview"
+            slides_data = params.get("slides_data") or [
+                {"type": "title", "title": title, "subtitle": "Created automatically by Zilo AI"},
+                {"type": "content", "title": "About Us", "bullets": ["Elite dropshipping services.", "Full custom AI automation."]},
+            ]
+            business_name = (user or {}).get("business_name") or "Zilo Merchant"
+            deck_style = params.get("deck_style") or "ribbon"
+            
+            logger.info(f"[WorkflowEngine] Generating presentation deck: {title}")
+            try:
+                from presentation_service import generate_presentation_with_upload
+                res = await generate_presentation_with_upload(
+                    title=title,
+                    slides_data=slides_data,
+                    business_name=business_name,
+                    deck_style=deck_style,
+                )
+                if res and res.get("file_url"):
+                    file_url = res["file_url"]
+                    event_data["presentation_url"] = file_url
+                    logger.info(f"[WorkflowEngine] Presentation deck uploaded! URL: {file_url}")
+                else:
+                    logger.error(f"[WorkflowEngine] Presentation generation failed: {res.get('error')}")
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error generating presentation: {e}", exc_info=True)
+            return True
+
+        elif action == "generate_business_forecast":
+            logger.info(f"[WorkflowEngine] Generating daily business customer metrics forecast")
+            try:
+                from daily_analyzer import DailyCustomerAnalyzer
+                analyzer = DailyCustomerAnalyzer(db)
+                insights = await analyzer.analyze_all_customers(user_id)
+                if insights:
+                    summary_lines = []
+                    for ins in insights[:5]:
+                        summary_lines.append(f"- **{ins.get('customer_name')}**: Urgency {ins.get('urgency_score')}/100. Action: {ins.get('suggested_action')}")
+                    formatted = "\n".join(summary_lines)
+                    event_data["forecast_summary"] = formatted
+                    logger.info(f"[WorkflowEngine] Customer analyzer completed! Analyzed {len(insights)} customers")
+                else:
+                    event_data["forecast_summary"] = "All customer channels are healthy and up to date."
+            except Exception as e:
+                logger.error(f"[WorkflowEngine] Error generating customer analyzer forecast: {e}", exc_info=True)
             return True
 
         else:
