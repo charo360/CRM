@@ -77,8 +77,12 @@ class ZiloSessionStore:
         orch._lead_scout_interval = doc.get("lead_scout_interval", "24h")
         orch._open_scout_interval = doc.get("open_scout_interval", "12h")
         orch._fb_group_interval = doc.get("fb_group_interval", "6h")
+        override_day = doc.get("relationship_day_override")
         created = doc.get("created_at")
-        if created:
+        if override_day is not None:
+            orch._relationship_day = int(override_day)  # type: ignore[attr-defined]
+            orch._relationship_day_override = int(override_day)  # type: ignore[attr-defined]
+        elif created:
             orch._relationship_day = _relationship_day(codec._parse_dt(created))  # type: ignore[attr-defined]
         else:
             orch._relationship_day = int(doc.get("relationship_day") or 1)  # type: ignore[attr-defined]
@@ -277,6 +281,7 @@ class ZiloSessionStore:
             "journal_last_visit_day": getattr(orch, "_journal_last_visit_day", None),
             "journal_streak": int(getattr(orch, "_journal_streak", 0) or 0),
             "journal_shown_milestones": list(getattr(orch, "_journal_shown_milestones", []) or []),
+            "relationship_day_override": getattr(orch, "_relationship_day_override", None),
         }
 
         set_on_insert = {

@@ -623,6 +623,17 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
         await _persist(user, db, orch)
         return payload
 
+    @router.post("/journal/advance")
+    async def rex_journal_advance(user=Depends(get_current_user)):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        day = getattr(orch, "_relationship_day", 1)
+        next_day = day + 1
+        orch._relationship_day = next_day  # type: ignore[attr-defined]
+        orch._relationship_day_override = next_day  # type: ignore[attr-defined]
+        payload = await serialize_journal(orch)  # mutates streak + shown_milestones
+        await _persist(user, db, orch)
+        return payload
+
     @router.get("/standings")
     async def rex_standings(user=Depends(get_current_user)):
         """Per-category trust ladder for Zilo (Chief of Staff)."""
