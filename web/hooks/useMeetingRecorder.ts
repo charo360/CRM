@@ -240,12 +240,13 @@ export function useMeetingRecorder() {
 
   // ── Start recording ────────────────────────────────────────────────────────
 
-  const startRecording = useCallback(async (meeting?: MeetingInfo & { recordMicOnly?: boolean }) => {
+  const startRecording = useCallback(async (meeting?: MeetingInfo & { recordMicOnly?: boolean; speakerMode?: boolean }) => {
     if (meeting) meetingRef.current = meeting;
     setError(""); setLiveTranscript(""); setInterimText(""); setSegments([]); setSavedNote(null); setStatusMsg("");
     segmentsRef.current = []; transcriptRef.current = ""; interimAccRef.current = "";
 
     const micOnly = meeting?.recordMicOnly ?? false;
+    const speakerMode = meeting?.speakerMode ?? false;
 
     try {
       let displayStream: MediaStream | null = null;
@@ -261,7 +262,11 @@ export function useMeetingRecorder() {
       }
 
       const micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { 
+          echoCancellation: !speakerMode, 
+          noiseSuppression: !speakerMode, 
+          autoGainControl: true 
+        },
       });
       micStreamRef.current = micStream;
 

@@ -203,7 +203,7 @@ export default function MeetingOverlay() {
                   onChange={e => setRecordMicOnly(e.target.checked)}
                   className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3 h-3"
                 />
-                <span className="text-[10px] text-gray-500 font-medium">Record mic only (no screen share popup)</span>
+                <span className="text-[10px] text-gray-500 font-medium">Record MY microphone only (does not capture participants)</span>
               </label>
             </div>
             <button
@@ -214,8 +214,8 @@ export default function MeetingOverlay() {
             </button>
             <p className="text-[10px] text-gray-400 text-center">
               {recordMicOnly 
-                ? "Opens meeting · captures your microphone only" 
-                : "Opens meeting · captures mic + tab audio"
+                ? "⚠️ Captures your microphone ONLY — will NOT record other participants" 
+                : "Captures your mic AND the meeting audio (choose 'Share tab/system audio')"
               }
             </p>
           </>

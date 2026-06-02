@@ -178,7 +178,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   const businessNavFiltered = [
     ...businessNav,
     { href: "/dashboard/field-agents", label: "Field Agents", icon: Globe },
-    { href: "/dashboard/smart-notes", label: "Smart Notes", icon: NotebookPen },
+    { href: "/dashboard/smart-notes", label: "Zilo Notetaker", icon: NotebookPen },
     { href: "/dashboard/inventory", label: "Inventory", icon: Package },
     { href: "/dashboard/loyalty", label: "Loyalty", icon: Star },
     { href: "/dashboard/nps", label: "Feedback / NPS", icon: MessageCircle },

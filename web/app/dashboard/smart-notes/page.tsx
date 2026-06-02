@@ -32,7 +32,8 @@ export default function SmartNotesPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [deleting,      setDeleting]      = useState<string | null>(null);
   const [keytermsInput, setKeytermsInput] = useState(""); // e.g. "Zilo, Samuel, Mweni"
-  const [recordMicOnly, setRecordMicOnly] = useState(true); // Default to microphone-only for seamless recordings
+  const [recordMicOnly, setRecordMicOnly] = useState(false); // Default to false (screen/tab audio capture) to ensure other participants are recorded
+  const [speakerMode,   setSpeakerMode]   = useState(false); // Disable echo cancellation to capture room/speaker playback
   const [editingTitle,  setEditingTitle]  = useState(false);
   const [titleValue,    setTitleValue]    = useState("");
   const [renaming,      setRenaming]      = useState(false);
@@ -200,7 +201,7 @@ export default function SmartNotesPage() {
         <div className="border-b border-gray-100 px-4 py-4 sm:px-5">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-lg font-bold text-gray-900">Smart Notes</h1>
+              <h1 className="text-lg font-bold text-gray-900">Zilo Notetaker</h1>
               <p className="text-xs text-gray-500 mt-0.5">AI-generated meeting notes</p>
             </div>
             {!loading && (
@@ -219,19 +220,46 @@ export default function SmartNotesPage() {
                   placeholder="Company, names to recognise… (e.g. Zilo, Samuel)"
                   className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 mb-2"
                 />
-                <label className="flex items-center gap-2 px-1 mb-3 cursor-pointer select-none">
+                <label className="flex items-center gap-2 px-1 mb-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={recordMicOnly}
                     onChange={e => setRecordMicOnly(e.target.checked)}
                     className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3.5 h-3.5"
                   />
-                  <span className="text-xs text-gray-500 font-medium">Record microphone only (no screen share)</span>
+                  <span className="text-xs text-gray-500 font-medium">Record MY microphone only (does not capture participants)</span>
                 </label>
+                {recordMicOnly && (
+                  <>
+                    <label className="flex items-center gap-2 px-1 mb-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={speakerMode}
+                        onChange={e => setSpeakerMode(e.target.checked)}
+                        className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3.5 h-3.5"
+                      />
+                      <span className="text-xs text-amber-700 font-semibold">Enable Speaker/Room Mode</span>
+                    </label>
+                    {speakerMode ? (
+                      <div className="bg-emerald-50 text-emerald-800 rounded-lg p-2.5 text-[11px] leading-relaxed mb-3 border border-emerald-200">
+                        ✅ <strong>Speaker Mode Active:</strong> Echo cancellation is disabled. Please play meeting audio through your device's <strong>speakers</strong> (do not use headphones), and Zilo will capture everyone in the room!
+                      </div>
+                    ) : (
+                      <div className="bg-amber-50 text-amber-800 rounded-lg p-2.5 text-[11px] leading-relaxed mb-3 border border-amber-200">
+                        ⚠️ <strong>Note:</strong> Recording your microphone alone <strong>will not capture other participants</strong> unless you check <strong>Enable Speaker/Room Mode</strong> above and use your laptop speakers.
+                      </div>
+                    )}
+                  </>
+                )}
                 <button
                   onClick={() => {
                     const keyterms = keytermsInput.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
-                    rec.startRecording({ title: `Recording ${new Date().toLocaleDateString()}`, keyterms, recordMicOnly });
+                    rec.startRecording({ 
+                      title: `Recording ${new Date().toLocaleDateString()}`, 
+                      keyterms, 
+                      recordMicOnly, 
+                      speakerMode: recordMicOnly && speakerMode 
+                    });
                   }}
                   className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
                 >
