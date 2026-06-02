@@ -117,13 +117,14 @@ export function useMeetingRecorder() {
       const savedTranscript = utterances?.length
         ? utterances.map(u => `${u.speaker}: ${u.text}`).join("\n")
         : transcript;
+      const aiCleanedTranscript = (notes as Record<string, unknown>).cleaned_transcript as string;
       const saved = await smartNotesApi.save({
         title,
         meeting_start:         m?.start,
         meeting_end:           m?.end,
         meeting_url:           m?.meet_url,
         attendees:             m?.attendees,
-        transcript:            savedTranscript,
+        transcript:            aiCleanedTranscript || savedTranscript,
         summary:               (notes as Record<string, unknown>).summary as string ?? "",
         action_items:          (notes as Record<string, unknown>).action_items as string[] ?? [],
         raw_calendar_event_id: m?.id,
