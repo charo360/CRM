@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import { isAuthenticated } from "@/lib/auth";
 import { BusinessProvider } from "@/contexts/BusinessContext";
 import { ZernioAccountsProvider } from "@/contexts/ZernioAccountsContext";
+import { MeetingRecorderProvider } from "@/contexts/MeetingRecorderContext";
 import Sidebar from "@/components/Sidebar";
 import Navbar from "@/components/Navbar";
 import AssistantLauncher from "@/components/AssistantLauncher";
@@ -51,49 +52,51 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <BusinessProvider>
       <ZernioAccountsProvider>
-      <div className="flex h-[100dvh] min-h-screen bg-slate-50" suppressHydrationWarning>
-        {mounted && mobileNavOpen && (
-          <button
-            type="button"
-            aria-label="Close navigation menu"
-            className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-            onClick={() => setMobileNavOpen(false)}
-          />
-        )}
+        <MeetingRecorderProvider>
+          <div className="flex h-[100dvh] min-h-screen bg-slate-50" suppressHydrationWarning>
+            {mounted && mobileNavOpen && (
+              <button
+                type="button"
+                aria-label="Close navigation menu"
+                className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+                onClick={() => setMobileNavOpen(false)}
+              />
+            )}
 
-        {/* Sidebar */}
-        {!mounted ? (
-          <aside
-            className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r border-brand-dark/20 bg-[#071a10] text-slate-100 min-h-screen lg:flex"
-            aria-hidden
-          />
-        ) : (
-          <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
-        )}
-        
-        {/* Right side - Navbar and Main Content */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {/* Sticky Navbar */}
-          {mounted && (
-            <Navbar
-              onMenuClick={() => setMobileNavOpen(true)}
-              onSearchClick={() =>
-                window.dispatchEvent(
-                  new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true })
-                )
-              }
-            />
-          )}
-          
-          {/* Main Content */}
-          <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50 text-slate-900">{children}</main>
-        </div>
-      </div>
-      {mounted && <AssistantLauncher />}
-      {mounted && <CommandBar />}
-      {mounted && <OnboardingWizard />}
-      {mounted && <MeetingOverlay />}
-      <Toaster richColors position="top-center" />
+            {/* Sidebar */}
+            {!mounted ? (
+              <aside
+                className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r border-brand-dark/20 bg-[#071a10] text-slate-100 min-h-screen lg:flex"
+                aria-hidden
+              />
+            ) : (
+              <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
+            )}
+            
+            {/* Right side - Navbar and Main Content */}
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              {/* Sticky Navbar */}
+              {mounted && (
+                <Navbar
+                  onMenuClick={() => setMobileNavOpen(true)}
+                  onSearchClick={() =>
+                    window.dispatchEvent(
+                      new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true })
+                    )
+                  }
+                />
+              )}
+              
+              {/* Main Content */}
+              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50 text-slate-900">{children}</main>
+            </div>
+          </div>
+          {mounted && <AssistantLauncher />}
+          {mounted && <CommandBar />}
+          {mounted && <OnboardingWizard />}
+          {mounted && <MeetingOverlay />}
+          <Toaster richColors position="top-center" />
+        </MeetingRecorderProvider>
       </ZernioAccountsProvider>
     </BusinessProvider>
   );

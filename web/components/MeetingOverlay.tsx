@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { smartNotesApi } from "@/lib/api";
 import { useRouter } from "next/navigation";
-import { useMeetingRecorder } from "@/hooks/useMeetingRecorder";
+import { useGlobalMeetingRecorder } from "@/contexts/MeetingRecorderContext";
 
 interface Meeting {
   id: string;
@@ -27,7 +27,7 @@ const SHOW_BEFORE = 2 * 60 * 1000;
 
 export default function MeetingOverlay() {
   const router = useRouter();
-  const rec = useMeetingRecorder();
+  const rec = useGlobalMeetingRecorder();
 
   const [meeting,      setMeeting]      = useState<Meeting | null>(null);
   const [isUpcoming,   setIsUpcoming]   = useState(false);
@@ -119,12 +119,24 @@ export default function MeetingOverlay() {
   };
 
   const isVisible = isUpcoming || rec.recordState !== "idle";
-  if (!isVisible || !meeting) return null;
+  if (!isVisible) return null;
+
+  const currentMeeting = meeting || (rec.recordState !== "idle" ? {
+    id: "manual",
+    title: "Manual Recording",
+    start: new Date().toISOString(),
+    end: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    meet_url: "",
+    attendees: [],
+    description: "",
+  } : null);
+
+  if (!currentMeeting) return null;
 
   const { recordState, elapsed, liveTranscript, interimText, statusMsg, segments, speakerTags, setSpeakerTags, error } = rec;
   const isRecording = recordState === "recording";
   const speakerList = Object.keys(speakerTags);
-  const attendeeOptions = ["You", ...meeting.attendees.map(e => e.split("@")[0])];
+  const attendeeOptions = ["You", ...(currentMeeting.attendees ?? []).map(e => e.split("@")[0])];
 
   return (
     <div className={`fixed bottom-6 right-6 z-[9999] rounded-2xl shadow-2xl border border-gray-200 bg-white overflow-hidden transition-all duration-200 ${
@@ -158,7 +170,7 @@ export default function MeetingOverlay() {
 
       {/* Body */}
       <div className="px-4 py-3 space-y-3">
-        <p className="text-sm font-medium text-gray-900 truncate">{meeting.title}</p>
+        <p className="text-sm font-medium text-gray-900 truncate">{currentMeeting.title}</p>
 
         {/* Live transcript — real-time Deepgram words */}
         {isRecording && expanded && (

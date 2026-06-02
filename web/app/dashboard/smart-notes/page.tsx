@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { smartNotesApi } from "@/lib/api";
-import { useMeetingRecorder } from "@/hooks/useMeetingRecorder";
+import { useGlobalMeetingRecorder } from "@/contexts/MeetingRecorderContext";
 import { cn } from "@/lib/utils";
 
 interface Note {
@@ -46,7 +46,7 @@ export default function SmartNotesPage() {
   const [nextStepsValue,   setNextStepsValue]   = useState("");
   const [transcriptValue,  setTranscriptValue]  = useState("");
 
-  const rec = useMeetingRecorder();
+  const rec = useGlobalMeetingRecorder();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll live transcript
