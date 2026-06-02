@@ -13,12 +13,28 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 logger = logging.getLogger(__name__)
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+_retry_decorator = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception(_is_retryable),
+    reraise=True,
+)
 
 
 # ── DeepSeek DSML tool-call parser ───────────────────────────────────────────
@@ -210,6 +226,7 @@ _OAI_KEY_ENV = {
 }
 
 
+@_retry_decorator
 async def _call_openai_compatible(
     cfg: Dict[str, str],
     messages: List[Dict[str, Any]],
@@ -231,6 +248,7 @@ async def _call_openai_compatible(
         payload["tool_choice"] = "auto"
 
     client = _get_http_client()
+    start_time = time.perf_counter()
     r = await client.post(
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -240,7 +258,21 @@ async def _call_openai_compatible(
     if r.status_code >= 400:
         logger.error("[models] %s chat/completions %s: %s", provider, r.status_code, r.text[:500])
     r.raise_for_status()
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
     data = r.json()
+
+    # Log per-provider latency span to llm_call_log for SLA analysis
+    usage = data.get("usage") or {}
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    llm_call_logger = logging.getLogger("llm_call_log")
+    llm_call_logger.info(json.dumps({
+        "provider": provider,
+        "model": cfg.get("model"),
+        "latency_ms": latency_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }))
 
     choice = data["choices"][0]
     msg = choice["message"]
@@ -325,6 +357,7 @@ def _merge_consecutive_anthropic_messages(messages: List[Dict[str, Any]]) -> Lis
     return merged
 
 
+@_retry_decorator
 async def _call_anthropic(
     cfg: Dict[str, str],
     messages: List[Dict[str, Any]],
@@ -450,6 +483,7 @@ async def _call_anthropic(
         payload["tools"] = a_tools
 
     client = _get_http_client()
+    start_time = time.perf_counter()
     r = await client.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -463,7 +497,21 @@ async def _call_anthropic(
     if r.status_code >= 400:
         logger.error("[models] anthropic messages %s: %s", r.status_code, r.text[:1000])
     r.raise_for_status()
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
     data = r.json()
+
+    # Log per-provider latency span to llm_call_log for SLA analysis
+    usage = data.get("usage") or {}
+    prompt_tokens = usage.get("input_tokens", 0)
+    completion_tokens = usage.get("output_tokens", 0)
+    llm_call_logger = logging.getLogger("llm_call_log")
+    llm_call_logger.info(json.dumps({
+        "provider": "anthropic",
+        "model": cfg.get("model"),
+        "latency_ms": latency_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }))
 
     content_text = ""
     tool_calls = []
@@ -514,14 +562,52 @@ async def stream_reply(
     cfg = resolve_model(model_id)
     provider = cfg["provider"]
 
-    if provider in ("openai", "deepseek", "grok"):
-        async for chunk in _stream_openai_compatible(cfg, messages, tools, temperature, timeout):
-            yield chunk
-    elif provider == "anthropic":
-        async for chunk in _stream_anthropic(cfg, messages, tools, temperature, timeout):
-            yield chunk
-    else:
-        raise RuntimeError(f"Unsupported provider for streaming: {provider}")
+    _FALLBACK_CHAIN = [
+        ("deepseek", "deepseek-chat"),
+        ("openai",   "gpt-4o-mini"),
+        ("grok",     "grok-3-mini"),
+        ("anthropic", "claude-haiku-4-5-20251001"),
+    ]
+    providers_to_try = [cfg] + [
+        {"provider": p, "model": m, "id": m}
+        for p, m in _FALLBACK_CHAIN
+        if p != provider and os.environ.get({"deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY",
+                                              "grok": "GROK_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(p, ""))
+    ]
+
+    last_exc = None
+    for attempt_cfg in providers_to_try:
+        try:
+            p = attempt_cfg["provider"]
+            if attempt_cfg is providers_to_try[0]:
+                try:
+                    if p in ("openai", "deepseek", "grok"):
+                        async for chunk in _stream_openai_compatible(attempt_cfg, messages, tools, temperature, timeout):
+                            yield chunk
+                    elif p == "anthropic":
+                        async for chunk in _stream_anthropic(attempt_cfg, messages, tools, temperature, timeout):
+                            yield chunk
+                    return
+                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
+                    logger.warning("[models] stream primary provider %s failed (%s), using fallback non-stream", p, e)
+                    last_exc = e
+            else:
+                resp = await chat_with_tools(
+                    messages=messages, tools=tools,
+                    model_id=attempt_cfg.get("id") or attempt_cfg.get("model"),
+                    temperature=temperature, timeout=timeout
+                )
+                content = resp.get("content", "")
+                if content:
+                    yield content
+                return
+        except Exception as e:
+            logger.warning("[models] stream fallback provider %s failed (%s)", attempt_cfg.get("provider"), e)
+            last_exc = e
+            continue
+
+    if last_exc:
+        raise last_exc
 
 
 async def _stream_openai_compatible(

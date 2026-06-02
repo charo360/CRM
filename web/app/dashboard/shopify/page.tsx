@@ -241,6 +241,7 @@ function CreateStoreWizard({ onBack, onConnectStore }: {
   const [email, setEmail]           = useState("");
   const [country, setCountry]       = useState("US");
   const [createdDomain, setCreatedDomain] = useState("");
+  const [partnerId, setPartnerId]   = useState("");
   const [error, setError]           = useState("");
 
   const slug = storeName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -267,6 +268,7 @@ function CreateStoreWizard({ onBack, onConnectStore }: {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Store creation failed");
       setCreatedDomain(data.domain);
+      setPartnerId(data.partner_id || "");
       setStep("done");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
@@ -280,11 +282,11 @@ function CreateStoreWizard({ onBack, onConnectStore }: {
         <Loader2 size={28} className="text-violet-600 animate-spin" />
       </div>
       <div>
-        <p className="font-bold text-slate-800 text-base">Creating your store…</p>
-        <p className="text-sm text-slate-500 mt-1">This usually takes 10–20 seconds</p>
+        <p className="font-bold text-slate-800 text-base">Initiating guided setup…</p>
+        <p className="text-sm text-slate-500 mt-1">This usually takes a few seconds</p>
       </div>
       <div className="space-y-2 text-left w-full max-w-xs">
-        {["Setting up store infrastructure", "Configuring payment settings", "Preparing your dashboard"].map((t, i) => (
+        {["Preparing Shopify Partner link", "Configuring redirect endpoints", "Readying connection profile"].map((t, i) => (
           <div key={i} className="flex items-center gap-2 text-sm text-slate-600">
             <div className="w-4 h-4 rounded-full border-2 border-violet-300 border-t-violet-600 animate-spin shrink-0" style={{ animationDelay: `${i * 150}ms` }} />
             {t}
@@ -296,36 +298,61 @@ function CreateStoreWizard({ onBack, onConnectStore }: {
 
   if (step === "done") return (
     <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-8 py-16">
-      <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center">
-        <CheckCircle2 size={28} className="text-emerald-600" />
+      <div className="w-16 h-16 rounded-2xl bg-violet-50 border border-violet-200 flex items-center justify-center">
+        <Store size={28} className="text-violet-600" />
       </div>
       <div>
-        <p className="font-bold text-slate-800 text-base">Your store is ready!</p>
+        <p className="font-bold text-slate-800 text-base">Guided Store Creation</p>
         <p className="text-sm text-slate-500 mt-1">
-          <span className="font-mono text-slate-700">{createdDomain}</span> has been created
+          Shopify requires development stores to be created manually through your Partner Dashboard for verification.
         </p>
       </div>
-      <div className="w-full max-w-sm space-y-3">
+      <div className="w-full max-w-sm space-y-4">
+        <div className="bg-slate-50 rounded-xl p-4 text-left border border-slate-100 space-y-3">
+          <div className="flex gap-3">
+            <div className="w-5 h-5 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center font-bold text-xs shrink-0">1</div>
+            <div>
+              <p className="text-xs font-semibold text-slate-800">Create store in Partner Dashboard</p>
+              <a
+                href={partnerId ? `https://partners.shopify.com/${partnerId}/stores/new` : "https://partners.shopify.com/"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 mt-1 text-xs text-violet-600 hover:text-violet-700 font-semibold underline"
+              >
+                Go to Shopify Partner Dashboard <ExternalLink size={11} />
+              </a>
+              <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                Choose **Create a test and build store** and name it <span className="font-mono font-bold text-slate-700 bg-slate-200/60 px-1 rounded">{createdDomain.replace(".myshopify.com", "")}</span>.
+              </p>
+            </div>
+          </div>
+          
+          <div className="border-t border-slate-200/60 my-2" />
+          
+          <div className="flex gap-3">
+            <div className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs shrink-0">2</div>
+            <div>
+              <p className="text-xs font-semibold text-slate-800">Connect to Zilo CRM</p>
+              <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                Once the store is created, click the button below to authorize and link it.
+              </p>
+            </div>
+          </div>
+        </div>
+
         <button
           onClick={() => onConnectStore(createdDomain.replace(".myshopify.com", ""))}
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors"
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors shadow-sm shadow-emerald-600/10"
         >
           <Zap size={14} /> Connect store to Zilo
         </button>
-        <a
-          href={`https://${createdDomain}/admin`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors"
-        >
-          <ExternalLink size={14} /> Open Shopify admin
-        </a>
         <p className="text-[11px] text-slate-400 leading-relaxed">
-          Your store is a free development store. When you&apos;re ready to sell, pick a Shopify plan inside your admin — Zilo earns a partnership commission that helps keep the platform free.
+          Your development store is completely free. When ready to sell, pick a Shopify plan inside your admin — Zilo earns a partner commission that supports our platform.
         </p>
       </div>
     </div>
   );
+
 
   return (
     <div className="flex flex-col h-full px-8 py-10 max-w-sm mx-auto w-full">
@@ -1241,6 +1268,7 @@ function ProductsTab() {
           compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
           tags:         `dropship,cj,${p.category.toLowerCase()}`,
           variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+          images:       p.image_url ? [{ src: p.image_url }] : [],
         },
       });
       setCjImportedIdxs((prev) => new Set(prev).add(idx));
@@ -1294,6 +1322,7 @@ function ProductsTab() {
           compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
           tags:         `dropship,aliexpress,${p.category.toLowerCase()}`,
           variants:     [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+          images:       p.image_url ? [{ src: p.image_url }] : [],
         },
       });
       setAeImportedIdxs((prev) => new Set(prev).add(idx));
@@ -1348,6 +1377,7 @@ function ProductsTab() {
           compare_at_price: String(Math.round(p.suggested_price * 1.3 * 100) / 100),
           tags:             `${tag},${p.category.toLowerCase()}`,
           variants:         [{ title: "Default Title", price: String(p.suggested_price), inventory_quantity: 50 }],
+          images:           p.image_url ? [{ src: p.image_url }] : [],
         },
       });
       setCmpImportedIds((prev) => new Set(prev).add(uid));

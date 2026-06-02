@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hunt — AI Scout</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    /* ---- Filter bar ---- */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .filter-pill {
+      padding: 6px 12px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all .12s;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .filter-pill:hover { 
+      border-color: var(--border2); 
+      color: var(--text); 
+      background: var(--surface2);
+    }
+    .filter-pill.active {
+      border-color: var(--gborder);
+      background: var(--gdim);
+      color: var(--green);
+      font-weight: 600;
+    }
+    .filter-sep { 
+      width: 1px; 
+      height: 16px; 
+      background: var(--border); 
+      margin: 0 4px;
+    }
+
+    /* ---- Leads list ---- */
+    .leads-list { 
+      padding: 16px 24px; 
+      display: flex; 
+      flex-direction: column; 
+      gap: 12px; 
+    }
+
+    /* ---- Lead row ---- */
+    .lead-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      display: grid;
+      grid-template-columns: 40px 60px 1fr auto auto 140px;
+      gap: 16px;
+      padding: 14px 16px;
+      align-items: center;
+      transition: all .15s;
+    }
+    
+    .lead-row.selected {
+      background: var(--gdim);
+      border-color: var(--green);
+    }
+    .lead-row:hover { 
+      border-color: var(--border2); 
+      box-shadow: var(--shadow-md); 
+    }
+    .lead-row.urgent { 
+      border-left: 3px solid var(--red); 
+      padding-left: 13px;
+    }
+    .lead-row.hot { 
+      border-left: 3px solid var(--amber); 
+      padding-left: 13px;
+    }
+    .lead-row.warm { 
+      border-left: 3px solid var(--green); 
+      padding-left: 13px;
+    }
+
+    /* Checkbox */
+    .lead-checkbox {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .lead-checkbox input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+      accent-color: var(--green);
+    }
+
+    /* Platform icon */
+    .lead-platform {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .platform-icon {
+      width: 36px; 
+      height: 36px;
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    /* Body cell */
+    .lead-body { 
+      min-width: 0; 
+    }
+    .lead-name-row { 
+      display: flex; 
+      align-items: center; 
+      gap: 8px; 
+      margin-bottom: 4px; 
+    }
+    .lead-name { 
+      font-size: 13px; 
+      font-weight: 600; 
+      color: var(--text); 
+    }
+    .lead-source { 
+      font-size: 11px; 
+      color: var(--muted); 
+      margin-bottom: 4px;
+    }
+    .lead-quote {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .lead-quote em { 
+      color: var(--text); 
+      font-style: normal; 
+      font-weight: 600; 
+    }
+
+    /* Intent cell */
+    .lead-intent {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .intent-label { 
+      font-size: 10px; 
+      color: var(--muted); 
+      font-weight: 500; 
+    }
+
+    /* Time cell */
+    .lead-time {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 2px;
+      text-align: right;
+      min-width: 80px;
+    }
+    .time-value { 
+      font-size: 13px; 
+      font-weight: 700; 
+      color: var(--text); 
+    }
+    .time-sub { 
+      font-size: 10px; 
+      color: var(--muted); 
+    }
+
+    /* Actions cell */
+    .lead-actions {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn-message {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      border: none;
+      background: var(--wa);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: background .12s;
+      white-space: nowrap;
+    }
+    .btn-message:hover { background: #15803D; }
+    .btn-message.done { background: #15803D; }
+    
+    .action-row { 
+      display: flex; 
+      gap: 6px; 
+    }
+    .btn-crm {
+      flex: 1;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      transition: all .12s;
+    }
+    .btn-crm:hover { 
+      background: var(--surface2); 
+      color: var(--text); 
+      border-color: var(--border2);
+    }
+    .btn-crm.added { 
+      background: var(--gdim); 
+      color: var(--green); 
+      border-color: var(--gborder); 
+    }
+    .btn-skip {
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all .12s;
+    }
+    .btn-skip:hover { 
+      background: var(--rdim); 
+      color: var(--red); 
+      border-color: var(--rborder); 
+    }
+
+    /* Empty state */
+    .empty-state {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px;
+      color: var(--muted);
+      gap: 8px;
+      text-align: center;
+    }
+    .empty-state .es-icon { font-size: 40px; margin-bottom: 4px; }
+    .empty-state .es-title { font-size: 15px; font-weight: 600; color: var(--text); }
+    
+    /* Bulk actions bar */
+    .bulk-actions {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--text);
+      color: white;
+      padding: 12px 24px;
+      border-radius: 50px;
+      display: none;
+      align-items: center;
+      gap: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+      z-index: 1000;
+      animation: slideUp 0.3s ease-out;
+    }
+    
+    .bulk-actions.show {
+      display: flex;
+    }
+    
+    @keyframes slideUp {
+      from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+      to { transform: translateX(-50%) translateY(0); opacity: 1; }
+    }
+    
+    .bulk-count {
+      font-size: 13px;
+      font-weight: 600;
+    }
+    
+    .bulk-actions .btn {
+      padding: 8px 16px;
+      border-radius: 20px;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    
+    .bulk-actions .btn-approve-all {
+      background: var(--green);
+      color: white;
+    }
+    
+    .bulk-actions .btn-approve-all:hover {
+      background: #047857;
+    }
+    
+    .bulk-actions .btn-skip-all {
+      background: rgba(255,255,255,0.2);
+      color: white;
+    }
+    
+    .bulk-actions .btn-skip-all:hover {
+      background: rgba(255,255,255,0.3);
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <a class="brand" href="#">
+      <div class="brand-dot"></div>
+      <span class="brand-name">AI Scout</span>
+    </a>
+    <div class="top-chips">
+      <div class="chip"><strong id="scan-count">175</strong>&nbsp;scanned</div>
+      <div class="chip"><strong>3</strong>&nbsp;agents live</div>
+      <div class="chip"><strong>KES 0</strong>&nbsp;spent</div>
+      <div class="live-badge"><div class="live-dot"></div> LIVE</div>
+    </div>
+    <div class="avatar">SM</div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Leads</div>
+    <a class="nav-item active" href="hunt.html">
+      <i class="ti ti-target nav-icon"></i> Hunt
+      <span class="nav-badge red" id="badge-count">7</span>
+    </a>
+    <a class="nav-item" href="pulse.html">
+      <i class="ti ti-radar nav-icon"></i> Pulse
+    </a>
+    <div class="nav-section">Intelligence</div>
+    <a class="nav-item" href="funding.html">
+      <i class="ti ti-moneybag nav-icon"></i> Funding
+      <span class="nav-badge grn">2</span>
+    </a>
+    <a class="nav-item" href="radar.html">
+      <i class="ti ti-trending-up nav-icon"></i> Market radar
+      <span class="nav-badge blu">5</span>
+    </a>
+    <div class="nav-section">Automation</div>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-adjustments-horizontal nav-icon"></i> Scouts setup
+    </a>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-robot nav-icon"></i> Autopilot
+    </a>
+    <div class="sidebar-bottom">
+      <a class="nav-item" href="setup.html">
+        <i class="ti ti-settings nav-icon"></i> Settings
+      </a>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+    <!-- Page header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">
+          You have <span style="color:var(--green);margin:0 4px" id="lead-count-title">7 hot leads</span> today
+        </div>
+        <div class="page-subtitle">Respond first, win the deal</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn primary" onclick="approveAll()">
+          Approve all
+        </button>
+      </div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="filter-bar">
+      <button class="filter-pill active" onclick="setFilter(this,'all')">All 7</button>
+      <button class="filter-pill" onclick="setFilter(this,'urgent')">🔴 Close now 2</button>
+      <button class="filter-pill" onclick="setFilter(this,'hot')">🟡 Hot 3</button>
+      <button class="filter-pill" onclick="setFilter(this,'warm')">🟢 Warm 2</button>
+      <div class="filter-sep"></div>
+      <button class="filter-pill" onclick="setFilter(this,'fb')">Facebook</button>
+      <button class="filter-pill" onclick="setFilter(this,'tw')">Twitter</button>
+    </div>
+
+    <!-- Leads -->
+    <div class="main-scroll">
+      <div class="leads-list" id="leads-list">
+
+        <!-- Lead 1 — URGENT -->
+        <div class="lead-row urgent" data-urgency="urgent" data-platform="fb" id="lead-1">
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:#EFF6FF;color:#1D4ED8">
+              <i class="ti ti-brand-facebook"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">James Mwangi</span>
+              <span class="tag tag-critical">🔴 Close now</span>
+            </div>
+            <div class="lead-source">Facebook Groups · Nairobi Business Hub</div>
+            <div class="lead-quote">
+              "<em>URGENT: Need 40 office chairs and 8 executive desks</em> for new office by Friday. Anyone with stock please DM me immediately"
+            </div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#FECACA" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#DC2626" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="8" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:#DC2626">9.4</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">23 min</div>
+            <div class="time-sub">ago</div>
+            <div class="time-sub">~3d left</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('lead-1', this)">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-lead-1" onclick="addToCRM('lead-1', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('lead-1')">Skip</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lead 2 — URGENT -->
+        <div class="lead-row urgent" data-urgency="urgent" data-platform="tw" id="lead-2">
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:#F0F9FF;color:#0369A1">
+              <i class="ti ti-brand-twitter"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">Amina Hassan</span>
+              <span class="tag tag-critical">🔴 Close now</span>
+            </div>
+            <div class="lead-source">Twitter @aminahassan_ke · Westlands, Nairobi</div>
+            <div class="lead-quote">
+              "<em>Tired of unreliable suppliers. Budget approved, need same-day delivery in Westlands.</em> Anyone dependable please DM."
+            </div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#FECACA" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#DC2626" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="15" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:#DC2626">8.8</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">1 hr</div>
+            <div class="time-sub">ago</div>
+            <div class="time-sub">Active thread</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('lead-2', this)">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-lead-2" onclick="addToCRM('lead-2', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('lead-2')">Skip</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lead 3 — HOT -->
+        <div class="lead-row hot" data-urgency="hot" data-platform="fb" id="lead-3">
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:#EFF6FF;color:#1D4ED8">
+              <i class="ti ti-brand-facebook"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">Brenda Ochieng</span>
+              <span class="tag tag-hot">🟡 Hot lead</span>
+            </div>
+            <div class="lead-source">Facebook Marketplace · Kilimani · Posted in 3 groups</div>
+            <div class="lead-quote">
+              "<em>How much for a reception desk?</em> Found two suppliers already, prices seem high. Open to better offers from Nairobi."
+            </div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#FDE68A" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#D97706" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="34" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:#D97706">7.3</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">3 hrs</div>
+            <div class="time-sub">ago</div>
+            <div class="time-sub">Comparing</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('lead-3', this)">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-lead-3" onclick="addToCRM('lead-3', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('lead-3')">Skip</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lead 4 — HOT -->
+        <div class="lead-row hot" data-urgency="hot" data-platform="fb" id="lead-4">
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:#EFF6FF;color:#1D4ED8">
+              <i class="ti ti-brand-facebook"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">David Kariuki</span>
+              <span class="tag tag-hot">🟡 Hot lead</span>
+            </div>
+            <div class="lead-source">Facebook Groups · Karen SME Traders</div>
+            <div class="lead-quote">
+              "<em>Looking for office chairs, need 20 units</em> for our expanding team in Karen. Prefer local suppliers for fast delivery. WhatsApp me."
+            </div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#FDE68A" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#D97706" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="38" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:#D97706">7.0</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">5 hrs</div>
+            <div class="time-sub">ago</div>
+            <div class="time-sub">Still active</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('lead-4', this)">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-lead-4" onclick="addToCRM('lead-4', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('lead-4')">Skip</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lead 5 — HOT -->
+        <div class="lead-row hot" data-urgency="hot" data-platform="tw" id="lead-5">
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:#F0F9FF;color:#0369A1">
+              <i class="ti ti-brand-twitter"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">Grace Njeri</span>
+              <span class="tag tag-hot">🟡 Hot lead</span>
+            </div>
+            <div class="lead-source">Twitter @gracenjeri · CBD Nairobi</div>
+            <div class="lead-quote">
+              "<em>Can anyone recommend a furniture supplier who delivers to CBD?</em> Need boardroom chairs and a conference table for our new office. Price range flexible."
+            </div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#FDE68A" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#D97706" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="44" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:#D97706">6.5</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">6 hrs</div>
+            <div class="time-sub">ago</div>
+            <div class="time-sub">Research</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('lead-5', this)">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-lead-5" onclick="addToCRM('lead-5', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('lead-5')">Skip</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lead 6 — WARM -->
+        <div class="lead-row warm" data-urgency="warm" data-platform="tw" id="lead-6">
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:#F0F9FF;color:#0369A1">
+              <i class="ti ti-brand-twitter"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">Peter Kamau</span>
+              <span class="tag tag-warm">🟢 Warm</span>
+            </div>
+            <div class="lead-source">Twitter @peterkamau · Nairobi</div>
+            <div class="lead-quote">
+              "<em>Anyone recommend a reliable office furniture supplier in Nairobi?</em> Setting up a new co-working space next quarter. Open to suggestions 🙏"
+            </div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#A7F3D0" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#059669" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="63" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:#059669">5.5</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">8 hrs</div>
+            <div class="time-sub">ago</div>
+            <div class="time-sub">Research</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('lead-6', this)">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-lead-6" onclick="addToCRM('lead-6', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('lead-6')">Skip</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lead 7 — WARM -->
+        <div class="lead-row warm" data-urgency="warm" data-platform="fb" id="lead-7">
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:#EFF6FF;color:#1D4ED8">
+              <i class="ti ti-brand-facebook"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">Faith Wambua</span>
+              <span class="tag tag-warm">🟢 Warm</span>
+            </div>
+            <div class="lead-source">Facebook Groups · Westlands Traders Network</div>
+            <div class="lead-quote">
+              "<em>Anyone bought office furniture recently in Nairobi?</em> Planning to furnish a small office of 10 people. Looking for quality at a good price."
+            </div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#A7F3D0" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="#059669" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="75" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:#059669">4.8</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">12 hrs</div>
+            <div class="time-sub">ago</div>
+            <div class="time-sub">Early research</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('lead-7', this)">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-lead-7" onclick="addToCRM('lead-7', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('lead-7')">Skip</button>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /leads-list -->
+
+      <!-- Empty state -->
+      <div class="empty-state" id="empty-state">
+        <div class="es-icon">🎯</div>
+        <div class="es-title">Queue cleared!</div>
+        <div>AI Scout is scanning for new leads…</div>
+      </div>
+
+    </div><!-- /main-scroll -->
+  </main>
+
+</div><!-- /shell -->
+
+<!-- Bulk actions bar -->
+<div class="bulk-actions" id="bulk-actions">
+  <span class="bulk-count"><span id="selected-count">0</span> selected</span>
+  <button class="btn btn-approve-all" onclick="approveSelected()">
+    ✓ Add to CRM
+  </button>
+  <button class="btn btn-skip-all" onclick="skipSelected()">
+    Skip All
+  </button>
+</div>
+
+<script src="api-client.js"></script>
+<script>
+  let allLeads = [];
+  let currentFilter = 'all';
+  let dismissed = new Set();
+  let selected = new Set();
+
+  // Load leads on page load
+  document.addEventListener('DOMContentLoaded', loadLeads);
+
+  async function loadLeads() {
+    try {
+      const data = await scoutApi.getOpportunities();
+      allLeads = (data.opportunities || []).filter(o => 
+        o.kind === 'social' || o.kind === 'group'
+      );
+      renderLeads();
+      updateCounts();
+    } catch (error) {
+      console.error('Failed to load leads:', error);
+      showToast(error.message, 'error');
+    }
+  }
+
+  function renderLeads() {
+    const container = document.getElementById('leads-list');
+    const emptyState = document.getElementById('empty-state');
+    
+    const visibleLeads = allLeads.filter(lead => {
+      if (dismissed.has(lead._id)) return false;
+      
+      const score = lead.score || 5;
+      const urgency = score >= 8 ? 'urgent' : score >= 5 ? 'hot' : 'warm';
+      const platform = (lead.platform || '').toLowerCase();
+      
+      if (currentFilter === 'all') return true;
+      if (currentFilter === 'urgent') return urgency === 'urgent';
+      if (currentFilter === 'hot') return urgency === 'hot';
+      if (currentFilter === 'warm') return urgency === 'warm';
+      if (currentFilter === 'fb') return platform.includes('facebook');
+      if (currentFilter === 'tw') return platform.includes('twitter');
+      
+      return true;
+    });
+
+    if (visibleLeads.length === 0) {
+      container.style.display = 'none';
+      emptyState.style.display = 'flex';
+      return;
+    }
+
+    container.style.display = 'flex';
+    emptyState.style.display = 'none';
+    
+    container.innerHTML = visibleLeads.map((lead, idx) => {
+      const score = lead.score || 5;
+      const urgency = score >= 8 ? 'urgent' : score >= 5 ? 'hot' : 'warm';
+      const platform = (lead.platform || 'facebook').toLowerCase();
+      const platformIcon = platform.includes('twitter') ? 'ti-brand-twitter' : 'ti-brand-facebook';
+      const platformColor = platform.includes('twitter') ? '#0369A1' : '#1D4ED8';
+      const platformBg = platform.includes('twitter') ? '#F0F9FF' : '#EFF6FF';
+      
+      const urgencyTag = score >= 8 ? '🔴 Close now' : score >= 5 ? '🟡 Hot lead' : '🟢 Warm';
+      const urgencyClass = score >= 8 ? 'tag-critical' : score >= 5 ? 'tag-hot' : 'tag-warm';
+      
+      const ringColor = score >= 8 ? '#DC2626' : score >= 5 ? '#D97706' : '#059669';
+      const ringBg = score >= 8 ? '#FECACA' : score >= 5 ? '#FDE68A' : '#A7F3D0';
+      const circumference = 126;
+      const offset = circumference * (1 - score / 10);
+      
+      const timeAgoText = timeAgo(lead.created_at);
+      
+      return `
+        <div class="lead-row ${urgency} ${selected.has(lead._id) ? 'selected' : ''}" data-urgency="${urgency}" data-platform="${platform.includes('facebook') ? 'fb' : 'tw'}" id="lead-${lead._id}">
+          <div class="lead-checkbox">
+            <input type="checkbox" ${selected.has(lead._id) ? 'checked' : ''} onchange="toggleSelect('${lead._id}')">
+          </div>
+          <div class="lead-platform">
+            <div class="platform-icon" style="background:${platformBg};color:${platformColor}">
+              <i class="ti ${platformIcon}"></i>
+            </div>
+          </div>
+          <div class="lead-body">
+            <div class="lead-name-row">
+              <span class="lead-name">${lead.contact_name || lead.author || 'Unknown'}</span>
+              <span class="tag ${urgencyClass}">${urgencyTag}</span>
+            </div>
+            <div class="lead-source">${lead.platform || 'Social'} · ${lead.group_name || 'Direct'}</div>
+            <div class="lead-quote">${lead.snippet || lead.title}</div>
+          </div>
+          <div class="lead-intent">
+            <div class="intent-ring">
+              <svg width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="20" fill="none" stroke="${ringBg}" stroke-width="3.5"/>
+                <circle cx="24" cy="24" r="20" fill="none" stroke="${ringColor}" stroke-width="3.5"
+                  stroke-dasharray="126" stroke-dashoffset="${offset}" stroke-linecap="round"/>
+              </svg>
+              <div class="intent-num" style="color:${ringColor}">${score.toFixed(1)}</div>
+            </div>
+            <div class="intent-label">Intent</div>
+          </div>
+          <div class="lead-time">
+            <div class="time-value">${timeAgoText}</div>
+            <div class="time-sub">ago</div>
+          </div>
+          <div class="lead-actions">
+            <button class="btn-message" onclick="messageNow('${lead._id}', this, '${lead.contact_info || ''}')">
+              💬 Message Now
+            </button>
+            <div class="action-row">
+              <button class="btn-crm" id="crm-${lead._id}" onclick="addToCRM('${lead._id}', this)">
+                CRM
+              </button>
+              <button class="btn-skip" onclick="skipLead('${lead._id}')">Skip</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function updateCounts() {
+    const activeLeads = allLeads.filter(l => !dismissed.has(l._id));
+    const urgentCount = activeLeads.filter(l => (l.score || 5) >= 8).length;
+    const hotCount = activeLeads.filter(l => (l.score || 5) >= 5 && (l.score || 5) < 8).length;
+    const warmCount = activeLeads.filter(l => (l.score || 5) < 5).length;
+    
+    document.getElementById('badge-count').textContent = activeLeads.length;
+    document.getElementById('lead-count-title').textContent = 
+      activeLeads.length === 0 ? 'no leads' : `${activeLeads.length} hot lead${activeLeads.length !== 1 ? 's' : ''}`;
+    
+    // Update filter pills
+    document.querySelector('.filter-pill[onclick*="all"]').textContent = `All ${activeLeads.length}`;
+    document.querySelector('.filter-pill[onclick*="urgent"]').textContent = `🔴 Close now ${urgentCount}`;
+    document.querySelector('.filter-pill[onclick*="hot"]').textContent = `🟡 Hot ${hotCount}`;
+    document.querySelector('.filter-pill[onclick*="warm"]').textContent = `🟢 Warm ${warmCount}`;
+  }
+
+  /* ---- Live scan counter ---- */
+  let count = 302;
+  setInterval(() => {
+    count += Math.floor(Math.random() * 3) + 1;
+    document.getElementById('scan-count').textContent = count;
+  }, 4000);
+
+  /* ---- Filter ---- */
+  function setFilter(btn, filter) {
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = filter;
+    renderLeads();
+  }
+
+  /* ---- Message Now ---- */
+  function messageNow(id, btn, phone) {
+    btn.textContent = '✓ Opening WhatsApp…';
+    btn.classList.add('done');
+    btn.disabled = true;
+    
+    // Open WhatsApp if phone number exists
+    if (phone) {
+      const cleanPhone = phone.replace(/\D/g, '');
+      const lead = allLeads.find(l => l._id === id);
+      const message = `Hi! I saw your post about ${lead?.title || 'furniture'}. I can help with that.`;
+      window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`, '_blank');
+    }
+    
+    setTimeout(() => skipLead(id), 700);
+  }
+
+  /* ---- Add to CRM ---- */
+  async function addToCRM(id, btn) {
+    try {
+      const lead = allLeads.find(l => l._id === id);
+      if (!lead) return;
+      
+      await scoutApi.addToCRM({
+        name: lead.contact_name || lead.author || lead.title,
+        phone: lead.contact_info || '',
+        snippet: lead.snippet,
+        url: lead.url,
+        title: lead.title
+      });
+      
+      btn.innerHTML = '✓ Added';
+      btn.classList.add('added');
+      btn.disabled = true;
+      showToast('Added to CRM', 'success');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  /* ---- Skip / dismiss ---- */
+  async function skipLead(id) {
+    try {
+      dismissed.add(id);
+      await scoutApi.dismissOpportunity(id);
+      renderLeads();
+      updateCounts();
+    } catch (error) {
+      console.error('Failed to dismiss:', error);
+      dismissed.delete(id);
+    }
+  }
+
+  /* ---- Approve all ---- */
+  async function approveAll() {
+    const activeLeads = allLeads.filter(l => !dismissed.has(l._id));
+    for (const lead of activeLeads) {
+      await addToCRM(lead._id, document.getElementById(`crm-${lead._id}`));
+    }
+    showToast(`${activeLeads.length} leads added to CRM`, 'success');
+  }
+
+  // Auto-refresh every 30 seconds
+  setInterval(loadLeads, 30000);
+
+  /* ---- Checkbox Selection ---- */
+  function toggleSelect(id) {
+    if (selected.has(id)) {
+      selected.delete(id);
+    } else {
+      selected.add(id);
+    }
+    updateBulkActions();
+    renderLeads();
+  }
+
+  function updateBulkActions() {
+    const bulkBar = document.getElementById('bulk-actions');
+    const countEl = document.getElementById('selected-count');
+    
+    if (selected.size > 0) {
+      bulkBar.classList.add('show');
+      countEl.textContent = selected.size;
+    } else {
+      bulkBar.classList.remove('show');
+    }
+  }
+
+  async function approveSelected() {
+    const selectedLeads = Array.from(selected);
+    let successCount = 0;
+    
+    for (const id of selectedLeads) {
+      try {
+        const lead = allLeads.find(l => l._id === id);
+        if (lead) {
+          await scoutApi.addToCRM({
+            name: lead.contact_name || lead.author || lead.title,
+            phone: lead.contact_info || '',
+            snippet: lead.snippet,
+            url: lead.url,
+            title: lead.title
+          });
+          dismissed.add(id);
+          selected.delete(id);
+          successCount++;
+        }
+      } catch (error) {
+        console.error('Failed to add to CRM:', error);
+      }
+    }
+    
+    showToast(`${successCount} leads added to CRM`, 'success');
+    renderLeads();
+    updateCounts();
+    updateBulkActions();
+  }
+
+  async function skipSelected() {
+    const selectedLeads = Array.from(selected);
+    
+    for (const id of selectedLeads) {
+      try {
+        await scoutApi.dismissOpportunity(id);
+        dismissed.add(id);
+        selected.delete(id);
+      } catch (error) {
+        console.error('Failed to dismiss:', error);
+      }
+    }
+    
+    showToast(`${selectedLeads.length} leads skipped`, 'info');
+    renderLeads();
+    updateCounts();
+    updateBulkActions();
+  }
+</script>
+</body>
+</html>

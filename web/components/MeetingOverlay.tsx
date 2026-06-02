@@ -34,9 +34,11 @@ export default function MeetingOverlay() {
   const [countdown,    setCountdown]    = useState("");
   const [expanded,     setExpanded]     = useState(false);
   const [keytermsInput,setKeytermsInput]= useState("");
+  const [recordMicOnly,setRecordMicOnly]= useState(false); // Default to false (screen audio capture) for active Zoom/Meet calendar invitations
 
   const activeMeetingRef = useRef<Meeting | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const dismissedMeetingsRef = useRef<Set<string>>(new Set());
 
   // Auto-scroll live transcript
   useEffect(() => {
@@ -52,7 +54,7 @@ export default function MeetingOverlay() {
       const now = Date.now();
       for (const raw of res.meetings) {
         const m = raw as unknown as Meeting;
-        if (!m.meet_url) continue;
+        if (!m.meet_url || dismissedMeetingsRef.current.has(m.id)) continue;
         const startMs = new Date(m.start).getTime();
         const endMs   = new Date(m.end).getTime();
         if (now > endMs) continue;
@@ -102,10 +104,14 @@ export default function MeetingOverlay() {
       start: meeting.start, end: meeting.end,
       meet_url: meeting.meet_url, attendees: meeting.attendees,
       keyterms,
+      recordMicOnly,
     });
   };
 
   const dismiss = () => {
+    if (meeting) {
+      dismissedMeetingsRef.current.add(meeting.id);
+    }
     rec.reset();
     setMeeting(null); setIsUpcoming(false);
     activeMeetingRef.current = null;
@@ -188,8 +194,17 @@ export default function MeetingOverlay() {
                 value={keytermsInput}
                 onChange={e => setKeytermsInput(e.target.value)}
                 placeholder="e.g. Zilo, Samuel, Mweni"
-                className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 mb-2"
               />
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={recordMicOnly}
+                  onChange={e => setRecordMicOnly(e.target.checked)}
+                  className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3 h-3"
+                />
+                <span className="text-[10px] text-gray-500 font-medium">Record MY microphone only (does not capture participants)</span>
+              </label>
             </div>
             <button
               onClick={handleJoinRecord}
@@ -197,7 +212,12 @@ export default function MeetingOverlay() {
             >
               Join &amp; Record
             </button>
-            <p className="text-[10px] text-gray-400 text-center">Opens meeting · captures mic + tab audio</p>
+            <p className="text-[10px] text-gray-400 text-center">
+              {recordMicOnly 
+                ? "⚠️ Captures your microphone ONLY — will NOT record other participants" 
+                : "Captures your mic AND the meeting audio (choose 'Share tab/system audio')"
+              }
+            </p>
           </>
         )}
 

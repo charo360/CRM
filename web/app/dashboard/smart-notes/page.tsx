@@ -32,6 +32,19 @@ export default function SmartNotesPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [deleting,      setDeleting]      = useState<string | null>(null);
   const [keytermsInput, setKeytermsInput] = useState(""); // e.g. "Zilo, Samuel, Mweni"
+  const [recordMicOnly, setRecordMicOnly] = useState(false); // Default to false (screen/tab audio capture) to ensure other participants are recorded
+  const [speakerMode,   setSpeakerMode]   = useState(false); // Disable echo cancellation to capture room/speaker playback
+  const [editingTitle,  setEditingTitle]  = useState(false);
+  const [titleValue,    setTitleValue]    = useState("");
+  const [renaming,      setRenaming]      = useState(false);
+
+  const [editingDetails, setEditingDetails] = useState(false);
+  const [summaryValue,    setSummaryValue]    = useState("");
+  const [keyPointsValue,   setKeyPointsValue]   = useState<string[]>([]);
+  const [actionItemsValue, setActionItemsValue] = useState<string[]>([]);
+  const [decisionsValue,   setDecisionsValue]   = useState<string[]>([]);
+  const [nextStepsValue,   setNextStepsValue]   = useState("");
+  const [transcriptValue,  setTranscriptValue]  = useState("");
 
   const rec = useMeetingRecorder();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -46,7 +59,17 @@ export default function SmartNotesPage() {
     if (rec.recordState === "done" && rec.savedNote) {
       const n = rec.savedNote as unknown as Note;
       setNotes(prev => [n, ...prev.filter(x => x.id !== n.id)]);
-      setSelected(rec.savedNote as unknown as NoteDetail);
+      const detail = rec.savedNote as unknown as NoteDetail;
+      setSelected(detail);
+      setTitleValue(detail.title);
+      setEditingTitle(false);
+      setEditingDetails(false);
+      setSummaryValue(detail.summary || "");
+      setKeyPointsValue(detail.key_points || []);
+      setActionItemsValue(detail.action_items || []);
+      setDecisionsValue(detail.decisions || []);
+      setNextStepsValue(detail.next_steps || "");
+      setTranscriptValue(detail.transcript || "");
     }
   }, [rec.recordState, rec.savedNote]);
 
@@ -63,11 +86,74 @@ export default function SmartNotesPage() {
 
   const openNote = async (id: string) => {
     setDetailLoading(true);
+    setEditingTitle(false);
+    setEditingDetails(false);
     try {
-      const doc = await smartNotesApi.get(id);
-      setSelected(doc as unknown as NoteDetail);
+      const doc = await smartNotesApi.get(id) as unknown as NoteDetail;
+      setSelected(doc);
+      setTitleValue(doc.title);
+      setSummaryValue(doc.summary || "");
+      setKeyPointsValue(doc.key_points || []);
+      setActionItemsValue(doc.action_items || []);
+      setDecisionsValue(doc.decisions || []);
+      setNextStepsValue(doc.next_steps || "");
+      setTranscriptValue(doc.transcript || "");
     } catch { /* ignore */ }
     finally { setDetailLoading(false); }
+  };
+
+  const cancelEdit = () => {
+    if (!selected) return;
+    setSummaryValue(selected.summary || "");
+    setKeyPointsValue(selected.key_points || []);
+    setActionItemsValue(selected.action_items || []);
+    setDecisionsValue(selected.decisions || []);
+    setNextStepsValue(selected.next_steps || "");
+    setTranscriptValue(selected.transcript || "");
+    setEditingDetails(false);
+  };
+
+  const saveDetails = async () => {
+    if (!selected) return;
+    setRenaming(true);
+    try {
+      const updated = await smartNotesApi.update(selected.id, {
+        summary: summaryValue,
+        key_points: keyPointsValue,
+        action_items: actionItemsValue,
+        decisions: decisionsValue,
+        next_steps: nextStepsValue,
+        transcript: transcriptValue,
+      });
+      const upDoc = updated as unknown as NoteDetail;
+      setSelected(upDoc);
+      setNotes(prev => prev.map(n => n.id === upDoc.id ? { ...n, summary: upDoc.summary } : n));
+      setEditingDetails(false);
+    } catch {
+      // ignore
+    } finally {
+      setRenaming(false);
+    }
+  };
+
+  const saveTitle = async () => {
+    if (!selected || !titleValue.trim() || titleValue.trim() === selected.title) {
+      setEditingTitle(false);
+      return;
+    }
+    setRenaming(true);
+    try {
+      const updated = await smartNotesApi.update(selected.id, { title: titleValue.trim() });
+      const upDoc = updated as unknown as NoteDetail;
+      setSelected(upDoc);
+      setTitleValue(upDoc.title);
+      setNotes(prev => prev.map(n => n.id === upDoc.id ? { ...n, title: upDoc.title } : n));
+    } catch {
+      // ignore
+    } finally {
+      setRenaming(false);
+      setEditingTitle(false);
+    }
   };
 
   const deleteNote = async (id: string) => {
@@ -115,7 +201,7 @@ export default function SmartNotesPage() {
         <div className="border-b border-gray-100 px-4 py-4 sm:px-5">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-lg font-bold text-gray-900">Smart Notes</h1>
+              <h1 className="text-lg font-bold text-gray-900">Zilo Notetaker</h1>
               <p className="text-xs text-gray-500 mt-0.5">AI-generated meeting notes</p>
             </div>
             {!loading && (
@@ -134,10 +220,46 @@ export default function SmartNotesPage() {
                   placeholder="Company, names to recognise… (e.g. Zilo, Samuel)"
                   className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 mb-2"
                 />
+                <label className="flex items-center gap-2 px-1 mb-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={recordMicOnly}
+                    onChange={e => setRecordMicOnly(e.target.checked)}
+                    className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3.5 h-3.5"
+                  />
+                  <span className="text-xs text-gray-500 font-medium">Record MY microphone only (does not capture participants)</span>
+                </label>
+                {recordMicOnly && (
+                  <>
+                    <label className="flex items-center gap-2 px-1 mb-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={speakerMode}
+                        onChange={e => setSpeakerMode(e.target.checked)}
+                        className="rounded border-gray-300 text-brand-dark focus:ring-brand-dark/40 w-3.5 h-3.5"
+                      />
+                      <span className="text-xs text-amber-700 font-semibold">Enable Speaker/Room Mode</span>
+                    </label>
+                    {speakerMode ? (
+                      <div className="bg-emerald-50 text-emerald-800 rounded-lg p-2.5 text-[11px] leading-relaxed mb-3 border border-emerald-200">
+                        ✅ <strong>Speaker Mode Active:</strong> Echo cancellation is disabled. Please play meeting audio through your device's <strong>speakers</strong> (do not use headphones), and Zilo will capture everyone in the room!
+                      </div>
+                    ) : (
+                      <div className="bg-amber-50 text-amber-800 rounded-lg p-2.5 text-[11px] leading-relaxed mb-3 border border-amber-200">
+                        ⚠️ <strong>Note:</strong> Recording your microphone alone <strong>will not capture other participants</strong> unless you check <strong>Enable Speaker/Room Mode</strong> above and use your laptop speakers.
+                      </div>
+                    )}
+                  </>
+                )}
                 <button
                   onClick={() => {
                     const keyterms = keytermsInput.split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
-                    rec.startRecording({ title: `Recording ${new Date().toLocaleDateString()}`, keyterms });
+                    rec.startRecording({ 
+                      title: `Recording ${new Date().toLocaleDateString()}`, 
+                      keyterms, 
+                      recordMicOnly, 
+                      speakerMode: recordMicOnly && speakerMode 
+                    });
                   }}
                   className="w-full py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
                 >
@@ -351,7 +473,40 @@ export default function SmartNotesPage() {
                   </button>
                   <span className="text-sm font-medium text-gray-500">Notes</span>
                 </div>
-                <h2 className="text-xl font-bold text-gray-900 sm:text-2xl">{selected.title}</h2>
+                {editingTitle ? (
+                  <input
+                    type="text"
+                    value={titleValue}
+                    onChange={e => setTitleValue(e.target.value)}
+                    onBlur={saveTitle}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") saveTitle();
+                      if (e.key === "Escape") {
+                        setTitleValue(selected.title);
+                        setEditingTitle(false);
+                      }
+                    }}
+                    autoFocus
+                    disabled={renaming}
+                    className="text-xl font-bold text-gray-900 sm:text-2xl border-b border-brand-dark/40 focus:outline-none focus:border-brand-dark pb-0.5 bg-transparent w-full"
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 group">
+                    <h2 
+                      onClick={() => setEditingTitle(true)}
+                      className="text-xl font-bold text-gray-900 sm:text-2xl cursor-pointer hover:text-brand-dark hover:underline decoration-brand-dark/30 underline-offset-4"
+                    >
+                      {selected.title}
+                    </h2>
+                    <button 
+                      onClick={() => setEditingTitle(true)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-brand-dark text-xs p-1 rounded transition-opacity"
+                      aria-label="Rename note"
+                    >
+                      ✏️
+                    </button>
+                  </div>
+                )}
                 <p className="text-sm text-gray-500 mt-1">
                   {fmtDate(selected.meeting_start)}
                   {selected.meeting_end && ` · ${fmtDuration(selected.meeting_start, selected.meeting_end)}`}
@@ -360,65 +515,160 @@ export default function SmartNotesPage() {
                   <p className="text-xs text-gray-400 mt-1">Attendees: {selected.attendees.join(", ")}</p>
                 )}
               </div>
-              <button
-                onClick={() => deleteNote(selected.id)}
-                disabled={deleting === selected.id}
-                className="shrink-0 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors disabled:opacity-50"
-              >
-                {deleting === selected.id ? "Deleting…" : "Delete"}
-              </button>
+              <div className="flex gap-2 shrink-0">
+                {editingDetails ? (
+                  <>
+                    <button
+                      onClick={saveDetails}
+                      disabled={renaming}
+                      className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs hover:bg-green-700 transition-colors font-semibold disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={cancelEdit}
+                      disabled={renaming}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 text-xs hover:bg-gray-50 transition-colors disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setEditingDetails(true)}
+                      className="px-3 py-1.5 rounded-lg border border-gray-200 text-brand-dark text-xs hover:bg-gray-50 transition-colors font-semibold"
+                    >
+                      Edit Note
+                    </button>
+                    <button
+                      onClick={() => deleteNote(selected.id)}
+                      disabled={deleting === selected.id}
+                      className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs hover:bg-red-50 transition-colors disabled:opacity-50"
+                    >
+                      {deleting === selected.id ? "Deleting…" : "Delete"}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
-            {selected.summary && (
-              <Section title="Summary">
-                <p className="text-sm text-gray-700 leading-relaxed">{selected.summary}</p>
-              </Section>
-            )}
-            {selected.key_points && selected.key_points.length > 0 && (
-              <Section title="Key Points">
-                <ul className="space-y-1">
-                  {selected.key_points.map((kp, i) => (
-                    <li key={i} className="flex gap-2 text-sm text-gray-700">
-                      <span className="text-brand-dark mt-0.5">•</span><span>{kp}</span>
-                    </li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-            {selected.action_items?.length > 0 && (
-              <Section title="Action Items">
-                <ul className="space-y-2">
-                  {selected.action_items.map((ai, i) => (
-                    <li key={i} className="flex gap-2 items-start">
-                      <span className="mt-0.5 w-4 h-4 rounded border border-gray-300 shrink-0 flex items-center justify-center text-[10px]">□</span>
-                      <span className="text-sm text-gray-700">{ai}</span>
-                    </li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-            {selected.decisions && selected.decisions.length > 0 && (
-              <Section title="Decisions">
-                <ul className="space-y-1">
-                  {selected.decisions.map((d, i) => (
-                    <li key={i} className="text-sm text-gray-700 flex gap-2">
-                      <span className="text-green-500">✓</span><span>{d}</span>
-                    </li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-            {selected.next_steps && (
-              <Section title="Next Steps">
-                <p className="text-sm text-gray-700 leading-relaxed">{selected.next_steps}</p>
-              </Section>
-            )}
-            {selected.transcript && (
-              <Section title="Transcript">
-                <div className="bg-gray-50 rounded-lg p-4 max-h-72 overflow-y-auto">
-                  <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap font-mono">{selected.transcript}</p>
-                </div>
-              </Section>
+            {editingDetails ? (
+              <div className="space-y-6">
+                <Section title="Summary">
+                  <textarea
+                    rows={4}
+                    value={summaryValue}
+                    onChange={e => setSummaryValue(e.target.value)}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                    placeholder="Enter summary..."
+                  />
+                </Section>
+
+                <Section title="Key Points (one per line)">
+                  <textarea
+                    rows={4}
+                    value={keyPointsValue.join("\n")}
+                    onChange={e => setKeyPointsValue(e.target.value.split("\n"))}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                    placeholder="Key point 1&#10;Key point 2"
+                  />
+                </Section>
+
+                <Section title="Action Items (one per line)">
+                  <textarea
+                    rows={4}
+                    value={actionItemsValue.join("\n")}
+                    onChange={e => setActionItemsValue(e.target.value.split("\n"))}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                    placeholder="Action item 1&#10;Action item 2"
+                  />
+                </Section>
+
+                <Section title="Decisions (one per line)">
+                  <textarea
+                    rows={4}
+                    value={decisionsValue.join("\n")}
+                    onChange={e => setDecisionsValue(e.target.value.split("\n"))}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                    placeholder="Decision 1&#10;Decision 2"
+                  />
+                </Section>
+
+                <Section title="Next Steps">
+                  <textarea
+                    rows={3}
+                    value={nextStepsValue}
+                    onChange={e => setNextStepsValue(e.target.value)}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                    placeholder="Enter next steps..."
+                  />
+                </Section>
+
+                <Section title="Transcript">
+                  <textarea
+                    rows={8}
+                    value={transcriptValue}
+                    onChange={e => setTranscriptValue(e.target.value)}
+                    className="w-full text-xs font-mono border border-gray-200 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 bg-gray-50 leading-relaxed"
+                    placeholder="Enter raw transcript..."
+                  />
+                </Section>
+              </div>
+            ) : (
+              <>
+                {(selected.summary || summaryValue) && (
+                  <Section title="Summary">
+                    <p className="text-sm text-gray-700 leading-relaxed">{selected.summary || summaryValue}</p>
+                  </Section>
+                )}
+                {((selected.key_points && selected.key_points.length > 0) || keyPointsValue.length > 0) && (
+                  <Section title="Key Points">
+                    <ul className="space-y-1">
+                      {(selected.key_points || keyPointsValue).filter(Boolean).map((kp, i) => (
+                        <li key={i} className="flex gap-2 text-sm text-gray-700">
+                          <span className="text-brand-dark mt-0.5">•</span><span>{kp}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Section>
+                )}
+                {((selected.action_items && selected.action_items.length > 0) || actionItemsValue.length > 0) && (
+                  <Section title="Action Items">
+                    <ul className="space-y-2">
+                      {(selected.action_items || actionItemsValue).filter(Boolean).map((ai, i) => (
+                        <li key={i} className="flex gap-2 items-start">
+                          <span className="mt-0.5 w-4 h-4 rounded border border-gray-300 shrink-0 flex items-center justify-center text-[10px]">□</span>
+                          <span className="text-sm text-gray-700">{ai}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Section>
+                )}
+                {((selected.decisions && selected.decisions.length > 0) || decisionsValue.length > 0) && (
+                  <Section title="Decisions">
+                    <ul className="space-y-1">
+                      {(selected.decisions || decisionsValue).filter(Boolean).map((d, i) => (
+                        <li key={i} className="text-sm text-gray-700 flex gap-2">
+                          <span className="text-green-500">✓</span><span>{d}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Section>
+                )}
+                {(selected.next_steps || nextStepsValue) && (
+                  <Section title="Next Steps">
+                    <p className="text-sm text-gray-700 leading-relaxed">{selected.next_steps || nextStepsValue}</p>
+                  </Section>
+                )}
+                {(selected.transcript || transcriptValue) && (
+                  <Section title="Transcript">
+                    <div className="bg-gray-50 rounded-lg p-4 max-h-72 overflow-y-auto">
+                      <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap font-mono">{selected.transcript || transcriptValue}</p>
+                    </div>
+                  </Section>
+                )}
+              </>
             )}
           </div>
         )}

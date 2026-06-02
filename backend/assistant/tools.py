@@ -88,7 +88,9 @@ async def run_tool(name: str, ctx: ToolContext, args: Dict[str, Any]) -> Any:
     if name not in REGISTRY:
         return {"error": f"Unknown tool: {name}"}
     try:
-        res = await REGISTRY[name]["impl"](ctx, args or {})
+        from assistant.tool_arg_validator import validate_tool_args
+        validated_args = validate_tool_args(name, args or {})
+        res = await REGISTRY[name]["impl"](ctx, validated_args)
         return res
     except Exception as e:
         logger.exception(f"[assistant.tool] {name} failed")
@@ -114,6 +116,47 @@ def _serialize(doc: Dict[str, Any]) -> Dict[str, Any]:
         else:
             out[k] = _s(v)
     return out
+
+
+# ── Tool-result cache helper ─────────────────────────────────────────────────
+import hashlib as _hashlib
+
+
+async def _tool_cached(
+    fn,
+    ctx: "ToolContext",
+    args: Dict[str, Any],
+    *,
+    ttl: int,
+    key_suffix: str = "",
+) -> Any:
+    """Transparent TTL-cache wrapper for read-only tool functions.
+
+    Key: tenant:{business_id}:tool_cache:{fn.__name__}:{args_hash}{key_suffix}
+    Falls back silently to live execution when Redis is unavailable.
+    """
+    try:
+        from redis_client import cache_get, cache_set
+        import json as _json
+
+        args_hash = _hashlib.md5(  # noqa: S324 — not a security context
+            _json.dumps(args, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        cache_key = f"tenant:{ctx.business_id}:tool_cache:{fn.__name__}:{args_hash}{key_suffix}"
+
+        cached = await cache_get(cache_key)
+        if cached is not None:
+            logger.debug("[tool_cache] HIT %s user=%s", fn.__name__, ctx.business_id)
+            return cached
+
+        result = await fn(ctx, args)
+        await cache_set(cache_key, result, ttl=ttl)
+        logger.debug("[tool_cache] SET %s user=%s ttl=%ds", fn.__name__, ctx.business_id, ttl)
+        return result
+    except Exception as exc:
+        # Cache errors must never break tools — fall through to live call
+        logger.warning("[tool_cache] bypass for %s: %s", getattr(fn, '__name__', '?'), exc)
+        return await fn(ctx, args)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -208,7 +251,14 @@ async def list_orders(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_products(ctx: ToolContext, args: Dict[str, Any]):
-    import os as _os
+    # Cache per-user, per-search term — 300s TTL (product catalog changes rarely)
+    search_suffix = f":{(args.get('search') or '').strip()[:40]}"
+    return await _tool_cached(
+        _list_products_impl, ctx, args, ttl=300, key_suffix=search_suffix
+    )
+
+
+async def _list_products_impl(ctx: ToolContext, args: Dict[str, Any]):
 
     q: Dict[str, Any] = {"user_id": ctx.business_id}
     if s := (args.get("search") or "").strip():
@@ -456,12 +506,400 @@ async def list_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": str(e)}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# INNOVATION 1 — Autonomous Notebook Synthesis (agent-driven memory write-back)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="save_notebook_observation",
+    description=(
+        "Write a permanent observation about a customer, a business pattern, or a strategic lane "
+        "into Zilo's Rex Notebook (persistent cross-session memory). "
+        "Use this when you discover something significant that should inform future decisions: "
+        "e.g. a customer's buying behaviour, a recurring pattern in the data, or a category where "
+        "you should stay hands-off. "
+        "Bucket choices: 'people' (requires a subject name), 'patterns' (no subject needed), "
+        "'lanes' (subject = category name, e.g. 'payments'). "
+        "Write in terse, evidence-based prose — no bullet points, no field labels, no 'I' or 'you'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "bucket": {
+                "type": "string",
+                "enum": ["people", "patterns", "lanes"],
+                "description": "Which memory bucket: 'people', 'patterns', or 'lanes'.",
+            },
+            "subject": {
+                "type": "string",
+                "description": (
+                    "Required for 'people' (use customer name, e.g. 'Patel') "
+                    "and 'lanes' (use category, e.g. 'payments'). "
+                    "Omit for 'patterns'."
+                ),
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "The observation in Rex's voice: terse, direct, third-person, evidence-based. "
+                    "E.g. 'Patel — responds to directness, not warmth. Two warm approaches failed.' "
+                    "or 'Reply rates drop 60% on Tuesdays across all segments.'"
+                ),
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional category tags, e.g. ['outreach', 'pricing'].",
+            },
+        },
+        "required": ["bucket", "text"],
+    },
+)
+async def save_notebook_observation(ctx: ToolContext, args: Dict[str, Any]):
+    bucket_str = (args.get("bucket") or "").strip().lower()
+    subject = (args.get("subject") or "").strip() or None
+    text = (args.get("text") or "").strip()
+    tags = tuple(str(t).strip() for t in (args.get("tags") or []) if t)
+
+    if not text:
+        return {"error": "text is required"}
+    if bucket_str not in ("people", "patterns", "lanes"):
+        return {"error": "bucket must be 'people', 'patterns', or 'lanes'"}
+
+    try:
+        from rex.memory.buckets import Bucket
+        from rex.memory.notebook import NotebookVoiceError
+        from rex.persistence.session import ZiloSessionStore
+
+        bucket = Bucket(bucket_str)
+        store = ZiloSessionStore(ctx.db)
+        orch = await store.load(ctx.user_id, business_id=ctx.business_id)
+        entry = orch.notebook.add(
+            bucket=bucket,
+            text=text,
+            subject=subject,
+            tags=tags,
+            strict_voice=True,
+        )
+        await store.save(ctx.user_id, business_id=ctx.business_id, orch=orch)
+        return {
+            "ok": True,
+            "entry_id": entry.id,
+            "bucket": bucket.value,
+            "subject": entry.subject,
+            "text": entry.text,
+        }
+    except NotebookVoiceError as ve:
+        return {
+            "error": "Voice validation failed — rewrite in terse, evidence-based third-person prose.",
+            "detail": str(ve),
+        }
+    except Exception as e:
+        logger.warning("[save_notebook_observation] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
+    name="search_notebook",
+    description=(
+        "Search Zilo's Rex Notebook for relevant observations about a customer, pattern, or strategic lane. "
+        "Use before customer interactions, before drafting proposals, or when you need to recall "
+        "prior decisions. Returns the most relevant notebook entries ranked by subject match, "
+        "tag match, and keyword overlap."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "subject": {
+                "type": "string",
+                "description": "Customer or lane name to look up, e.g. 'Patel' or 'payments'.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Natural-language keyword search across all entries.",
+            },
+            "bucket": {
+                "type": "string",
+                "enum": ["people", "patterns", "lanes"],
+                "description": "Optionally restrict to one bucket.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 5,
+                "minimum": 1,
+                "maximum": 20,
+            },
+        },
+    },
+)
+async def search_notebook(ctx: ToolContext, args: Dict[str, Any]):
+    subject = (args.get("subject") or "").strip() or None
+    query = (args.get("query") or "").strip() or None
+    bucket_str = (args.get("bucket") or "").strip().lower() or None
+    limit = min(int(args.get("limit") or 5), 20)
+
+    try:
+        from rex.memory.buckets import Bucket
+        from rex.memory.notebook import find_relevant
+        from rex.persistence.session import ZiloSessionStore
+
+        store = ZiloSessionStore(ctx.db)
+        orch = await store.load(ctx.user_id, business_id=ctx.business_id)
+
+        # If bucket filter, also narrow pool before calling find_relevant
+        if bucket_str:
+            bucket = Bucket(bucket_str)
+            from rex.memory.notebook import Notebook
+            from rex.memory.store import InMemoryNotebookStore
+            subset = orch.notebook.by_bucket(bucket)
+            filtered_nb = Notebook(store=InMemoryNotebookStore(subset))
+        else:
+            filtered_nb = orch.notebook
+
+        results = find_relevant(
+            filtered_nb,
+            subject=subject,
+            query=query,
+            limit=limit,
+        )
+        if not results:
+            return {"count": 0, "entries": [], "message": "No matching notebook entries found."}
+
+        return {
+            "count": len(results),
+            "entries": [
+                {
+                    "id": e.id,
+                    "bucket": e.bucket.value,
+                    "subject": e.subject,
+                    "text": e.text,
+                    "tags": list(e.tags),
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+                for e in results
+            ],
+        }
+    except Exception as e:
+        logger.warning("[search_notebook] %s", e)
+        return {"error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INNOVATION 3 — Unified Knowledge Retrieval (notebook + smart notes in one call)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="retrieve_knowledge",
+    description=(
+        "Unified knowledge retrieval — searches BOTH the Rex Notebook (persistent agent memory) "
+        "AND the Smart Notes (AI-generated meeting transcripts, decisions, action items) in one call. "
+        "Use this as your first step when you need background context before advising the user: "
+        "client history, past decisions, agreed strategies, recurring patterns. "
+        "Returns results labelled by source: 'notebook' or 'smart_notes'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language query — what you want to know.",
+            },
+            "subject": {
+                "type": "string",
+                "description": "Optional: customer or topic name to prioritise in notebook search.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 8,
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Max total results (notebook + smart notes combined).",
+            },
+        },
+        "required": ["query"],
+    },
+)
+async def retrieve_knowledge(ctx: ToolContext, args: Dict[str, Any]):
+    query = (args.get("query") or "").strip()
+    subject = (args.get("subject") or "").strip() or None
+    limit = min(int(args.get("limit") or 8), 20)
+
+    if not query:
+        return {"error": "query is required"}
+
+    half = max(limit // 2, 1)
+    results: List[Dict[str, Any]] = []
+
+    # Source 1: Rex Notebook
+    try:
+        from rex.memory.notebook import find_relevant
+        from rex.persistence.session import ZiloSessionStore
+
+        store = ZiloSessionStore(ctx.db)
+        orch = await store.load(ctx.user_id, business_id=ctx.business_id)
+        nb_hits = find_relevant(orch.notebook, subject=subject, query=query, limit=half)
+        for e in nb_hits:
+            results.append({
+                "source": "notebook",
+                "bucket": e.bucket.value,
+                "subject": e.subject,
+                "text": e.text,
+                "tags": list(e.tags),
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            })
+    except Exception as e:
+        logger.warning("[retrieve_knowledge] notebook lookup failed: %s", e)
+
+    # Source 2: Smart Notes (semantic vector search)
+    try:
+        from smart_notes.knowledge import search_knowledge
+        sn_hits = await search_knowledge(ctx.db, ctx.business_id, query, top_k=half)
+        for hit in sn_hits:
+            results.append({
+                "source": "smart_notes",
+                "title": hit.get("title", ""),
+                "date": hit.get("date", ""),
+                "text": hit.get("text", hit.get("summary", "")),
+                "attendees": hit.get("attendees", []),
+                "action_items": hit.get("action_items", []),
+                "score": hit.get("score"),
+            })
+    except Exception as e:
+        logger.warning("[retrieve_knowledge] smart_notes lookup failed: %s", e)
+
+    if not results:
+        return {
+            "query": query,
+            "count": 0,
+            "results": [],
+            "message": "No relevant knowledge found in notebook or meeting notes.",
+        }
+
+    return {"query": query, "count": len(results), "results": results}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INNOVATION 2 — Cross-Agent Shared Ledger (collaborative agent scratchpad)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="save_agent_hint",
+    description=(
+        "Post a short strategic hint to the shared agent scratchpad — a lightweight cross-agent ledger "
+        "that lets specialists leave observations for other agents. "
+        "Use this when you spot something that another agent should know: "
+        "e.g. 'Instagram Reels performing 3× better than static posts this month', "
+        "'Customer segment 25-34 converts best on weekend mornings', "
+        "'Stripe subscription churn spiked — 4 cancellations in 7 days'. "
+        "Category examples: 'social', 'payments', 'customers', 'inventory', 'marketing', 'operations'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Topic area, e.g. 'social', 'payments', 'customers', 'inventory'.",
+            },
+            "hint": {
+                "type": "string",
+                "description": "Short, factual observation (1-2 sentences max). Evidence-based.",
+            },
+            "agent": {
+                "type": "string",
+                "description": "Which specialist is writing this hint, e.g. 'meta_ads', 'shopify', 'social_media'.",
+            },
+        },
+        "required": ["category", "hint"],
+    },
+)
+async def save_agent_hint(ctx: ToolContext, args: Dict[str, Any]):
+    category = (args.get("category") or "").strip().lower()
+    hint = (args.get("hint") or "").strip()
+    agent = (args.get("agent") or "zilo").strip().lower()
+
+    if not category or not hint:
+        return {"error": "category and hint are required"}
+    if len(hint) > 500:
+        return {"error": "hint must be ≤ 500 characters — keep it sharp"}
+
+    try:
+        doc = {
+            "user_id": ctx.business_id,
+            "category": category,
+            "hint": hint,
+            "agent": agent,
+            "created_at": datetime.utcnow(),
+        }
+        result = await ctx.db.agent_hints.insert_one(doc)
+        return {"ok": True, "hint_id": str(result.inserted_id), "category": category}
+    except Exception as e:
+        logger.warning("[save_agent_hint] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
+    name="read_agent_hints",
+    description=(
+        "Read recent cross-agent hints from the shared scratchpad — observations other Zilo specialists "
+        "have logged about the business. Use before advising on strategy to check what other agents "
+        "have already spotted. Optionally filter by category."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Filter by topic, e.g. 'social', 'payments'. Omit to read all recent hints.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 10,
+                "minimum": 1,
+                "maximum": 30,
+            },
+        },
+    },
+)
+async def read_agent_hints(ctx: ToolContext, args: Dict[str, Any]):
+    category = (args.get("category") or "").strip().lower() or None
+    limit = min(int(args.get("limit") or 10), 30)
+
+    try:
+        query: Dict[str, Any] = {"user_id": ctx.business_id}
+        if category:
+            query["category"] = category
+        rows = await ctx.db.agent_hints.find(query).sort("created_at", -1).to_list(limit)
+        if not rows:
+            return {"count": 0, "hints": [], "message": "No agent hints found for this business yet."}
+        return {
+            "count": len(rows),
+            "hints": [
+                {
+                    "hint_id": str(r.get("_id", "")),
+                    "category": r.get("category", ""),
+                    "hint": r.get("hint", ""),
+                    "agent": r.get("agent", "zilo"),
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                }
+                for r in rows
+            ],
+        }
+    except Exception as e:
+        logger.warning("[read_agent_hints] %s", e)
+        return {"error": str(e)}
+
+
 @tool(
     name="get_analytics_summary",
     description="High-level business stats: customer count, sales today, revenue, active orders, bookings today.",
     parameters={"type": "object", "properties": {}},
 )
 async def get_analytics_summary(ctx: ToolContext, args: Dict[str, Any]):
+    # Cache the dashboard snapshot for 120 s — today's stats don't change per-second
+    return await _tool_cached(_get_analytics_summary_impl, ctx, args, ttl=120)
+
+
+async def _get_analytics_summary_impl(ctx: ToolContext, args: Dict[str, Any]):
     now = datetime.utcnow()
     start = datetime(now.year, now.month, now.day)
 
@@ -602,7 +1040,11 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
     destructive=False,
 )
 async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
-    from .owner_profile import build_owner_profile
+    # Owner profile (brand kit, settings) changes very rarely — 600 s TTL
+    return await _tool_cached(_get_owner_info_impl, ctx, args, ttl=600)
+
+
+async def _get_owner_info_impl(ctx: ToolContext, args: Dict[str, Any]):
 
     user = await ctx.db.users.find_one({"_id": ctx.business_id})
     if not user:
@@ -2503,6 +2945,178 @@ async def run_weekly_operator_digest(ctx: ToolContext, args: Dict[str, Any]):
 # ═════════════════════════════════════════════════════════════════════════════
 
 @tool(
+    name="shopify_partner_create_store",
+    description=(
+        "Create a new Shopify development store from scratch using the Shopify Partner API. "
+        "Returns the domain of the created store and a direct authorization link for the user to "
+        "install Zilo and connect it. The user will be the store owner."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["store_name", "email", "first_name"],
+        "properties": {
+            "store_name": {
+                "type": "string",
+                "description": "Desired subdomain name (e.g. 'my-awesome-shop'). Only lowercase letters, numbers, and hyphens are allowed."
+            },
+            "email": {
+                "type": "string",
+                "description": "Login/owner email for the new store."
+            },
+            "first_name": {
+                "type": "string",
+                "description": "First name of the store owner."
+            },
+            "last_name": {
+                "type": "string",
+                "description": "Optional last name of the store owner."
+            },
+            "country_code": {
+                "type": "string",
+                "default": "US",
+                "description": "Two-letter ISO country code (e.g. 'US', 'CA', 'GB')."
+            }
+        }
+    },
+    destructive=True,
+)
+async def shopify_partner_create_store(ctx: ToolContext, args: Dict[str, Any]):
+    import re as _re
+    from urllib.parse import urlencode
+
+    store_name   = str(args.get("store_name",   "")).strip().lower()
+    first_name   = str(args.get("first_name",   "")).strip()
+    last_name    = str(args.get("last_name",    "")).strip()
+    email        = str(args.get("email",        "")).strip()
+    country_code = str(args.get("country_code", "US")).strip().upper()
+
+    if not store_name or not first_name or not email:
+        return {"error": "store_name, first_name and email are required"}
+
+    # Sanitise store name — only lowercase letters, numbers, hyphens
+    store_name = _re.sub(r"[^a-z0-9-]", "-", store_name).strip("-")
+    if not store_name:
+        return {"error": "store_name must contain letters or numbers"}
+
+    partner_id     = os.environ.get("SHOPIFY_PARTNER_ID",           "").strip()
+    partner_token  = os.environ.get("SHOPIFY_PARTNER_ACCESS_TOKEN", "").strip()
+
+    if not partner_id:
+        return {
+            "error": (
+                "SHOPIFY_PARTNER_ID is not configured. "
+                "Add it to your .env (found in Partners Dashboard → Settings)."
+            )
+        }
+    if not partner_token:
+        return {
+            "error": (
+                "SHOPIFY_PARTNER_ACCESS_TOKEN is not configured. "
+                "Generate one at partners.shopify.com → Settings → Partner API clients → Create access token."
+            )
+        }
+
+    # ── Shopify Partners GraphQL API — create development store ──────────────
+    # Mutation: developmentStoreV2Create (Partners API 2024-10)
+    # Docs: https://shopify.dev/docs/api/partner/2024-10/mutations/developmentStoreV2Create
+    gql_mutation = """
+        mutation developmentStoreV2Create($input: DevelopmentStoreV2CreateInput!) {
+          developmentStoreV2Create(input: $input) {
+            store {
+              name
+              shopifyDomain
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+    """
+
+    gql_variables = {
+        "input": {
+            "name":        store_name,
+            "login":       email,
+            "firstName":   first_name,
+            "lastName":    last_name or "",
+            "countryCode": country_code,
+            "storeType":   "DEVELOPMENT",
+        }
+    }
+
+    # ── Shopify Affiliate Tracking Flow ──────────────────────────────────────
+    # Send user to your tracked Shopify Affiliate link so you earn a bounty
+    # when they create a store and upgrade.
+    affiliate_url = os.environ.get(
+        "SHOPIFY_AFFILIATE_LINK",
+        "https://shopify.pxf.io/c/7362062/1061744/13624"
+    ).strip()
+
+    # Build OAuth connect URL so the user can link their store in one click after creation
+    client_id     = os.environ.get("SHOPIFY_CLIENT_ID",     "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+
+    domain     = f"{store_name}.myshopify.com"
+    auth_url   = ""
+    if client_id and client_secret:
+        from server import _shopify_state_encode, _SHOPIFY_SCOPES
+        api_url      = os.environ.get("NEXT_PUBLIC_API_URL", "").strip().rstrip("/")
+        redirect_uri = f"{api_url}/shopify/oauth/callback" if api_url else "http://127.0.0.1:8000/api/shopify/oauth/callback"
+        state        = _shopify_state_encode(ctx.business_id, client_secret)
+        params       = {
+            "client_id":    client_id,
+            "scope":        _SHOPIFY_SCOPES,
+            "redirect_uri": redirect_uri,
+            "state":        state,
+        }
+        auth_url = f"https://{domain}/admin/oauth/authorize?{urlencode(params)}"
+
+    # Log the referral intent so we can track which users followed through
+    try:
+        from datetime import datetime as _dt
+        await ctx.db.shopify_partner_referrals.insert_one({
+            "business_id":   ctx.business_id,
+            "store_name":    store_name,
+            "domain":        domain,
+            "email":         email,
+            "first_name":    first_name,
+            "last_name":     last_name,
+            "country_code":  country_code,
+            "status":        "pending",
+            "created_at":    _dt.utcnow(),
+        })
+    except Exception:
+        pass
+
+    connect_instructions = (
+        f"Once your store is ready, come back and say:\n"
+        f"> **\"Connect my store {domain}\"**\n\n"
+        f"Zilo will link it instantly."
+    ) if not auth_url else (
+        f"Once your store is ready, [click here to connect it to Zilo]({auth_url}) — takes 10 seconds."
+    )
+
+    return {
+        "status":                "guided",
+        "domain":                domain,
+        "name":                  store_name,
+        "partner_dashboard_url": affiliate_url,
+        "auth_url":              auth_url,
+        "message": (
+            f"Let's get your new Shopify store set up and connected to Zilo.\n\n"
+            f"Here's what to do:\n\n"
+            f"**Step 1 — Create your store** (2 minutes)\n"
+            f"[Click here to start your Shopify store]({affiliate_url}) → click **Start free trial** and follow the prompts.\n\n"
+            f"**Step 2 — Connect to Zilo** (10 seconds)\n"
+            f"{connect_instructions}\n\n"
+            f"Once connected, I can help you search dropshipping products, manage listings, and sync your inventory!"
+        ),
+    }
+
+
+
+@tool(
     name="list_shopify_orders",
     description=(
         "Fetch orders from the connected Shopify store. "
@@ -3982,6 +4596,132 @@ async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
             "description":   inv.get("description"),
         })
     return {"count": len(out), "invoices": out}
+
+
+@tool(
+    name="get_stripe_balance",
+    description="Get the current available and pending balance of the connected Stripe account. Requires Stripe to be connected.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_stripe_balance(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "GET", "/v1/balance")
+    except RuntimeError as e:
+        return {"error": str(e)}
+    available = data.get("available", [])
+    pending = data.get("pending", [])
+    out_available = [{"amount": round(a.get("amount", 0) / 100, 2), "currency": (a.get("currency") or "").upper()} for a in available]
+    out_pending = [{"amount": round(p.get("amount", 0) / 100, 2), "currency": (p.get("currency") or "").upper()} for p in pending]
+    return {"available": out_available, "pending": out_pending}
+
+
+@tool(
+    name="list_stripe_customers",
+    description="Fetch customers from the connected Stripe account. Can filter by customer email.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "email": {"type": "string", "description": "Filter by exact customer email address"},
+            "limit": {"type": "integer", "default": 20, "description": "Number of customers to return (1-100)"},
+        },
+    },
+)
+async def list_stripe_customers(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    limit = min(int(args.get("limit", 20)), 100)
+    email = (args.get("email") or "").strip()
+    qparams = {"limit": str(limit)}
+    if email:
+        qparams["email"] = email
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "GET", "/v1/customers", params=qparams)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    items = data.get("data", [])
+    out = []
+    for c in items:
+        out.append({
+            "id": c.get("id"),
+            "email": c.get("email"),
+            "name": c.get("name"),
+            "created": c.get("created"),
+            "description": c.get("description"),
+        })
+    return {"count": len(out), "customers": out}
+
+
+@tool(
+    name="list_stripe_subscriptions",
+    description="Fetch subscriptions from the connected Stripe account, filtered by status. Requires Stripe connection.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "default": "active", "description": "active | trialing | past_due | canceled | all"},
+            "limit": {"type": "integer", "default": 20, "description": "Number of subscriptions to return (1-100)"},
+        },
+    },
+)
+async def list_stripe_subscriptions(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    limit = min(int(args.get("limit", 20)), 100)
+    status = args.get("status", "active")
+    qparams = {"limit": str(limit)}
+    if status != "all":
+        qparams["status"] = status
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "GET", "/v1/subscriptions", params=qparams)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    items = data.get("data", [])
+    out = []
+    for s in items:
+        out.append({
+            "id": s.get("id"),
+            "status": s.get("status"),
+            "customer": s.get("customer"),
+            "current_period_start": s.get("current_period_start"),
+            "current_period_end": s.get("current_period_end"),
+            "trial_start": s.get("trial_start"),
+            "trial_end": s.get("trial_end"),
+            "cancel_at_period_end": s.get("cancel_at_period_end"),
+        })
+    return {"count": len(out), "subscriptions": out}
+
+
+@tool(
+    name="create_stripe_payment_link",
+    description="Create a shareable Stripe payment link from a Price ID and quantity.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "price_id": {"type": "string", "description": "The Stripe Price ID (e.g. price_123)"},
+            "quantity": {"type": "integer", "default": 1, "description": "Quantity for this price item"},
+        },
+        "required": ["price_id"],
+    },
+)
+async def create_stripe_payment_link(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    price_id = args.get("price_id")
+    quantity = int(args.get("quantity") or 1)
+    payload = {
+        "line_items": [
+            {
+                "price": price_id,
+                "quantity": quantity,
+            }
+        ]
+    }
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "POST", "/v1/payment_links", json=payload)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    return {
+        "id": data.get("id"),
+        "url": data.get("url"),
+        "active": data.get("active"),
+    }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -13190,6 +13930,20 @@ async def _record_and_read_follower_history(
 async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
     days = max(1, min(int(args.get("days") or 7), 30))
     customer_query = (args.get("customer_name_or_email") or "").strip()
+
+    # ── Fast-path: return cached snapshot for business-wide (no customer filter) ──
+    # Customer-specific queries are never cached (fresh state required).
+    if not customer_query:
+        try:
+            from redis_client import cache_get, cache_set
+            _cache_key = f"tenant:{ctx.business_id}:tool_cache:get_business_context:days={days}"
+            _cached = await cache_get(_cache_key)
+            if _cached is not None:
+                logger.debug("[tool_cache] HIT get_business_context user=%s days=%d", ctx.business_id, days)
+                return _cached
+        except Exception as _exc:
+            logger.warning("[tool_cache] get_business_context cache_get skipped: %s", _exc)
+
     limit = 20
 
     # ── Helper: match customer by name/email ─────────────────────────────────────
@@ -13291,7 +14045,7 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
     }
 
     # ── 6. Assemble response ─────────────────────────────────────────────────────
-    return {
+    result = {
         "scope": "customer" if target_customer else "business",
         "customer": target_customer,
         "customers": customers,
@@ -13304,6 +14058,18 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
         "quick_stats": quick_stats,
         "window_days": days,
     }
+
+    # Store business-wide snapshots in Redis for 60 s — never cache customer-scoped results
+    if not customer_query:
+        try:
+            from redis_client import cache_set
+            _cache_key = f"tenant:{ctx.business_id}:tool_cache:get_business_context:days={days}"
+            await cache_set(_cache_key, result, ttl=60)
+            logger.debug("[tool_cache] SET get_business_context user=%s days=%d ttl=60s", ctx.business_id, days)
+        except Exception as _exc:
+            logger.warning("[tool_cache] get_business_context cache_set skipped: %s", _exc)
+
+    return result
 
 
 @tool(
@@ -15071,7 +15837,7 @@ async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -
             "status":      "active",
             "tags":        f"dropship,cj,{prod.get('categoryName', '')}",
             "variants":    variants,
-            "images":      [{"src": img} for img in images[:5] if img],
+            "images":      [{"src": img} for img in images[:15] if img],
         }
     }
 
@@ -15734,7 +16500,7 @@ async def import_aliexpress_product_to_shopify(ctx: ToolContext, args: Dict[str,
 
     title       = args.get("product_title") or ae_item.get("subject", "")
     description = ae_item.get("detail", "")
-    images      = [i.strip() for i in ae_images.split(";") if i.strip()][:5] if ae_images else []
+    images      = [i.strip() for i in ae_images.split(";") if i.strip()][:15] if ae_images else []
 
     # Cost from first SKU or base price
     cost_price = 0.0
@@ -16291,6 +17057,14 @@ async def publish_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str,
 async def shopify_publish_blog_post(ctx: ToolContext, args: Dict[str, Any]):
     from .composio_helper import composio_proxy as nango_proxy
     import httpx as _httpx
+    from plan_enforcement import enforce_blogpost_limit
+    from fastapi import HTTPException
+
+    try:
+        # Enforce subscription plan blogpost limits before publishing
+        await enforce_blogpost_limit(ctx.db, ctx.business_id)
+    except HTTPException as e:
+        return {"error": e.detail, "success": False}
 
     title   = args["title"]
     content = args.get("content", "")
@@ -18316,3 +19090,127 @@ async def manage_gmail_filters(ctx: ToolContext, args: Dict[str, Any]) -> Dict[s
     except Exception as e:
         logger.exception("[manage_gmail_filters] error")
         return {"error": str(e)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# BROWSER AUTOMATION TOOLS (Chrome Extension Integration)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="browser_navigate",
+    description="Navigate the user's active browser window to a specific website/URL.",
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "The destination web address/URL (e.g. 'https://google.com')"}
+        }
+    }
+)
+async def browser_navigate(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        url = args["url"]
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"https://{url}"
+        result = await send_browser_command(ctx.user_id, "navigate", url=url)
+        return result
+    except Exception as e:
+        return {"error": f"Browser navigation tool error: {e}"}
+
+
+@tool(
+    name="browser_click",
+    description="Click an element matching the provided CSS or XPath selector inside the user's browser tab.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The target CSS selector, XPath, or 'text=Label' pattern (e.g. 'button.submit', '//div[@id=\"btn\"]', or 'text=Submit')"}
+        }
+    }
+)
+async def browser_click(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "click", selector=args["selector"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser click tool error: {e}"}
+
+
+@tool(
+    name="browser_type",
+    description="Focus and type text into an input or form field inside the user's browser tab.",
+    parameters={
+        "type": "object",
+        "required": ["selector", "text"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback pattern targeting the input element"},
+            "text": {"type": "string", "description": "The characters/text value to type into the field"}
+        }
+    }
+)
+async def browser_type(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "type", selector=args["selector"], text=args["text"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser typing tool error: {e}"}
+
+
+@tool(
+    name="browser_scroll",
+    description="Smoothly scroll the target element or page viewport into view.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback targeting the element to scroll to"}
+        }
+    }
+)
+async def browser_scroll(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "scroll", selector=args["selector"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser scroll tool error: {e}"}
+
+
+@tool(
+    name="browser_extract",
+    description="Extract raw text, values, HTML elements, or specific attribute contents from matching page elements.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback pattern targeting the element to extract from"},
+            "data_type": {
+                "type": "string",
+                "enum": ["text", "value", "html", "attribute"],
+                "default": "text",
+                "description": "What type of data to extract: 'text' (inner text content), 'value' (input form values), 'html' (outer HTML structure), or 'attribute' (custom node properties)"
+            },
+            "attribute_name": {
+                "type": "string",
+                "description": "The name of the attribute to extract (only needed when data_type is set to 'attribute' - e.g. 'href' or 'src')"
+            }
+        }
+    }
+)
+async def browser_extract(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(
+            ctx.user_id, 
+            "extract", 
+            selector=args["selector"], 
+            data_type=args.get("data_type", "text"),
+            text=args.get("attribute_name")
+        )
+        return result
+    except Exception as e:
+        return {"error": f"Browser extract tool error: {e}"}

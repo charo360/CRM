@@ -37,6 +37,17 @@ class NoteSave(BaseModel):
     raw_calendar_event_id: Optional[str] = None
 
 
+class NoteUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    action_items: Optional[List[str]] = None
+    key_points: Optional[List[str]] = None
+    decisions: Optional[List[str]] = None
+    next_steps: Optional[str] = None
+    transcript: Optional[str] = None
+
+
 # ── AssemblyAI helpers ─────────────────────────────────────────────────────────
 
 async def _aai_upload(content: bytes, api_key: str) -> str:
@@ -436,6 +447,50 @@ Respond ONLY with valid JSON. No markdown fences."""
         if not doc:
             raise HTTPException(404, "Note not found")
         return _ser(doc)
+
+    @router.patch("/{note_id}")
+    async def update_note(note_id: str, body: NoteUpdate, user=auth_dep):
+        tid = _tid(user)
+        doc = await db.smart_notes.find_one({"_id": note_id, "user_id": tid})
+        if not doc:
+            raise HTTPException(404, "Note not found")
+
+        updates: Dict[str, Any] = {}
+        if body.title is not None:
+            updates["title"] = body.title
+        if body.summary is not None:
+            updates["summary"] = body.summary
+        if body.action_items is not None:
+            updates["action_items"] = body.action_items
+        if body.key_points is not None:
+            updates["key_points"] = body.key_points
+        if body.decisions is not None:
+            updates["decisions"] = body.decisions
+        if body.next_steps is not None:
+            updates["next_steps"] = body.next_steps
+        if body.transcript is not None:
+            updates["transcript"] = body.transcript
+
+        if not updates:
+            return _ser(doc)
+
+        updates["updated_at"] = datetime.now(timezone.utc)
+
+        await db.smart_notes.update_one(
+            {"_id": note_id, "user_id": tid},
+            {"$set": updates}
+        )
+
+        updated_doc = await db.smart_notes.find_one({"_id": note_id, "user_id": tid})
+
+        # Re-index into the knowledge base so the updated details reflect in semantic searches
+        try:
+            from smart_notes.knowledge import ingest_note as _ingest
+            asyncio.create_task(_ingest(db, updated_doc))
+        except Exception as _kb_err:
+            logger.warning("[smart-notes] knowledge base re-ingest failed: %s", _kb_err)
+
+        return _ser(updated_doc)
 
     @router.delete("/{note_id}")
     async def delete_note(note_id: str, user=auth_dep):

@@ -197,7 +197,7 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_team_analytics", label: "Team analytics", description: "Team performance" },
       { key: "nav_whatsapp", label: "WhatsApp", description: "WA tools" },
       { key: "nav_field_agents", label: "Field Agents", description: "Assign and track field rep tasks — check-ins, routes, and activity", keywords: ["field", "agents", "reps", "tasks", "check-in", "routes", "mobile"] },
-      { key: "nav_smart_notes", label: "Smart Notes", description: "AI meeting note-taker — auto-records and transcribes calendar meetings", keywords: ["notes", "meeting", "transcribe", "record", "notetaker", "ai"] },
+      { key: "nav_smart_notes", label: "Zilo Notetaker", description: "AI meeting note-taker — auto-records and transcribes calendar meetings", keywords: ["notes", "meeting", "transcribe", "record", "notetaker", "ai"] },
       { key: "nav_team", label: "Team", description: "Members, roles, and team settings" },
       {
         key: "nav_collaboration",

@@ -187,7 +187,7 @@ async def process_gmail_trigger(event: Dict[str, Any], db: Any) -> Dict[str, Any
         # sync pipeline that normalizes + stores Gmail/Outlook into email_db.
         try:
             from email_sync import sync_emails_for_user
-            result = await sync_emails_for_user(user_id, db, max_results=10)
+            result = await sync_emails_for_user(user_id, db, max_results=10, trigger_briefing_ingest=True)
             logger.info(
                 "✅ Gmail webhook sync for %s → threads=%s messages=%s",
                 user.get("email", user_id),
@@ -224,3 +224,72 @@ async def handle_composio_webhook(payload: Dict[str, Any], db: Any) -> Dict[str,
     else:
         logger.warning(f"Unhandled trigger type: {trigger_name}")
         return {"error": f"Unhandled trigger: {trigger_name}"}
+
+
+async def register_gmail_webhook_for_user(user_id: str, db: Any) -> None:
+    """
+    Check Gmail connection status and register/upsert the GMAIL_NEW_GMAIL_MESSAGE trigger in Composio.
+    Saves the registered connected_account_id to the user document in MongoDB.
+    """
+    from composio_service import get_connection_status, _get_key
+    import httpx
+
+    api_key = _get_key()
+    if not api_key:
+        logger.warning("[gmail_webhook_setup] COMPOSIO_API_KEY not configured, skipping auto-registration")
+        return
+
+    try:
+        status_res = await get_connection_status(user_id, "gmail")
+        if not status_res.get("connected") or not status_res.get("connection_id"):
+            logger.info("[gmail_webhook_setup] Gmail not connected for user %s, skipping watch registration", user_id)
+            return
+
+        connected_account_id = status_res["connection_id"]
+
+        # Check if already registered in the user document
+        from bson import ObjectId
+        try:
+            flt = {"_id": ObjectId(user_id)}
+        except Exception:
+            flt = {"_id": user_id}
+
+        user = await db.users.find_one(flt)
+        if user:
+            existing_conn_id = (user.get("composio_connections") or {}).get("gmail", {}).get("connected_account_id")
+            if existing_conn_id == connected_account_id:
+                # Already setup and matches
+                return
+
+        # Not registered or mismatch, register/upsert in Composio
+        logger.info("[gmail_webhook_setup] Registering real-time trigger GMAIL_NEW_GMAIL_MESSAGE for user %s (account=%s)", user_id, connected_account_id)
+        
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                "https://backend.composio.dev/api/v3.1/trigger_instances/GMAIL_NEW_GMAIL_MESSAGE/upsert",
+                headers={
+                    "X-API-Key": api_key,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "connected_account_id": connected_account_id,
+                    "trigger_config": {}
+                }
+            )
+            
+            if resp.status_code in (200, 201, 204):
+                logger.info("[gmail_webhook_setup] Trigger GMAIL_NEW_GMAIL_MESSAGE successfully registered in Composio")
+                # Store connected_account_id in user doc
+                await db.users.update_one(
+                    flt,
+                    {
+                        "$set": {
+                            "composio_connections.gmail.connected_account_id": connected_account_id
+                        }
+                    }
+                )
+            else:
+                logger.error("[gmail_webhook_setup] Failed to register trigger: %d %s", resp.status_code, resp.text)
+    except Exception as e:
+        logger.exception("[gmail_webhook_setup] Exception in auto-registration: %s", e)
+

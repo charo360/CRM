@@ -1,13 +1,16 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import {
   X,
-  LayoutDashboard,
+  Sun,
+  BookOpen,
+  ListChecks,
   ShoppingCart,
   Users,
   CreditCard,
@@ -65,11 +68,22 @@ import { useRouter } from "next/navigation";
 import { useBusiness } from "@/contexts/BusinessContext";
 import { isSidebarHrefEnabled } from "@/lib/sidebarFeatures";
 
-/** Always visible for every account — channels & connections included for everyone. */
-function coreNavItems(overviewLabel: string) {
+const ZILO_NAV = [
+  { href: "/dashboard", label: "Zilo Briefing", icon: Sun, exact: true as const },
+  { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
+  { href: "/dashboard/rex/journal", label: "Journal", icon: BookOpen },
+  { href: "/dashboard/rex/notebook", label: "Notebook", icon: NotebookPen },
+] as const;
+
+/** Rarely-used Zilo utility links — shown near logout, not in main nav */
+const ZILO_UTILITY_NAV = [
+  { href: "/dashboard/rex/ledger", label: "Action Log", icon: ListChecks },
+  { href: "/dashboard/rex/team", label: "Zilo's team", icon: Users },
+] as const;
+
+/** Workspace links (Overview replaced by Zilo Briefing above). */
+function coreNavItems() {
   return [
-    { href: "/dashboard", label: overviewLabel, icon: LayoutDashboard, exact: true as const },
-    { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
     { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
@@ -109,8 +123,24 @@ type SidebarProps = {
 export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const [ziloStagedCount, setZiloStagedCount] = useState(0);
   const { showBookingsNav, bookingsNavLabel, bookingsNavHref, ui, sidebarFeatures } = useBusiness();
-  const workspaceNav = coreNavItems(ui.overviewTitle);
+  const workspaceNav = coreNavItems();
+
+  useEffect(() => {
+    api.get<{ counts?: { staged?: number } }>("/rex/home?background=false")
+      .then((d) => setZiloStagedCount(d.counts?.staged ?? 0))
+      .catch(() => setZiloStagedCount(0));
+  }, [pathname]);
+
+  useEffect(() => {
+    function handleCountChange(e: Event) {
+      const customEvent = e as CustomEvent<number>;
+      setZiloStagedCount(customEvent.detail ?? 0);
+    }
+    window.addEventListener("zilo-staged-count-change", handleCountChange);
+    return () => window.removeEventListener("zilo-staged-count-change", handleCountChange);
+  }, []);
 
   const mainNav = MAIN_NAV.map((item) =>
     item.href === "/dashboard/customers" ? { ...item, label: ui.customersNavLabel } : item
@@ -151,7 +181,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   const businessNavFiltered = [
     ...businessNav,
     { href: "/dashboard/field-agents", label: "Field Agents", icon: Globe },
-    { href: "/dashboard/smart-notes", label: "Smart Notes", icon: NotebookPen },
+    { href: "/dashboard/smart-notes", label: "Zilo Notetaker", icon: NotebookPen },
     { href: "/dashboard/inventory", label: "Inventory", icon: Package },
     { href: "/dashboard/loyalty", label: "Loyalty", icon: Star },
     { href: "/dashboard/nps", label: "Feedback / NPS", icon: MessageCircle },
@@ -175,6 +205,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   ].filter((item) => isSidebarHrefEnabled(item.href, sidebarFeatures));
 
   const NAV_GROUPS = [
+    { label: "Zilo", items: [...ZILO_NAV] },
     { label: "Workspace", items: [...workspaceNav] },
     ...(mainNavFiltered.length
       ? [{ label: "Main", items: mainNavFiltered }]
@@ -227,6 +258,16 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         )}
       </div>
 
+      {ziloStagedCount > 0 && (
+        <div className="mx-3 mt-3 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2.5">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">Zilo</p>
+          <p className="mt-1 text-xs leading-snug text-slate-200">
+            <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-400 align-middle" />
+            {ziloStagedCount} item{ziloStagedCount === 1 ? "" : "s"} in briefing
+          </p>
+        </div>
+      )}
+
       {/* Nav groups - Scrollable */}
       <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
         {NAV_GROUPS.map((group) => (
@@ -238,11 +279,11 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
               {group.items.map((item: { href: string; label: string; icon: React.ElementType; exact?: boolean }) => {
                 const { href, label, icon: Icon } = item;
                 const exact = "exact" in item ? item.exact : undefined;
+                const badge = group.label === "Zilo" && href === "/dashboard" ? ziloStagedCount : 0;
                 return (
                 <Link
                   key={href}
                   href={href}
-                  onClick={onMobileClose}
                   className={cn(
                     "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
                     linkActive(href, exact)
@@ -251,7 +292,12 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
                   )}
                 >
                   <Icon size={15} />
-                  {label}
+                  <span className="flex-1">{label}</span>
+                  {badge > 0 && (
+                    <span className="rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-brand-ink">
+                      {badge}
+                    </span>
+                  )}
                 </Link>
                 );
               })}
@@ -272,6 +318,25 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <span className="flex-1">Ask Zilo anything…</span>
           <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">⌘K</kbd>
         </button>
+
+        {/* Utility links — Action Log & Team, rarely used */}
+        <div className="border-t border-white/10 pt-2 space-y-0.5">
+          {ZILO_UTILITY_NAV.map(({ href, label, icon: Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                linkActive(href)
+                  ? "bg-brand/20 text-brand-light"
+                  : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
+              )}
+            >
+              <Icon size={13} />
+              {label}
+            </Link>
+          ))}
+        </div>
 
         {/* Logout */}
         <button

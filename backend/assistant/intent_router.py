@@ -318,6 +318,8 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "connect shopify", "shopify sync", "shopify autopilot",
         "run shopify", "shopify discount", "create discount shopify",
         "abandoned cart", "cart recovery", "shopify win-back",
+        "create shopify", "create shop", "build shopify", "build store",
+        "create store", "create a shop", "create a store",
     ],
 
     # ── Payments ──────────────────────────────────────────────────────────────
@@ -437,6 +439,7 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "investment memo", "investor memo", "fundraising document",
         "press release", "write a press release",
         "meeting minutes", "write minutes", "draft minutes",
+        "meeting notes", "smart notes", "search notes", "recent meetings", "find notes from",
         "contract", "draft a contract", "service agreement", "write an agreement",
         "letter of intent", "loi", "write a letter of intent",
         "client onboarding", "onboarding letter", "welcome letter",
@@ -779,7 +782,7 @@ async def _llm_route_choice(
             "- customers: customer records, segments, VIPs, health scores, at-risk customers\n"
             "- contacts: leads, contact database, import contacts, contact records (not customers)\n"
             "- quotes: short pricing docs — quotes, estimates, scope-of-work for a specific customer\n"
-            "- document: long-form written docs — business plans, pitch decks, contracts, reports, press releases, proposals\n"
+            "- document: long-form written docs — business plans, pitch decks, contracts, reports, press releases, proposals, meeting minutes/notes, smart notes\n"
             "- meta_ads: Facebook/Instagram ad campaigns, budgets, ROAS, ad performance strategy\n"
             "- google_ads: Google Search/Display/Performance Max campaigns, quality score, adwords\n"
             "- creative: generating/refining VISUALS — graphics, flyers, ad images, social post images, carousels\n"
@@ -797,7 +800,7 @@ async def _llm_route_choice(
             "1. 'invoice' / 'create invoice' / 'unpaid invoice' / 'overdue invoice' → invoices (not finance, not stripe)\n"
             "2. 'expense' / 'cash flow' / 'P&L' / 'profit and loss' → finance (not invoices)\n"
             "3. 'stripe [anything]' → stripe; otherwise payment records → payments\n"
-            "4. 'business plan' / 'pitch deck' / 'contract' / 'press release' / 'write a report' → document\n"
+            "4. 'business plan' / 'pitch deck' / 'contract' / 'press release' / 'write a report' / 'meeting notes' / 'smart notes' → document\n"
             "5. 'quote' / 'estimate' / 'scope of work' for a specific customer → quotes (not document)\n"
             "6. 'design an ad' / 'ad graphic' / 'ad image' / 'make a flyer' → creative (not meta_ads)\n"
             "7. 'facebook ad campaign' / 'ad budget' / 'ROAS' / 'ad spend' / 'retargeting' → meta_ads (not creative)\n"

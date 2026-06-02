@@ -240,19 +240,33 @@ export function useMeetingRecorder() {
 
   // ── Start recording ────────────────────────────────────────────────────────
 
-  const startRecording = useCallback(async (meeting?: MeetingInfo) => {
+  const startRecording = useCallback(async (meeting?: MeetingInfo & { recordMicOnly?: boolean; speakerMode?: boolean }) => {
     if (meeting) meetingRef.current = meeting;
     setError(""); setLiveTranscript(""); setInterimText(""); setSegments([]); setSavedNote(null); setStatusMsg("");
     segmentsRef.current = []; transcriptRef.current = ""; interimAccRef.current = "";
 
+    const micOnly = meeting?.recordMicOnly ?? false;
+    const speakerMode = meeting?.speakerMode ?? false;
+
     try {
-      // Capture system audio (tab) + mic
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
-      displayStreamRef.current = displayStream;
-      displayStream.getVideoTracks().forEach(t => t.stop()); // video not needed
+      let displayStream: MediaStream | null = null;
+      if (!micOnly) {
+        try {
+          // Capture system audio (tab) + mic
+          displayStream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+          displayStreamRef.current = displayStream;
+          displayStream.getVideoTracks().forEach(t => t.stop()); // video not needed
+        } catch (e) {
+          console.warn("[MeetingRecorder] getDisplayMedia failed or was cancelled. Falling back to Mic only mode.", e);
+        }
+      }
 
       const micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { 
+          echoCancellation: !speakerMode, 
+          noiseSuppression: !speakerMode, 
+          autoGainControl: true 
+        },
       });
       micStreamRef.current = micStream;
 
@@ -267,8 +281,10 @@ export function useMeetingRecorder() {
 
       // Mix display + mic into a single destination
       const dest = ctx.createMediaStreamDestination();
-      const dispTracks = displayStream.getAudioTracks();
-      if (dispTracks.length > 0) ctx.createMediaStreamSource(new MediaStream(dispTracks)).connect(dest);
+      if (displayStream) {
+        const dispTracks = displayStream.getAudioTracks();
+        if (dispTracks.length > 0) ctx.createMediaStreamSource(new MediaStream(dispTracks)).connect(dest);
+      }
       ctx.createMediaStreamSource(micStream).connect(dest);
 
       // Connect mixed stream → PCM worklet

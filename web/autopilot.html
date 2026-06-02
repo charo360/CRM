@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Autopilot — AI Scout</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    /* ---- Autopilot Grid ---- */
+    .autopilot-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      padding: 20px 24px;
+    }
+
+    /* ---- Section ---- */
+    .autopilot-section {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 6px;
+      background: var(--amber);
+      color: white;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    /* ---- Queue Card ---- */
+    .queue-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      transition: all 0.15s;
+    }
+
+    .queue-card:hover {
+      border-color: var(--border2);
+      box-shadow: var(--shadow-md);
+    }
+
+    .queue-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .queue-type {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--amber);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .queue-time {
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .queue-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .queue-content {
+      font-size: 12px;
+      color: var(--text2);
+      line-height: 1.6;
+      margin-bottom: 12px;
+      max-height: 60px;
+      overflow: hidden;
+    }
+
+    .queue-content.expanded {
+      max-height: none;
+    }
+
+    .queue-textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--text);
+      resize: vertical;
+      margin-bottom: 12px;
+    }
+
+    .queue-textarea:focus {
+      outline: none;
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+    }
+
+    .queue-actions {
+      display: flex;
+      gap: 8px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .btn-approve {
+      flex: 1;
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      border: none;
+      background: var(--green);
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.12s;
+    }
+
+    .btn-approve:hover {
+      background: #047857;
+    }
+
+    .btn-edit {
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.12s;
+    }
+
+    .btn-edit:hover {
+      background: var(--surface2);
+      border-color: var(--border2);
+    }
+
+    .btn-skip {
+      padding: 8px 14px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: color 0.12s;
+    }
+
+    .btn-skip:hover {
+      color: var(--red);
+    }
+
+    /* ---- Instant Action Card ---- */
+    .action-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      transition: all 0.15s;
+    }
+
+    .action-card:hover {
+      border-color: var(--border2);
+      box-shadow: var(--shadow-md);
+    }
+
+    .action-card.pending {
+      border-left: 3px solid var(--blue);
+    }
+
+    .action-card.approved {
+      border-left: 3px solid var(--green);
+      opacity: 0.6;
+    }
+
+    .action-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .action-type {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--blue);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .action-status {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 10px;
+    }
+
+    .action-status.pending {
+      background: var(--bdim);
+      color: var(--blue);
+    }
+
+    .action-status.approved {
+      background: var(--gdim);
+      color: var(--green);
+    }
+
+    .action-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .action-content {
+      font-size: 12px;
+      color: var(--text2);
+      line-height: 1.6;
+      margin-bottom: 8px;
+    }
+
+    .action-meta {
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .action-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-action-approve {
+      flex: 1;
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      border: none;
+      background: var(--blue);
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.12s;
+    }
+
+    .btn-action-approve:hover {
+      background: #1D4ED8;
+    }
+
+    .btn-dismiss {
+      padding: 8px 14px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: color 0.12s;
+    }
+
+    .btn-dismiss:hover {
+      color: var(--red);
+    }
+
+    /* ---- Empty State ---- */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      color: var(--muted);
+      gap: 8px;
+      text-align: center;
+    }
+
+    .empty-state .es-icon {
+      font-size: 48px;
+      margin-bottom: 8px;
+      opacity: 0.3;
+    }
+
+    .empty-state .es-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <a class="brand" href="#">
+      <div class="brand-dot"></div>
+      <span class="brand-name">AI Scout</span>
+    </a>
+    <div class="top-chips">
+      <div class="chip"><strong>302</strong>&nbsp;scanned</div>
+      <div class="chip"><strong>3</strong>&nbsp;agents live</div>
+      <div class="chip"><strong>KES 0</strong>&nbsp;spent</div>
+      <div class="live-badge"><div class="live-dot"></div> LIVE</div>
+    </div>
+    <div class="avatar">SM</div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Leads</div>
+    <a class="nav-item" href="hunt.html">
+      <i class="ti ti-target nav-icon"></i> Hunt
+      <span class="nav-badge red">7</span>
+    </a>
+    <a class="nav-item" href="pulse.html">
+      <i class="ti ti-radar nav-icon"></i> Pulse
+    </a>
+    <div class="nav-section">Intelligence</div>
+    <a class="nav-item" href="funding.html">
+      <i class="ti ti-moneybag nav-icon"></i> Funding
+      <span class="nav-badge grn">2</span>
+    </a>
+    <a class="nav-item" href="radar.html">
+      <i class="ti ti-trending-up nav-icon"></i> Market radar
+      <span class="nav-badge blu">5</span>
+    </a>
+    <div class="nav-section">Automation</div>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-adjustments-horizontal nav-icon"></i> Scouts setup
+    </a>
+    <a class="nav-item active" href="autopilot.html">
+      <i class="ti ti-robot nav-icon"></i> Autopilot
+      <span class="nav-badge red" id="autopilot-badge">3</span>
+    </a>
+    <div class="sidebar-bottom">
+      <a class="nav-item" href="settings.html">
+        <i class="ti ti-settings nav-icon"></i> Settings
+      </a>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+    <!-- Page header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">Autopilot</div>
+        <div class="page-subtitle">Review and approve AI-generated actions</div>
+      </div>
+    </div>
+
+    <!-- Main scroll -->
+    <div class="main-scroll">
+      <div class="autopilot-grid">
+
+        <!-- LEFT COLUMN: Approval Queue -->
+        <div class="autopilot-section">
+          <div class="section-header">
+            <div class="section-title">
+              <i class="ti ti-list-check"></i>
+              Approval Queue
+              <span class="section-badge" id="queue-count">0</span>
+            </div>
+          </div>
+
+          <div id="queue-list">
+            <!-- Queue items will be loaded here -->
+            <div class="empty-state">
+              <div class="es-icon">✓</div>
+              <div class="es-title">Queue is clear</div>
+              <div>No pending approvals</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: Instant Actions -->
+        <div class="autopilot-section">
+          <div class="section-header">
+            <div class="section-title">
+              <i class="ti ti-zap"></i>
+              Instant Actions
+              <span class="section-badge" id="actions-count">0</span>
+            </div>
+            <button class="btn" onclick="generateActions()">
+              <i class="ti ti-sparkles"></i> Generate
+            </button>
+          </div>
+
+          <div id="actions-list">
+            <!-- Instant actions will be loaded here -->
+            <div class="empty-state">
+              <div class="es-icon">⚡</div>
+              <div class="es-title">No instant actions</div>
+              <div>Generate actions from your signals</div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /autopilot-grid -->
+    </div><!-- /main-scroll -->
+  </main>
+
+</div><!-- /shell -->
+
+<script src="api-client.js"></script>
+<script>
+  let queueData = [];
+  let actionsData = [];
+  let editingQueue = {};
+
+  // Load data on page load
+  document.addEventListener('DOMContentLoaded', loadData);
+
+  async function loadData() {
+    try {
+      const data = await scoutApi.loadAll();
+      queueData = data.queue || [];
+      actionsData = data.instantActions || [];
+      
+      renderQueue();
+      renderActions();
+      updateBadges();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  function renderQueue() {
+    const container = document.getElementById('queue-list');
+    
+    if (queueData.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="es-icon">✓</div>
+          <div class="es-title">Queue is clear</div>
+          <div>No pending approvals</div>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = queueData.map(item => `
+      <div class="queue-card" id="queue-${item._id}">
+        <div class="queue-header">
+          <div class="queue-type">${item.action_type.replace(/_/g, ' ')}</div>
+          <div class="queue-time">${timeAgo(item.created_at)}</div>
+        </div>
+        <div class="queue-title">${item.title}</div>
+        ${editingQueue[item._id] ? `
+          <textarea class="queue-textarea" id="content-${item._id}">${item.draft_content}</textarea>
+        ` : `
+          <div class="queue-content">${item.draft_content}</div>
+        `}
+        <div class="queue-actions">
+          <button class="btn-approve" onclick="approveQueue('${item._id}')">
+            <i class="ti ti-check"></i> Approve
+          </button>
+          <button class="btn-edit" onclick="toggleEdit('${item._id}')">
+            ${editingQueue[item._id] ? 'Collapse' : 'Edit'}
+          </button>
+          <button class="btn-skip" onclick="skipQueue('${item._id}')">
+            Skip
+          </button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderActions() {
+    const container = document.getElementById('actions-list');
+    
+    if (actionsData.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="es-icon">⚡</div>
+          <div class="es-title">No instant actions</div>
+          <div>Generate actions from your signals</div>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = actionsData.map(action => `
+      <div class="action-card ${action.status}" id="action-${action._id}">
+        <div class="action-header">
+          <div class="action-type">${action.action_type.replace(/_/g, ' ')}</div>
+          <div class="action-status ${action.status}">${action.status}</div>
+        </div>
+        <div class="action-title">${action.title}</div>
+        <div class="action-content">${action.draft_content}</div>
+        <div class="action-meta">
+          Source: ${action.source_title} · ${Math.round(action.confidence * 100)}% confidence
+        </div>
+        ${action.status === 'pending' ? `
+          <div class="action-actions">
+            <button class="btn-action-approve" onclick="approveAction('${action._id}')">
+              <i class="ti ti-check"></i> Approve
+            </button>
+            <button class="btn-dismiss" onclick="dismissAction('${action._id}')">
+              Dismiss
+            </button>
+          </div>
+        ` : ''}
+      </div>
+    `).join('');
+  }
+
+  function updateBadges() {
+    const pendingQueue = queueData.length;
+    const pendingActions = actionsData.filter(a => a.status === 'pending').length;
+    const total = pendingQueue + pendingActions;
+    
+    document.getElementById('queue-count').textContent = pendingQueue;
+    document.getElementById('actions-count').textContent = pendingActions;
+    document.getElementById('autopilot-badge').textContent = total;
+  }
+
+  function toggleEdit(id) {
+    editingQueue[id] = !editingQueue[id];
+    renderQueue();
+  }
+
+  async function approveQueue(id) {
+    try {
+      const content = editingQueue[id] 
+        ? document.getElementById(`content-${id}`).value
+        : queueData.find(q => q._id === id)?.draft_content;
+      
+      await scoutApi.approveQueueItem(id, content);
+      queueData = queueData.filter(q => q._id !== id);
+      delete editingQueue[id];
+      
+      renderQueue();
+      updateBadges();
+      showToast('Approved successfully', 'success');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function skipQueue(id) {
+    try {
+      await scoutApi.skipQueueItem(id);
+      queueData = queueData.filter(q => q._id !== id);
+      delete editingQueue[id];
+      
+      renderQueue();
+      updateBadges();
+      showToast('Skipped', 'info');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function generateActions() {
+    try {
+      showToast('Generating instant actions...', 'info');
+      await scoutApi.generateInstantActions();
+      
+      setTimeout(async () => {
+        await loadData();
+        showToast('Actions generated', 'success');
+      }, 35000);
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function approveAction(id) {
+    try {
+      await scoutApi.approveInstantAction(id);
+      const action = actionsData.find(a => a._id === id);
+      if (action) action.status = 'approved';
+      
+      renderActions();
+      updateBadges();
+      showToast('Action approved', 'success');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  async function dismissAction(id) {
+    try {
+      await scoutApi.rejectInstantAction(id);
+      actionsData = actionsData.filter(a => a._id !== id);
+      
+      renderActions();
+      updateBadges();
+      showToast('Action dismissed', 'info');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
+  // Auto-refresh every 30 seconds
+  setInterval(loadData, 30000);
+</script>
+</body>
+</html>

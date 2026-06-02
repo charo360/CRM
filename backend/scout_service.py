@@ -17,8 +17,11 @@ SCOUTS_COLLECTION = "zilo_scouts"
 EXECUTIONS_COLLECTION = "zilo_scout_executions"
 
 FREQUENCY_HOURS = {
+    "1h": 1,
+    "2h": 2,
     "6h": 6,
     "12h": 12,
+    "24h": 24,
     "daily": 24,
     "weekly": 168,
 }
@@ -41,45 +44,81 @@ def _serialize_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_COUNTRY_NAMES: Dict[str, str] = {
+    "US": "United States", "GB": "United Kingdom", "CA": "Canada",
+    "AU": "Australia", "NZ": "New Zealand", "IE": "Ireland",
+    "KE": "Kenya", "NG": "Nigeria", "ZA": "South Africa", "GH": "Ghana",
+    "UG": "Uganda", "TZ": "Tanzania", "ET": "Ethiopia", "RW": "Rwanda",
+    "FI": "Finland", "DE": "Germany", "FR": "France", "SE": "Sweden",
+    "NO": "Norway", "DK": "Denmark", "NL": "Netherlands", "BE": "Belgium",
+    "IN": "India", "PK": "Pakistan", "BD": "Bangladesh", "PH": "Philippines",
+    "SG": "Singapore", "MY": "Malaysia", "ID": "Indonesia", "TH": "Thailand",
+    "BR": "Brazil", "MX": "Mexico", "AR": "Argentina", "CO": "Colombia",
+    "AE": "UAE", "SA": "Saudi Arabia", "EG": "Egypt",
+}
+
+
 async def get_biz_context(db, uid: str) -> Dict[str, Any]:
     biz = await db.users.find_one({"_id": uid}) or {}
     settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
+    bk = biz.get("business_knowledge") or {}
+
+    country_code = (biz.get("country_code") or "").upper()
+    country = _COUNTRY_NAMES.get(country_code, country_code)
+
     return {
-        "business_name": biz.get("business_name", "") or biz.get("name", ""),
-        "business_type": biz.get("business_type", "") or biz.get("industry", ""),
-        "country": biz.get("country", "") or biz.get("location", ""),
+        "business_name": biz.get("business_name", "") or "",
+        "owner_name": biz.get("owner_name", "") or "",
+        "business_type": bk.get("business_type", "") or "",
+        "country": country,
+        "country_code": country_code,
         "goals": settings.get("goals", ""),
-        "products": biz.get("products") or biz.get("services") or [],
+        "products_services": bk.get("products_services", "") or "",
+        "business_description": bk.get("business_description", "") or "",
+        "pricing_info": bk.get("pricing_info", "") or "",
     }
 
 
 def _default_scout_templates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Build 3–5 scouts from business profile without LLM."""
+    """Build 3–5 scouts from business profile. LLM expands queries at run time."""
     biz_name = (ctx.get("business_name") or "my business").strip()
     biz_type = (ctx.get("business_type") or "services").strip()
     country = (ctx.get("country") or "").strip()
     loc = country or "worldwide"
+    products = (ctx.get("products_services") or "").strip()
+
+    # Use products/services description for more specific queries if available
+    search_subject = products[:80] if products else biz_type
 
     scouts: List[Dict[str, Any]] = [
         {
             "title": f"Buy intent — {biz_type}",
-            "goal": f"Find people asking for recommendations or looking to hire {biz_type} in {loc}",
+            "goal": (
+                f"Find people actively looking to buy, hire, or get recommendations for "
+                f"{search_subject} in {loc}. Look for social posts, forum threads, and "
+                f"community discussions where people express a need or ask for suggestions."
+            ),
             "scout_type": "buy_intent",
             "search_queries": [
-                f'"looking for" {biz_type} {country}'.strip(),
-                f'"recommend" {biz_type} {country}'.strip(),
+                f'"looking for" {search_subject} {country}'.strip(),
+                f'"recommend" {search_subject} {country}'.strip(),
                 f'"anyone know" {biz_type} {country}'.strip(),
                 f'"need a" {biz_type} {country}'.strip(),
+                f'site:reddit.com {biz_type} {country} recommendation'.strip(),
             ],
         },
         {
-            "title": f"Category discussions — {biz_type}",
-            "goal": f"Monitor forum and social threads discussing {biz_type} problems and solutions in {loc}",
+            "title": f"Market discussions — {biz_type}",
+            "goal": (
+                f"Monitor online discussions, forums, and social media where potential customers "
+                f"of {search_subject} share problems, compare options, or seek advice in {loc}."
+            ),
             "scout_type": "category",
             "search_queries": [
+                f"best {search_subject} {country}".strip(),
+                f"{biz_type} comparison {country}".strip(),
                 f"{biz_type} advice {country}".strip(),
-                f"best {biz_type} {country}".strip(),
-                f"{biz_type} reddit {country}".strip(),
+                f'site:reddit.com {biz_type} advice'.strip(),
             ],
         },
     ]
@@ -87,9 +126,13 @@ def _default_scout_templates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if biz_name and biz_name.lower() not in ("my business", "business", ""):
         scouts.append({
             "title": f"Brand mentions — {biz_name}",
-            "goal": f"Track public mentions and reviews of {biz_name}",
+            "goal": (
+                f"Track public mentions, reviews, and conversations about {biz_name} "
+                f"across the web to stay informed and engage where relevant."
+            ),
             "scout_type": "brand",
             "search_queries": [
+                f'"{biz_name}"',
                 f'"{biz_name}" review',
                 f'"{biz_name}" {country}'.strip(),
             ],
@@ -99,12 +142,16 @@ def _default_scout_templates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if any(w in goals for w in ("fund", "grant", "tender", "rfp", "invest")):
         scouts.append({
             "title": "Funding & grants",
-            "goal": f"Find grants, tenders, and funding opportunities for {biz_type} in {loc}",
+            "goal": (
+                f"Find open grants, tenders, RFPs, and funding opportunities relevant to "
+                f"{biz_type} businesses in {loc}."
+            ),
             "scout_type": "funding",
             "search_queries": [
                 f"{biz_type} grant {country}".strip(),
                 f"{biz_type} tender {country}".strip(),
                 f"small business funding {country}".strip(),
+                f"startup grant {country}".strip(),
             ],
         })
 
@@ -220,11 +267,30 @@ async def get_pulse(db, uid: str, limit: int = 5) -> List[Dict[str, Any]]:
     return items
 
 
-async def _scout_search(queries: List[str], country: str, goal: str) -> List[Dict[str, Any]]:
-    """Run focused web search for a scout's query list."""
-    from search_engine import run_search_plan
+async def _scout_search(
+    queries: List[str],
+    country: str,
+    goal: str,
+    ctx: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Run focused web search for a scout's query list, with LLM query expansion."""
+    from search_engine import run_search_plan, build_search_plan
 
-    plan = {
+    ctx = ctx or {}
+
+    # Build a rich business context string so the LLM generates relevant queries
+    biz_parts: List[str] = []
+    if ctx.get("business_name"):
+        biz_parts.append(f"Business: {ctx['business_name']}")
+    if ctx.get("business_type"):
+        biz_parts.append(f"Type: {ctx['business_type']}")
+    if ctx.get("products_services"):
+        biz_parts.append(f"Products/Services: {ctx['products_services']}")
+    if ctx.get("business_description"):
+        biz_parts.append(f"About: {ctx['business_description']}")
+    biz_context = " | ".join(biz_parts) if biz_parts else goal
+
+    plan: Dict[str, Any] = {
         "queries": queries[:6],
         "reddit_subreddits": [],
         "news_terms": queries[:2],
@@ -232,20 +298,25 @@ async def _scout_search(queries: List[str], country: str, goal: str) -> List[Dic
         "brave_country": "us" if country.upper() in ("US", "USA") else "xx",
     }
 
-    # Try LLM subreddit discovery for buy-intent scouts
-    if any(w in goal.lower() for w in ("reddit", "recommend", "looking for", "forum")):
-        try:
-            from search_engine import build_search_plan
-            enriched = await build_search_plan(goal, goal, country, n_queries=4)
-            if enriched.get("reddit_subreddits"):
-                plan["reddit_subreddits"] = enriched["reddit_subreddits"][:5]
-            if enriched.get("queries"):
-                merged = list(dict.fromkeys(queries + enriched["queries"]))
-                plan["queries"] = merged[:8]
-        except Exception as e:
-            logger.debug("[scouts] subreddit plan skipped: %s", e)
+    # Always try LLM expansion — it generates niche, high-intent queries we'd never
+    # think of from simple templates (site-specific searches, operator-enhanced, etc.)
+    try:
+        enriched = await build_search_plan(goal, biz_context, country, n_queries=8)
+        if enriched.get("reddit_subreddits"):
+            plan["reddit_subreddits"] = enriched["reddit_subreddits"][:6]
+        if enriched.get("queries"):
+            merged = list(dict.fromkeys(queries + enriched["queries"]))
+            plan["queries"] = merged[:12]
+        if enriched.get("news_terms"):
+            plan["news_terms"] = enriched["news_terms"][:4]
+        if enriched.get("search_us_gov") is not None:
+            plan["search_us_gov"] = enriched["search_us_gov"]
+        logger.info("[scouts] LLM expanded to %d queries + %d subreddits",
+                    len(plan["queries"]), len(plan["reddit_subreddits"]))
+    except Exception as e:
+        logger.warning("[scouts] LLM plan skipped, using templates: %s", e)
 
-    results = await run_search_plan(plan, max_total=60)
+    results = await run_search_plan(plan, max_total=80)
     return results
 
 
@@ -263,14 +334,22 @@ async def _score_and_save(
         _log_activity,
     )
 
-    biz_name = ctx.get("business_name", "")
-    biz_type = ctx.get("business_type", "business")
+    biz_name = ctx.get("business_name", "") or "This business"
+    biz_type = ctx.get("business_type", "") or "services"
     country = ctx.get("country", "")
+    products = ctx.get("products_services", "")
+    biz_desc = ctx.get("business_description", "")
 
-    biz_context = (
-        f"{biz_name} is a {biz_type} business in {country}. "
-        f"Goals: {ctx.get('goals') or 'find customers and opportunities'}."
-    )
+    biz_context_parts = [f"{biz_name} is a {biz_type} business"]
+    if country:
+        biz_context_parts[0] += f" in {country}"
+    if products:
+        biz_context_parts.append(f"Products/Services: {products[:200]}")
+    if biz_desc:
+        biz_context_parts.append(f"About: {biz_desc[:200]}")
+    if ctx.get("goals"):
+        biz_context_parts.append(f"Goals: {ctx['goals'][:150]}")
+    biz_context = ". ".join(biz_context_parts) + "."
 
     enriched = await _ai_score_results(
         raw_results,
@@ -382,7 +461,7 @@ async def execute_scout(db, scout: Dict[str, Any], ctx: Optional[Dict[str, Any]]
         country = scout.get("location") or ctx.get("country", "")
         goal = scout.get("goal") or scout.get("title", "")
 
-        raw = await _scout_search(queries, country, goal)
+        raw = await _scout_search(queries, country, goal, ctx=ctx)
         saved = await _score_and_save(db, uid, scout, raw, ctx)
 
         freq_hours = scout.get("frequency_hours") or FREQUENCY_HOURS.get(scout.get("frequency", "12h"), 12)

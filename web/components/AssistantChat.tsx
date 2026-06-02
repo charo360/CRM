@@ -142,6 +142,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_owner_info:        "Getting business info…",
   list_design_library_assets: "Loading design assets…",
   // Shopify
+  shopify_partner_create_store: "Creating Shopify store…",
   list_shopify_orders:   "Fetching Shopify orders…",
   list_shopify_products: "Fetching Shopify products…",
   get_shopify_analytics: "Pulling Shopify analytics…",
@@ -394,6 +395,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
 
   const loadConversation = useCallback(async (id: string) => {
     setLoadingConv(true);
+    setError(null);
     try {
       const conv: AssistantConversation = await assistantApi.getConversation(id);
       const msgs = conv.messages || [];
@@ -405,12 +407,21 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       else setActiveAgent("general");
       const docs = await assistantApi.listDocuments(id).catch(() => ({ documents: [] }));
       setDocuments(docs.documents || []);
-    } catch {
-      setError("Could not load that conversation");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      const gone = /404|not found/i.test(msg);
+      if (gone) {
+        setConvId(null);
+        setMessages([]);
+        setDocuments([]);
+        onConversationChange?.(null);
+      } else {
+        setError(msg || "Could not load that conversation");
+      }
     } finally {
       setLoadingConv(false);
     }
-  }, []);
+  }, [onConversationChange]);
 
   useEffect(() => {
     if (!shareOpen) return;

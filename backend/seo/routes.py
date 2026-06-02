@@ -809,161 +809,22 @@ def make_seo_router(db, user_dep):
     @router.post("/scrape-website")
     async def scrape_website(payload: ScrapeWebsiteRequest, user=user_dep):
         """Scrape a website and use LLM to write rich, full business profile content for all Settings fields."""
-        import html as _html
-        from html.parser import HTMLParser
-        from urllib.parse import urljoin, urlparse
+        from utils.web_scraper import scrape_site
 
-        url = payload.url.strip()
-        if not url.startswith("http"):
-            url = "https://" + url
-
-        # ── Deep HTML extractor ──────────────────────────────────────────────
-        class _DeepParser(HTMLParser):
-            SKIP_TAGS = {"script", "style", "noscript", "head", "svg", "iframe", "form", "button", "input"}
-
-            def __init__(self):
-                super().__init__()
-                self.title = ""; self.meta_desc = ""; self.og_name = ""; self.og_desc = ""
-                self.phone = ""; self.email = ""
-                self.chunks: list[str] = []          # all meaningful text blocks
-                self.links: list[str] = []           # href values for sub-page discovery
-                self._skip_depth = 0
-                self._in_title = False
-                self._current_tag = ""
-                self._buf = ""
-
-            def _flush(self):
-                t = self._buf.strip()
-                if t and len(t) > 8:
-                    self.chunks.append(t)
-                self._buf = ""
-
-            def handle_starttag(self, tag, attrs):
-                a = dict(attrs)
-                if tag in self.SKIP_TAGS:
-                    self._skip_depth += 1
-                    return
-                if tag == "title":
-                    self._in_title = True; self._buf = ""
-                if tag == "meta":
-                    n = a.get("name", "").lower(); prop = a.get("property", "").lower(); c = a.get("content", "")
-                    if n == "description": self.meta_desc = c
-                    if prop == "og:site_name": self.og_name = c
-                    if prop == "og:description": self.og_desc = c
-                if tag == "a":
-                    href = a.get("href", "")
-                    if href and not href.startswith("#") and not href.startswith("javascript"):
-                        self.links.append(href)
-                if tag in ("h1", "h2", "h3", "h4", "p", "li", "td", "th", "span", "div", "article", "section"):
-                    self._flush()
-                self._current_tag = tag
-
-            def handle_endtag(self, tag):
-                if tag in self.SKIP_TAGS:
-                    self._skip_depth = max(0, self._skip_depth - 1)
-                    return
-                if tag == "title" and self._in_title:
-                    self.title = self._buf.strip(); self._in_title = False; self._buf = ""
-                if tag in ("h1", "h2", "h3", "h4", "p", "li", "td", "th", "article", "section"):
-                    self._flush()
-
-            def handle_data(self, data):
-                if self._skip_depth > 0: return
-                if self._in_title:
-                    self._buf += data
-                else:
-                    cleaned = " ".join(data.split())
-                    if cleaned:
-                        self._buf += " " + cleaned
-
-            def get_text(self, max_chars: int = 6000) -> str:
-                seen: set[str] = set()
-                out: list[str] = []
-                total = 0
-                for c in self.chunks:
-                    norm = " ".join(c.split())
-                    if norm in seen or len(norm) < 10:
-                        continue
-                    seen.add(norm)
-                    out.append(norm)
-                    total += len(norm)
-                    if total >= max_chars:
-                        break
-                return "\n".join(out)
-
-        async def _fetch_page(client: httpx.AsyncClient, page_url: str) -> str:
-            try:
-                r = await client.get(page_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
-                if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
-                    return r.text
-            except Exception:
-                pass
-            return ""
-
-        # ── Fetch homepage + up to 3 sub-pages ──────────────────────────────
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
-                home_html = await _fetch_page(client, url)
-                if not home_html:
-                    raise HTTPException(status_code=400, detail="Could not fetch website — check the URL.")
-
-                home_parser = _DeepParser()
-                home_parser.feed(home_html)
-
-                # Discover relevant sub-pages from internal links
-                base = urlparse(url)
-                PRIORITY_SLUGS = ["about", "services", "menu", "products", "contact",
-                                  "our-story", "what-we-do", "pricing", "who-we-are"]
-                candidate_pages: list[str] = []
-                seen_urls: set[str] = {url}
-                for href in home_parser.links:
-                    if href.startswith("//"):
-                        href = base.scheme + ":" + href
-                    elif href.startswith("/"):
-                        href = f"{base.scheme}://{base.netloc}{href}"
-                    elif not href.startswith("http"):
-                        href = urljoin(url, href)
-                    parsed = urlparse(href)
-                    if parsed.netloc != base.netloc:
-                        continue
-                    slug = parsed.path.strip("/").lower()
-                    if any(p in slug for p in PRIORITY_SLUGS) and href not in seen_urls:
-                        candidate_pages.append(href)
-                        seen_urls.add(href)
-                    if len(candidate_pages) >= 6:
-                        break
-
-                # Fetch up to 3 sub-pages concurrently
-                import asyncio
-                sub_htmls = await asyncio.gather(*[_fetch_page(client, u) for u in candidate_pages[:3]])
-        except HTTPException:
-            raise
+            scrape = await scrape_site(payload.url, max_subpages=3)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Could not fetch website: {e}")
 
-        # ── Parse & merge all page text ──────────────────────────────────────
-        try:
-            all_text_parts: list[str] = []
-            main_text = home_parser.get_text(4000)
-            if main_text:
-                all_text_parts.append(f"=== Homepage ===\n{main_text}")
+        if scrape is None:
+            raise HTTPException(status_code=400, detail="Could not fetch website — check the URL.")
 
-            for i, (sub_url, sub_html) in enumerate(zip(candidate_pages[:3], sub_htmls)):
-                if not sub_html:
-                    continue
-                sp = _DeepParser()
-                sp.feed(sub_html)
-                sub_text = sp.get_text(2000)
-                if sub_text:
-                    slug = urlparse(sub_url).path.strip("/") or "page"
-                    all_text_parts.append(f"=== {slug} ===\n{sub_text}")
-
-            combined_text = "\n\n".join(all_text_parts)[:9000]
-            og_name = _html.unescape(home_parser.og_name)
-            meta_desc = _html.unescape(home_parser.meta_desc or home_parser.og_desc)
-            site_title = _html.unescape(home_parser.title)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to parse website: {e}")
+        url = scrape.url
+        combined_text = scrape.combined_text
+        og_name = scrape.og_name
+        meta_desc = scrape.meta_desc
+        site_title = scrape.title
+        pages_scraped = scrape.pages_scraped
 
         # ── LLM: write rich, full content for every field ────────────────────
         prompt = f"""You are an expert business profile writer. You have been given the full text content scraped from a business website across multiple pages. Your job is to write a complete, rich, professional business profile by reading everything and synthesising the best possible content.
@@ -1032,7 +893,7 @@ Rules:
         if not data.get("business_description") and site_title:
             data["business_description"] = site_title
 
-        return {"url": url, "extracted": data, "pages_scraped": 1 + len([h for h in sub_htmls if h])}
+        return {"url": url, "extracted": data, "pages_scraped": pages_scraped}
 
     # ── Site Audit ──────────────────────────────────────────────────────────
 
@@ -1912,6 +1773,10 @@ List (briefly, 3-5 bullets) what still reads as obviously AI-generated — speci
         doc = await db.seo_blog_posts.find_one({"_id": payload.post_id, "user_id": tid})
         if not doc: raise HTTPException(404, "Post not found")
 
+        # Enforce plan subscription blogpost limits before publishing
+        from plan_enforcement import enforce_blogpost_limit
+        await enforce_blogpost_limit(db, tid)
+
         result: Dict[str, Any] = {"platform": payload.platform, "ok": False}
 
         if payload.platform == "wordpress":
@@ -1979,15 +1844,43 @@ List (briefly, 3-5 bullets) what still reads as obviously AI-generated — speci
             if not all([payload.shopify_domain, payload.shopify_token]):
                 raise HTTPException(400, "Shopify domain and access token required")
             try:
+                headers = {"X-Shopify-Access-Token": payload.shopify_token, "Content-Type": "application/json"}
                 async with httpx.AsyncClient(timeout=30) as hc:
+                    # 1. Fetch available blogs
+                    blogs_resp = await hc.get(
+                        f"https://{payload.shopify_domain}/admin/api/2024-01/blogs.json",
+                        headers=headers
+                    )
+                    blog_id = None
+                    if blogs_resp.status_code in (200, 201):
+                        blogs = blogs_resp.json().get("blogs", [])
+                        if blogs:
+                            blog_id = blogs[0]["id"]
+                    
+                    # 2. If no blogs exist, create a default "News" blog
+                    if not blog_id:
+                        new_blog_resp = await hc.post(
+                            f"https://{payload.shopify_domain}/admin/api/2024-01/blogs.json",
+                            headers=headers,
+                            json={"blog": {"title": "News"}}
+                        )
+                        if new_blog_resp.status_code in (200, 201):
+                            blog_id = new_blog_resp.json().get("blog", {}).get("id")
+                    
+                    if not blog_id:
+                        raise ValueError("No blogs found and failed to create a default blog")
+
+                    # 3. Post the article into the identified blog
                     resp = await hc.post(
-                        f"https://{payload.shopify_domain}/admin/api/2024-01/blogs/articles.json",
-                        headers={"X-Shopify-Access-Token": payload.shopify_token, "Content-Type": "application/json"},
+                        f"https://{payload.shopify_domain}/admin/api/2024-01/blogs/{blog_id}/articles.json",
+                        headers=headers,
                         json={"article": {"title": doc.get("title", ""), "body_html": _markdown_to_html(doc.get("content", "")), "published": True}},
                     )
                 if resp.status_code in (200, 201):
                     data = resp.json()
-                    result.update({"ok": True, "article_id": data.get("article", {}).get("id")})
+                    article_data = data.get("article", {})
+                    article_url = article_data.get("url") or f"/blogs/news/{article_data.get('handle', '')}"
+                    result.update({"ok": True, "article_id": article_data.get("id"), "article_url": article_url})
                 else:
                     result["error"] = resp.text[:300]
             except Exception as e:

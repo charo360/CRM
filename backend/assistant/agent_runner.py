@@ -210,6 +210,77 @@ async def run_agent_stream(
         except Exception:
             system = "You are a helpful CRM assistant."
 
+    # ── Check Integration Connection ──────────────────────────────────────────
+    user_id = str(user.get("business_id") or user.get("_id") or "")
+    _AGENT_REQUIRED_INTEGRATIONS = {
+        "shopify": "shopify",
+        "shopify_orders": "shopify",
+        "shopify_products": "shopify",
+        "shopify_analytics": "shopify",
+        "shopify_customers": "shopify",
+        "stripe": "stripe",
+        "klaviyo": "klaviyo",
+        "mailchimp": "mailchimp",
+        "brevo": "brevo",
+        "slack": "slack",
+        "gmail": "gmail",
+        "google_calendar": "googlecalendar",
+        "google_sheets": "googlesheets",
+        "notion": "notion",
+        "microsoft": "outlook",
+        "telegram": "telegram",
+        "whatsapp": "whatsapp",
+        "messages": "whatsapp",
+        "broadcasts": "whatsapp",
+        "nps": "whatsapp",
+        "payments": "stripe",
+        "invoices": "stripe",
+    }
+    integration_toolkit = _AGENT_REQUIRED_INTEGRATIONS.get(agent_id)
+    integration_connected = True
+    if integration_toolkit and user_id:
+        try:
+            if integration_toolkit == "whatsapp":
+                from whatsapp_service import get_whatsapp_service
+                wa = get_whatsapp_service(db)
+                status = await wa.get_instance_status(user_id)
+                integration_connected = bool(status.get("connected"))
+            elif integration_toolkit == "telegram":
+                tg = await db.telegram_connections.find_one({"user_id": user_id})
+                integration_connected = bool(tg)
+            else:
+                import composio_service
+                # Ensure DB is set on composio_service
+                if db:
+                    composio_service.set_db(db)
+                status = await composio_service.get_connection_status(user_id, integration_toolkit)
+                integration_connected = status.get("connected", False)
+        except Exception as exc:
+            logger.warning("[agent_runner] check connection status failed for agent_id=%s integration=%s: %s", agent_id, integration_toolkit, exc)
+
+    if integration_toolkit and not integration_connected:
+        logger.info("[agent_runner] integration %s is NOT connected for agent %s", integration_toolkit, agent_id)
+        notice = (
+            f"\n\n---\n"
+            f"⚠️ CRITICAL SYSTEM NOTICE:\n"
+            f"The required integration '{integration_toolkit}' is NOT connected for this user.\n"
+            f"Do NOT attempt to run any tools that interact with {integration_toolkit} (except shopify_partner_create_store if you are Shopify-related).\n"
+            f"If you attempt to call them, they will fail and raise a connection error.\n"
+            f"Instead, you MUST immediately inform the user that their {integration_toolkit} integration is not connected yet, "
+            f"and guide them to connect it. "
+        )
+        if integration_toolkit == "shopify":
+            notice += (
+                f"You have the 'shopify_partner_create_store' tool. Ask the user if they would like to create a new "
+                f"development store now using 'shopify_partner_create_store', or help them connect their existing store. "
+                f"Explain that Zilo can link it instantly once connected."
+            )
+        else:
+            notice += (
+                f"Guide the user to the Integrations page in the dashboard to connect their {integration_toolkit} account."
+            )
+        system += notice
+
     allowed = cfg.get("allowed_tools")
     tool_specs = (
         openai_tool_specs_filtered(allowed) if allowed is not None else openai_tool_specs()

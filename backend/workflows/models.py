@@ -18,6 +18,16 @@ class WorkflowTrigger(BaseModel):
         "customer_created",
         "pipeline_stage_changed",
         "payhero_payment_received",
+        "shopify_order_created",
+        "shopify_order_fulfilled",
+        "shopify_abandoned_cart",
+        "shopify_low_stock",
+        "shopify_refund_created",
+        "invoice_created",
+        "invoice_paid",
+        "gmail_email_received",
+        "social_lead_discovered",
+        "meta_ad_health_alert",
     ]
     condition: Optional[str] = None  # e.g. "intent == 'order'" or "always"
 

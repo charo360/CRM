@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scouts Setup — AI Scout</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    /* ---- Setup Grid ---- */
+    .setup-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      padding: 20px 24px;
+    }
+
+    /* ---- Section ---- */
+    .setup-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 16px;
+    }
+
+    /* ---- Toggle Item ---- */
+    .toggle-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toggle-item:last-child {
+      border-bottom: none;
+    }
+
+    .toggle-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .toggle-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 3px;
+    }
+
+    .toggle-subtitle {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* ---- Toggle Switch ---- */
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch.active {
+      background: var(--green);
+    }
+
+    .toggle-knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .toggle-switch.active .toggle-knob {
+      transform: translateX(20px);
+    }
+
+    /* ---- Keywords Section ---- */
+    .keywords-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .keywords-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .keywords-hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .keyword-input-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .keyword-input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--text);
+      transition: all 0.15s;
+    }
+
+    .keyword-input:focus {
+      outline: none;
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+    }
+
+    .keyword-input::placeholder {
+      color: var(--muted);
+    }
+
+    .keywords-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .keyword-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      background: var(--gdim);
+      color: var(--green);
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .keyword-remove {
+      cursor: pointer;
+      opacity: 0.6;
+      transition: opacity 0.15s;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .keyword-remove:hover {
+      opacity: 1;
+    }
+
+    /* ---- Morning Brief ---- */
+    .brief-card {
+      background: linear-gradient(135deg, #ECFDF5 0%, #D1FAE5 100%);
+      border: 1px solid var(--gborder);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .brief-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .brief-icon {
+      font-size: 18px;
+    }
+
+    .brief-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .brief-row {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 12px;
+    }
+
+    .brief-label {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .brief-value {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .brief-value.link {
+      color: var(--blue);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .brief-value.link:hover {
+      text-decoration: underline;
+    }
+
+    .brief-input {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-family: inherit;
+      color: var(--text);
+      background: white;
+    }
+
+    .brief-input:focus {
+      outline: none;
+      border-color: var(--green);
+    }
+
+    /* ---- Competitor Watch ---- */
+    .competitor-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .competitor-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .competitor-hint {
+      font-size: 11px;
+      color: var(--amber);
+      font-weight: 500;
+      margin-bottom: 12px;
+    }
+
+    .competitor-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .competitor-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--surface2);
+      border-radius: var(--radius);
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .competitor-remove {
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.15s;
+      font-size: 11px;
+    }
+
+    .competitor-remove:hover {
+      color: var(--red);
+    }
+
+    /* ---- Save Button ---- */
+    .save-btn-fixed {
+      position: fixed;
+      top: 20px;
+      right: 24px;
+      padding: 10px 20px;
+      background: var(--green);
+      color: white;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      box-shadow: var(--shadow-md);
+      transition: all 0.15s;
+      z-index: 100;
+    }
+
+    .save-btn-fixed:hover {
+      background: #047857;
+      box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3);
+    }
+
+    .save-btn-fixed:active {
+      transform: translateY(1px);
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <a class="brand" href="#">
+      <div class="brand-dot"></div>
+      <span class="brand-name">AI Scout</span>
+    </a>
+    <div class="top-chips">
+      <div class="chip"><strong>302</strong>&nbsp;scanned</div>
+      <div class="chip"><strong>3</strong>&nbsp;agents live</div>
+      <div class="chip"><strong>KES 0</strong>&nbsp;spent</div>
+      <div class="live-badge"><div class="live-dot"></div> LIVE</div>
+    </div>
+    <div class="avatar">SM</div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Leads</div>
+    <a class="nav-item" href="hunt.html">
+      <i class="ti ti-target nav-icon"></i> Hunt
+      <span class="nav-badge red">7</span>
+    </a>
+    <a class="nav-item" href="pulse.html">
+      <i class="ti ti-radar nav-icon"></i> Pulse
+    </a>
+    <div class="nav-section">Intelligence</div>
+    <a class="nav-item" href="funding.html">
+      <i class="ti ti-moneybag nav-icon"></i> Funding
+      <span class="nav-badge grn">2</span>
+    </a>
+    <a class="nav-item" href="radar.html">
+      <i class="ti ti-trending-up nav-icon"></i> Market radar
+      <span class="nav-badge blu">5</span>
+    </a>
+    <div class="nav-section">Automation</div>
+    <a class="nav-item active" href="setup.html">
+      <i class="ti ti-adjustments-horizontal nav-icon"></i> Scouts setup
+    </a>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-robot nav-icon"></i> Autopilot
+    </a>
+    <div class="sidebar-bottom">
+      <a class="nav-item" href="setup.html">
+        <i class="ti ti-settings nav-icon"></i> Settings
+      </a>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+    <!-- Page header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">Scouts setup</div>
+        <div class="page-subtitle">Configure what AI Scout hunts for and how it alerts you</div>
+      </div>
+    </div>
+
+    <!-- Save Button -->
+    <button class="save-btn-fixed" onclick="saveChanges()">Save changes</button>
+
+    <!-- Main scroll -->
+    <div class="main-scroll">
+      <div class="setup-grid">
+
+        <!-- LEFT COLUMN -->
+        <div>
+          
+          <!-- Hunting Platforms -->
+          <div class="setup-section">
+            <div class="section-title">Hunting Platforms</div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Facebook groups</div>
+                <div class="toggle-subtitle">4 groups · every 30 min</div>
+              </div>
+              <div class="toggle-switch" id="switch-facebook_groups" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Facebook Marketplace</div>
+                <div class="toggle-subtitle">Kilimani · Westlands · Karen</div>
+              </div>
+              <div class="toggle-switch" id="switch-facebook_marketplace" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Twitter / X</div>
+                <div class="toggle-subtitle">Keyword monitoring</div>
+              </div>
+              <div class="toggle-switch" id="switch-twitter" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">WhatsApp groups</div>
+                <div class="toggle-subtitle">Coming soon</div>
+              </div>
+              <div class="toggle-switch" id="switch-whatsapp" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Shopify Stores</div>
+                <div class="toggle-subtitle">RapidAPI & public contacts scraper</div>
+              </div>
+              <div class="toggle-switch" id="switch-shopify" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Alerts -->
+          <div class="setup-section" style="margin-top: 24px;">
+            <div class="section-title">Alerts</div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Urgent lead alerts</div>
+                <div class="toggle-subtitle">WhatsApp ping instantly</div>
+              </div>
+              <div class="toggle-switch active" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Morning brief</div>
+                <div class="toggle-subtitle">8:00 AM via WhatsApp</div>
+              </div>
+              <div class="toggle-switch active" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Competitor mentions</div>
+                <div class="toggle-subtitle">Alert when rivals get criticized</div>
+              </div>
+              <div class="toggle-switch active" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Agents -->
+          <div class="setup-section" style="margin-top: 24px;">
+            <div class="section-title">Agents</div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Funding hunter</div>
+                <div class="toggle-subtitle">Grants, VCs, accelerators</div>
+              </div>
+              <div class="toggle-switch active" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+
+            <div class="toggle-item">
+              <div class="toggle-content">
+                <div class="toggle-title">Admin autopilot</div>
+                <div class="toggle-subtitle">Follow-ups & reminders</div>
+              </div>
+              <div class="toggle-switch" onclick="toggleSwitch(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- RIGHT COLUMN -->
+        <div>
+          
+          <!-- Keywords -->
+          <div class="setup-section">
+            <div class="section-title">Buying Intent Keywords</div>
+            
+            <div class="keywords-header">
+              <div class="keywords-label">Keywords</div>
+            </div>
+            <div class="keywords-hint">triggers a lead alert when matched</div>
+
+            <div class="keyword-input-row">
+              <input 
+                type="text" 
+                class="keyword-input" 
+                placeholder="Type a keyword and press Enter..."
+                id="keyword-input"
+                onkeydown="handleKeywordEnter(event)"
+              />
+            </div>
+
+            <div class="keywords-list" id="keywords-list">
+              <div class="keyword-tag">
+                office chairs
+                <span class="keyword-remove" onclick="removeKeyword(this)">×</span>
+              </div>
+              <div class="keyword-tag">
+                executive desk
+                <span class="keyword-remove" onclick="removeKeyword(this)">×</span>
+              </div>
+              <div class="keyword-tag">
+                supplier needed
+                <span class="keyword-remove" onclick="removeKeyword(this)">×</span>
+              </div>
+              <div class="keyword-tag">
+                office furniture
+                <span class="keyword-remove" onclick="removeKeyword(this)">×</span>
+              </div>
+              <div class="keyword-tag">
+                furniture delivery
+                <span class="keyword-remove" onclick="removeKeyword(this)">×</span>
+              </div>
+              <div class="keyword-tag">
+                reception desk
+                <span class="keyword-remove" onclick="removeKeyword(this)">×</span>
+              </div>
+              <div class="keyword-tag">
+                boardroom table
+                <span class="keyword-remove" onclick="removeKeyword(this)">×</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Morning Brief -->
+          <div class="setup-section" style="margin-top: 24px;">
+            <div class="section-title">Morning Brief</div>
+
+            <div class="brief-card">
+              <div class="brief-header">
+                <div class="brief-icon">📱</div>
+                <div class="brief-title">WhatsApp morning brief</div>
+              </div>
+
+              <div class="brief-row">
+                <div class="brief-label">Send time</div>
+                <div class="brief-value">
+                  <input type="time" class="brief-input" value="08:00" />
+                  <a href="#" class="brief-value link" style="margin-left: 8px;">Edit</a>
+                </div>
+              </div>
+
+              <div class="brief-row">
+                <div class="brief-label">Number</div>
+                <div class="brief-value">
+                  +254 7** *** 219
+                  <a href="#" class="brief-value link" style="margin-left: 8px;">Edit</a>
+                </div>
+              </div>
+
+              <div class="brief-row">
+                <div class="brief-label">Include</div>
+                <div class="brief-value">Top 3 leads + funding</div>
+              </div>
+
+              <div class="brief-row">
+                <div class="brief-label">Language</div>
+                <div class="brief-value">
+                  English / Swahili
+                  <a href="#" class="brief-value link" style="margin-left: 8px;">Edit</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Competitor Watch -->
+          <div class="setup-section" style="margin-top: 24px;">
+            <div class="section-title">Competitor Watch</div>
+
+            <div class="competitor-header">
+              <div class="competitor-label">Monitoring these rivals</div>
+            </div>
+            <div class="competitor-hint">Monitoring these rivals</div>
+
+            <div class="keyword-input-row">
+              <input 
+                type="text" 
+                class="keyword-input" 
+                placeholder="Add competitor name..."
+                id="competitor-input"
+                onkeydown="handleCompetitorEnter(event)"
+              />
+            </div>
+
+            <div class="competitor-list" id="competitor-list">
+              <div class="competitor-item">
+                <span>Acme Furniture</span>
+                <span class="competitor-remove" onclick="removeCompetitor(this)">Remove</span>
+              </div>
+              <div class="competitor-item">
+                <span>Nairobi Office Supplies</span>
+                <span class="competitor-remove" onclick="removeCompetitor(this)">Remove</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </div><!-- /setup-grid -->
+    </div><!-- /main-scroll -->
+  </main>
+
+</div><!-- /shell -->
+
+<script src="api-client.js"></script>
+<script>
+  function toggleSwitch(el) {
+    el.classList.toggle('active');
+  }
+
+  function handleKeywordEnter(event) {
+    if (event.key === 'Enter') {
+      const input = event.target;
+      const value = input.value.trim();
+      if (value) {
+        if (!socialSettings.keywords) socialSettings.keywords = [];
+        socialSettings.keywords.push(value);
+        renderSettings();
+        input.value = '';
+      }
+    }
+  }
+
+  function handleCompetitorEnter(event) {
+    if (event.key === 'Enter') {
+      const input = event.target;
+      const value = input.value.trim();
+      if (value) {
+        if (!socialSettings.competitors) socialSettings.competitors = [];
+        socialSettings.competitors.push(value);
+        renderSettings();
+        input.value = '';
+      }
+    }
+  }
+
+  let socialSettings = {};
+  let scouts = [];
+
+  // Load settings on page load
+  document.addEventListener('DOMContentLoaded', loadSettings);
+
+  async function loadSettings() {
+    try {
+      const data = await scoutApi.loadAll();
+      socialSettings = data.socialSettings || {};
+      scouts = data.scouts || [];
+      
+      renderSettings();
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+      showToast(error.message, 'error');
+    }
+  }
+
+  function renderSettings() {
+    // Render platforms toggles
+    const platforms = socialSettings.platforms || [];
+    const switches = ["facebook_groups", "facebook_marketplace", "twitter", "whatsapp", "shopify"];
+    switches.forEach(p => {
+      const el = document.getElementById(`switch-${p}`);
+      if (el) {
+        if (platforms.includes(p)) {
+          el.classList.add('active');
+        } else {
+          el.classList.remove('active');
+        }
+      }
+    });
+
+    // Render keywords
+    const keywordsList = document.getElementById('keywords-list');
+    if (socialSettings.keywords && keywordsList) {
+      keywordsList.innerHTML = socialSettings.keywords.map(kw => `
+        <div class="keyword-tag">
+          ${kw}
+          <span class="keyword-remove" onclick="removeKeywordByText('${kw}')">×</span>
+        </div>
+      `).join('');
+    }
+
+    // Render competitors
+    const competitorList = document.getElementById('competitor-list');
+    if (socialSettings.competitors && competitorList) {
+      competitorList.innerHTML = socialSettings.competitors.map(comp => `
+        <div class="competitor-item">
+          <span>${comp}</span>
+          <span class="competitor-remove" onclick="removeCompetitorByText('${comp}')">Remove</span>
+        </div>
+      `).join('');
+    }
+  }
+
+  function removeKeywordByText(text) {
+    if (socialSettings.keywords) {
+      socialSettings.keywords = socialSettings.keywords.filter(k => k !== text);
+      renderSettings();
+    }
+  }
+
+  function removeCompetitorByText(text) {
+    if (socialSettings.competitors) {
+      socialSettings.competitors = socialSettings.competitors.filter(c => c !== text);
+      renderSettings();
+    }
+  }
+
+  async function saveChanges() {
+    try {
+      // Gather active platforms
+      const platforms = [];
+      const switches = ["facebook_groups", "facebook_marketplace", "twitter", "whatsapp", "shopify"];
+      switches.forEach(p => {
+        const el = document.getElementById(`switch-${p}`);
+        if (el && el.classList.contains('active')) {
+          platforms.push(p);
+        }
+      });
+      socialSettings.platforms = platforms;
+
+      await scoutApi.updateSocialSettings(socialSettings);
+      showToast('Settings saved successfully!', 'success');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+</script>
+</body>
+</html>
