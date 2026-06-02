@@ -121,7 +121,7 @@ export default function MeetingOverlay() {
   const isVisible = isUpcoming || rec.recordState !== "idle";
   if (!isVisible) return null;
 
-  const currentMeeting = meeting || (rec.recordState !== "idle" ? {
+  const currentMeeting = meeting || rec.activeMeeting || (rec.recordState !== "idle" ? {
     id: "manual",
     title: "Manual Recording",
     start: new Date().toISOString(),
@@ -133,10 +133,17 @@ export default function MeetingOverlay() {
 
   if (!currentMeeting) return null;
 
-  const { recordState, elapsed, liveTranscript, interimText, statusMsg, segments, speakerTags, setSpeakerTags, error } = rec;
+  const { 
+    recordState, elapsed, liveTranscript, interimText, statusMsg, segments, speakerTags, setSpeakerTags, error,
+    customAttendees, setCustomAttendees 
+  } = rec;
   const isRecording = recordState === "recording";
   const speakerList = Object.keys(speakerTags);
-  const attendeeOptions = ["You", ...(currentMeeting.attendees ?? []).map(e => e.split("@")[0])];
+  const attendeeOptions = [
+    "You",
+    ...(currentMeeting.attendees ?? []).map(e => e.split("@")[0]),
+    ...(customAttendees ?? [])
+  ].filter((v, i, self) => v && self.indexOf(v) === i);
 
   return (
     <div className={`fixed bottom-6 right-6 z-[9999] rounded-2xl shadow-2xl border border-gray-200 bg-white overflow-hidden transition-all duration-200 ${
@@ -245,33 +252,95 @@ export default function MeetingOverlay() {
 
         {/* Speaker tagging — immediate after stop (no AssemblyAI wait) */}
         {recordState === "tagging" && (
-          <div className="space-y-2">
+          <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
             <p className="text-xs text-gray-400">Assign names to each voice — then generate your notes.</p>
-            {speakerList.map(spk => {
-              const preview = segments.find(s => s.speaker === spk)?.text ?? "";
-              return (
-                <div key={spk} className="space-y-1">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-6 h-6 rounded-full bg-brand-dark flex items-center justify-center text-[10px] font-bold text-white shrink-0">
-                      {spk}
+
+            {/* Pull Attendees / Pasted Link block */}
+            <div className="bg-gray-50 rounded-lg p-2 border border-gray-200/60 space-y-1.5">
+              <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block">Pull Attendees from Meeting Link</label>
+              <input
+                type="text"
+                placeholder="Paste link or names (e.g. Alice, Bob)..."
+                className="w-full text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-brand-dark/40 bg-white"
+                onKeyDown={async (e) => {
+                  if (e.key === "Enter") {
+                    const val = (e.target as HTMLInputElement).value.trim();
+                    if (!val) return;
+                    if (val.includes("http") || val.includes("meet.") || val.includes("zoom")) {
+                      try {
+                        const res = await smartNotesApi.upcoming();
+                        const matched = res.meetings.find(m => m.meet_url && val.includes(String(m.meet_url)));
+                        if (matched && matched.attendees) {
+                          const list = matched.attendees.map((email: string) => email.split("@")[0]);
+                          setCustomAttendees(prev => [...new Set([...prev, ...list])]);
+                          (e.target as HTMLInputElement).value = "";
+                        } else {
+                          alert("Meeting link not found in calendar. Paste names directly instead (e.g. Alice, Bob).");
+                        }
+                      } catch {
+                        alert("Failed to query calendar meetings.");
+                      }
+                    } else {
+                      const list = val.split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
+                      if (list.length) {
+                        setCustomAttendees(prev => [...new Set([...prev, ...list])]);
+                        (e.target as HTMLInputElement).value = "";
+                      }
+                    }
+                  }
+                }}
+              />
+              <p className="text-[9px] text-gray-400 leading-none">Press Enter to pull calendar attendees or split names by commas</p>
+            </div>
+
+            <div className="space-y-3 pt-1">
+              {speakerList.map(spk => {
+                const preview = segments.find(s => s.speaker === spk)?.text ?? "";
+                return (
+                  <div key={spk} className="space-y-1.5 bg-white p-2 border border-gray-100 rounded-lg shadow-sm">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-5 h-5 rounded-full bg-brand-dark flex items-center justify-center text-[10px] font-bold text-white shrink-0">
+                        {spk}
+                      </div>
+                      <p className="text-[10px] text-gray-400 italic truncate flex-1">&ldquo;{preview}&rdquo;</p>
                     </div>
-                    <p className="text-[10px] text-gray-400 italic truncate flex-1">&ldquo;{preview}&rdquo;</p>
+                    <input
+                      type="text"
+                      list={`spk-${spk}-list`}
+                      value={speakerTags[spk] ?? ""}
+                      onChange={e => setSpeakerTags(prev => ({ ...prev, [spk]: e.target.value }))}
+                      placeholder="Enter name"
+                      className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
+                    />
+                    <datalist id={`spk-${spk}-list`}>
+                      {attendeeOptions.map(opt => <option key={opt} value={opt} />)}
+                    </datalist>
+
+                    {/* Suggestion Badges */}
+                    {attendeeOptions.length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-0.5">
+                        {attendeeOptions.map(opt => (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setSpeakerTags(prev => ({ ...prev, [spk]: opt }))}
+                            className={`text-[9px] px-1.5 py-0.5 rounded-full border transition-colors ${
+                              speakerTags[spk] === opt
+                                ? "bg-brand-dark border-brand-dark text-white font-medium"
+                                : "bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-500"
+                            }`}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <input
-                    type="text"
-                    list={`spk-${spk}-list`}
-                    value={speakerTags[spk] ?? ""}
-                    onChange={e => setSpeakerTags(prev => ({ ...prev, [spk]: e.target.value }))}
-                    placeholder="Enter name"
-                    className="w-full text-xs border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-dark/40"
-                  />
-                  <datalist id={`spk-${spk}-list`}>
-                    {attendeeOptions.map(opt => <option key={opt} value={opt} />)}
-                  </datalist>
-                </div>
-              );
-            })}
-            <div className="flex gap-2 pt-1">
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2 pt-2">
               <button
                 onClick={rec.generateWithSpeakers}
                 className="flex-1 py-2 rounded-lg bg-brand-dark hover:opacity-90 text-white text-sm font-semibold transition-colors"

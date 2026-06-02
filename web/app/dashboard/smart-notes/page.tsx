@@ -180,7 +180,17 @@ export default function SmartNotesPage() {
     return mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
   };
 
-  const { recordState, elapsed, liveTranscript, interimText, statusMsg, segments, speakerTags, setSpeakerTags, error: recError } = rec;
+  const { 
+    recordState, elapsed, liveTranscript, interimText, statusMsg, segments, speakerTags, setSpeakerTags, error: recError,
+    activeMeeting, customAttendees, setCustomAttendees 
+  } = rec;
+
+  const currentMeeting = activeMeeting || null;
+  const attendeeOptions = [
+    "You",
+    ...(currentMeeting?.attendees ?? []).map(e => e.split("@")[0]),
+    ...(customAttendees ?? [])
+  ].filter((v, i, self) => v && self.indexOf(v) === i);
 
   const showDetailPanel =
     detailLoading ||
@@ -396,11 +406,49 @@ export default function SmartNotesPage() {
               </div>
             </div>
 
+            {/* Pull Attendees input */}
+            <div className="mt-5 bg-white rounded-xl border border-gray-200 p-4 shadow-sm space-y-2">
+              <label className="text-xs font-bold text-gray-700 block">Pull Attendees from Meeting Link</label>
+              <input
+                type="text"
+                placeholder="Paste Google Meet/Zoom link or attendee names..."
+                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-dark/40 bg-gray-50/50"
+                onKeyDown={async (e) => {
+                  if (e.key === "Enter") {
+                    const val = (e.target as HTMLInputElement).value.trim();
+                    if (!val) return;
+                    if (val.includes("http") || val.includes("meet.") || val.includes("zoom")) {
+                      try {
+                        const res = await smartNotesApi.upcoming();
+                        const matched = res.meetings.find(m => m.meet_url && val.includes(String(m.meet_url)));
+                        if (matched && matched.attendees) {
+                          const list = matched.attendees.map((email: string) => email.split("@")[0]);
+                          setCustomAttendees(prev => [...new Set([...prev, ...list])]);
+                          (e.target as HTMLInputElement).value = "";
+                        } else {
+                          alert("Meeting link not found in scheduled calendar. Paste names directly instead (e.g. Alice, Bob).");
+                        }
+                      } catch {
+                        alert("Failed to query calendar meetings.");
+                      }
+                    } else {
+                      const list = val.split(/[,\n;]+/).map(s => s.trim()).filter(Boolean);
+                      if (list.length) {
+                        setCustomAttendees(prev => [...new Set([...prev, ...list])]);
+                        (e.target as HTMLInputElement).value = "";
+                      }
+                    }
+                  }
+                }}
+              />
+              <p className="text-xs text-gray-400">Press Enter to pull calendar attendees or enter comma-separated names</p>
+            </div>
+
             <div className="mt-6 space-y-4 mb-8">
               {Object.keys(speakerTags).map(spk => {
                 const preview = segments.find(s => s.speaker === spk)?.text ?? "";
                 return (
-                  <div key={spk} className="bg-white rounded-xl border border-gray-200 p-4">
+                  <div key={spk} className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
                     <div className="flex items-center gap-3 mb-3">
                       <div className="w-9 h-9 rounded-full bg-brand-dark flex items-center justify-center text-sm font-bold text-white shrink-0">
                         {spk}
@@ -419,8 +467,28 @@ export default function SmartNotesPage() {
                       className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-dark/40"
                     />
                     <datalist id={`spk-${spk}-opts`}>
-                      <option value="You" />
+                      {attendeeOptions.map(opt => <option key={opt} value={opt} />)}
                     </datalist>
+
+                    {/* Quick Selection badges */}
+                    {attendeeOptions.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {attendeeOptions.map(opt => (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setSpeakerTags(prev => ({ ...prev, [spk]: opt }))}
+                            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                              speakerTags[spk] === opt
+                                ? "bg-brand-dark border-brand-dark text-white font-medium shadow-sm"
+                                : "bg-gray-50 hover:bg-gray-100 border-gray-200 text-gray-600"
+                            }`}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
