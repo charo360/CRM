@@ -32,9 +32,11 @@ function formatErrorBody(res: Response, rawText: string): string {
         ? d
             .map((x: { msg?: string }) => (typeof x === "object" && x && "msg" in x ? x.msg : String(x)))
             .join("; ")
-        : typeof d === "object" && d !== null
-          ? JSON.stringify(d)
-          : rawText || res.statusText || "Request failed";
+        : typeof d === "object" && d !== null && "message" in d && typeof (d as { message?: unknown }).message === "string"
+          ? (d as { message: string }).message
+          : typeof d === "object" && d !== null
+            ? JSON.stringify(d)
+            : rawText || res.statusText || "Request failed";
   return msg ? `${res.status}: ${msg}` : `${res.status}: Request failed`;
 }
 
@@ -1068,6 +1070,27 @@ export interface PaystackConnection {
   connected: boolean;
   business_name?: string;
   default_currency?: string;
+  payout_type?: "bank" | "mobile_money";
+  subaccount_code?: string;
+  subaccount_name?: string;
+  settlement_bank?: string;
+  account_number?: string;
+  auth_mode?: "platform" | "merchant" | null;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+}
+
+export interface PaystackSetup {
+  platform_available: boolean;
+  currencies: string[];
+  default_currency: string;
+  payout_types?: Array<"bank" | "mobile_money">;
+  mobile_money_currencies?: string[];
+}
+
+export interface PaystackPayoutOption {
+  code: string;
+  name: string;
 }
 
 export interface PaystackUsageSummary {
@@ -1077,14 +1100,97 @@ export interface PaystackUsageSummary {
   };
 }
 
+export type MerchantPaymentProvider = "paystack" | "stripe" | "flutterwave" | "payhero";
+
+export interface MerchantPaymentConnectionInfo {
+  connected: boolean;
+  label?: string;
+  currency?: string;
+  subaccount_code?: string;
+  subaccount_id?: string;
+  checkout_ready?: boolean;
+  channel_id?: number;
+}
+
+export interface MerchantPaymentTransaction {
+  id: string;
+  provider: MerchantPaymentProvider;
+  reference: string;
+  amount_major?: number;
+  currency: string;
+  status: string;
+  order_id?: string;
+  customer_email?: string;
+  channel?: string;
+  created_at?: string;
+  refundable?: boolean;
+  refund_mode?: "manual";
+}
+
+export interface MerchantPaymentsOverview {
+  connected_providers: MerchantPaymentProvider[];
+  connections: Partial<Record<MerchantPaymentProvider, MerchantPaymentConnectionInfo>>;
+  preferred_provider: MerchantPaymentProvider | null;
+  transactions: MerchantPaymentTransaction[];
+}
+
+export const merchantPaymentsApi = {
+  overview: (limit = 50) =>
+    api.get<MerchantPaymentsOverview>(`/merchant-payments/overview?limit=${limit}`),
+  setPreferredProvider: (provider: MerchantPaymentProvider | null) =>
+    api.put<{ preferred_provider: MerchantPaymentProvider | null }>(
+      "/merchant-payments/preferred-provider",
+      { provider }
+    ),
+  refund: (params: { provider: MerchantPaymentProvider; ledger_id: string }) =>
+    api.post<{
+      status: string;
+      provider: string;
+      provider_refund_id?: string;
+      manual_followup?: string;
+    }>("/merchant-payments/refund", params),
+};
+
 export const paystackApi = {
+  setup: async () => {
+    const res = await fetch("/api/paystack/setup");
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as PaystackSetup;
+  },
+  payoutOptions: async (params: { currency: string; payout_type: "bank" | "mobile_money" }) => {
+    const qs = `currency=${encodeURIComponent(params.currency)}&payout_type=${encodeURIComponent(params.payout_type)}`;
+    const res = await fetch(`/api/paystack/payout-options?${qs}`);
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as {
+      currency: string;
+      payout_type: "bank" | "mobile_money";
+      options: PaystackPayoutOption[];
+      supported?: boolean;
+      hint?: string;
+    };
+  },
   connection: () => api.get<PaystackConnection>("/paystack/connection"),
-  connect: (payload: { secret_key: string; currency?: string }) =>
+  connect: (payload: {
+    secret_key?: string;
+    currency?: string;
+    payout_type?: "bank" | "mobile_money";
+    settlement_bank?: string;
+    account_number?: string;
+    business_name?: string;
+  }) =>
     api.post<{
       status: string;
       connected: boolean;
       business_name: string;
       default_currency?: string;
+      payout_type?: "bank" | "mobile_money";
+      subaccount_code?: string;
     }>("/paystack/connect", payload),
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/paystack/connect"),
@@ -1115,6 +1221,197 @@ export const paystackApi = {
   verifyTransaction: (reference: string) =>
     api.get<{ status: string; data: Record<string, unknown> }>(
       `/paystack/transaction/verify/${encodeURIComponent(reference)}`
+    ),
+};
+
+export interface FlutterwaveConnection {
+  connected: boolean;
+  business_name?: string;
+  default_currency?: string;
+  subaccount_id?: string;
+  subaccount_name?: string;
+  settlement_bank?: string;
+  account_number?: string;
+  business_email?: string;
+  country?: string;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+}
+
+export interface FlutterwaveSetup {
+  platform_available: boolean;
+  currencies: string[];
+  default_currency: string;
+  merchant_split_percent?: number;
+}
+
+export interface FlutterwavePayoutOption {
+  code: string;
+  name: string;
+}
+
+export const flutterwaveApi = {
+  setup: async () => {
+    const res = await fetch("/api/flutterwave/setup");
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as FlutterwaveSetup;
+  },
+  payoutOptions: async (params: { currency: string }) => {
+    const qs = `currency=${encodeURIComponent(params.currency)}`;
+    const res = await fetch(`/api/flutterwave/payout-options?${qs}`);
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as {
+      currency: string;
+      country: string;
+      options: FlutterwavePayoutOption[];
+    };
+  },
+  connection: () => api.get<FlutterwaveConnection>("/flutterwave/connection"),
+  connect: (payload: {
+    currency?: string;
+    country?: string;
+    account_bank?: string;
+    account_number?: string;
+    business_name?: string;
+    business_email?: string;
+    business_contact?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      business_name: string;
+      default_currency?: string;
+      subaccount_id?: string;
+    }>("/flutterwave/connect", payload),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/flutterwave/connect"),
+  initializeTransaction: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    callback_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      payment_link: string;
+      authorization_url: string;
+      reference: string;
+      tx_ref: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/flutterwave/transaction/initialize", params),
+};
+
+export type StripeConnectStatus =
+  | "not_connected"
+  | "onboarding"
+  | "verification_pending"
+  | "ready";
+
+export interface StripeConnection {
+  connected: boolean;
+  checkout_ready?: boolean;
+  status?: StripeConnectStatus;
+  business_name?: string;
+  default_currency?: string;
+  country?: string;
+  connect_email?: string;
+  account_id?: string;
+  charges_enabled?: boolean;
+  payouts_enabled?: boolean;
+  details_submitted?: boolean;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+}
+
+export interface StripeSetup {
+  platform_available: boolean;
+  currencies: string[];
+  countries: string[];
+  default_currency: string;
+  default_country?: string;
+  connect_note?: string;
+  merchant_transfer_percent?: number;
+  platform_fee_percent?: number;
+}
+
+export const stripeConnectApi = {
+  setup: async () => {
+    const parse = (raw: string, res: Response): StripeSetup => {
+      if (!res.ok) {
+        throw new Error(formatErrorBody(res, raw));
+      }
+      return JSON.parse(raw) as StripeSetup;
+    };
+    let res = await fetch("/api/stripe/setup", { cache: "no-store" });
+    let raw = await res.text();
+    if (res.ok) return parse(raw, res);
+    try {
+      res = await fetch(`${API_BASE}/stripe/setup`, { cache: "no-store" });
+      raw = await res.text();
+      if (res.ok) return parse(raw, res);
+    } catch {
+      /* use primary error below */
+    }
+    throw new Error(formatErrorBody(res, raw));
+  },
+  connection: () => api.get<StripeConnection>("/stripe/connection"),
+  connect: (payload: {
+    email: string;
+    business_name: string;
+    currency?: string;
+    country?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      checkout_ready: boolean;
+      onboarding_url: string;
+      account_id: string;
+      business_name: string;
+      default_currency?: string;
+    }>("/stripe/connect", payload),
+  accountLink: () =>
+    api.post<{ onboarding_url: string }>("/stripe/connect/account-link", {}),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/stripe/connect"),
+  initializeCheckout: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    success_url?: string;
+    cancel_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      authorization_url: string;
+      checkout_url: string;
+      session_id: string;
+      reference: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/stripe/checkout/initialize", params),
+  verifyCheckout: (sessionId: string) =>
+    api.get<{ status: string; data: Record<string, unknown> }>(
+      `/stripe/checkout/verify/${encodeURIComponent(sessionId)}`
     ),
 };
 

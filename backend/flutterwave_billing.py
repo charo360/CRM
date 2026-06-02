@@ -1,5 +1,5 @@
 """
-Paystack payment intents and transaction ledger (idempotent by reference).
+Flutterwave payment intents and transaction ledger (idempotent by tx_ref).
 """
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-INTENTS = "paystack_payment_intents"
-LEDGER = "paystack_transactions"
+INTENTS = "flutterwave_payment_intents"
+LEDGER = "flutterwave_transactions"
 
 
-async def ensure_paystack_indexes(db) -> None:
+async def ensure_flutterwave_indexes(db) -> None:
     await db[INTENTS].create_index([("user_id", 1), ("created_at", -1)])
     await db[INTENTS].create_index([("user_id", 1), ("status", 1)])
-    await db[INTENTS].create_index("reference", unique=True, sparse=True)
+    await db[INTENTS].create_index("tx_ref", unique=True, sparse=True)
     await db[INTENTS].create_index("external_reference")
     await db[LEDGER].create_index([("user_id", 1), ("created_at", -1)])
     await db[LEDGER].create_index(
-        "paystack_reference",
+        "flutterwave_tx_ref",
         unique=True,
         sparse=True,
-        name="paystack_reference_unique",
+        name="flutterwave_tx_ref_unique",
     )
 
 
@@ -34,12 +34,12 @@ async def create_payment_intent(
     amount_major: float,
     currency: str,
     email: str,
-    reference: str,
+    tx_ref: str,
     external_reference: str = "",
     order_id: Optional[str] = None,
     customer_id: Optional[str] = None,
     customer_name: str = "",
-    callback_url: str = "",
+    redirect_url: str = "",
 ) -> Dict[str, Any]:
     doc = {
         "user_id": user_id,
@@ -48,10 +48,10 @@ async def create_payment_intent(
         "amount_major": float(amount_major),
         "currency": currency.upper(),
         "email": email,
-        "reference": reference,
+        "tx_ref": tx_ref,
         "external_reference": external_reference,
         "customer_name": customer_name,
-        "callback_url": callback_url,
+        "redirect_url": redirect_url,
         "status": "pending",
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
@@ -65,9 +65,8 @@ async def mark_intent_initialized(
     db,
     intent_id: Any,
     *,
-    authorization_url: str,
-    access_code: str,
-    paystack_reference: str,
+    payment_link: str,
+    flw_ref: str = "",
     raw: Optional[dict] = None,
 ) -> None:
     await db[INTENTS].update_one(
@@ -75,10 +74,9 @@ async def mark_intent_initialized(
         {
             "$set": {
                 "status": "checkout_open",
-                "authorization_url": authorization_url,
-                "access_code": access_code,
-                "paystack_reference": paystack_reference,
-                "paystack_init": raw,
+                "payment_link": payment_link,
+                "flutterwave_ref": flw_ref,
+                "flutterwave_init": raw,
                 "updated_at": datetime.utcnow(),
             }
         },
@@ -96,7 +94,7 @@ async def record_successful_charge(
     db,
     *,
     user_id: str,
-    paystack_reference: str,
+    flutterwave_tx_ref: str,
     amount_major: float,
     currency: str,
     order_id: Optional[str] = None,
@@ -105,17 +103,17 @@ async def record_successful_charge(
     customer_email: str = "",
     raw_payload: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    ref = (paystack_reference or "").strip()
+    ref = (flutterwave_tx_ref or "").strip()
     if not ref:
-        return {"inserted": False, "reason": "missing reference"}
+        return {"inserted": False, "reason": "missing tx_ref"}
 
-    existing = await db[LEDGER].find_one({"paystack_reference": ref})
+    existing = await db[LEDGER].find_one({"flutterwave_tx_ref": ref})
     if existing:
         return {"inserted": False, "ledger_id": str(existing["_id"])}
 
     doc = {
         "user_id": user_id,
-        "paystack_reference": ref,
+        "flutterwave_tx_ref": ref,
         "amount_major": float(amount_major),
         "currency": currency.upper(),
         "channel": channel,
@@ -129,8 +127,8 @@ async def record_successful_charge(
     try:
         res = await db[LEDGER].insert_one(doc)
     except Exception as e:
-        logger.warning("[Paystack ledger] insert: %s", e)
-        existing = await db[LEDGER].find_one({"paystack_reference": ref})
+        logger.warning("[Flutterwave ledger] insert: %s", e)
+        existing = await db[LEDGER].find_one({"flutterwave_tx_ref": ref})
         if existing:
             return {"inserted": False, "ledger_id": str(existing["_id"])}
         raise
@@ -141,14 +139,14 @@ async def record_successful_charge(
             {
                 "$set": {
                     "status": "succeeded",
-                    "paystack_reference": ref,
+                    "flutterwave_tx_ref": ref,
                     "updated_at": datetime.utcnow(),
                 }
             },
         )
     else:
         await db[INTENTS].update_one(
-            {"reference": ref, "user_id": user_id},
+            {"tx_ref": ref, "user_id": user_id},
             {"$set": {"status": "succeeded", "updated_at": datetime.utcnow()}},
         )
 
@@ -230,15 +228,8 @@ async def get_ledger_entry(db, user_id: str, ledger_id: str) -> Optional[Dict[st
     return await db[LEDGER].find_one({"_id": oid, "user_id": user_id})
 
 
-async def find_intent_by_reference(db, reference: str) -> Optional[Dict[str, Any]]:
-    ref = (reference or "").strip()
+async def find_intent_by_tx_ref(db, tx_ref: str) -> Optional[Dict[str, Any]]:
+    ref = (tx_ref or "").strip()
     if not ref:
         return None
-    return await db[INTENTS].find_one(
-        {
-            "$or": [
-                {"reference": ref},
-                {"paystack_reference": ref},
-            ]
-        }
-    )
+    return await db[INTENTS].find_one({"tx_ref": ref})

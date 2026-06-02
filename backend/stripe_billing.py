@@ -1,5 +1,5 @@
 """
-Paystack payment intents and transaction ledger (idempotent by reference).
+Stripe Connect payment intents and transaction ledger (idempotent by session / PI id).
 """
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-INTENTS = "paystack_payment_intents"
-LEDGER = "paystack_transactions"
+INTENTS = "stripe_payment_intents"
+LEDGER = "stripe_transactions"
 
 
-async def ensure_paystack_indexes(db) -> None:
+async def ensure_stripe_indexes(db) -> None:
     await db[INTENTS].create_index([("user_id", 1), ("created_at", -1)])
     await db[INTENTS].create_index([("user_id", 1), ("status", 1)])
-    await db[INTENTS].create_index("reference", unique=True, sparse=True)
-    await db[INTENTS].create_index("external_reference")
+    await db[INTENTS].create_index("checkout_reference", unique=True, sparse=True)
+    await db[INTENTS].create_index("stripe_session_id", sparse=True)
     await db[LEDGER].create_index([("user_id", 1), ("created_at", -1)])
     await db[LEDGER].create_index(
-        "paystack_reference",
+        "stripe_payment_id",
         unique=True,
         sparse=True,
-        name="paystack_reference_unique",
+        name="stripe_payment_id_unique",
     )
 
 
@@ -34,12 +34,13 @@ async def create_payment_intent(
     amount_major: float,
     currency: str,
     email: str,
-    reference: str,
+    checkout_reference: str,
     external_reference: str = "",
     order_id: Optional[str] = None,
     customer_id: Optional[str] = None,
     customer_name: str = "",
-    callback_url: str = "",
+    success_url: str = "",
+    cancel_url: str = "",
 ) -> Dict[str, Any]:
     doc = {
         "user_id": user_id,
@@ -48,10 +49,11 @@ async def create_payment_intent(
         "amount_major": float(amount_major),
         "currency": currency.upper(),
         "email": email,
-        "reference": reference,
+        "checkout_reference": checkout_reference,
         "external_reference": external_reference,
         "customer_name": customer_name,
-        "callback_url": callback_url,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
         "status": "pending",
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
@@ -61,13 +63,12 @@ async def create_payment_intent(
     return doc
 
 
-async def mark_intent_initialized(
+async def mark_intent_checkout_open(
     db,
     intent_id: Any,
     *,
-    authorization_url: str,
-    access_code: str,
-    paystack_reference: str,
+    session_id: str,
+    checkout_url: str,
     raw: Optional[dict] = None,
 ) -> None:
     await db[INTENTS].update_one(
@@ -75,10 +76,9 @@ async def mark_intent_initialized(
         {
             "$set": {
                 "status": "checkout_open",
-                "authorization_url": authorization_url,
-                "access_code": access_code,
-                "paystack_reference": paystack_reference,
-                "paystack_init": raw,
+                "stripe_session_id": session_id,
+                "checkout_url": checkout_url,
+                "stripe_session": raw,
                 "updated_at": datetime.utcnow(),
             }
         },
@@ -96,29 +96,29 @@ async def record_successful_charge(
     db,
     *,
     user_id: str,
-    paystack_reference: str,
+    stripe_payment_id: str,
     amount_major: float,
     currency: str,
     order_id: Optional[str] = None,
     intent_id: Optional[Any] = None,
-    channel: str = "",
+    session_id: str = "",
     customer_email: str = "",
     raw_payload: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    ref = (paystack_reference or "").strip()
+    ref = (stripe_payment_id or "").strip()
     if not ref:
-        return {"inserted": False, "reason": "missing reference"}
+        return {"inserted": False, "reason": "missing payment id"}
 
-    existing = await db[LEDGER].find_one({"paystack_reference": ref})
+    existing = await db[LEDGER].find_one({"stripe_payment_id": ref})
     if existing:
         return {"inserted": False, "ledger_id": str(existing["_id"])}
 
     doc = {
         "user_id": user_id,
-        "paystack_reference": ref,
+        "stripe_payment_id": ref,
+        "stripe_session_id": session_id or None,
         "amount_major": float(amount_major),
         "currency": currency.upper(),
-        "channel": channel,
         "customer_email": customer_email,
         "order_id": order_id,
         "intent_id": str(intent_id) if intent_id else None,
@@ -129,8 +129,8 @@ async def record_successful_charge(
     try:
         res = await db[LEDGER].insert_one(doc)
     except Exception as e:
-        logger.warning("[Paystack ledger] insert: %s", e)
-        existing = await db[LEDGER].find_one({"paystack_reference": ref})
+        logger.warning("[Stripe ledger] insert: %s", e)
+        existing = await db[LEDGER].find_one({"stripe_payment_id": ref})
         if existing:
             return {"inserted": False, "ledger_id": str(existing["_id"])}
         raise
@@ -141,15 +141,15 @@ async def record_successful_charge(
             {
                 "$set": {
                     "status": "succeeded",
-                    "paystack_reference": ref,
+                    "stripe_payment_id": ref,
                     "updated_at": datetime.utcnow(),
                 }
             },
         )
-    else:
+    elif session_id:
         await db[INTENTS].update_one(
-            {"reference": ref, "user_id": user_id},
-            {"$set": {"status": "succeeded", "updated_at": datetime.utcnow()}},
+            {"stripe_session_id": session_id, "user_id": user_id},
+            {"$set": {"status": "succeeded", "stripe_payment_id": ref, "updated_at": datetime.utcnow()}},
         )
 
     return {"inserted": True, "ledger_id": str(res.inserted_id)}
@@ -173,10 +173,7 @@ async def usage_summary(db, user_id: str) -> Dict[str, Any]:
         "payments": {
             "count": total_count,
             "by_currency": {
-                k: {
-                    "count": v.get("count", 0),
-                    "volume_major": v.get("volume_major", 0),
-                }
+                k: {"count": v.get("count", 0), "volume_major": v.get("volume_major", 0)}
                 for k, v in by_currency.items()
             },
         }
@@ -230,15 +227,15 @@ async def get_ledger_entry(db, user_id: str, ledger_id: str) -> Optional[Dict[st
     return await db[LEDGER].find_one({"_id": oid, "user_id": user_id})
 
 
-async def find_intent_by_reference(db, reference: str) -> Optional[Dict[str, Any]]:
-    ref = (reference or "").strip()
+async def find_intent_by_reference(db, checkout_reference: str) -> Optional[Dict[str, Any]]:
+    ref = (checkout_reference or "").strip()
     if not ref:
         return None
-    return await db[INTENTS].find_one(
-        {
-            "$or": [
-                {"reference": ref},
-                {"paystack_reference": ref},
-            ]
-        }
-    )
+    return await db[INTENTS].find_one({"checkout_reference": ref})
+
+
+async def find_intent_by_session_id(db, session_id: str) -> Optional[Dict[str, Any]]:
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    return await db[INTENTS].find_one({"stripe_session_id": sid})

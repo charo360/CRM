@@ -24,16 +24,15 @@ CURRENCY_SUBUNIT = {
 
 
 def secret_key_from_doc(doc: Optional[dict]) -> Optional[str]:
-    if not doc:
-        return None
-    key = (doc.get("paystack_secret_key") or "").strip()
-    if key.startswith("sk_"):
-        return key
-    return None
+    from paystack_credentials import resolve_secret_key
+
+    return resolve_secret_key(doc)
 
 
 def paystack_connected(doc: Optional[dict]) -> bool:
-    return secret_key_from_doc(doc) is not None
+    from paystack_credentials import paystack_connected as _connected
+
+    return _connected(doc)
 
 
 def parse_connect_body(body: dict) -> Dict[str, Any]:
@@ -43,10 +42,13 @@ def parse_connect_body(body: dict) -> Dict[str, Any]:
     currency = (body.get("currency") or body.get("default_currency") or "NGN").strip().upper()
     if currency not in CURRENCY_SUBUNIT:
         raise ValueError(f"Unsupported currency '{currency}'")
+    from paystack_credentials import PAYSTACK_AUTH_MERCHANT
+
     return {
         "paystack_secret_key": secret_key,
         "paystack_business_name": "",
         "paystack_default_currency": currency,
+        "paystack_auth_mode": PAYSTACK_AUTH_MERCHANT,
     }
 
 

@@ -182,6 +182,44 @@ async def record_mpesa_payment_success(
     return {"inserted": True, "ledger_id": str(res.inserted_id), "fee_kes": fee}
 
 
+async def mark_mpesa_ledger_refunded(
+    db,
+    *,
+    user_id: str,
+    ledger_id: str,
+    note: str = "",
+) -> bool:
+    from bson import ObjectId
+
+    try:
+        oid = ObjectId(ledger_id)
+    except Exception:
+        return False
+    res = await db[COLLECTION].update_one(
+        {"_id": oid, "user_id": user_id, "kind": "mpesa_payment", "status": "accrued"},
+        {
+            "$set": {
+                "status": "refunded",
+                "refunded_at": datetime.utcnow(),
+                "refund_note": (note or "")[:500] or None,
+            }
+        },
+    )
+    return res.modified_count > 0
+
+
+async def get_mpesa_ledger_entry(db, user_id: str, ledger_id: str) -> Optional[Dict[str, Any]]:
+    from bson import ObjectId
+
+    try:
+        oid = ObjectId(ledger_id)
+    except Exception:
+        return None
+    return await db[COLLECTION].find_one(
+        {"_id": oid, "user_id": user_id, "kind": "mpesa_payment"}
+    )
+
+
 async def record_channel_message(
     db,
     *,

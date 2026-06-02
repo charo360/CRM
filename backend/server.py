@@ -13315,9 +13315,13 @@ async def startup_tasks():
 
         from payhero_billing import ensure_payhero_indexes
         from paystack_routes import setup_paystack
+        from flutterwave_routes import setup_flutterwave
+        from stripe_routes import setup_stripe
 
         await ensure_payhero_indexes(db)
         await setup_paystack(db)
+        await setup_flutterwave(db)
+        await setup_stripe(db)
 
         # Expenses
         await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
@@ -15136,6 +15140,20 @@ register_paystack_routes(api_router, db, get_current_user)
 from payhero_routes import register_payhero_routes
 
 register_payhero_routes(api_router, db, get_current_user)
+
+
+# ── Flutterwave (Africa card/bank + subaccount splits) ───────────────────────
+from flutterwave_routes import register_flutterwave_routes
+
+register_flutterwave_routes(api_router, db, get_current_user)
+
+from stripe_routes import register_stripe_routes
+
+register_stripe_routes(api_router, db, get_current_user)
+
+from merchant_payments_routes import register_merchant_payments_routes
+
+register_merchant_payments_routes(api_router, db, get_current_user)
 
 
 # ── AI Assistant routes ──

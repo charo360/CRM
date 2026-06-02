@@ -1,86 +1,73 @@
 """
-Paystack — initialize checkout, verify, webhooks, order reconciliation.
+Flutterwave — initialize checkout, webhooks, order reconciliation.
 """
 from __future__ import annotations
 
-import hashlib
 import hmac
 import logging
 import re
-import secrets
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from paystack_auth import (
-    amount_to_subunit,
-    paystack_connected,
-    secret_key_from_doc,
-    subunit_to_major,
-)
-from paystack_billing import (
+from flutterwave_auth import new_transaction_reference, secret_key_from_doc
+from flutterwave_billing import (
     create_payment_intent,
-    find_intent_by_reference,
+    find_intent_by_tx_ref,
     mark_intent_failed,
     mark_intent_initialized,
     record_successful_charge,
 )
-from paystack_client import PaystackApiError, PaystackClient
+from flutterwave_client import FlutterwaveApiError, FlutterwaveClient
+from flutterwave_credentials import (
+    flutterwave_connected,
+    merchant_split_fraction,
+    webhook_secret_hash,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def verify_webhook_signature(secret_key: str, raw_body: bytes, signature_header: str) -> bool:
-    if not secret_key or not signature_header:
+def verify_webhook_hash(signature_header: str) -> bool:
+    expected = webhook_secret_hash()
+    if not expected or not signature_header:
         return False
-    digest = hmac.new(
-        secret_key.encode("utf-8"),
-        raw_body,
-        hashlib.sha512,
-    ).hexdigest()
-    return hmac.compare_digest(digest, signature_header.strip())
-
-
-def new_transaction_reference(user_id: str, external_ref: str = "") -> str:
-    suffix = secrets.token_hex(4)
-    base = re.sub(r"[^a-zA-Z0-9_-]", "", (external_ref or "crm"))[:32]
-    uid = re.sub(r"[^a-zA-Z0-9]", "", str(user_id))[-8:]
-    return f"crm_{uid}_{base}_{suffix}"[:64]
+    return hmac.compare_digest(signature_header.strip(), expected.strip())
 
 
 def parse_webhook_event(payload: Dict[str, Any]) -> Dict[str, Any]:
-    event = (payload.get("event") or "").strip()
+    event = (payload.get("event") or payload.get("event.type") or "").strip()
     data = payload.get("data") or {}
     if not isinstance(data, dict):
         data = {}
 
-    reference = (
-        data.get("reference")
-        or data.get("transaction_reference")
-        or ""
-    )
+    tx_ref = (data.get("tx_ref") or data.get("txRef") or "").strip()
     status = (data.get("status") or "").lower()
-    amount_sub = data.get("amount") or 0
+    amount = data.get("amount")
+    try:
+        amount_major = float(amount) if amount is not None else 0.0
+    except (TypeError, ValueError):
+        amount_major = 0.0
     currency = (data.get("currency") or "NGN").upper()
-    metadata = data.get("metadata") or {}
-    if not isinstance(metadata, dict):
-        metadata = {}
+    meta = data.get("meta") or data.get("metadata") or {}
+    if not isinstance(meta, dict):
+        meta = {}
 
     customer = data.get("customer") or {}
     email = ""
     if isinstance(customer, dict):
         email = customer.get("email") or ""
 
-    success = event == "charge.success" or status == "success"
+    success = event in ("charge.completed",) or status in ("successful", "success")
 
     return {
         "event": event,
         "success": success,
-        "reference": reference,
-        "amount_major": subunit_to_major(int(amount_sub or 0), currency),
+        "tx_ref": tx_ref,
+        "amount_major": amount_major,
         "currency": currency,
-        "metadata": metadata,
+        "meta": meta,
         "customer_email": email,
-        "channel": data.get("channel") or "",
+        "channel": data.get("payment_type") or data.get("processor_response") or "",
         "raw": payload,
     }
 
@@ -97,14 +84,14 @@ async def initialize_checkout_for_user(
     order_id: Optional[str] = None,
     customer_id: Optional[str] = None,
     customer_name: str = "",
-    callback_url: str = "",
+    redirect_url: str = "",
 ) -> Dict[str, Any]:
     secret = secret_key_from_doc(user_doc)
     if not secret:
-        raise ValueError("Paystack not connected")
+        raise ValueError("Flutterwave not connected")
 
-    cur = (currency or user_doc.get("paystack_default_currency") or "NGN").upper()
-    reference = new_transaction_reference(user_id, external_reference or order_id or "")
+    cur = (currency or user_doc.get("flutterwave_default_currency") or "NGN").upper()
+    tx_ref = new_transaction_reference(user_id, external_reference or order_id or "")
 
     intent = await create_payment_intent(
         db,
@@ -112,58 +99,63 @@ async def initialize_checkout_for_user(
         amount_major=amount_major,
         currency=cur,
         email=email,
-        reference=reference,
+        tx_ref=tx_ref,
         external_reference=external_reference,
         order_id=order_id,
         customer_id=customer_id,
         customer_name=customer_name,
-        callback_url=callback_url,
+        redirect_url=redirect_url,
     )
 
-    metadata = {
+    meta = {
         "crm_user_id": str(user_id),
         "order_id": str(order_id) if order_id else "",
         "external_reference": external_reference or "",
         "intent_id": str(intent["_id"]),
     }
 
-    payload = {
-        "email": email,
-        "amount": amount_to_subunit(amount_major, cur),
+    sub_id = (user_doc.get("flutterwave_subaccount_id") or "").strip()
+    payload: Dict[str, Any] = {
+        "tx_ref": tx_ref,
+        "amount": round(float(amount_major), 2),
         "currency": cur,
-        "reference": reference,
-        "metadata": metadata,
+        "redirect_url": redirect_url or "https://flutterwave.com/ng/",
+        "customer": {
+            "email": email,
+            "name": (customer_name or email.split("@")[0])[:120],
+        },
+        "meta": meta,
+        "customizations": {
+            "title": "Order payment",
+            "description": external_reference or "CRM checkout",
+        },
     }
-    subaccount_code = (user_doc.get("paystack_subaccount_code") or "").strip()
-    if subaccount_code:
-        payload["subaccount"] = subaccount_code
-    if callback_url:
-        payload["callback_url"] = callback_url
+    if sub_id:
+        payload["subaccounts"] = [{"id": sub_id}]
 
-    client = PaystackClient(secret)
+    client = FlutterwaveClient(secret)
     try:
-        data = await client.initialize_transaction(payload)
-    except PaystackApiError as e:
+        data = await client.create_payment(payload)
+    except FlutterwaveApiError as e:
         await mark_intent_failed(db, intent["_id"], str(e))
         raise
 
-    auth_url = data.get("authorization_url") or ""
-    access_code = data.get("access_code") or ""
-    ps_ref = data.get("reference") or reference
+    link = data.get("link") or data.get("checkout_url") or ""
+    flw_ref = str(data.get("flw_ref") or data.get("id") or "")
 
     await mark_intent_initialized(
         db,
         intent["_id"],
-        authorization_url=auth_url,
-        access_code=access_code,
-        paystack_reference=ps_ref,
+        payment_link=link,
+        flw_ref=flw_ref,
         raw=data,
     )
 
     return {
-        "authorization_url": auth_url,
-        "access_code": access_code,
-        "reference": ps_ref,
+        "payment_link": link,
+        "authorization_url": link,
+        "tx_ref": tx_ref,
+        "reference": tx_ref,
         "intent_id": str(intent["_id"]),
         "currency": cur,
         "amount_major": amount_major,
@@ -179,20 +171,20 @@ async def process_charge_success(
     if not parsed.get("success"):
         return {"handled": False, "reason": f"event={parsed.get('event')}"}
 
-    reference = (parsed.get("reference") or "").strip()
-    if not reference:
-        return {"handled": False, "reason": "no reference"}
+    tx_ref = (parsed.get("tx_ref") or "").strip()
+    if not tx_ref:
+        return {"handled": False, "reason": "no tx_ref"}
 
-    intent = await find_intent_by_reference(db, reference)
-    metadata = parsed.get("metadata") or {}
+    intent = await find_intent_by_tx_ref(db, tx_ref)
+    meta = parsed.get("meta") or {}
     user_id = None
     if intent:
         user_id = intent.get("user_id")
-    elif metadata.get("crm_user_id"):
-        user_id = metadata.get("crm_user_id")
+    elif meta.get("crm_user_id"):
+        user_id = meta.get("crm_user_id")
 
     if not user_id:
-        logger.warning("[Paystack] No user for reference=%s", reference)
+        logger.warning("[Flutterwave] No user for tx_ref=%s", tx_ref)
         return {"handled": False, "reason": "unknown merchant"}
 
     from payhero_auth import user_id_filter
@@ -200,23 +192,22 @@ async def process_charge_success(
     user = await db.users.find_one(
         user_id_filter(user_id),
         {
-            "paystack_secret_key": 1,
-            "paystack_auth_mode": 1,
-            "paystack_default_currency": 1,
+            "flutterwave_subaccount_id": 1,
+            "flutterwave_default_currency": 1,
             "push_token": 1,
         },
     )
-    if not user or not paystack_connected(user):
+    if not user or not flutterwave_connected(user):
         return {"handled": False, "reason": "merchant not connected"}
 
-    order_id = (intent or {}).get("order_id") or metadata.get("order_id") or None
+    order_id = (intent or {}).get("order_id") or meta.get("order_id") or None
     if order_id == "":
         order_id = None
 
     ledger = await record_successful_charge(
         db,
         user_id=str(user_id),
-        paystack_reference=reference,
+        flutterwave_tx_ref=tx_ref,
         amount_major=parsed["amount_major"],
         currency=parsed["currency"],
         order_id=str(order_id) if order_id else None,
@@ -234,7 +225,7 @@ async def process_charge_success(
         user["_id"],
         order_id=order_id,
         amount=parsed["amount_major"],
-        external_ref=(intent or {}).get("external_reference") or metadata.get("external_reference") or "",
+        external_ref=(intent or {}).get("external_reference") or meta.get("external_reference") or "",
     )
 
     order_number = None
@@ -245,8 +236,8 @@ async def process_charge_success(
             {
                 "$set": {
                     "payment_status": "Paid",
-                    "payment_method": "Paystack",
-                    "payment_reference": reference,
+                    "payment_method": "Flutterwave",
+                    "payment_reference": tx_ref,
                     "paid_at": datetime.utcnow(),
                     "paid_amount": parsed["amount_major"],
                 }
@@ -271,8 +262,32 @@ async def process_charge_success(
         "amount": parsed["amount_major"],
         "currency": parsed["currency"],
         "order_number": order_number,
-        "reference": reference,
+        "reference": tx_ref,
         "customer_email": parsed.get("customer_email"),
+    }
+
+
+def build_subaccount_payload(
+    *,
+    account_bank: str,
+    account_number: str,
+    business_name: str,
+    business_email: str,
+    business_contact: str,
+    country: str,
+) -> Dict[str, Any]:
+    # Dashboard shows "Subaccount's share (%)" as 100.00; API wants decimal fraction 1.0 / 0.9.
+    split_value = merchant_split_fraction()
+    return {
+        "account_bank": account_bank,
+        "account_number": account_number,
+        "business_name": business_name,
+        "business_email": business_email,
+        "business_contact": business_contact,
+        "business_mobile": business_contact,
+        "country": country.upper(),
+        "split_type": "percentage",
+        "split_value": split_value,
     }
 
 

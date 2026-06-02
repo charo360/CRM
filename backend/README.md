@@ -30,6 +30,7 @@ Data is stored in **MongoDB** (Motor async driver). **Redis** is used for queues
 | `memory/` | Conversation memory system |
 | `rag/` | Retrieval indexing/search |
 | `paystack_*.py` | Paystack connect, checkout initialize, webhooks, ledger |
+| `flutterwave_*.py` | Flutterwave subaccounts, checkout, webhooks, ledger |
 | `payhero_*.py` | PayHero M-Pesa STK, webhooks, usage ledger |
 | `worker.py` | Redis queue consumer (separate process) |
 | `requirements.txt` | Python dependencies (target **Python 3.11**) |
@@ -117,6 +118,34 @@ Each business connects their own **secret key** (`sk_test_…` / `sk_live_…`) 
 | Collections | `paystack_payment_intents`, `paystack_transactions` |
 
 `BACKEND_URL` and `FRONTEND_URL` must be reachable from Paystack and the customer’s browser (use ngrok or your public API host in development).
+
+### Flutterwave (platform subaccounts)
+
+Platform-managed only: set **`FLUTTERWAVE_PLATFORM_SECRET_KEY`** (`FLWSECK_TEST-…` / `FLWSECK-…`) and **`FLUTTERWAVE_SECRET_HASH`** (dashboard webhook hash). Merchants connect in **Integrations → Flutterwave** (bank + settlement details); the server creates a Flutterwave subaccount and stores `flutterwave_subaccount_id` on the user document.
+
+| Item | Value |
+|------|--------|
+| Webhook URL | `{BACKEND_URL}/api/webhooks/flutterwave` |
+| Redirect after pay | `{FRONTEND_URL}/dashboard/orders?flutterwave=success` |
+| Merchant split % | `FLUTTERWAVE_MERCHANT_SPLIT_PERCENT` (default `90` = 90% to merchant; API sends `0.9`) |
+| Collections | `flutterwave_payment_intents`, `flutterwave_transactions` |
+
+### Stripe Connect (platform destination charges)
+
+Set **`STRIPE_PLATFORM_SECRET_KEY`** (`sk_test_…` / `sk_live_…`). Merchants onboard via **Integrations → Stripe** (Express Connect account link). Checkout uses **destination charges** with an application fee; configure **`STRIPE_MERCHANT_TRANSFER_PERCENT`** (default `90` = 90% to the connected account before Stripe fees).
+
+Before any merchant can connect, the **platform** Stripe account must finish [Connect platform profile](https://dashboard.stripe.com/settings/connect/platform-profile) (including who manages losses on connected accounts). If this is skipped, account creation returns an error about “managing losses for connected accounts”.
+
+Merchant **country** must be one where Stripe allows the `card_payments` capability on Express connected accounts (see [global availability](https://stripe.com/global)). **Kenya, Nigeria, and Ghana** are not in that list for this integration — use Paystack or PayHero instead.
+
+| Item | Value |
+|------|--------|
+| Webhook (your account — onboarding + destination checkout) | `{BACKEND_URL}/api/webhooks/stripe` |
+| Webhook (connected accounts — optional, direct charges) | `{BACKEND_URL}/api/webhooks/stripe/connect` |
+| Signing secrets | `STRIPE_WEBHOOK_SECRET` or `STRIPE_WEBHOOK_SECRET_PLATFORM`; optional `STRIPE_WEBHOOK_SECRET_CONNECT` |
+| After onboarding | `{FRONTEND_URL}/dashboard/integrations?stripe=return` |
+| Order success redirect | `{FRONTEND_URL}/dashboard/orders?stripe=success` |
+| Collections | `stripe_payment_intents`, `stripe_transactions` |
 
 ## Running locally
 

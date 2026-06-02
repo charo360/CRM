@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { payheroApi, type PayheroUsageSummary } from "@/lib/api";
-import { PAYHERO_SMS_KES, PAYHERO_WHATSAPP_KES } from "@/lib/billing/payheroRates";
 
 export function PayHeroUsagePanel({ connected }: { connected: boolean }) {
   const [summary, setSummary] = useState<PayheroUsageSummary | null>(null);
@@ -24,28 +23,40 @@ export function PayHeroUsagePanel({ connected }: { connected: boolean }) {
 
   if (!connected) return null;
 
+  const mpesa = summary?.mpesa_payments;
+  const totalFees = summary ? Math.round(summary.total_estimated_fees_kes) : 0;
+  const collected = mpesa ? Math.round(mpesa.gross_collected_kes) : 0;
+  const mpesaFees = mpesa ? Math.round(mpesa.estimated_payhero_fees_kes) : 0;
+  const count = mpesa?.count ?? 0;
+
   return (
-    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-xs text-slate-600 space-y-2">
-      <p className="font-semibold text-slate-800">PayHero usage (estimated)</p>
-      <p className="text-[10px] text-slate-500">
-        M-Pesa fees by amount tier · SMS KES {PAYHERO_SMS_KES.toFixed(2)} · WhatsApp KES{" "}
-        {PAYHERO_WHATSAPP_KES.toFixed(2)} per message
-      </p>
+    <div className="rounded-lg border border-slate-200/90 bg-white px-3 py-2.5 text-[11px] shadow-sm">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Usage</p>
       {loading ? (
-        <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+        <div className="mt-2 flex justify-center py-2">
+          <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+        </div>
       ) : summary ? (
-        <ul className="space-y-1 tabular-nums">
-          <li>
-            M-Pesa: {summary.mpesa_payments.count} payments · collected KES{" "}
-            {Math.round(summary.mpesa_payments.gross_collected_kes).toLocaleString()} · est. fees KES{" "}
-            {Math.round(summary.mpesa_payments.estimated_payhero_fees_kes).toLocaleString()}
-          </li>
-          <li className="font-medium text-slate-800">
-            Total est. PayHero fees: KES {Math.round(summary.total_estimated_fees_kes).toLocaleString()}
-          </li>
-        </ul>
+        <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 tabular-nums">
+          <div>
+            <dt className="text-slate-500">M-Pesa payments</dt>
+            <dd className="font-semibold text-slate-900">{count.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Collected</dt>
+            <dd className="font-semibold text-slate-900">KES {collected.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Est. M-Pesa fees</dt>
+            <dd className="font-medium text-slate-800">KES {mpesaFees.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Est. total fees</dt>
+            <dd className="font-medium text-slate-800">KES {totalFees.toLocaleString()}</dd>
+          </div>
+        </dl>
       ) : (
-        <p className="text-slate-400">No usage recorded yet.</p>
+        <p className="mt-2 text-slate-400">No payments recorded yet.</p>
       )}
     </div>
   );
