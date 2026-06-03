@@ -230,6 +230,11 @@ _APP_NAMES: Dict[str, str] = {
     "googleanalytics":      "googleanalytics",
     "googleads":            "googleads",
 
+    # Social (Meta)
+    "facebook":             "facebook",
+    "instagram":            "instagram",
+    "youtube":              "youtube",
+
 }
 
 
@@ -261,6 +266,12 @@ TOOLKIT_SEARCHCONSOLE      = "googlesearchconsole"
 TOOLKIT_GOOGLEANALYTICS    = "googleanalytics"
 
 TOOLKIT_GOOGLEADS          = "googleads"
+
+TOOLKIT_FACEBOOK           = "facebook"
+
+TOOLKIT_INSTAGRAM          = "instagram"
+
+TOOLKIT_YOUTUBE            = "youtube"
 
 
 
@@ -326,6 +337,20 @@ ACTION_SLACK_SEND_MESSAGE = "SLACK_SEND_MESSAGE"
 
 
 
+# Facebook / Instagram (Meta Graph via Composio)
+ACTION_FB_LIST_PAGES      = "FACEBOOK_LIST_MANAGED_PAGES"
+ACTION_FB_CREATE_POST     = "FACEBOOK_CREATE_POST"
+ACTION_FB_CREATE_PHOTO    = "FACEBOOK_CREATE_PHOTO_POST"
+ACTION_FB_CREATE_VIDEO    = "FACEBOOK_CREATE_VIDEO_POST"
+ACTION_IG_CREATE_MEDIA    = "INSTAGRAM_POST_IG_USER_MEDIA"
+ACTION_IG_PUBLISH_MEDIA   = "INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH"
+ACTION_IG_USER_INFO       = "INSTAGRAM_GET_USER_INFO"
+
+# YouTube
+ACTION_YT_MULTIPART_UPLOAD = "YOUTUBE_MULTIPART_UPLOAD_VIDEO"
+
+
+
 
 
 def _get_key() -> str:
@@ -347,6 +372,58 @@ def _headers() -> Dict[str, str]:
 def is_configured() -> bool:
 
     return bool(_get_key())
+
+
+async def upload_file_for_tool(
+    toolkit_slug: str,
+    tool_slug: str,
+    filename: str,
+    data: bytes,
+    mimetype: str,
+) -> Dict[str, Any]:
+    """Upload bytes to Composio file storage for tool actions (e.g. YouTube video)."""
+    import hashlib
+
+    key = _get_key()
+    if not key:
+        return {"error": "COMPOSIO_API_KEY not configured"}
+    if not data:
+        return {"error": "Empty file payload"}
+
+    md5 = hashlib.md5(data).hexdigest()
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            presign = await client.post(
+                f"{_BASE}/v3/files/upload/request",
+                headers=_headers(),
+                json={
+                    "md5": md5,
+                    "toolkit_slug": toolkit_slug,
+                    "tool_slug": tool_slug,
+                    "filename": filename,
+                    "mimetype": mimetype,
+                },
+            )
+            if presign.status_code != 200:
+                return {"error": f"Composio presign failed: HTTP {presign.status_code}"}
+            pdata = presign.json()
+            s3key = pdata.get("key")
+            upload_url = pdata.get("new_presigned_url") or pdata.get("url")
+            if not s3key or not upload_url:
+                return {"error": "Composio presign missing upload fields"}
+            if not pdata.get("exists"):
+                put = await client.put(
+                    upload_url,
+                    content=data,
+                    headers={"Content-Type": mimetype},
+                )
+                if put.status_code not in (200, 201, 204):
+                    return {"error": f"Composio file upload failed: HTTP {put.status_code}"}
+    except Exception as exc:
+        logger.warning("[composio] upload_file_for_tool error: %s", exc)
+        return {"error": str(exc)}
+
+    return {"file": {"name": filename, "mimetype": mimetype, "s3key": s3key}}
 
 
 
@@ -1031,7 +1108,10 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str, extra_d
 
 
 
-_OK_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "INITIATED", "SUCCESS", "ENABLED", ""}
+_CONNECTED_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "SUCCESS", "ENABLED"}
+
+# OAuth in progress — must NOT show as connected in the UI
+_PENDING_STATUSES = {"INITIATED", "INITIALIZING", "PENDING", "IN_PROGRESS"}
 _ACCOUNTS_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
 CACHE_TTL = 30.0  # cache connection status for 30 seconds
 
@@ -1085,6 +1165,40 @@ async def _v3_list_user_accounts(user_id: str) -> List[Dict[str, Any]]:
     return items
 
 
+def _account_matches_toolkit(item: Dict[str, Any], toolkit: str) -> bool:
+    app_name_norm = _normalize_app(_APP_NAMES.get(toolkit.lower(), toolkit.lower()))
+    toolkit_norm = _normalize_app(toolkit)
+    slug = (item.get("toolkit") or {}).get("slug", "") if isinstance(item.get("toolkit"), dict) else ""
+    slug_norm = _normalize_app(slug)
+    if not slug_norm:
+        return False
+    return (
+        app_name_norm in slug_norm
+        or slug_norm in app_name_norm
+        or toolkit_norm in slug_norm
+    )
+
+
+def _accounts_for_toolkit(
+    items: List[Dict[str, Any]],
+    toolkit: str,
+    *,
+    connected_only: bool = False,
+    pending_only: bool = False,
+) -> List[Dict[str, Any]]:
+    matched: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or not _account_matches_toolkit(item, toolkit):
+            continue
+        status = str(item.get("status") or "").upper()
+        if connected_only and status not in _CONNECTED_STATUSES:
+            continue
+        if pending_only and status not in _PENDING_STATUSES:
+            continue
+        matched.append(item)
+    return matched
+
+
 async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
     """Return {"connected": bool, "connection_id": str|None} for one toolkit."""
 
@@ -1102,22 +1216,11 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
         logger.warning("[composio] get_connection_status error: %s", e)
         return {"connected": False, "error": str(e)}
 
-    app_name_norm = _normalize_app(_APP_NAMES.get(toolkit.lower(), toolkit.lower()))
-    toolkit_norm = _normalize_app(toolkit)
-
     for item in items:
-        slug = (item.get("toolkit") or {}).get("slug", "") if isinstance(item.get("toolkit"), dict) else ""
-        slug_norm = _normalize_app(slug)
-        if not slug_norm:
-            continue
-        if (
-            app_name_norm not in slug_norm
-            and slug_norm not in app_name_norm
-            and toolkit_norm not in slug_norm
-        ):
+        if not _account_matches_toolkit(item, toolkit):
             continue
         status = str(item.get("status") or "").upper()
-        if status in _OK_STATUSES:
+        if status in _CONNECTED_STATUSES:
             return {"connected": True, "connection_id": item.get("id")}
 
     return {"connected": False}
@@ -1139,7 +1242,7 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
     connected_slugs: set = set()
     for item in items:
         status = str(item.get("status") or "").upper()
-        if status not in _OK_STATUSES:
+        if status not in _CONNECTED_STATUSES:
             continue
         slug = (item.get("toolkit") or {}).get("slug", "") if isinstance(item.get("toolkit"), dict) else ""
         if slug:
@@ -1170,7 +1273,7 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
 
 async def disconnect(user_id: str, toolkit: str) -> Dict[str, Any]:
 
-    """Disconnect a user's active connection for a toolkit."""
+    """Disconnect a user's connection(s) for a toolkit (active + stale pending OAuth)."""
 
     _ACCOUNTS_CACHE.pop(user_id, None)
 
@@ -1178,31 +1281,75 @@ async def disconnect(user_id: str, toolkit: str) -> Dict[str, Any]:
 
         return {"error": "COMPOSIO_API_KEY not configured"}
 
+    try:
+        items = await _v3_list_user_accounts(user_id)
+    except Exception as e:
+        logger.warning("[composio] disconnect list error: %s", e)
+        return {"error": str(e)}
 
+    to_remove = _accounts_for_toolkit(items, toolkit)
+    if not to_remove:
+        return {"disconnected": True, "note": "No connection found"}
 
-    status = await get_connection_status(user_id, toolkit)
-
-    conn_id = status.get("connection_id")
-
-    if not conn_id:
-
-        return {"disconnected": True, "note": "No active connection found"}
-
-
-
+    removed = 0
+    errors: List[str] = []
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.delete(
-                f"{_BASE}/v3/connected_accounts/{conn_id}",
-                headers=_headers(),
-            )
-            if resp.status_code in (200, 204):
-                return {"disconnected": True}
-            data = resp.json() if resp.content else {}
-            return {"error": data.get("message") or f"HTTP {resp.status_code}"}
+            for item in to_remove:
+                conn_id = item.get("id")
+                if not conn_id:
+                    continue
+                resp = await client.delete(
+                    f"{_BASE}/v3/connected_accounts/{conn_id}",
+                    headers=_headers(),
+                )
+                if resp.status_code in (200, 204, 404):
+                    removed += 1
+                else:
+                    data = resp.json() if resp.content else {}
+                    errors.append(data.get("message") or f"HTTP {resp.status_code}")
     except Exception as e:
         logger.error("[composio] disconnect error: %s", e)
         return {"error": str(e)}
+
+    if errors and removed == 0:
+        return {"error": "; ".join(errors)}
+    return {"disconnected": True, "removed": removed}
+
+
+async def cleanup_pending_connection(user_id: str, toolkit: str) -> Dict[str, Any]:
+    """Remove in-progress OAuth accounts (e.g. user closed popup without logging in)."""
+    if not _get_key():
+        return {"error": "COMPOSIO_API_KEY not configured"}
+
+    try:
+        items = await _v3_list_user_accounts(user_id)
+    except Exception as e:
+        logger.warning("[composio] cleanup_pending list error: %s", e)
+        return {"error": str(e)}
+
+    pending = _accounts_for_toolkit(items, toolkit, pending_only=True)
+    if not pending:
+        return {"cleaned": 0}
+
+    cleaned = 0
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for item in pending:
+                conn_id = item.get("id")
+                if not conn_id:
+                    continue
+                resp = await client.delete(
+                    f"{_BASE}/v3/connected_accounts/{conn_id}",
+                    headers=_headers(),
+                )
+                if resp.status_code in (200, 204, 404):
+                    cleaned += 1
+    except Exception as e:
+        logger.warning("[composio] cleanup_pending error: %s", e)
+        return {"error": str(e)}
+
+    return {"cleaned": cleaned}
 
 
 
@@ -1475,6 +1622,18 @@ def _toolkit_for_action(action: str) -> Optional[str]:
     if a.startswith("GOOGLESHEETS_") or a.startswith("GOOGLE_SHEETS_"):
 
         return TOOLKIT_GOOGLESHEETS
+
+    if a.startswith("FACEBOOK_"):
+
+        return TOOLKIT_FACEBOOK
+
+    if a.startswith("INSTAGRAM_"):
+
+        return TOOLKIT_INSTAGRAM
+
+    if a.startswith("YOUTUBE_"):
+
+        return TOOLKIT_YOUTUBE
 
     return None
 

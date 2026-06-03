@@ -145,24 +145,30 @@ def _serialize_post(row: Dict[str, Any]) -> Dict[str, Any]:
         "assets": row.get("assets") or [],
         "image_url": row.get("image_url"),
         "publish_error": row.get("publish_error") or None,
-        "zernio_post_id": row.get("zernio_post_id") or None,
+        "zernio_post_id": row.get("external_post_id") or row.get("zernio_post_id") or None,
+        "external_post_id": row.get("external_post_id") or row.get("zernio_post_id") or None,
+        "publish_provider": row.get("publish_provider") or None,
         "engagement_synced_at": _dt(row.get("engagement_synced_at")) if row.get("engagement_synced_at") else None,
         "engagement": _serialize_engagement(row.get("engagement")),
     }
 
 
 async def _push_post_if_needed(db, doc: Dict[str, Any], *, force: bool = False) -> Dict[str, Any] | None:
-    from social_publish_service import apply_publish_result, push_post_to_zernio, should_push_to_zernio
+    from social_publish_service import apply_publish_result, push_post, should_push_post
 
-    if not should_push_to_zernio(doc, force=force):
+    if not should_push_post(doc, force=force):
         return None
-    if force and doc.get("zernio_post_id"):
+    external_id = doc.get("external_post_id") or doc.get("zernio_post_id")
+    if force and external_id:
         await db.scheduled_posts.update_one(
             {"_id": doc["_id"]},
-            {"$unset": {"zernio_post_id": ""}, "$set": {"updated_at": datetime.utcnow()}},
+            {
+                "$unset": {"zernio_post_id": "", "external_post_id": ""},
+                "$set": {"updated_at": datetime.utcnow()},
+            },
         )
-        doc = {**doc, "zernio_post_id": None}
-    result = await push_post_to_zernio(db, doc)
+        doc = {**doc, "zernio_post_id": None, "external_post_id": None}
+    result = await push_post(db, doc)
     await apply_publish_result(db, str(doc["_id"]), result)
     return result
 

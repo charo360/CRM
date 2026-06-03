@@ -24,6 +24,10 @@ function phonePlaceholder(countryCode: string) {
   return PHONE_PLACEHOLDERS[countryCode] || "+1234567890 (include country code)";
 }
 
+const CARD = "rounded-lg border border-slate-200 bg-white";
+const INPUT_CLASS =
+  "w-full border border-slate-200 rounded-lg outline-none transition-colors focus:border-brand text-sm";
+
 function countryCodeFromSettings(settings: { country_code?: string; country?: string }) {
   const raw = (settings.country_code || "").trim().toUpperCase();
   if (raw && getCountryByCode(raw)) return raw;
@@ -111,14 +115,14 @@ type Application = {
 
 function StatusBadge({ status }: { status: Campaign["status"] }) {
   const map: Record<string, { label: string; cls: string }> = {
-    draft:   { label: "Draft",   cls: "bg-slate-100 text-slate-600" },
-    sending: { label: "Sending", cls: "bg-yellow-100 text-yellow-700" },
-    sent:    { label: "Sent",    cls: "bg-green-100 text-green-700" },
-    partial: { label: "Partial", cls: "bg-orange-100 text-orange-700" },
+    draft: { label: "Draft", cls: "border-slate-200 bg-slate-50 text-slate-600" },
+    sending: { label: "Sending", cls: "border-amber-200 bg-amber-50 text-amber-800" },
+    sent: { label: "Sent", cls: "border-emerald-200 bg-emerald-50 text-emerald-800" },
+    partial: { label: "Partial", cls: "border-orange-200 bg-orange-50 text-orange-800" },
   };
   const s = map[status] ?? map.draft;
   return (
-    <span className={cn("inline-flex px-2 py-0.5 rounded-full text-xs font-medium", s.cls)}>
+    <span className={cn("inline-flex rounded border px-2 py-0.5 text-xs font-medium", s.cls)}>
       {s.label}
     </span>
   );
@@ -184,19 +188,19 @@ function CampaignModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h2 className="font-semibold text-slate-800">New SMS Campaign</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className={`${CARD} w-full max-w-lg max-h-[90vh] overflow-y-auto`}>
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <h2 className="font-semibold text-slate-900">New SMS campaign</h2>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600" aria-label="Close">
             <X size={18} />
           </button>
         </div>
-        <div className="p-6 space-y-4">
+        <div className="space-y-4 p-5">
           <div>
             <label className="text-sm font-medium text-slate-700">Campaign name</label>
             <input
-              className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+              className={`${INPUT_CLASS} mt-1 px-3 py-2`}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Spring promo"
@@ -205,7 +209,7 @@ function CampaignModal({
           <div>
             <label className="text-sm font-medium text-slate-700">Message template</label>
             <select
-              className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+              className={`${INPUT_CLASS} mt-1 px-3 py-2`}
               value={templateId}
               onChange={(e) => setTemplateId(e.target.value)}
             >
@@ -225,7 +229,7 @@ function CampaignModal({
           <div>
             <label className="text-sm font-medium text-slate-700">Template parameters (JSON)</label>
             <textarea
-              className="mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono h-24"
+              className={`${INPUT_CLASS} mt-1 h-24 resize-none px-3 py-2 font-mono`}
               value={paramsJson}
               onChange={(e) => setParamsJson(e.target.value)}
             />
@@ -233,7 +237,7 @@ function CampaignModal({
           <div>
             <label className="text-sm font-medium text-slate-700">Phone numbers (optional)</label>
             <textarea
-              className="mt-1 w-full border rounded-lg px-3 py-2 text-sm h-20"
+              className={`${INPUT_CLASS} mt-1 h-20 resize-none px-3 py-2`}
               value={phones}
               onChange={(e) => setPhones(e.target.value)}
               placeholder={`${phoneExample}, one per line or comma-separated`}
@@ -242,7 +246,7 @@ function CampaignModal({
           <div>
             <label className="text-sm font-medium text-slate-700">Tags (optional)</label>
             <input
-              className="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+              className={`${INPUT_CLASS} mt-1 px-3 py-2`}
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder="VIP, Returning"
@@ -257,12 +261,12 @@ function CampaignModal({
             Only send to customers with SMS opt-in
           </label>
         </div>
-        <div className="flex gap-2 px-6 py-4 border-t bg-slate-50 rounded-b-2xl">
+        <div className="flex gap-2 border-t border-slate-200 bg-slate-50/80 px-5 py-4">
           <button
             type="button"
             disabled={saving}
             onClick={() => handleSave(false)}
-            className="flex-1 py-2 rounded-lg border text-sm font-medium hover:bg-white"
+            className="flex-1 rounded-lg border border-slate-200 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-white"
           >
             Save draft
           </button>
@@ -270,9 +274,9 @@ function CampaignModal({
             type="button"
             disabled={saving}
             onClick={() => handleSave(true)}
-            className="flex-1 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark disabled:opacity-50"
+            className="flex-1 rounded-lg border border-brand-dark bg-brand-dark py-2 text-sm font-medium text-white transition-colors hover:bg-brand hover:text-brand-ink disabled:opacity-50"
           >
-            {saving ? <Loader2 size={16} className="animate-spin mx-auto" /> : "Save & send"}
+            {saving ? <Loader2 size={16} className="mx-auto animate-spin" /> : "Save & send"}
           </button>
         </div>
       </div>
@@ -454,26 +458,31 @@ export default function SmsMarketingPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="mx-auto w-full space-y-6 p-6 pb-16 text-slate-900">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <Smartphone className="text-brand" size={26} />
+          <div className="mb-2 flex items-center gap-2 text-brand-dark">
+            <MessageSquare size={20} aria-hidden />
+            <span className="text-xs font-semibold uppercase tracking-wide">Marketing</span>
+          </div>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold text-slate-900">
+            <Smartphone className="text-brand-dark" size={24} aria-hidden />
             SMS Marketing
           </h1>
-          <p className="text-slate-500 text-sm mt-1">
-            Two ways to use SMS: get notifications from Zilo on your phone, and/or apply for your own sender to message customers.
+          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-slate-500">
+            Get notifications from Zilo on your phone, and/or apply for your own sender to message customers.
           </p>
         </div>
-        {tab === "campaigns" && canSendCampaigns && (
+        {tab === "campaigns" && canSendCampaigns ? (
           <button
             type="button"
             onClick={() => setShowModal(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark"
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-brand-dark bg-brand-dark px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand hover:text-brand-ink"
           >
-            <Plus size={16} /> New campaign
+            <Plus size={16} aria-hidden />
+            New campaign
           </button>
-        )}
+        ) : null}
       </div>
 
       {!canSendCampaigns && tab === "campaigns" && (
@@ -538,34 +547,37 @@ export default function SmsMarketingPage() {
         </div>
       )}
 
-      {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {stats ? (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
           {[
-            { label: "Campaigns", value: stats.campaigns.total, icon: FileText },
-            { label: "Messages sent", value: stats.messages_sent, icon: Send },
-            { label: "Opted in", value: stats.customers_opted_in, icon: Users },
-            { label: "Inbound", value: stats.inbound_messages, icon: Inbox },
-          ].map(({ label, value, icon: Icon }) => (
-            <div key={label} className="bg-white border rounded-xl p-4">
-              <div className="flex items-center gap-2 text-slate-500 text-xs">
-                <Icon size={14} /> {label}
+            { label: "Campaigns", value: stats.campaigns.total, icon: FileText, bg: "bg-blue-50 border-blue-200", iconBg: "bg-blue-100 text-blue-600", text: "text-blue-800", sub: "text-blue-700" },
+            { label: "Messages sent", value: stats.messages_sent, icon: Send, bg: "bg-emerald-50 border-emerald-200", iconBg: "bg-emerald-100 text-emerald-600", text: "text-emerald-800", sub: "text-emerald-700" },
+            { label: "Opted in", value: stats.customers_opted_in, icon: Users, bg: "bg-violet-50 border-violet-200", iconBg: "bg-violet-100 text-violet-600", text: "text-violet-800", sub: "text-violet-700" },
+            { label: "Inbound", value: stats.inbound_messages, icon: Inbox, bg: "bg-slate-50 border-slate-200", iconBg: "bg-slate-100 text-slate-600", text: "text-slate-800", sub: "text-slate-600" },
+          ].map(({ label, value, icon: Icon, bg, iconBg, text, sub }) => (
+            <div key={label} className={cn("flex items-center gap-3 rounded-xl border p-4", bg)}>
+              <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-full", iconBg)}>
+                <Icon size={18} aria-hidden />
               </div>
-              <p className="text-2xl font-semibold text-slate-900 mt-1">{value}</p>
+              <div className="min-w-0">
+                <p className={cn("text-xs font-medium", sub)}>{label}</p>
+                <p className={cn("text-xl font-bold tabular-nums truncate", text)}>{value}</p>
+              </div>
             </div>
           ))}
         </div>
-      )}
+      ) : null}
 
-      <div className="flex gap-1 border-b">
+      <div className="flex border-b border-slate-200">
         {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
             className={cn(
-              "flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+              "flex items-center gap-2 border-b-2 -mb-px px-4 py-2.5 text-sm font-medium transition-colors",
               tab === t.id
-                ? "border-brand text-brand-dark"
+                ? "border-brand-dark text-brand-dark"
                 : "border-transparent text-slate-500 hover:text-slate-700"
             )}
           >
@@ -575,89 +587,106 @@ export default function SmsMarketingPage() {
       </div>
 
       {tab === "campaigns" && (
-        <div className="bg-white border rounded-xl overflow-hidden">
+        <div className={`${CARD} overflow-hidden`}>
           {campaigns.length === 0 ? (
-            <div className="p-12 text-center text-slate-500">
-              <MessageSquare size={40} className="mx-auto mb-3 opacity-40" />
-              <p>No campaigns yet. Create one to start sending SMS.</p>
+            <div className="flex flex-col items-center justify-center gap-2 px-4 py-14 text-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50">
+                <MessageSquare size={20} className="text-slate-400" aria-hidden />
+              </div>
+              <p className="text-sm text-slate-500">No campaigns yet. Create one to start sending SMS.</p>
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-slate-600">
-                <tr>
-                  <th className="text-left px-4 py-3 font-medium">Name</th>
-                  <th className="text-left px-4 py-3 font-medium">Status</th>
-                  <th className="text-left px-4 py-3 font-medium">Sent</th>
-                  <th className="text-right px-4 py-3 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {campaigns.map((c) => (
-                  <tr key={c.id} className="border-t">
-                    <td className="px-4 py-3">
-                      <p className="font-medium text-slate-800">{c.name}</p>
-                      <p className="text-xs text-slate-400 truncate max-w-xs">{c.template_name || c.template_id}</p>
-                    </td>
-                    <td className="px-4 py-3"><StatusBadge status={c.status} /></td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {c.stats?.sent ?? 0} sent
-                      {(c.stats?.failed ?? 0) > 0 && (
-                        <span className="text-red-500 ml-1">({c.stats.failed} failed)</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right space-x-2">
-                      {c.status === "draft" && (
-                        <button
-                          type="button"
-                          onClick={() => handleSendCampaign(c.id)}
-                          className="text-brand hover:underline text-xs font-medium"
-                        >
-                          Send
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteCampaign(c.id)}
-                        className="text-red-500 hover:underline text-xs"
-                      >
-                        Delete
-                      </button>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <th className="px-4 py-3 text-left">Name</th>
+                    <th className="px-4 py-3 text-left">Status</th>
+                    <th className="px-4 py-3 text-left">Sent</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {campaigns.map((c) => (
+                    <tr key={c.id} className="transition-colors hover:bg-slate-50/80">
+                      <td className="px-4 py-3.5">
+                        <p className="font-medium text-slate-900">{c.name}</p>
+                        <p className="max-w-xs truncate text-xs text-slate-400">{c.template_name || c.template_id}</p>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <StatusBadge status={c.status} />
+                      </td>
+                      <td className="px-4 py-3.5 text-slate-600">
+                        {c.stats?.sent ?? 0} sent
+                        {(c.stats?.failed ?? 0) > 0 ? (
+                          <span className="ml-1 text-red-600">({c.stats.failed} failed)</span>
+                        ) : null}
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <div className="flex justify-end gap-1.5">
+                          {c.status === "draft" ? (
+                            <button
+                              type="button"
+                              onClick={() => handleSendCampaign(c.id)}
+                              className="inline-flex h-8 items-center gap-1 rounded-lg border border-brand-dark bg-brand-dark px-2.5 text-xs font-medium text-white transition-colors hover:bg-brand hover:text-brand-ink"
+                              title="Send campaign"
+                            >
+                              <Send size={13} aria-hidden />
+                              Send
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCampaign(c.id)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-colors hover:border-red-200 hover:text-red-600"
+                            title="Delete"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
 
       {tab === "inbox" && (
-        <div className="bg-white border rounded-xl divide-y max-h-[60vh] overflow-y-auto">
+        <div className={`${CARD} max-h-[60vh] divide-y divide-slate-100 overflow-y-auto`}>
           {messages.length === 0 ? (
-            <div className="p-12 text-center text-slate-500">
-              <Inbox size={40} className="mx-auto mb-3 opacity-40" />
-              <p>Inbound and outbound SMS will appear here.</p>
-              <p className="text-xs mt-2">Replies from customers will show here once your account is active.</p>
+            <div className="flex flex-col items-center justify-center gap-2 px-4 py-14 text-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50">
+                <Inbox size={20} className="text-slate-400" aria-hidden />
+              </div>
+              <p className="text-sm text-slate-500">Inbound and outbound SMS will appear here.</p>
+              <p className="text-xs text-slate-400">Replies show here once your account is active.</p>
             </div>
           ) : (
             messages.map((m) => (
-              <div key={m.id} className="px-4 py-3 flex gap-3">
-                <div className={cn(
-                  "w-8 h-8 rounded-full flex items-center justify-center shrink-0",
-                  m.direction === "inbound" ? "bg-blue-100 text-blue-600" : "bg-green-100 text-green-600"
-                )}>
-                  <MessageSquare size={14} />
+              <div key={m.id} className="flex gap-3 px-4 py-3.5 transition-colors hover:bg-slate-50/80">
+                <div
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border",
+                    m.direction === "inbound"
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  )}
+                >
+                  <MessageSquare size={14} aria-hidden />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-slate-800">{m.phone}</span>
-                    <span className="text-xs text-slate-400 capitalize">{m.direction}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm font-medium text-slate-900">{m.phone}</span>
+                    <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium capitalize text-slate-500">
+                      {m.direction}
+                    </span>
                     <span className="text-xs text-slate-400">{m.status}</span>
                   </div>
-                  <p className="text-sm text-slate-600 mt-0.5 break-words">{m.body || "—"}</p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {new Date(m.created_at).toLocaleString()}
-                  </p>
+                  <p className="mt-1 break-words text-sm leading-relaxed text-slate-600">{m.body || "—"}</p>
+                  <p className="mt-1 text-xs text-slate-400">{new Date(m.created_at).toLocaleString()}</p>
                 </div>
               </div>
             ))
@@ -666,17 +695,16 @@ export default function SmsMarketingPage() {
       )}
 
       {tab === "settings" && (
-        <div className="space-y-6">
-          {/* Mode 1: Platform / Zilo notifications */}
-          <div className="bg-white border rounded-xl p-6 space-y-4">
-            <h2 className="font-semibold text-slate-800">Notifications from Zilo</h2>
+        <div className="space-y-5">
+          <div className={`${CARD} space-y-4 p-5 sm:p-6`}>
+            <h2 className="font-semibold text-slate-900">Notifications from Zilo</h2>
             <p className="text-sm text-slate-500">
               Link your mobile number to receive SMS alerts from us, and optionally send order-style notifications to customers who opted in — no marketing application required.
             </p>
             <div>
               <label className="text-sm font-medium text-slate-700">Your mobile number</label>
               <input
-                className="mt-1 w-full max-w-md border rounded-lg px-3 py-2 text-sm"
+                className={`${INPUT_CLASS} mt-1 max-w-md px-3 py-2`}
                 placeholder={phoneExample}
                 value={settings.owner_notification_phone || ""}
                 onChange={(e) => setSettings({ ...settings, owner_notification_phone: e.target.value })}
@@ -695,16 +723,16 @@ export default function SmsMarketingPage() {
               type="button"
               disabled={savingSettings}
               onClick={saveSettings}
-              className="py-2 px-4 rounded-lg bg-brand text-white text-sm font-medium hover:bg-brand-dark disabled:opacity-50"
+              className="rounded-lg border border-brand-dark bg-brand-dark px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand hover:text-brand-ink disabled:opacity-50"
             >
               {savingSettings ? "Saving…" : "Save notification settings"}
             </button>
-            {platformReady && (
-              <div className="pt-2 border-t">
-                <p className="text-sm font-medium text-slate-700 mb-2">Test customer notification</p>
-                <div className="flex gap-2 max-w-md">
+            {platformReady ? (
+              <div className="border-t border-slate-200 pt-4">
+                <p className="mb-2 text-sm font-medium text-slate-700">Test customer notification</p>
+                <div className="flex max-w-md gap-2">
                   <input
-                    className="flex-1 border rounded-lg px-3 py-2 text-sm"
+                    className={`${INPUT_CLASS} flex-1 px-3 py-2`}
                     placeholder={phoneExample}
                     value={testPhone}
                     onChange={(e) => setTestPhone(e.target.value)}
@@ -712,24 +740,28 @@ export default function SmsMarketingPage() {
                   <button
                     type="button"
                     onClick={() => void sendTestSms("platform")}
-                    className="px-4 py-2 rounded-lg border text-sm font-medium hover:bg-slate-50"
+                    className="shrink-0 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
                   >
                     Send test
                   </button>
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
 
-          {/* Mode 2: Own SMS marketing account */}
-          <div className="bg-white border rounded-xl p-6">
-            <h2 className="font-semibold text-slate-800 flex items-center gap-2">
-              <ShieldCheck size={18} className="text-brand" />
+          <div className={`${CARD} p-5 sm:p-6`}>
+            <h2 className="flex items-center gap-2 font-semibold text-slate-900">
+              <ShieldCheck size={18} className="text-brand-dark" aria-hidden />
               Your own SMS marketing account
             </h2>
             <p className="text-sm text-slate-500 mt-1 mb-4">
               Apply to send campaigns under your business name and number. Required for the Campaigns tab and inbound replies on your sender.
             </p>
+            {application.status === "rejected" ? (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                Your previous application was not approved. Update the details below and submit again.
+              </div>
+            ) : null}
             {application.status === "none" || application.status === "rejected" ? (
               <SmsApplicationForm
                 defaultCountry={accountCountry}
@@ -738,34 +770,51 @@ export default function SmsMarketingPage() {
                 onSubmit={submitApplication}
               />
             ) : (
-              <div className="space-y-2">
-                <div className={cn(
-                  "inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium",
-                  application.status === "pending" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-800"
-                )}>
-                  {application.status === "pending" ? <Clock size={14} /> : <CheckCircle2 size={14} />}
-                  {application.status === "pending" ? "Under review — setting up your SMS account" : "Account active"}
+              <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-4 space-y-3">
+                <div
+                  className={cn(
+                    "inline-flex items-center gap-2 rounded border px-3 py-1.5 text-sm font-medium",
+                    application.status === "pending"
+                      ? "border-amber-200 bg-amber-50 text-amber-800"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  )}
+                >
+                  {application.status === "pending" ? <Clock size={14} aria-hidden /> : <CheckCircle2 size={14} aria-hidden />}
+                  {application.status === "pending"
+                    ? "Under review — setting up your SMS account"
+                    : "Account active"}
                 </div>
-                {application.business_name && (
-                  <p className="text-sm text-slate-600">Business: {application.business_name}</p>
-                )}
-                {displaySender && application.status === "pending" && (
-                  <p className="text-sm text-slate-600">Sender name: {displaySender}</p>
-                )}
-                {displayNumber && isActive && (
-                  <p className="text-sm text-slate-600">Number: {displayNumber}</p>
-                )}
+                <dl className="grid gap-2 text-sm sm:grid-cols-2">
+                  {application.business_name ? (
+                    <div>
+                      <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">Business</dt>
+                      <dd className="mt-0.5 font-medium text-slate-800">{application.business_name}</dd>
+                    </div>
+                  ) : null}
+                  {displaySender && application.status === "pending" ? (
+                    <div>
+                      <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">Sender name</dt>
+                      <dd className="mt-0.5 font-medium text-slate-800">{displaySender}</dd>
+                    </div>
+                  ) : null}
+                  {displayNumber && isActive ? (
+                    <div>
+                      <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">Number</dt>
+                      <dd className="mt-0.5 font-mono font-medium text-slate-800">{displayNumber}</dd>
+                    </div>
+                  ) : null}
+                </dl>
               </div>
             )}
           </div>
 
-          {canSendCampaigns && (
-            <div className="bg-white border rounded-xl p-6">
-              <h2 className="font-semibold text-slate-800 mb-1">Test your marketing sender</h2>
-              <p className="text-sm text-slate-500 mb-3">Sends using your business name and number.</p>
-              <div className="flex gap-2 max-w-md">
+          {canSendCampaigns ? (
+            <div className={`${CARD} p-5 sm:p-6`}>
+              <h2 className="mb-1 font-semibold text-slate-900">Test your marketing sender</h2>
+              <p className="mb-3 text-sm text-slate-500">Sends using your business name and number.</p>
+              <div className="flex max-w-md gap-2">
                 <input
-                  className="flex-1 border rounded-lg px-3 py-2 text-sm"
+                  className={`${INPUT_CLASS} flex-1 px-3 py-2`}
                   placeholder={phoneExample}
                   value={testPhone}
                   onChange={(e) => setTestPhone(e.target.value)}
@@ -773,13 +822,13 @@ export default function SmsMarketingPage() {
                 <button
                   type="button"
                   onClick={() => void sendTestSms("marketing")}
-                  className="px-4 py-2 rounded-lg border text-sm font-medium hover:bg-slate-50"
+                  className="shrink-0 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
                 >
                   Send test
                 </button>
               </div>
             </div>
-          )}
+          ) : null}
 
           {/* Opt-in info */}
           <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-sm text-green-900">

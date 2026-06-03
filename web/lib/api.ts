@@ -1729,6 +1729,8 @@ export interface ScheduledPost {
   image_url?: string;
   publish_error?: string;
   zernio_post_id?: string;
+  external_post_id?: string;
+  publish_provider?: string;
   engagement_synced_at?: string;
   engagement?: {
     likes: number;
@@ -1760,8 +1762,34 @@ export interface SocialAnalytics {
 export type SocialPostPublishResult = {
   success: boolean;
   zernio_post_id?: string | null;
+  external_post_id?: string | null;
+  publish_provider?: string | null;
   error?: string | null;
   crm_status?: string;
+};
+
+export interface ComposioFacebookPage {
+  id: string;
+  name: string;
+  username?: string;
+  category?: string;
+  instagram_user_id?: string | null;
+}
+
+export interface ComposioSocialSettings {
+  facebook: { connected: boolean; page_id?: string | null; page_name?: string | null };
+  instagram: { connected: boolean; user_id?: string | null };
+  youtube: { connected: boolean };
+}
+
+export const composioSocialApi = {
+  settings: () => api.get<ComposioSocialSettings>("/composio/social/settings"),
+  facebookPages: () => api.get<{ pages: ComposioFacebookPage[] }>("/composio/social/facebook/pages"),
+  selectFacebookPage: (page_id: string) =>
+    api.post<{ ok: boolean; page_id: string; page_name: string; instagram_user_id?: string | null }>(
+      "/composio/social/facebook/page",
+      { page_id },
+    ),
 };
 
 export const socialSchedulerApi = {

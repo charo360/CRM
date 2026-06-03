@@ -6,10 +6,46 @@ import { api, Customer, Message, Sale, Order, FollowUp } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { formatCurrency, formatDate, formatDateTime, timeAgo } from "@/lib/utils";
 import {
-  ArrowLeft, MessageSquare, Phone, Mail, MapPin, ShoppingBag,
-  TrendingUp, Calendar, FileText, Sparkles, Loader2, Edit, Save, X,
-  CheckCircle2, Clock, Package, CreditCard, Inbox, ChevronDown, ChevronUp
+  ArrowLeft,
+  MessageSquare,
+  Phone,
+  Mail,
+  TrendingUp,
+  Calendar,
+  Sparkles,
+  Loader2,
+  Edit,
+  Save,
+  X,
+  CheckCircle2,
+  Clock,
+  Package,
+  CreditCard,
+  Inbox,
+  ChevronDown,
+  ChevronUp,
+  User,
 } from "lucide-react";
+
+const INPUT_CLASS =
+  "w-full text-sm border border-slate-200 rounded-lg outline-none transition-colors focus:border-brand";
+
+const STAGE_COLORS: Record<string, string> = {
+  lead: "border-slate-200 bg-slate-50 text-slate-600",
+  contacted: "border-blue-200 bg-blue-50 text-blue-700",
+  negotiating: "border-amber-200 bg-amber-50 text-amber-800",
+  won: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  lost: "border-red-200 bg-red-50 text-red-700",
+};
+
+const TIMELINE_ICON_STYLES: Record<string, string> = {
+  message: "border-blue-200 bg-blue-50 text-blue-700",
+  sale: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  order: "border-slate-200 bg-brand/10 text-brand-dark",
+  followup: "border-amber-200 bg-amber-50 text-amber-800",
+};
+
+const STAGES = ["lead", "contacted", "negotiating", "won", "lost"] as const;
 
 interface TimelineEvent {
   id: string;
@@ -190,17 +226,26 @@ export default function CustomerProfilePage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-brand-dark" size={28} />
+      <div className="flex min-h-[320px] items-center justify-center p-6">
+        <Loader2 className="animate-spin text-brand-dark" size={26} aria-hidden />
       </div>
     );
   }
 
   if (!customer) {
     return (
-      <div className="p-6 text-center text-slate-400">
-        Customer not found.{" "}
-        <button onClick={() => router.back()} className="text-brand-dark hover:underline">Go back</button>
+      <div className="mx-auto max-w-6xl p-6">
+        <div className="rounded-lg border border-slate-200 bg-white px-6 py-12 text-center">
+          <p className="text-sm font-medium text-slate-600">Customer not found</p>
+          <button
+            type="button"
+            onClick={() => router.back()}
+            className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-brand-dark hover:underline"
+          >
+            <ArrowLeft size={15} aria-hidden />
+            Back to customers
+          </button>
+        </div>
       </div>
     );
   }
@@ -214,82 +259,102 @@ export default function CustomerProfilePage() {
     { id: "followups", label: "Follow-ups", count: followups.length },
   ] as const;
 
-  const STAGES = ["lead", "contacted", "negotiating", "won", "lost"];
-  const STAGE_COLORS: Record<string, string> = {
-    lead: "bg-slate-100 text-slate-600",
-    contacted: "bg-blue-100 text-blue-700",
-    negotiating: "bg-amber-100 text-amber-700",
-    won: "bg-green-100 text-green-700",
-    lost: "bg-red-100 text-red-600",
-  };
-
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
-      {/* Back */}
-      <button onClick={() => router.back()} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800">
-        <ArrowLeft size={15} /> Back to Customers
+    <div className="mx-auto max-w-6xl space-y-6 p-6 pb-16 text-slate-900">
+      <button
+        type="button"
+        onClick={() => router.back()}
+        className="inline-flex items-center gap-1.5 text-sm text-slate-500 transition-colors hover:text-slate-800"
+      >
+        <ArrowLeft size={15} aria-hidden />
+        Back to customers
       </button>
 
-      {/* Header Card */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-brand/15 flex items-center justify-center shrink-0">
+      <div className="rounded-lg border border-slate-200 bg-white p-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-4">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-brand/10 sm:h-16 sm:w-16">
               {customer.profile_picture ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={customer.profile_picture} alt={customer.name} className="w-16 h-16 rounded-2xl object-cover" />
+                <img src={customer.profile_picture} alt="" className="h-full w-full object-cover" />
               ) : (
-                <span className="text-2xl font-bold text-brand-dark">{customer.name.charAt(0).toUpperCase()}</span>
+                <span className="text-xl font-semibold text-brand-dark sm:text-2xl">
+                  {customer.name.charAt(0).toUpperCase()}
+                </span>
               )}
             </div>
-            <div>
+            <div className="min-w-0">
               {editing ? (
                 <input
                   value={editForm.name}
-                  onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-                  className="text-xl font-bold text-slate-900 border-b border-brand outline-none"
+                  onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                  className={`${INPUT_CLASS} max-w-md px-2 py-1 text-lg font-semibold`}
                 />
               ) : (
-                <h1 className="text-xl font-bold text-slate-900">{customer.name}</h1>
+                <h1 className="truncate text-xl font-semibold text-slate-900 sm:text-2xl">{customer.name}</h1>
               )}
-              <div className="flex items-center gap-3 mt-1 flex-wrap">
-                <span className="flex items-center gap-1 text-sm text-slate-500">
-                  <Phone size={12} /> {customer.phone_number}
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span className="flex items-center gap-1 font-mono text-sm text-slate-500">
+                  <Phone size={13} className="shrink-0" aria-hidden />
+                  {customer.phone_number}
                 </span>
-                {customer.email && (
-                  <span className="flex items-center gap-1 text-sm text-slate-500">
-                    <Mail size={12} /> {customer.email}
+                {customer.email ? (
+                  <span className="flex min-w-0 max-w-full items-center gap-1 text-sm text-slate-500">
+                    <Mail size={13} className="shrink-0" aria-hidden />
+                    <span className="truncate">{customer.email}</span>
                   </span>
-                )}
+                ) : null}
               </div>
-              <div className="flex items-center gap-2 mt-2 flex-wrap">
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 {editing ? (
                   <select
                     value={editForm.stage}
-                    onChange={e => setEditForm(f => ({ ...f, stage: e.target.value }))}
-                    className="text-xs px-2 py-1 border border-slate-200 rounded-lg outline-none"
+                    onChange={(e) => setEditForm((f) => ({ ...f, stage: e.target.value }))}
+                    className={`rounded-md border px-2 py-1 text-xs font-medium capitalize outline-none focus:border-brand ${STAGE_COLORS[editForm.stage] || "border-slate-200 bg-white"}`}
                   >
-                    {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+                    {STAGES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
                   </select>
                 ) : (
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STAGE_COLORS[customer.stage || "lead"]}`}>
+                  <span
+                    className={`rounded border px-2 py-0.5 text-xs font-medium capitalize ${STAGE_COLORS[customer.stage || "lead"]}`}
+                  >
                     {customer.stage || "lead"}
                   </span>
                 )}
-                {(customer.tags || []).map(t => (
-                  <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-brand/10 text-brand-dark font-medium">{t}</span>
+                {(customer.tags || []).map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-brand/25 bg-brand/10 px-2 py-0.5 text-xs font-medium text-brand-dark"
+                  >
+                    {t}
+                  </span>
                 ))}
               </div>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex shrink-0 gap-2">
             {editing ? (
               <>
-                <button onClick={() => setEditing(false)} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50"
+                  aria-label="Cancel edit"
+                >
                   <X size={16} />
                 </button>
-                <button onClick={handleSave} disabled={saving} className="flex items-center gap-1.5 px-4 py-2 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand disabled:opacity-50">
-                  {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-brand-dark bg-brand-dark px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand hover:text-brand-ink disabled:opacity-50"
+                >
+                  {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                  Save
                 </button>
               </>
             ) : (
@@ -297,12 +362,18 @@ export default function CustomerProfilePage() {
                 <button
                   type="button"
                   onClick={() => router.push(`/dashboard/messages?customer=${encodeURIComponent(customer.id)}`)}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-green-500 text-white text-sm font-medium rounded-lg hover:bg-green-600"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-brand-dark bg-brand-dark px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-brand hover:text-brand-ink"
                 >
-                  <MessageSquare size={14} /> Message
+                  <MessageSquare size={14} aria-hidden />
+                  Message
                 </button>
-                <button onClick={() => setEditing(true)} className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50">
-                  <Edit size={14} /> Edit
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50"
+                >
+                  <Edit size={14} aria-hidden />
+                  Edit
                 </button>
               </>
             )}
@@ -310,167 +381,191 @@ export default function CustomerProfilePage() {
         </div>
 
         {/* Edit fields */}
-        {editing && (
-          <div className="mt-4 grid grid-cols-1 gap-3 pt-4 border-t border-slate-100">
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
-              <input value={editForm.email} onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
+        {editing ? (
+          <div className="mt-5 grid grid-cols-1 gap-3 border-t border-slate-200 pt-5 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs font-medium text-slate-700">Email</label>
+              <input
+                value={editForm.email}
+                onChange={(e) => setEditForm((f) => ({ ...f, email: e.target.value }))}
+                className={`${INPUT_CLASS} px-3 py-2`}
+              />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Tags (comma-separated)</label>
-              <input value={editForm.tags} onChange={e => setEditForm(f => ({ ...f, tags: e.target.value }))}
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs font-medium text-slate-700">Tags (comma-separated)</label>
+              <input
+                value={editForm.tags}
+                onChange={(e) => setEditForm((f) => ({ ...f, tags: e.target.value }))}
                 placeholder="VIP, Returning"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
+                className={`${INPUT_CLASS} px-3 py-2`}
+              />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Notes</label>
-              <textarea value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
-                rows={2} className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none" />
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs font-medium text-slate-700">Notes</label>
+              <textarea
+                value={editForm.notes}
+                onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                rows={3}
+                className={`${INPUT_CLASS} resize-none px-3 py-2`}
+              />
             </div>
           </div>
-        )}
+        ) : null}
 
-        {/* Stats row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5 pt-5 border-t border-slate-100">
+        <div className="mt-5 grid grid-cols-2 gap-3 border-t border-slate-200 pt-5 sm:grid-cols-4">
           {[
-            { label: "Total Spent", value: formatCurrency(customer.total_spent || 0), icon: TrendingUp, color: "text-green-600", bg: "bg-green-50" },
-            { label: "Orders", value: customer.purchase_count || 0, icon: Package, color: "text-blue-600", bg: "bg-blue-50" },
-            { label: "Last Contact", value: customer.last_contacted ? timeAgo(customer.last_contacted) : "Never", icon: Clock, color: "text-amber-600", bg: "bg-amber-50" },
-            { label: "Member Since", value: formatDate(customer.created_at), icon: Calendar, color: "text-brand-dark", bg: "bg-brand/10" },
-          ].map(({ label, value, icon: Icon, color, bg }) => (
-            <div key={label} className="flex items-center gap-3">
-              <div className={`w-9 h-9 rounded-xl ${bg} flex items-center justify-center shrink-0`}>
-                <Icon size={16} className={color} />
+            { label: "Total spent", value: formatCurrency(customer.total_spent || 0), icon: TrendingUp },
+            { label: "Orders", value: String(customer.purchase_count || 0), icon: Package },
+            {
+              label: "Last contact",
+              value: customer.last_contacted ? timeAgo(customer.last_contacted) : "Never",
+              icon: Clock,
+            },
+            { label: "Member since", value: formatDate(customer.created_at), icon: Calendar },
+          ].map(({ label, value, icon: Icon }) => (
+            <div key={label} className="rounded-lg border border-slate-200 px-3 py-3">
+              <div className="flex items-center gap-1.5 text-slate-400">
+                <Icon size={13} className="text-brand-dark" aria-hidden />
+                <span className="text-[11px] font-semibold uppercase tracking-wide">{label}</span>
               </div>
-              <div>
-                <p className="text-xs text-slate-500">{label}</p>
-                <p className="text-sm font-semibold text-slate-800">{value}</p>
-              </div>
+              <p className="mt-1 truncate text-sm font-semibold tabular-nums text-slate-900">{value}</p>
             </div>
           ))}
         </div>
 
-        {/* Notes */}
-        {customer.notes && !editing && (
-          <div className="mt-4 p-3 bg-slate-50 rounded-xl text-sm text-slate-600 border border-slate-100">
-            <p className="text-xs font-medium text-slate-400 mb-1">Notes</p>
+        {customer.notes && !editing ? (
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-600">
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Notes</p>
             {customer.notes}
           </div>
-        )}
+        ) : null}
 
-        {/* AI Notes */}
-        <div className="mt-4">
+        <div className="mt-4 border-t border-slate-200 pt-4">
           <button
+            type="button"
             onClick={generateAINotes}
             disabled={generatingNotes}
-            className="flex items-center gap-1.5 text-xs text-brand-dark hover:text-brand-ink disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-brand-dark transition-colors hover:border-brand/40 hover:bg-brand/10 disabled:opacity-50"
           >
-            <Sparkles size={12} className={generatingNotes ? "animate-spin" : ""} />
-            {generatingNotes ? "Generating AI notes…" : "Generate AI customer notes"}
+            <Sparkles size={13} className={generatingNotes ? "animate-spin" : ""} aria-hidden />
+            {generatingNotes ? "Generating…" : "Generate AI notes"}
           </button>
-          {aiNotes && (
-            <div className="mt-2 p-3 bg-brand/10 rounded-xl text-sm text-brand-ink border border-brand/15">
+          {aiNotes ? (
+            <div className="mt-3 rounded-lg border border-brand/25 bg-brand/10 px-4 py-3 text-sm leading-relaxed text-brand-ink">
               {aiNotes}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-200">
-        {TABS.map(({ id: tid, label, count }) => (
-          <button
-            key={tid}
-            onClick={() => {
-              setActiveTab(tid);
-              if (tid === "emails" && customer?.email && !emailsLoaded) {
-                loadEmails(customer.email);
-              }
-            }}
-            className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-              activeTab === tid
-                ? "bg-white border-b-2 border-brand-dark text-brand-dark"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            {label} {count > 0 && <span className="ml-1 text-xs text-slate-400">({count})</span>}
-          </button>
-        ))}
+      <div className="overflow-x-auto pb-0.5">
+        <div className="inline-flex min-w-full gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 sm:min-w-0">
+          {TABS.map(({ id: tid, label, count }) => (
+            <button
+              key={tid}
+              type="button"
+              onClick={() => {
+                setActiveTab(tid);
+                if (tid === "emails" && customer.email && !emailsLoaded) {
+                  loadEmails(customer.email);
+                }
+              }}
+              className={`shrink-0 rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors sm:text-sm ${
+                activeTab === tid
+                  ? "border border-slate-200 bg-white text-slate-900"
+                  : "border border-transparent text-slate-600 hover:text-slate-800"
+              }`}
+            >
+              {label}
+              {count > 0 ? <span className="ml-1 text-slate-400">({count})</span> : null}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Tab Content */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
 
         {/* Timeline */}
         {activeTab === "timeline" && (
           <div className="divide-y divide-slate-100">
-            {timeline.length === 0 && <p className="text-center text-slate-400 text-sm py-10">No activity yet</p>}
-            {timeline.map((event) => {
-              const Icon = event.type === "message" ? MessageSquare
-                : event.type === "sale" ? CreditCard
-                : event.type === "order" ? Package
-                : CheckCircle2;
-              const colors: Record<string, string> = {
-                message: "bg-blue-50 text-blue-600",
-                sale: "bg-green-50 text-green-600",
-                order: "bg-brand/10 text-brand-dark",
-                followup: "bg-amber-50 text-amber-600",
-              };
-              return (
-                <div key={event.id} className="flex items-start gap-3 p-4">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${colors[event.type]}`}>
-                    <Icon size={14} />
+            {timeline.length === 0 ? (
+              <EmptyTab message="No activity yet" />
+            ) : (
+              timeline.map((event) => {
+                const Icon =
+                  event.type === "message"
+                    ? MessageSquare
+                    : event.type === "sale"
+                      ? CreditCard
+                      : event.type === "order"
+                        ? Package
+                        : CheckCircle2;
+                return (
+                  <div key={event.id} className="flex items-start gap-3 px-4 py-3.5">
+                    <div
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border ${TIMELINE_ICON_STYLES[event.type] || "border-slate-200 bg-slate-50 text-slate-600"}`}
+                    >
+                      <Icon size={14} aria-hidden />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-slate-700">{event.content}</p>
+                      {event.amount !== undefined && event.amount > 0 ? (
+                        <p className="mt-0.5 text-xs font-medium tabular-nums text-emerald-700">
+                          {formatCurrency(event.amount)}
+                        </p>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 text-xs text-slate-400">{timeAgo(event.created_at)}</span>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-slate-700">{event.content}</p>
-                    {event.amount !== undefined && event.amount > 0 && (
-                      <p className="text-xs font-semibold text-green-600 mt-0.5">{formatCurrency(event.amount)}</p>
-                    )}
-                  </div>
-                  <span className="text-xs text-slate-400 shrink-0">{timeAgo(event.created_at)}</span>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         )}
 
         {/* Messages */}
         {activeTab === "messages" && (
-          <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
-            {messages.length === 0 && <p className="text-center text-slate-400 text-sm py-10">No messages</p>}
-            {messages.map((m) => (
-              <div key={m.id} className={`flex p-4 ${m.direction === "outgoing" ? "justify-end" : ""}`}>
-                <div className={`max-w-sm rounded-xl px-4 py-2 text-sm ${m.direction === "outgoing" ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-800"}`}>
-                  <p>{m.content}</p>
-                  <p className={`text-xs mt-1 ${m.direction === "outgoing" ? "text-brand/30" : "text-slate-400"}`}>{timeAgo(m.created_at)}</p>
+          <div className="max-h-[500px] space-y-3 overflow-y-auto p-4">
+            {messages.length === 0 ? (
+              <EmptyTab message="No messages" icon={MessageSquare} />
+            ) : (
+              messages.map((m) => (
+                <div key={m.id} className={`flex ${m.direction === "outgoing" ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[85%] rounded-lg border px-3 py-2 text-sm sm:max-w-sm ${
+                      m.direction === "outgoing"
+                        ? "border-brand-dark bg-brand-dark text-white"
+                        : "border-slate-200 bg-slate-50 text-slate-800"
+                    }`}
+                  >
+                    <p className="leading-relaxed">{m.content}</p>
+                    <p
+                      className={`mt-1 text-xs ${m.direction === "outgoing" ? "text-white/70" : "text-slate-400"}`}
+                    >
+                      {timeAgo(m.created_at)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         )}
 
         {/* Emails */}
         {activeTab === "emails" && (
           <div className="divide-y divide-slate-100">
-            {!customer?.email && (
-              <div className="text-center text-slate-400 text-sm py-10">
-                <Mail size={24} className="mx-auto mb-2 opacity-30" />
-                No email address on file for this customer.
-              </div>
-            )}
-            {customer?.email && emailsLoading && (
-              <div className="flex items-center justify-center py-12 gap-2 text-slate-400">
-                <Loader2 size={18} className="animate-spin" />
+            {!customer.email ? (
+              <EmptyTab message="No email address on file for this customer." icon={Mail} />
+            ) : null}
+            {customer.email && emailsLoading ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-slate-400">
+                <Loader2 size={18} className="animate-spin" aria-hidden />
                 <span className="text-sm">Loading emails…</span>
               </div>
-            )}
-            {customer?.email && !emailsLoading && emailsLoaded && emails.length === 0 && (
-              <div className="text-center text-slate-400 text-sm py-10">
-                <Inbox size={24} className="mx-auto mb-2 opacity-30" />
-                No emails found for {customer.email}
-              </div>
-            )}
+            ) : null}
+            {customer.email && !emailsLoading && emailsLoaded && emails.length === 0 ? (
+              <EmptyTab message={`No emails found for ${customer.email}`} icon={Inbox} />
+            ) : null}
             {emails.map((thread) => {
               const isExpanded = expandedThread === thread.id;
               const msgs = threadMessages[thread.id];
@@ -478,8 +573,9 @@ export default function CustomerProfilePage() {
               return (
                 <div key={thread.id} className="flex flex-col">
                   <button
+                    type="button"
                     onClick={() => loadThread(thread)}
-                    className="flex items-start gap-3 p-4 hover:bg-slate-50 text-left w-full"
+                    className="flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-slate-50/80"
                   >
                     <div className={`w-2 h-2 rounded-full mt-2 shrink-0 ${thread.unread ? "bg-brand-dark" : "bg-transparent border border-slate-300"}`} />
                     <div className="flex-1 min-w-0">
@@ -523,78 +619,135 @@ export default function CustomerProfilePage() {
 
         {/* Sales */}
         {activeTab === "sales" && (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                {["Item", "Amount", "Method", "Date"].map(h => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {sales.length === 0 ? (
-                <tr><td colSpan={4} className="text-center text-slate-400 py-10">No sales yet</td></tr>
-              ) : sales.map(s => (
-                <tr key={s.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-3 text-slate-800">{s.item}</td>
-                  <td className="px-4 py-3 font-semibold text-green-600">{formatCurrency(s.amount)}</td>
-                  <td className="px-4 py-3 text-slate-500 capitalize">{s.payment_method}</td>
-                  <td className="px-4 py-3 text-slate-400 text-xs">{formatDate(s.created_at)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/80">
+                  {["Item", "Amount", "Method", "Date"].map((h) => (
+                    <th
+                      key={h}
+                      className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {sales.length === 0 ? (
+                  <tr>
+                    <td colSpan={4}>
+                      <EmptyTab message="No sales yet" icon={CreditCard} />
+                    </td>
+                  </tr>
+                ) : (
+                  sales.map((s) => (
+                    <tr key={s.id} className="transition-colors hover:bg-slate-50/80">
+                      <td className="px-4 py-3.5 text-slate-800">{s.item}</td>
+                      <td className="px-4 py-3.5 font-medium tabular-nums text-emerald-700">
+                        {formatCurrency(s.amount)}
+                      </td>
+                      <td className="px-4 py-3.5 capitalize text-slate-600">{s.payment_method}</td>
+                      <td className="px-4 py-3.5 text-xs text-slate-500">{formatDate(s.created_at)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {/* Orders */}
         {activeTab === "orders" && (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                {["Order", "Product", "Total", "Status", "Date"].map(h => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {orders.length === 0 ? (
-                <tr><td colSpan={5} className="text-center text-slate-400 py-10">No orders yet</td></tr>
-              ) : orders.map(o => (
-                <tr key={o.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-3 font-medium text-slate-800">#{o.order_number || o.id.slice(-6)}</td>
-                  <td className="px-4 py-3 text-slate-600">{o.product}</td>
-                  <td className="px-4 py-3 font-semibold text-slate-800">{formatCurrency(o.total_amount)}</td>
-                  <td className="px-4 py-3">
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-brand/10 text-brand-dark font-medium">
-                      {o.fulfillment_status || "New"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-slate-400 text-xs">{timeAgo(o.created_at)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/80">
+                  {["Order", "Product", "Total", "Status", "Date"].map((h) => (
+                    <th
+                      key={h}
+                      className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {orders.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <EmptyTab message="No orders yet" icon={Package} />
+                    </td>
+                  </tr>
+                ) : (
+                  orders.map((o) => (
+                    <tr key={o.id} className="transition-colors hover:bg-slate-50/80">
+                      <td className="px-4 py-3.5 font-medium text-slate-900">
+                        #{o.order_number || o.id.slice(-6)}
+                      </td>
+                      <td className="px-4 py-3.5 text-slate-600">{o.product}</td>
+                      <td className="px-4 py-3.5 font-medium tabular-nums text-slate-900">
+                        {formatCurrency(o.total_amount)}
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <span className="rounded border border-brand/25 bg-brand/10 px-2 py-0.5 text-xs font-medium text-brand-dark">
+                          {o.fulfillment_status || "New"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-xs text-slate-500">{timeAgo(o.created_at)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {/* Follow-ups */}
         {activeTab === "followups" && (
           <div className="divide-y divide-slate-100">
-            {followups.length === 0 && <p className="text-center text-slate-400 text-sm py-10">No follow-ups</p>}
-            {followups.map(f => (
-              <div key={f.id} className="flex items-start gap-3 p-4">
-                <div className={`w-2 h-2 rounded-full mt-2 ${f.status === "done" ? "bg-green-400" : "bg-amber-400"}`} />
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-slate-800 capitalize">{f.type} follow-up</p>
-                  {f.message && <p className="text-xs text-slate-500 mt-0.5">{f.message}</p>}
-                  <p className="text-xs text-slate-400 mt-1">
-                    {formatDateTime(f.reminder_date)} · <span className="capitalize">{f.status}</span>
-                  </p>
+            {followups.length === 0 ? (
+              <EmptyTab message="No follow-ups" icon={CheckCircle2} />
+            ) : (
+              followups.map((f) => (
+                <div key={f.id} className="flex items-start gap-3 px-4 py-3.5">
+                  <span
+                    className={`mt-2 h-2 w-2 shrink-0 rounded-full border ${
+                      f.status === "done" ? "border-emerald-400 bg-emerald-400" : "border-amber-400 bg-amber-400"
+                    }`}
+                    aria-hidden
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium capitalize text-slate-900">{f.type} follow-up</p>
+                    {f.message ? <p className="mt-0.5 text-xs text-slate-500">{f.message}</p> : null}
+                    <p className="mt-1 text-xs text-slate-400">
+                      {formatDateTime(f.reminder_date)} · <span className="capitalize">{f.status}</span>
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function EmptyTab({
+  message,
+  icon: Icon = User,
+}: {
+  message: string;
+  icon?: React.ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
+      <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50">
+        <Icon size={18} className="text-slate-400" aria-hidden />
+      </div>
+      <p className="text-sm text-slate-500">{message}</p>
     </div>
   );
 }

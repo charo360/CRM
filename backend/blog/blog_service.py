@@ -12,8 +12,18 @@ import logging
 from datetime import datetime
 from types import SimpleNamespace
 from urllib.parse import urlparse
-from slugify import slugify
 from typing import List
+
+try:
+    from slugify import slugify
+except ImportError:
+    import re
+
+    def slugify(value: str, **kwargs) -> str:
+        """Fallback when python-slugify is not installed (blog routes still mount)."""
+        s = re.sub(r"[^\w\s-]", "", (value or "").lower())
+        s = re.sub(r"[\s_-]+", "-", s).strip("-")
+        return s or "site"
 
 logger = logging.getLogger(__name__)
 
