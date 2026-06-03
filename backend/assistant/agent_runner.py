@@ -120,6 +120,43 @@ def _extract_text_from_steps(steps: List[Dict[str, Any]]) -> str:
     return ""
 
 
+def _summarize_last_step(last_step: Dict[str, Any]) -> str:
+    """Honest fallback summary when the LLM didn't emit a final reply but at
+    least one tool ran successfully. Tries to surface concrete counts/IDs from
+    the result instead of fabricating a generic apology."""
+    tool = last_step.get("tool") or "the action"
+    result = last_step.get("result") or {}
+    if not isinstance(result, dict):
+        return f"Done — `{tool}` completed."
+
+    # Specific shapes we recognise (extend as more tools surface this issue).
+    if "trashed_count" in result:
+        n = result.get("trashed_count") or 0
+        q = result.get("query")
+        if q:
+            return f"Done — moved **{n}** thread(s) matching `{q}` to Trash."
+        return f"Done — moved **{n}** thread(s) to Trash."
+    if result.get("status") == "sent" and result.get("message_id"):
+        return "Done — email sent."
+    if result.get("status") == "trashed":
+        return "Done — moved to Trash."
+    if result.get("status") == "created" and result.get("event_id"):
+        return "Done — calendar event created."
+    if result.get("status") == "updated" and result.get("event_id"):
+        return "Done — calendar event updated."
+    if result.get("status") == "deleted":
+        return "Done — deleted."
+    if result.get("status") == "draft_saved":
+        return "Done — draft saved."
+    if "count" in result and isinstance(result.get("count"), int):
+        return f"Done — found {result['count']} item(s)."
+
+    # Generic fall-through: name the tool and signal success.
+    if result.get("success") or result.get("status"):
+        return f"Done — `{tool}` completed."
+    return f"`{tool}` finished but produced no message to show."
+
+
 def _needs_continuation(steps: List[Dict[str, Any]], *, agent_id: str) -> bool:
     if not steps:
         return False
@@ -172,6 +209,77 @@ async def run_agent_stream(
             system = SYSTEM_PROMPT
         except Exception:
             system = "You are a helpful CRM assistant."
+
+    # ── Check Integration Connection ──────────────────────────────────────────
+    user_id = str(user.get("business_id") or user.get("_id") or "")
+    _AGENT_REQUIRED_INTEGRATIONS = {
+        "shopify": "shopify",
+        "shopify_orders": "shopify",
+        "shopify_products": "shopify",
+        "shopify_analytics": "shopify",
+        "shopify_customers": "shopify",
+        "stripe": "stripe",
+        "klaviyo": "klaviyo",
+        "mailchimp": "mailchimp",
+        "brevo": "brevo",
+        "slack": "slack",
+        "gmail": "gmail",
+        "google_calendar": "googlecalendar",
+        "google_sheets": "googlesheets",
+        "notion": "notion",
+        "microsoft": "outlook",
+        "telegram": "telegram",
+        "whatsapp": "whatsapp",
+        "messages": "whatsapp",
+        "broadcasts": "whatsapp",
+        "nps": "whatsapp",
+        "payments": "stripe",
+        "invoices": "stripe",
+    }
+    integration_toolkit = _AGENT_REQUIRED_INTEGRATIONS.get(agent_id)
+    integration_connected = True
+    if integration_toolkit and user_id:
+        try:
+            if integration_toolkit == "whatsapp":
+                from whatsapp_service import get_whatsapp_service
+                wa = get_whatsapp_service(db)
+                status = await wa.get_instance_status(user_id)
+                integration_connected = bool(status.get("connected"))
+            elif integration_toolkit == "telegram":
+                tg = await db.telegram_connections.find_one({"user_id": user_id})
+                integration_connected = bool(tg)
+            else:
+                import composio_service
+                # Ensure DB is set on composio_service
+                if db:
+                    composio_service.set_db(db)
+                status = await composio_service.get_connection_status(user_id, integration_toolkit)
+                integration_connected = status.get("connected", False)
+        except Exception as exc:
+            logger.warning("[agent_runner] check connection status failed for agent_id=%s integration=%s: %s", agent_id, integration_toolkit, exc)
+
+    if integration_toolkit and not integration_connected:
+        logger.info("[agent_runner] integration %s is NOT connected for agent %s", integration_toolkit, agent_id)
+        notice = (
+            f"\n\n---\n"
+            f"⚠️ CRITICAL SYSTEM NOTICE:\n"
+            f"The required integration '{integration_toolkit}' is NOT connected for this user.\n"
+            f"Do NOT attempt to run any tools that interact with {integration_toolkit} (except shopify_partner_create_store if you are Shopify-related).\n"
+            f"If you attempt to call them, they will fail and raise a connection error.\n"
+            f"Instead, you MUST immediately inform the user that their {integration_toolkit} integration is not connected yet, "
+            f"and guide them to connect it. "
+        )
+        if integration_toolkit == "shopify":
+            notice += (
+                f"You have the 'shopify_partner_create_store' tool. Ask the user if they would like to create a new "
+                f"development store now using 'shopify_partner_create_store', or help them connect their existing store. "
+                f"Explain that Zilo can link it instantly once connected."
+            )
+        else:
+            notice += (
+                f"Guide the user to the Integrations page in the dashboard to connect their {integration_toolkit} account."
+            )
+        system += notice
 
     allowed = cfg.get("allowed_tools")
     tool_specs = (
@@ -382,14 +490,21 @@ async def run_agent_stream(
                 logger.warning("[agent_runner] document auto-plan failed: %s", exc)
     if not result_text:
         if steps:
-            last_result = steps[-1].get("result") or {}
+            last_step = steps[-1]
+            last_result = last_step.get("result") or {}
             if isinstance(last_result, dict) and last_result.get("error"):
                 result_text = f"I ran into an issue: {last_result['error']}"
-            else:
+            elif agent_id == "document":
+                # Document-agent-specific recovery: it really might be mid-draft.
                 result_text = (
                     "I pulled your business data but didn't finish the document yet. "
                     "Say **continue** and I'll draft and export it now."
                 )
+            else:
+                # Generic fallback for other agents: don't fabricate a
+                # document-related message. Summarise the last tool's result
+                # honestly so the user knows what actually happened.
+                result_text = _summarize_last_step(last_step)
         else:
             result_text = "I couldn't complete that request — please try again or rephrase."
 

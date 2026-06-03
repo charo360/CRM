@@ -124,6 +124,7 @@ class EmailContactClassifier:
 
     def __init__(self, db: Any):
         self.db = db
+        self.last_quota_error_at = None
         raw_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
         self.api_key = raw_key.replace("\r", "").replace("\n", "").replace(" ", "")
         if self.api_key and self.api_key != "your_openai_api_key_here":
@@ -136,6 +137,18 @@ class EmailContactClassifier:
         else:
             self.client = None
             self.has_ai = False
+
+    @property
+    def is_ai_available(self) -> bool:
+        if not self.has_ai or not self.client:
+            return False
+        if self.last_quota_error_at:
+            from datetime import timedelta
+            if datetime.now(timezone.utc) - self.last_quota_error_at < timedelta(minutes=15):
+                return False
+            else:
+                self.last_quota_error_at = None
+        return True
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -183,6 +196,10 @@ class EmailContactClassifier:
                         created += 1
                     elif contact_result == "updated":
                         updated += 1
+
+                    # Trigger reply draft generation for new or updated Customer/Partner/Supplier contacts
+                    if contact_result in ("created", "updated") and result.get("type") in ("customer", "partner", "supplier"):
+                        await self.generate_and_save_reply_draft(user_id, sender_email, messages)
 
                 # Mark all messages from this sender as classified
                 msg_ids = [m["_id"] for m in messages]
@@ -251,7 +268,7 @@ class EmailContactClassifier:
             return kw_result
 
         # Step 3: AI fallback if available and enough content
-        if self.has_ai and len(combined_text) > 100:
+        if self.is_ai_available and len(combined_text) > 100:
             biz_context = await self._get_business_context(user_id)
             ai_result = await self._ai_classify(
                 sender_email, messages, subjects, biz_context
@@ -400,6 +417,10 @@ SUBTYPE: For investor (Angel/VC/PE/Family Office/Other), for partner (Strategic/
 
         except Exception as e:
             logger.error("[email_classifier] AI classification failed: %s", e)
+            err_msg = str(e).lower()
+            if "insufficient_quota" in err_msg or "quota" in err_msg or "429" in err_msg:
+                logger.warning("[email_classifier] OpenAI quota exceeded. Disabling AI classification fallback for 15 minutes.")
+                self.last_quota_error_at = datetime.now(timezone.utc)
             return None
 
     def _parse_ai_response(self, text: str) -> Optional[Dict[str, Any]]:
@@ -588,6 +609,118 @@ SUBTYPE: For investor (Angel/VC/PE/Family Office/Other), for partner (Strategic/
         )
 
     # ── Bulk operations ───────────────────────────────────────────────────────
+
+    async def generate_and_save_reply_draft(
+        self,
+        user_id: str,
+        sender_email: str,
+        messages: List[Dict],
+    ) -> None:
+        """Generate an AI draft reply and save it to Gmail/Outlook."""
+        if not self.is_ai_available or not self.client:
+            return
+
+        # Ensure last message is incoming and has not been reply_drafted
+        latest_incoming = None
+        for msg in reversed(messages):
+            if not msg.get("is_outgoing"):
+                latest_incoming = msg
+                break
+
+        if not latest_incoming:
+            return
+
+        # Check if already reply_drafted
+        if latest_incoming.get("reply_drafted"):
+            return
+
+        thread_id = latest_incoming.get("thread_id")
+        provider = latest_incoming.get("provider", "gmail")
+
+        try:
+            biz_context = await self._get_business_context(user_id)
+            
+            # Format transcript
+            transcript = ""
+            for m in messages[-10:]:
+                role = "US" if m.get("is_outgoing") else "CUSTOMER"
+                body = m.get("body_clean") or m.get("body_raw") or ""
+                transcript += f"[{role}] {body[:300]}\n"
+
+            prompt = f"""You are a helpful CRM AI assistant drafting an email response on behalf of the business owner.
+
+ABOUT THE BUSINESS:
+{biz_context}
+
+EMAIL THREAD HISTORY:
+{transcript}
+
+Task: Write a professional, concise, and helpful email reply to the customer's last email.
+Rules:
+- Respond as the business owner or the business team
+- Keep it natural, friendly, and brief (1-3 paragraphs max)
+- Do NOT output MIME headers, subject lines, greeting templates, or wrapper text
+- Return ONLY the plain text email body content to be sent to the customer
+"""
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=500,
+            )
+            draft_reply = response.choices[0].message.content.strip()
+            if not draft_reply:
+                return
+
+            subject = latest_incoming.get("subject", "Re: inquiry")
+            if not subject.lower().startswith("re:"):
+                subject = "Re: " + subject
+
+            from composio_service import composio_proxy
+
+            if provider == "gmail":
+                # Build raw MIME message
+                import base64
+                from email.mime.multipart import MIMEMultipart
+                from email.mime.text import MIMEText
+                
+                msg = MIMEMultipart("alternative")
+                msg["To"] = sender_email
+                msg["Subject"] = subject
+                msg.attach(MIMEText(draft_reply, "plain", "utf-8"))
+                raw_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+                await composio_proxy(
+                    user_id, "gmail", "POST",
+                    "gmail/v1/users/me/drafts",
+                    json={"message": {"raw": raw_msg, "threadId": thread_id}}
+                )
+                logger.info("[email_classifier] Created Gmail draft reply for thread %s", thread_id)
+            else:
+                # Outlook / Microsoft
+                payload = {
+                    "subject": subject,
+                    "body": {"contentType": "Text", "content": draft_reply},
+                    "toRecipients": [{"emailAddress": {"address": sender_email}}],
+                    "conversationId": thread_id
+                }
+                await composio_proxy(
+                    user_id, "outlook", "POST",
+                    "v1.0/me/messages",
+                    json=payload
+                )
+                logger.info("[email_classifier] Created Outlook draft reply for conversation %s", thread_id)
+
+            # Mark message as reply_drafted in DB
+            msg_id = latest_incoming.get("id") or latest_incoming.get("_id")
+            await self.db.email_messages.update_one(
+                {"_id": msg_id},
+                {"$set": {"reply_drafted": True}}
+            )
+
+        except Exception as e:
+            logger.warning("[email_classifier] Failed to generate/save reply draft: %s", e)
 
     async def reclassify_all(self, user_id: str) -> Dict[str, Any]:
         """

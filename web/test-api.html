@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Connection Test</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .test-box {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .status {
+      padding: 10px;
+      border-radius: 4px;
+      margin: 10px 0;
+      font-weight: 600;
+    }
+    .success { background: #d1fae5; color: #065f46; }
+    .error { background: #fee2e2; color: #991b1b; }
+    .info { background: #dbeafe; color: #1e40af; }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    button:hover { background: #1d4ed8; }
+    pre {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 AI Scout API Connection Test</h1>
+  
+  <div class="test-box">
+    <h3>Test 1: Backend Health Check</h3>
+    <button onclick="testHealth()">Test Backend Health</button>
+    <div id="health-result"></div>
+  </div>
+
+  <div class="test-box">
+    <h3>Test 2: API Endpoint (with auth)</h3>
+    <button onclick="testAPI()">Test Opportunities API</button>
+    <div id="api-result"></div>
+  </div>
+
+  <div class="test-box">
+    <h3>Test 3: Check Authentication</h3>
+    <button onclick="checkAuth()">Check Auth Token</button>
+    <div id="auth-result"></div>
+  </div>
+
+  <div class="test-box">
+    <h3>Current Page Info</h3>
+    <div class="status info">
+      <strong>Page URL:</strong> <span id="page-url"></span><br>
+      <strong>Protocol:</strong> <span id="protocol"></span><br>
+      <strong>API Base:</strong> http://127.0.0.1:8000/api
+    </div>
+  </div>
+
+  <script>
+    // Display page info
+    document.getElementById('page-url').textContent = window.location.href;
+    document.getElementById('protocol').textContent = window.location.protocol;
+
+    async function testHealth() {
+      const result = document.getElementById('health-result');
+      result.innerHTML = '<div class="status info">Testing...</div>';
+      
+      try {
+        const response = await fetch('http://127.0.0.1:8000/health');
+        const data = await response.json();
+        
+        result.innerHTML = `
+          <div class="status success">✅ Backend is running!</div>
+          <pre>${JSON.stringify(data, null, 2)}</pre>
+        `;
+      } catch (error) {
+        result.innerHTML = `
+          <div class="status error">❌ Backend connection failed</div>
+          <pre>${error.message}</pre>
+          <p><strong>Possible issues:</strong></p>
+          <ul>
+            <li>Backend is not running (start with: python server.py)</li>
+            <li>Backend is running on a different port</li>
+            <li>CORS is blocking the request</li>
+          </ul>
+        `;
+      }
+    }
+
+    async function testAPI() {
+      const result = document.getElementById('api-result');
+      result.innerHTML = '<div class="status info">Testing...</div>';
+      
+      const token = localStorage.getItem('token') || localStorage.getItem('access_token');
+      
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/action-mode/opportunities', {
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        result.innerHTML = `
+          <div class="status success">✅ API is working!</div>
+          <p><strong>Found ${data.opportunities?.length || 0} opportunities</strong></p>
+          <pre>${JSON.stringify(data, null, 2).substring(0, 500)}...</pre>
+        `;
+      } catch (error) {
+        result.innerHTML = `
+          <div class="status error">❌ API request failed</div>
+          <pre>${error.message}</pre>
+          <p><strong>Possible issues:</strong></p>
+          <ul>
+            <li>Not authenticated (no valid token)</li>
+            <li>API endpoint doesn't exist</li>
+            <li>CORS headers not configured</li>
+            <li>Backend error</li>
+          </ul>
+        `;
+      }
+    }
+
+    function checkAuth() {
+      const result = document.getElementById('auth-result');
+      const token = localStorage.getItem('token') || localStorage.getItem('access_token');
+      
+      if (token) {
+        result.innerHTML = `
+          <div class="status success">✅ Auth token found</div>
+          <p><strong>Token (first 50 chars):</strong></p>
+          <pre>${token.substring(0, 50)}...</pre>
+          <p><strong>Token length:</strong> ${token.length} characters</p>
+        `;
+      } else {
+        result.innerHTML = `
+          <div class="status error">❌ No auth token found</div>
+          <p><strong>You need to log in first!</strong></p>
+          <ol>
+            <li>Go to your main app: <a href="http://localhost:3000" target="_blank">http://localhost:3000</a></li>
+            <li>Log in with your credentials</li>
+            <li>Come back to this page and test again</li>
+          </ol>
+          <p><strong>Or manually set a token:</strong></p>
+          <input type="text" id="manual-token" placeholder="Paste token here" style="width: 100%; padding: 8px; margin: 10px 0;">
+          <button onclick="setToken()">Set Token</button>
+        `;
+      }
+    }
+
+    function setToken() {
+      const token = document.getElementById('manual-token').value;
+      if (token) {
+        localStorage.setItem('token', token);
+        checkAuth();
+      }
+    }
+
+    // Auto-run tests on load
+    window.addEventListener('load', () => {
+      if (window.location.protocol !== 'file:') {
+        testHealth();
+        checkAuth();
+      } else {
+        document.body.innerHTML = `
+          <div class="test-box">
+            <div class="status error">
+              <h2>⚠️ Wrong Protocol Detected</h2>
+              <p>You're opening this file directly (file:// protocol).</p>
+              <p><strong>You need to use a web server!</strong></p>
+              <h3>Steps:</h3>
+              <ol>
+                <li>Open PowerShell in the web folder</li>
+                <li>Run: <code>python -m http.server 8080</code></li>
+                <li>Open: <a href="http://localhost:8080/test-api.html">http://localhost:8080/test-api.html</a></li>
+              </ol>
+            </div>
+          </div>
+        `;
+      }
+    });
+  </script>
+</body>
+</html>

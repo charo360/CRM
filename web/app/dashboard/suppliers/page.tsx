@@ -439,27 +439,41 @@ export default function SuppliersPage() {
 
   function renderStars(rating: number, onPick?: (r: number) => void) {
     return (
-      <div className="flex items-center gap-0.5">
-        {[1, 2, 3, 4, 5].map((star) => (
-          <button
-            key={star}
-            type="button"
-            disabled={!onPick}
-            onClick={() => onPick?.(star)}
-            className={cn(
-              "p-0.5 rounded transition-colors",
-              onPick && "hover:bg-amber-50 cursor-pointer",
-              !onPick && "cursor-default"
-            )}
-          >
+      <div
+        className="flex items-center gap-0.5"
+        role={onPick ? undefined : "img"}
+        aria-label={onPick ? undefined : `${rating} out of 5 stars`}
+        onClick={onPick ? (e) => e.stopPropagation() : undefined}
+      >
+        {[1, 2, 3, 4, 5].map((star) => {
+          const filled = star <= rating;
+          const icon = (
             <Star
               size={18}
-              className={cn(
-                star <= rating ? "text-amber-400 fill-amber-400" : "text-slate-300"
-              )}
+              className={cn(filled ? "text-amber-400 fill-amber-400" : "text-slate-300")}
             />
-          </button>
-        ))}
+          );
+
+          if (onPick) {
+            return (
+              <button
+                key={star}
+                type="button"
+                onClick={() => onPick(star)}
+                className="rounded p-0.5 transition-colors hover:bg-amber-50 cursor-pointer"
+                aria-label={`Rate ${star} out of 5`}
+              >
+                {icon}
+              </button>
+            );
+          }
+
+          return (
+            <span key={star} className="inline-flex rounded p-0.5">
+              {icon}
+            </span>
+          );
+        })}
       </div>
     );
   }

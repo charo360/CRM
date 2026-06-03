@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
 import json
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .documents import delete_document, list_for_conversation, store_upload
@@ -119,10 +119,15 @@ def _extract_workspace_updates(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def _mk_router(db, get_current_user):
     """Factory — binds db + auth dep into the router. Call this from server.py."""
+    router = APIRouter(prefix="/assistant", tags=["assistant"])
 
     async def _load_accessible_conv(conv_id: str, user) -> Dict[str, Any]:
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        from assistant.conversation_access import tenant_user_ids
+
+        row = await db.assistant_conversations.find_one({
+            "_id": conv_id,
+            "user_id": {"$in": tenant_user_ids(user)},
+        })
         if not row or not can_access_conversation_row(row, user):
             raise HTTPException(404, "Conversation not found")
         return row
@@ -157,7 +162,8 @@ def _mk_router(db, get_current_user):
         try:
             recent_convs, owner_prefs_raw, biz_settings, biz_knowledge = await _asyncio.gather(
                 db.assistant_conversations.find(
-                    conversation_list_filter(user)
+                    conversation_list_filter(user),
+                    {"title": 1, "agent": 1}
                 ).sort("updated_at", -1).to_list(5),
                 _get_all_owner_prefs_safe(user_id),
                 db.users.find_one({"_id": user_id}, {"settings": 1}),
@@ -273,14 +279,24 @@ def _mk_router(db, get_current_user):
 
     @router.get("/conversations")
     async def list_conversations(user=Depends(get_current_user)):
+        projection = {
+            "title": 1,
+            "updated_at": 1,
+            "agent": 1,
+            "visibility": 1,
+            "shared_with": 1,
+            "created_by": 1,
+            "message_count": {"$size": {"$ifNull": ["$messages", []]}}
+        }
         rows = await db.assistant_conversations.find(
-            conversation_list_filter(user)
+            conversation_list_filter(user),
+            projection
         ).sort("updated_at", -1).to_list(50)
         return [{
             "id": r["_id"],
             "title": r.get("title") or "New chat",
             "updated_at": r.get("updated_at"),
-            "message_count": len(r.get("messages") or []),
+            "message_count": r.get("message_count", 0),
             "agent": r.get("agent") or "general",
             **serialize_conversation_meta(r),
         } for r in rows]
@@ -299,11 +315,18 @@ def _mk_router(db, get_current_user):
 
     @router.delete("/conversations/{conv_id}")
     async def delete_conversation(conv_id: str, user=Depends(get_current_user)):
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
+        from assistant.conversation_access import tenant_user_ids
+
+        row = await db.assistant_conversations.find_one({
+            "_id": conv_id,
+            "user_id": {"$in": tenant_user_ids(user)},
+        }, {"messages": 0})
         if not row or not can_access_conversation_row(row, user):
             raise HTTPException(404, "Conversation not found")
-        await db.assistant_conversations.delete_one({"_id": conv_id, "user_id": bid})
+        await db.assistant_conversations.delete_one({
+            "_id": conv_id,
+            "user_id": row.get("user_id"),
+        })
         return {"status": "deleted"}
 
     @router.post("/chat")
@@ -973,10 +996,7 @@ def _mk_router(db, get_current_user):
             raise HTTPException(400, "visibility must be 'team' or 'private'")
         if title is None and visibility is None:
             raise HTTPException(400, "Provide title and/or visibility")
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
-        if not row or not can_access_conversation_row(row, user):
-            raise HTTPException(404, "Conversation not found")
+        row = await _load_accessible_conv(conv_id, user)
         updates: Dict[str, Any] = {"updated_at": datetime.utcnow()}
         if title is not None:
             updates["title"] = title
@@ -985,7 +1005,7 @@ def _mk_router(db, get_current_user):
             if visibility == "team":
                 updates["shared_with"] = []
         res = await db.assistant_conversations.update_one(
-            {"_id": conv_id, "user_id": bid},
+            {"_id": conv_id, "user_id": row.get("user_id")},
             {"$set": updates},
         )
         if res.matched_count == 0:
@@ -999,17 +1019,14 @@ def _mk_router(db, get_current_user):
         raw_ids = body.get("user_ids") or []
         if not isinstance(raw_ids, list) or not raw_ids:
             raise HTTPException(400, "user_ids array is required")
-        bid = tenant_user_id(user)
-        row = await db.assistant_conversations.find_one({"_id": conv_id, "user_id": bid})
-        if not row or not can_access_conversation_row(row, user):
-            raise HTTPException(404, "Conversation not found")
+        row = await _load_accessible_conv(conv_id, user)
         creator = str(row.get("created_by") or user["_id"])
         shared = {creator, str(user["_id"])}
         for x in raw_ids:
             if x:
                 shared.add(str(x))
         await db.assistant_conversations.update_one(
-            {"_id": conv_id, "user_id": bid},
+            {"_id": conv_id, "user_id": row.get("user_id")},
             {
                 "$set": {
                     "visibility": "private",
@@ -1183,6 +1200,50 @@ def _mk_router(db, get_current_user):
             "created_at": r.get("created_at"),
         } for r in rows]
 
+    @router.get("/admin/audit/export")
+    async def audit_export(
+        start: Optional[str] = Query(None),
+        end: Optional[str] = Query(None),
+        event_type: Optional[str] = Query(None),
+        limit: int = Query(500),
+        user=Depends(get_current_user)
+    ):
+        """Export audit log records as NDJSON."""
+        user_id = user.get("business_id", user["_id"])
+        query: Dict[str, Any] = {"user_id": user_id}
+        
+        if start or end:
+            created_query: Dict[str, Any] = {}
+            if start:
+                try:
+                    created_query["$gte"] = datetime.fromisoformat(start)
+                except ValueError:
+                    raise HTTPException(400, "start must be a valid ISO date string")
+            if end:
+                try:
+                    created_query["$lte"] = datetime.fromisoformat(end)
+                except ValueError:
+                    raise HTTPException(400, "end must be a valid ISO date string")
+            query["created_at"] = created_query
+            
+        if event_type:
+            query["event_type"] = event_type
+            
+        limit_val = max(1, min(int(limit or 500), 5000))
+        
+        async def _generate_ndjson():
+            cursor = db.assistant_audit_log.find(query).sort("created_at", 1).limit(limit_val)
+            async for doc in cursor:
+                doc["_id"] = str(doc["_id"])
+                if isinstance(doc.get("created_at"), datetime):
+                    doc["created_at"] = doc["created_at"].isoformat()
+                yield json.dumps(doc, default=str) + "\n"
+                
+        return StreamingResponse(
+            _generate_ndjson(),
+            media_type="application/x-ndjson",
+        )
+
     @router.post("/ai-draft")
     async def ai_draft(req: Request, user=Depends(get_current_user)):
         """Lightweight single-turn LLM call for email drafts, classification, and summaries.
@@ -1233,6 +1294,34 @@ def _mk_router(db, get_current_user):
             "top_product": stats.get("top_product"),
             "total_revenue_window": stats.get("total_revenue_window"),
         }
+
+    @router.get("/usage")
+    async def assistant_usage(user=Depends(get_current_user)):
+        import os
+        from redis_client import get_redis
+        from assistant.quota_service import get_usage_summary
+        
+        redis = await get_redis()
+        business_id = user.get("business_id", user["_id"])
+        plan = user.get("plan", "free")
+        
+        # Determine provider based on default model
+        model = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-v4-pro")
+        provider = "deepseek"
+        if "openai" in model:
+            provider = "openai"
+        elif "anthropic" in model or "claude" in model:
+            provider = "anthropic"
+        elif "grok" in model:
+            provider = "grok"
+            
+        summary = await get_usage_summary(
+            redis=redis,
+            business_id=business_id,
+            plan=plan,
+            model_provider=provider,
+        )
+        return summary
 
     return router
 

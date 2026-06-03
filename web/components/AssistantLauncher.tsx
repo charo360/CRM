@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { X } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import AssistantChat from "./AssistantChat";
 
@@ -15,15 +14,27 @@ export default function AssistantLauncher() {
 
   useEffect(() => {
     try {
-      setConvId(localStorage.getItem(LS_KEY));
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw && raw !== "null" && raw !== "undefined" && raw.length > 8) {
+        setConvId(raw);
+      }
     } catch {}
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
 
   // Hide on the dedicated page to avoid two chats on screen
   if (pathname?.startsWith("/dashboard/assistant")) return null;
   if (pathname === "/login" || pathname === "/") return null;
   const liftOnInbox = pathname?.startsWith("/dashboard/social-inbox");
-  const launcherPosClass = liftOnInbox ? "bottom-28 right-5" : "bottom-5 right-5";
+  const launcherPosClass = liftOnInbox ? "bottom-28 right-4 sm:right-5" : "bottom-4 right-4 sm:bottom-5 sm:right-5";
 
   return (
     <>
@@ -38,20 +49,17 @@ export default function AssistantLauncher() {
         </button>
       )}
       {open && (
-        <div className={`fixed ${launcherPosClass} z-40 flex h-[560px] w-[400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl`}>
-          <div className="flex items-center justify-between bg-gradient-to-r from-brand-dark to-brand px-3 py-2 text-white">
-            <div className="flex items-center gap-1">
-              <ZiloLogo size={28} className="shrink-0 rounded-md bg-white/15 p-0.5" />
-              <div className="text-sm font-semibold">Zilo Chat</div>
-            </div>
-            <button type="button" onClick={() => setOpen(false)} aria-label="Close">
-              <X size={16} />
-            </button>
-          </div>
-          <div className="flex-1 min-h-0">
+        <div
+          className={`fixed z-50 flex flex-col overflow-hidden bg-white
+            inset-0
+            sm:inset-x-auto sm:bottom-5 sm:right-5 sm:top-auto sm:h-[min(560px,calc(100dvh-5.5rem))] sm:w-[400px] sm:rounded-2xl sm:border sm:border-slate-200 sm:shadow-2xl
+            ${liftOnInbox ? "sm:bottom-28" : ""}`}
+        >
+          <div className="flex min-h-0 flex-1 flex-col">
             <AssistantChat
               compact
               conversationId={convId}
+              onClose={() => setOpen(false)}
               onConversationChange={(id) => {
                 setConvId(id);
                 try {

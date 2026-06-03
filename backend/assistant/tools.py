@@ -88,7 +88,9 @@ async def run_tool(name: str, ctx: ToolContext, args: Dict[str, Any]) -> Any:
     if name not in REGISTRY:
         return {"error": f"Unknown tool: {name}"}
     try:
-        res = await REGISTRY[name]["impl"](ctx, args or {})
+        from assistant.tool_arg_validator import validate_tool_args
+        validated_args = validate_tool_args(name, args or {})
+        res = await REGISTRY[name]["impl"](ctx, validated_args)
         return res
     except Exception as e:
         logger.exception(f"[assistant.tool] {name} failed")
@@ -114,6 +116,47 @@ def _serialize(doc: Dict[str, Any]) -> Dict[str, Any]:
         else:
             out[k] = _s(v)
     return out
+
+
+# ── Tool-result cache helper ─────────────────────────────────────────────────
+import hashlib as _hashlib
+
+
+async def _tool_cached(
+    fn,
+    ctx: "ToolContext",
+    args: Dict[str, Any],
+    *,
+    ttl: int,
+    key_suffix: str = "",
+) -> Any:
+    """Transparent TTL-cache wrapper for read-only tool functions.
+
+    Key: tenant:{business_id}:tool_cache:{fn.__name__}:{args_hash}{key_suffix}
+    Falls back silently to live execution when Redis is unavailable.
+    """
+    try:
+        from redis_client import cache_get, cache_set
+        import json as _json
+
+        args_hash = _hashlib.md5(  # noqa: S324 — not a security context
+            _json.dumps(args, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        cache_key = f"tenant:{ctx.business_id}:tool_cache:{fn.__name__}:{args_hash}{key_suffix}"
+
+        cached = await cache_get(cache_key)
+        if cached is not None:
+            logger.debug("[tool_cache] HIT %s user=%s", fn.__name__, ctx.business_id)
+            return cached
+
+        result = await fn(ctx, args)
+        await cache_set(cache_key, result, ttl=ttl)
+        logger.debug("[tool_cache] SET %s user=%s ttl=%ds", fn.__name__, ctx.business_id, ttl)
+        return result
+    except Exception as exc:
+        # Cache errors must never break tools — fall through to live call
+        logger.warning("[tool_cache] bypass for %s: %s", getattr(fn, '__name__', '?'), exc)
+        return await fn(ctx, args)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -208,7 +251,14 @@ async def list_orders(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def list_products(ctx: ToolContext, args: Dict[str, Any]):
-    import os as _os
+    # Cache per-user, per-search term — 300s TTL (product catalog changes rarely)
+    search_suffix = f":{(args.get('search') or '').strip()[:40]}"
+    return await _tool_cached(
+        _list_products_impl, ctx, args, ttl=300, key_suffix=search_suffix
+    )
+
+
+async def _list_products_impl(ctx: ToolContext, args: Dict[str, Any]):
 
     q: Dict[str, Any] = {"user_id": ctx.business_id}
     if s := (args.get("search") or "").strip():
@@ -456,12 +506,400 @@ async def list_meeting_notes(ctx: ToolContext, args: Dict[str, Any]):
         return {"error": str(e)}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# INNOVATION 1 — Autonomous Notebook Synthesis (agent-driven memory write-back)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="save_notebook_observation",
+    description=(
+        "Write a permanent observation about a customer, a business pattern, or a strategic lane "
+        "into Zilo's Rex Notebook (persistent cross-session memory). "
+        "Use this when you discover something significant that should inform future decisions: "
+        "e.g. a customer's buying behaviour, a recurring pattern in the data, or a category where "
+        "you should stay hands-off. "
+        "Bucket choices: 'people' (requires a subject name), 'patterns' (no subject needed), "
+        "'lanes' (subject = category name, e.g. 'payments'). "
+        "Write in terse, evidence-based prose — no bullet points, no field labels, no 'I' or 'you'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "bucket": {
+                "type": "string",
+                "enum": ["people", "patterns", "lanes"],
+                "description": "Which memory bucket: 'people', 'patterns', or 'lanes'.",
+            },
+            "subject": {
+                "type": "string",
+                "description": (
+                    "Required for 'people' (use customer name, e.g. 'Patel') "
+                    "and 'lanes' (use category, e.g. 'payments'). "
+                    "Omit for 'patterns'."
+                ),
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "The observation in Rex's voice: terse, direct, third-person, evidence-based. "
+                    "E.g. 'Patel — responds to directness, not warmth. Two warm approaches failed.' "
+                    "or 'Reply rates drop 60% on Tuesdays across all segments.'"
+                ),
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional category tags, e.g. ['outreach', 'pricing'].",
+            },
+        },
+        "required": ["bucket", "text"],
+    },
+)
+async def save_notebook_observation(ctx: ToolContext, args: Dict[str, Any]):
+    bucket_str = (args.get("bucket") or "").strip().lower()
+    subject = (args.get("subject") or "").strip() or None
+    text = (args.get("text") or "").strip()
+    tags = tuple(str(t).strip() for t in (args.get("tags") or []) if t)
+
+    if not text:
+        return {"error": "text is required"}
+    if bucket_str not in ("people", "patterns", "lanes"):
+        return {"error": "bucket must be 'people', 'patterns', or 'lanes'"}
+
+    try:
+        from rex.memory.buckets import Bucket
+        from rex.memory.notebook import NotebookVoiceError
+        from rex.persistence.session import ZiloSessionStore
+
+        bucket = Bucket(bucket_str)
+        store = ZiloSessionStore(ctx.db)
+        orch = await store.load(ctx.user_id, business_id=ctx.business_id)
+        entry = orch.notebook.add(
+            bucket=bucket,
+            text=text,
+            subject=subject,
+            tags=tags,
+            strict_voice=True,
+        )
+        await store.save(ctx.user_id, business_id=ctx.business_id, orch=orch)
+        return {
+            "ok": True,
+            "entry_id": entry.id,
+            "bucket": bucket.value,
+            "subject": entry.subject,
+            "text": entry.text,
+        }
+    except NotebookVoiceError as ve:
+        return {
+            "error": "Voice validation failed — rewrite in terse, evidence-based third-person prose.",
+            "detail": str(ve),
+        }
+    except Exception as e:
+        logger.warning("[save_notebook_observation] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
+    name="search_notebook",
+    description=(
+        "Search Zilo's Rex Notebook for relevant observations about a customer, pattern, or strategic lane. "
+        "Use before customer interactions, before drafting proposals, or when you need to recall "
+        "prior decisions. Returns the most relevant notebook entries ranked by subject match, "
+        "tag match, and keyword overlap."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "subject": {
+                "type": "string",
+                "description": "Customer or lane name to look up, e.g. 'Patel' or 'payments'.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Natural-language keyword search across all entries.",
+            },
+            "bucket": {
+                "type": "string",
+                "enum": ["people", "patterns", "lanes"],
+                "description": "Optionally restrict to one bucket.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 5,
+                "minimum": 1,
+                "maximum": 20,
+            },
+        },
+    },
+)
+async def search_notebook(ctx: ToolContext, args: Dict[str, Any]):
+    subject = (args.get("subject") or "").strip() or None
+    query = (args.get("query") or "").strip() or None
+    bucket_str = (args.get("bucket") or "").strip().lower() or None
+    limit = min(int(args.get("limit") or 5), 20)
+
+    try:
+        from rex.memory.buckets import Bucket
+        from rex.memory.notebook import find_relevant
+        from rex.persistence.session import ZiloSessionStore
+
+        store = ZiloSessionStore(ctx.db)
+        orch = await store.load(ctx.user_id, business_id=ctx.business_id)
+
+        # If bucket filter, also narrow pool before calling find_relevant
+        if bucket_str:
+            bucket = Bucket(bucket_str)
+            from rex.memory.notebook import Notebook
+            from rex.memory.store import InMemoryNotebookStore
+            subset = orch.notebook.by_bucket(bucket)
+            filtered_nb = Notebook(store=InMemoryNotebookStore(subset))
+        else:
+            filtered_nb = orch.notebook
+
+        results = find_relevant(
+            filtered_nb,
+            subject=subject,
+            query=query,
+            limit=limit,
+        )
+        if not results:
+            return {"count": 0, "entries": [], "message": "No matching notebook entries found."}
+
+        return {
+            "count": len(results),
+            "entries": [
+                {
+                    "id": e.id,
+                    "bucket": e.bucket.value,
+                    "subject": e.subject,
+                    "text": e.text,
+                    "tags": list(e.tags),
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+                for e in results
+            ],
+        }
+    except Exception as e:
+        logger.warning("[search_notebook] %s", e)
+        return {"error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INNOVATION 3 — Unified Knowledge Retrieval (notebook + smart notes in one call)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="retrieve_knowledge",
+    description=(
+        "Unified knowledge retrieval — searches BOTH the Rex Notebook (persistent agent memory) "
+        "AND the Smart Notes (AI-generated meeting transcripts, decisions, action items) in one call. "
+        "Use this as your first step when you need background context before advising the user: "
+        "client history, past decisions, agreed strategies, recurring patterns. "
+        "Returns results labelled by source: 'notebook' or 'smart_notes'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural-language query — what you want to know.",
+            },
+            "subject": {
+                "type": "string",
+                "description": "Optional: customer or topic name to prioritise in notebook search.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 8,
+                "minimum": 1,
+                "maximum": 20,
+                "description": "Max total results (notebook + smart notes combined).",
+            },
+        },
+        "required": ["query"],
+    },
+)
+async def retrieve_knowledge(ctx: ToolContext, args: Dict[str, Any]):
+    query = (args.get("query") or "").strip()
+    subject = (args.get("subject") or "").strip() or None
+    limit = min(int(args.get("limit") or 8), 20)
+
+    if not query:
+        return {"error": "query is required"}
+
+    half = max(limit // 2, 1)
+    results: List[Dict[str, Any]] = []
+
+    # Source 1: Rex Notebook
+    try:
+        from rex.memory.notebook import find_relevant
+        from rex.persistence.session import ZiloSessionStore
+
+        store = ZiloSessionStore(ctx.db)
+        orch = await store.load(ctx.user_id, business_id=ctx.business_id)
+        nb_hits = find_relevant(orch.notebook, subject=subject, query=query, limit=half)
+        for e in nb_hits:
+            results.append({
+                "source": "notebook",
+                "bucket": e.bucket.value,
+                "subject": e.subject,
+                "text": e.text,
+                "tags": list(e.tags),
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            })
+    except Exception as e:
+        logger.warning("[retrieve_knowledge] notebook lookup failed: %s", e)
+
+    # Source 2: Smart Notes (semantic vector search)
+    try:
+        from smart_notes.knowledge import search_knowledge
+        sn_hits = await search_knowledge(ctx.db, ctx.business_id, query, top_k=half)
+        for hit in sn_hits:
+            results.append({
+                "source": "smart_notes",
+                "title": hit.get("title", ""),
+                "date": hit.get("date", ""),
+                "text": hit.get("text", hit.get("summary", "")),
+                "attendees": hit.get("attendees", []),
+                "action_items": hit.get("action_items", []),
+                "score": hit.get("score"),
+            })
+    except Exception as e:
+        logger.warning("[retrieve_knowledge] smart_notes lookup failed: %s", e)
+
+    if not results:
+        return {
+            "query": query,
+            "count": 0,
+            "results": [],
+            "message": "No relevant knowledge found in notebook or meeting notes.",
+        }
+
+    return {"query": query, "count": len(results), "results": results}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INNOVATION 2 — Cross-Agent Shared Ledger (collaborative agent scratchpad)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@tool(
+    name="save_agent_hint",
+    description=(
+        "Post a short strategic hint to the shared agent scratchpad — a lightweight cross-agent ledger "
+        "that lets specialists leave observations for other agents. "
+        "Use this when you spot something that another agent should know: "
+        "e.g. 'Instagram Reels performing 3× better than static posts this month', "
+        "'Customer segment 25-34 converts best on weekend mornings', "
+        "'Stripe subscription churn spiked — 4 cancellations in 7 days'. "
+        "Category examples: 'social', 'payments', 'customers', 'inventory', 'marketing', 'operations'."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Topic area, e.g. 'social', 'payments', 'customers', 'inventory'.",
+            },
+            "hint": {
+                "type": "string",
+                "description": "Short, factual observation (1-2 sentences max). Evidence-based.",
+            },
+            "agent": {
+                "type": "string",
+                "description": "Which specialist is writing this hint, e.g. 'meta_ads', 'shopify', 'social_media'.",
+            },
+        },
+        "required": ["category", "hint"],
+    },
+)
+async def save_agent_hint(ctx: ToolContext, args: Dict[str, Any]):
+    category = (args.get("category") or "").strip().lower()
+    hint = (args.get("hint") or "").strip()
+    agent = (args.get("agent") or "zilo").strip().lower()
+
+    if not category or not hint:
+        return {"error": "category and hint are required"}
+    if len(hint) > 500:
+        return {"error": "hint must be ≤ 500 characters — keep it sharp"}
+
+    try:
+        doc = {
+            "user_id": ctx.business_id,
+            "category": category,
+            "hint": hint,
+            "agent": agent,
+            "created_at": datetime.utcnow(),
+        }
+        result = await ctx.db.agent_hints.insert_one(doc)
+        return {"ok": True, "hint_id": str(result.inserted_id), "category": category}
+    except Exception as e:
+        logger.warning("[save_agent_hint] %s", e)
+        return {"error": str(e)}
+
+
+@tool(
+    name="read_agent_hints",
+    description=(
+        "Read recent cross-agent hints from the shared scratchpad — observations other Zilo specialists "
+        "have logged about the business. Use before advising on strategy to check what other agents "
+        "have already spotted. Optionally filter by category."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Filter by topic, e.g. 'social', 'payments'. Omit to read all recent hints.",
+            },
+            "limit": {
+                "type": "integer",
+                "default": 10,
+                "minimum": 1,
+                "maximum": 30,
+            },
+        },
+    },
+)
+async def read_agent_hints(ctx: ToolContext, args: Dict[str, Any]):
+    category = (args.get("category") or "").strip().lower() or None
+    limit = min(int(args.get("limit") or 10), 30)
+
+    try:
+        query: Dict[str, Any] = {"user_id": ctx.business_id}
+        if category:
+            query["category"] = category
+        rows = await ctx.db.agent_hints.find(query).sort("created_at", -1).to_list(limit)
+        if not rows:
+            return {"count": 0, "hints": [], "message": "No agent hints found for this business yet."}
+        return {
+            "count": len(rows),
+            "hints": [
+                {
+                    "hint_id": str(r.get("_id", "")),
+                    "category": r.get("category", ""),
+                    "hint": r.get("hint", ""),
+                    "agent": r.get("agent", "zilo"),
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                }
+                for r in rows
+            ],
+        }
+    except Exception as e:
+        logger.warning("[read_agent_hints] %s", e)
+        return {"error": str(e)}
+
+
 @tool(
     name="get_analytics_summary",
     description="High-level business stats: customer count, sales today, revenue, active orders, bookings today.",
     parameters={"type": "object", "properties": {}},
 )
 async def get_analytics_summary(ctx: ToolContext, args: Dict[str, Any]):
+    # Cache the dashboard snapshot for 120 s — today's stats don't change per-second
+    return await _tool_cached(_get_analytics_summary_impl, ctx, args, ttl=120)
+
+
+async def _get_analytics_summary_impl(ctx: ToolContext, args: Dict[str, Any]):
     now = datetime.utcnow()
     start = datetime(now.year, now.month, now.day)
 
@@ -602,7 +1040,11 @@ async def create_followup(ctx: ToolContext, args: Dict[str, Any]):
     destructive=False,
 )
 async def get_owner_info(ctx: ToolContext, args: Dict[str, Any]):
-    from .owner_profile import build_owner_profile
+    # Owner profile (brand kit, settings) changes very rarely — 600 s TTL
+    return await _tool_cached(_get_owner_info_impl, ctx, args, ttl=600)
+
+
+async def _get_owner_info_impl(ctx: ToolContext, args: Dict[str, Any]):
 
     user = await ctx.db.users.find_one({"_id": ctx.business_id})
     if not user:
@@ -2503,6 +2945,178 @@ async def run_weekly_operator_digest(ctx: ToolContext, args: Dict[str, Any]):
 # ═════════════════════════════════════════════════════════════════════════════
 
 @tool(
+    name="shopify_partner_create_store",
+    description=(
+        "Create a new Shopify development store from scratch using the Shopify Partner API. "
+        "Returns the domain of the created store and a direct authorization link for the user to "
+        "install Zilo and connect it. The user will be the store owner."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["store_name", "email", "first_name"],
+        "properties": {
+            "store_name": {
+                "type": "string",
+                "description": "Desired subdomain name (e.g. 'my-awesome-shop'). Only lowercase letters, numbers, and hyphens are allowed."
+            },
+            "email": {
+                "type": "string",
+                "description": "Login/owner email for the new store."
+            },
+            "first_name": {
+                "type": "string",
+                "description": "First name of the store owner."
+            },
+            "last_name": {
+                "type": "string",
+                "description": "Optional last name of the store owner."
+            },
+            "country_code": {
+                "type": "string",
+                "default": "US",
+                "description": "Two-letter ISO country code (e.g. 'US', 'CA', 'GB')."
+            }
+        }
+    },
+    destructive=True,
+)
+async def shopify_partner_create_store(ctx: ToolContext, args: Dict[str, Any]):
+    import re as _re
+    from urllib.parse import urlencode
+
+    store_name   = str(args.get("store_name",   "")).strip().lower()
+    first_name   = str(args.get("first_name",   "")).strip()
+    last_name    = str(args.get("last_name",    "")).strip()
+    email        = str(args.get("email",        "")).strip()
+    country_code = str(args.get("country_code", "US")).strip().upper()
+
+    if not store_name or not first_name or not email:
+        return {"error": "store_name, first_name and email are required"}
+
+    # Sanitise store name — only lowercase letters, numbers, hyphens
+    store_name = _re.sub(r"[^a-z0-9-]", "-", store_name).strip("-")
+    if not store_name:
+        return {"error": "store_name must contain letters or numbers"}
+
+    partner_id     = os.environ.get("SHOPIFY_PARTNER_ID",           "").strip()
+    partner_token  = os.environ.get("SHOPIFY_PARTNER_ACCESS_TOKEN", "").strip()
+
+    if not partner_id:
+        return {
+            "error": (
+                "SHOPIFY_PARTNER_ID is not configured. "
+                "Add it to your .env (found in Partners Dashboard → Settings)."
+            )
+        }
+    if not partner_token:
+        return {
+            "error": (
+                "SHOPIFY_PARTNER_ACCESS_TOKEN is not configured. "
+                "Generate one at partners.shopify.com → Settings → Partner API clients → Create access token."
+            )
+        }
+
+    # ── Shopify Partners GraphQL API — create development store ──────────────
+    # Mutation: developmentStoreV2Create (Partners API 2024-10)
+    # Docs: https://shopify.dev/docs/api/partner/2024-10/mutations/developmentStoreV2Create
+    gql_mutation = """
+        mutation developmentStoreV2Create($input: DevelopmentStoreV2CreateInput!) {
+          developmentStoreV2Create(input: $input) {
+            store {
+              name
+              shopifyDomain
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+    """
+
+    gql_variables = {
+        "input": {
+            "name":        store_name,
+            "login":       email,
+            "firstName":   first_name,
+            "lastName":    last_name or "",
+            "countryCode": country_code,
+            "storeType":   "DEVELOPMENT",
+        }
+    }
+
+    # ── Shopify Affiliate Tracking Flow ──────────────────────────────────────
+    # Send user to your tracked Shopify Affiliate link so you earn a bounty
+    # when they create a store and upgrade.
+    affiliate_url = os.environ.get(
+        "SHOPIFY_AFFILIATE_LINK",
+        "https://shopify.pxf.io/c/7362062/1061744/13624"
+    ).strip()
+
+    # Build OAuth connect URL so the user can link their store in one click after creation
+    client_id     = os.environ.get("SHOPIFY_CLIENT_ID",     "").strip()
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+
+    domain     = f"{store_name}.myshopify.com"
+    auth_url   = ""
+    if client_id and client_secret:
+        from server import _shopify_state_encode, _SHOPIFY_SCOPES
+        api_url      = os.environ.get("NEXT_PUBLIC_API_URL", "").strip().rstrip("/")
+        redirect_uri = f"{api_url}/shopify/oauth/callback" if api_url else "http://127.0.0.1:8000/api/shopify/oauth/callback"
+        state        = _shopify_state_encode(ctx.business_id, client_secret)
+        params       = {
+            "client_id":    client_id,
+            "scope":        _SHOPIFY_SCOPES,
+            "redirect_uri": redirect_uri,
+            "state":        state,
+        }
+        auth_url = f"https://{domain}/admin/oauth/authorize?{urlencode(params)}"
+
+    # Log the referral intent so we can track which users followed through
+    try:
+        from datetime import datetime as _dt
+        await ctx.db.shopify_partner_referrals.insert_one({
+            "business_id":   ctx.business_id,
+            "store_name":    store_name,
+            "domain":        domain,
+            "email":         email,
+            "first_name":    first_name,
+            "last_name":     last_name,
+            "country_code":  country_code,
+            "status":        "pending",
+            "created_at":    _dt.utcnow(),
+        })
+    except Exception:
+        pass
+
+    connect_instructions = (
+        f"Once your store is ready, come back and say:\n"
+        f"> **\"Connect my store {domain}\"**\n\n"
+        f"Zilo will link it instantly."
+    ) if not auth_url else (
+        f"Once your store is ready, [click here to connect it to Zilo]({auth_url}) — takes 10 seconds."
+    )
+
+    return {
+        "status":                "guided",
+        "domain":                domain,
+        "name":                  store_name,
+        "partner_dashboard_url": affiliate_url,
+        "auth_url":              auth_url,
+        "message": (
+            f"Let's get your new Shopify store set up and connected to Zilo.\n\n"
+            f"Here's what to do:\n\n"
+            f"**Step 1 — Create your store** (2 minutes)\n"
+            f"[Click here to start your Shopify store]({affiliate_url}) → click **Start free trial** and follow the prompts.\n\n"
+            f"**Step 2 — Connect to Zilo** (10 seconds)\n"
+            f"{connect_instructions}\n\n"
+            f"Once connected, I can help you search dropshipping products, manage listings, and sync your inventory!"
+        ),
+    }
+
+
+
+@tool(
     name="list_shopify_orders",
     description=(
         "Fetch orders from the connected Shopify store. "
@@ -3982,6 +4596,132 @@ async def list_stripe_invoices(ctx: ToolContext, args: Dict[str, Any]):
             "description":   inv.get("description"),
         })
     return {"count": len(out), "invoices": out}
+
+
+@tool(
+    name="get_stripe_balance",
+    description="Get the current available and pending balance of the connected Stripe account. Requires Stripe to be connected.",
+    parameters={"type": "object", "properties": {}},
+)
+async def get_stripe_balance(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "GET", "/v1/balance")
+    except RuntimeError as e:
+        return {"error": str(e)}
+    available = data.get("available", [])
+    pending = data.get("pending", [])
+    out_available = [{"amount": round(a.get("amount", 0) / 100, 2), "currency": (a.get("currency") or "").upper()} for a in available]
+    out_pending = [{"amount": round(p.get("amount", 0) / 100, 2), "currency": (p.get("currency") or "").upper()} for p in pending]
+    return {"available": out_available, "pending": out_pending}
+
+
+@tool(
+    name="list_stripe_customers",
+    description="Fetch customers from the connected Stripe account. Can filter by customer email.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "email": {"type": "string", "description": "Filter by exact customer email address"},
+            "limit": {"type": "integer", "default": 20, "description": "Number of customers to return (1-100)"},
+        },
+    },
+)
+async def list_stripe_customers(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    limit = min(int(args.get("limit", 20)), 100)
+    email = (args.get("email") or "").strip()
+    qparams = {"limit": str(limit)}
+    if email:
+        qparams["email"] = email
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "GET", "/v1/customers", params=qparams)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    items = data.get("data", [])
+    out = []
+    for c in items:
+        out.append({
+            "id": c.get("id"),
+            "email": c.get("email"),
+            "name": c.get("name"),
+            "created": c.get("created"),
+            "description": c.get("description"),
+        })
+    return {"count": len(out), "customers": out}
+
+
+@tool(
+    name="list_stripe_subscriptions",
+    description="Fetch subscriptions from the connected Stripe account, filtered by status. Requires Stripe connection.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "default": "active", "description": "active | trialing | past_due | canceled | all"},
+            "limit": {"type": "integer", "default": 20, "description": "Number of subscriptions to return (1-100)"},
+        },
+    },
+)
+async def list_stripe_subscriptions(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    limit = min(int(args.get("limit", 20)), 100)
+    status = args.get("status", "active")
+    qparams = {"limit": str(limit)}
+    if status != "all":
+        qparams["status"] = status
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "GET", "/v1/subscriptions", params=qparams)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    items = data.get("data", [])
+    out = []
+    for s in items:
+        out.append({
+            "id": s.get("id"),
+            "status": s.get("status"),
+            "customer": s.get("customer"),
+            "current_period_start": s.get("current_period_start"),
+            "current_period_end": s.get("current_period_end"),
+            "trial_start": s.get("trial_start"),
+            "trial_end": s.get("trial_end"),
+            "cancel_at_period_end": s.get("cancel_at_period_end"),
+        })
+    return {"count": len(out), "subscriptions": out}
+
+
+@tool(
+    name="create_stripe_payment_link",
+    description="Create a shareable Stripe payment link from a Price ID and quantity.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "price_id": {"type": "string", "description": "The Stripe Price ID (e.g. price_123)"},
+            "quantity": {"type": "integer", "default": 1, "description": "Quantity for this price item"},
+        },
+        "required": ["price_id"],
+    },
+)
+async def create_stripe_payment_link(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import composio_proxy
+    price_id = args.get("price_id")
+    quantity = int(args.get("quantity") or 1)
+    payload = {
+        "line_items": [
+            {
+                "price": price_id,
+                "quantity": quantity,
+            }
+        ]
+    }
+    try:
+        data = await composio_proxy(ctx.business_id, "stripe", "POST", "/v1/payment_links", json=payload)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    return {
+        "id": data.get("id"),
+        "url": data.get("url"),
+        "active": data.get("active"),
+    }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -9400,58 +10140,148 @@ def _ms_addr_list(val: str) -> list:
     return [{"emailAddress": {"address": a.strip()}} for a in (val or "").split(",") if a.strip()]
 
 
+# ── Outlook tools (Microsoft 365 mail + calendar via Composio action slugs) ──
+# All Outlook tools use Composio's dedicated action slugs via execute_action,
+# NOT the v2 actions/proxy (retired) or v3 proxy (gated).
+
+_OUTLOOK_ATTACHMENT_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Optional single file attachment. Provide a public 'url' the server can fetch "
+        "and a 'filename' to display in the email. Up to 20MB. Composio currently supports "
+        "one attachment per email — to send multiple files, send multiple emails."
+    ),
+    "properties": {
+        "url":      {"type": "string", "description": "Direct download URL"},
+        "filename": {"type": "string", "description": "Filename shown in the email, e.g. 'invoice.pdf'"},
+    },
+    "required": ["url", "filename"],
+}
+
+
+def _outlook_response_data(execute_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Outlook actions wrap responses much like Gmail: usually under
+    `data.response_data`, sometimes flat. Return the payload either way."""
+    inner = execute_result.get("data") or {}
+    if isinstance(inner, dict):
+        rd = inner.get("response_data")
+        if isinstance(rd, dict):
+            return rd
+        return inner
+    return {}
+
+
 @tool(
     name="outlook_list_messages",
     description=(
-        "List Outlook / Microsoft 365 inbox messages. "
-        "Filter by folder, unread status, or search term. "
+        "List Outlook / Microsoft 365 inbox messages. Filter by folder, unread, or sender. "
+        "For full-text search across body, use outlook_search instead. "
         "Returns: id, subject, from, preview, date, read status."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "folder":      {"type": "string", "description": "inbox (default), sentItems, drafts, deletedItems"},
-            "search":      {"type": "string", "description": "Search subject or body"},
-            "unread_only": {"type": "boolean"},
-            "max_results": {"type": "integer", "description": "1-50, default 15"},
+            "folder":      {"type": "string", "description": "Well-known folder name. Default 'inbox'. Other: 'sentitems', 'drafts', 'deleteditems'."},
+            "unread_only": {"type": "boolean", "description": "Only unread messages."},
+            "from_email":  {"type": "string", "description": "Filter to messages from this exact sender address."},
+            "max_results": {"type": "integer", "description": "1-100, default 15"},
         },
     },
 )
 async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     folder = (args.get("folder") or "inbox").strip()
-    limit  = min(int(args.get("max_results") or 15), 50)
-    params: Dict[str, Any] = {
-        "$top":     limit,
-        "$select":  _OUTLOOK_SELECT,
-        "$orderby": "receivedDateTime desc",
+    limit  = min(max(int(args.get("max_results") or 15), 1), 100)
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "folder":  folder,
+        "top":     limit,
+        "orderby": ["receivedDateTime desc"],
     }
     if args.get("unread_only"):
-        params["$filter"] = "isRead eq false"
-    if args.get("search"):
-        params["$search"] = f'"{args["search"]}"'
-    try:
-        data = await nango_proxy(
-            ctx.business_id, _MICROSOFT_KEY, "GET",
-            f"v1.0/me/mailFolders/{folder}/messages",
-            params=params,
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+        action_args["is_read"] = False
+    if args.get("from_email"):
+        action_args["from_address"] = args["from_email"].strip()
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_MESSAGES", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("messages") or inner.get("items") or []
     messages = []
-    for m in (data.get("value") or []):
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
         sender = (m.get("from") or {}).get("emailAddress") or {}
         messages.append({
-            "message_id":    m.get("id"),
-            "subject":       m.get("subject") or "(no subject)",
+            "message_id":      m.get("id"),
+            "subject":         m.get("subject") or "(no subject)",
+            "from_name":       sender.get("name"),
+            "from_email":      sender.get("address"),
+            "preview":         _email_trunc(m.get("bodyPreview") or "", 200),
+            "date":            m.get("receivedDateTime"),
+            "is_read":         m.get("isRead", True),
+            "conversation_id": m.get("conversationId"),
+            "has_attachments": m.get("hasAttachments", False),
+        })
+    return {"messages": messages, "total": len(messages), "folder": folder}
+
+
+@tool(
+    name="outlook_search",
+    description=(
+        "Full-text search across Outlook messages (body, subject, attachments). "
+        "Use this when the user describes content rather than a sender/folder filter."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query":            {"type": "string", "description": "Free-text search string."},
+            "from_email":       {"type": "string", "description": "Optional: only this sender."},
+            "subject":          {"type": "string", "description": "Optional: only matches in subject."},
+            "has_attachments":  {"type": "boolean", "description": "Optional: filter messages with attachments."},
+            "max_results":      {"type": "integer", "description": "1-100, default 20."},
+        },
+        "required": ["query"],
+    },
+)
+async def outlook_search(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    action_args: Dict[str, Any] = {
+        "query": q,
+        "size":  min(max(int(args.get("max_results") or 20), 1), 100),
+        "enable_top_results": True,
+    }
+    if args.get("from_email"):
+        action_args["fromEmail"] = args["from_email"].strip()
+    if args.get("subject"):
+        action_args["subject"] = args["subject"]
+    if "has_attachments" in args:
+        action_args["hasAttachments"] = bool(args["has_attachments"])
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_SEARCH_MESSAGES", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("hits") or inner.get("results") or inner.get("messages") or []
+    messages = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        # Search hits may wrap the message inside a 'resource' or 'hit' field
+        msg = m.get("resource") or m.get("hit") or m.get("message") or m
+        sender = (msg.get("from") or {}).get("emailAddress") or {}
+        messages.append({
+            "message_id":    msg.get("id"),
+            "subject":       msg.get("subject") or "(no subject)",
             "from_name":     sender.get("name"),
             "from_email":    sender.get("address"),
-            "preview":       _email_trunc(m.get("bodyPreview") or "", 200),
-            "date":          m.get("receivedDateTime"),
-            "is_read":       m.get("isRead", True),
-            "conversation_id": m.get("conversationId"),
+            "preview":       _email_trunc(msg.get("bodyPreview") or "", 200),
+            "date":          msg.get("receivedDateTime"),
+            "has_attachments": msg.get("hasAttachments", False),
         })
-    return {"messages": messages, "total": len(messages)}
+    return {"query": q, "count": len(messages), "messages": messages}
 
 
 @tool(
@@ -9466,104 +10296,619 @@ async def outlook_list_messages(ctx: ToolContext, args: Dict[str, Any]):
     },
 )
 async def outlook_read_message(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
+    from composio_service import execute_action
     msg_id = (args.get("message_id") or "").strip()
     if not msg_id:
         return {"error": "message_id is required"}
-    try:
-        m = await nango_proxy(
-            ctx.business_id, _MICROSOFT_KEY, "GET",
-            f"v1.0/me/messages/{msg_id}",
-            params={"$select": _OUTLOOK_FULL_SELECT},
-        )
-    except RuntimeError as e:
-        return {"error": str(e)}
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_MESSAGE", {
+        "user_id": "me", "message_id": msg_id,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    m = _outlook_response_data(r)
     sender = (m.get("from") or {}).get("emailAddress") or {}
-    to_list = [(r.get("emailAddress") or {}).get("address") for r in (m.get("toRecipients") or [])]
+    to_list = [(rcp.get("emailAddress") or {}).get("address") for rcp in (m.get("toRecipients") or [])]
     body_content = _email_trunc((m.get("body") or {}).get("content") or m.get("bodyPreview") or "", 4000)
     return {
-        "message_id":    m.get("id"),
-        "subject":       m.get("subject") or "(no subject)",
-        "from_name":     sender.get("name"),
-        "from_email":    sender.get("address"),
-        "to":            ", ".join(filter(None, to_list)),
-        "date":          m.get("receivedDateTime"),
-        "is_read":       m.get("isRead", True),
-        "body":          body_content,
+        "message_id":          m.get("id") or msg_id,
+        "subject":             m.get("subject") or "(no subject)",
+        "from_name":           sender.get("name"),
+        "from_email":          sender.get("address"),
+        "to":                  ", ".join(filter(None, to_list)),
+        "date":                m.get("receivedDateTime"),
+        "is_read":             m.get("isRead", True),
+        "body":                body_content,
         "internet_message_id": m.get("internetMessageId"),
-        "conversation_id": m.get("conversationId"),
+        "conversation_id":     m.get("conversationId"),
+        "has_attachments":     m.get("hasAttachments", False),
     }
 
 
 @tool(
     name="outlook_send",
-    description="Send a new email via Outlook / Microsoft 365. to, subject, body required. cc and bcc optional.",
+    description=(
+        "Send a new email via Outlook / Microsoft 365. The primary recipient goes in 'to'; "
+        "extra to-addresses go in 'cc' or 'bcc'. Pass 'attachment' ({url, filename}) for a single file."
+    ),
     parameters={
         "type": "object",
         "properties": {
-            "to":      {"type": "string", "description": "Recipient(s), comma-separated"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string", "description": "Plain text body"},
-            "cc":      {"type": "string"},
-            "bcc":     {"type": "string"},
+            "to":         {"type": "string", "description": "Primary recipient email address."},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string", "description": "Plain text body (HTML if is_html=true)."},
+            "is_html":    {"type": "boolean", "description": "Body is HTML. Default false."},
+            "cc":         {"type": "string", "description": "Comma-separated CC addresses."},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses."},
+            "attachment": _OUTLOOK_ATTACHMENT_SCHEMA,
         },
         "required": ["to", "subject", "body"],
     },
     destructive=True,
 )
 async def outlook_send(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    to = (args.get("to") or "").strip()
+    from composio_service import execute_action
+    to_raw = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = (args.get("body") or "").strip()
-    if not to or not subject or not body:
+    if not to_raw or not subject or not body:
         return {"error": "to, subject, and body are required"}
-    payload: Dict[str, Any] = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "Text", "content": body},
-            "toRecipients": _ms_addr_list(to),
-        },
-        "saveToSentItems": True,
+    # to_email is a single string; if user passed CSV, take the first
+    to_emails = [e.strip() for e in to_raw.split(",") if e.strip()]
+    primary = to_emails[0]
+    extra_to = to_emails[1:]
+
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "OUTLOOK_OUTLOOK_SEND_EMAIL")
+    if err:
+        return {"error": err}
+
+    action_args: Dict[str, Any] = {
+        "user_id":  "me",
+        "to_email": primary,
+        "subject":  subject,
+        "body":     body,
+        "is_html":  bool(args.get("is_html", False)),
+        "save_to_sent_items": True,
     }
-    if args.get("cc"):
-        payload["message"]["ccRecipients"] = _ms_addr_list(args["cc"])
+    cc = _split_csv(args.get("cc")) + extra_to  # roll extra primary-to into CC
+    if cc:
+        action_args["cc_emails"] = cc
     if args.get("bcc"):
-        payload["message"]["bccRecipients"] = _ms_addr_list(args["bcc"])
-    try:
-        await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", "v1.0/me/sendMail", json=payload)
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "sent"}
+        action_args["bcc_emails"] = _split_csv(args["bcc"])
+    if att_dict:
+        action_args["attachment"] = att_dict
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_SEND_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "sent", "attached": bool(att_dict)}
 
 
 @tool(
     name="outlook_reply",
-    description="Reply to an Outlook message. Set reply_all=true to reply to all recipients.",
+    description=(
+        "Reply to an Outlook message. Pass extra recipients via 'cc' (Composio's "
+        "OUTLOOK_REPLY_EMAIL doesn't have a native reply-all flag, so reply-all "
+        "is approximated by listing the original To/CC recipients in 'cc')."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "message_id": {"type": "string", "description": "Outlook message ID to reply to"},
-            "body":       {"type": "string", "description": "Reply body text"},
-            "reply_all":  {"type": "boolean", "description": "Reply all. Default false."},
+            "body":       {"type": "string", "description": "Reply body (plain text)"},
+            "cc":         {"type": "string", "description": "Comma-separated extra recipients (use for reply-all)."},
+            "bcc":        {"type": "string", "description": "Comma-separated BCC addresses."},
         },
         "required": ["message_id", "body"],
     },
     destructive=True,
 )
 async def outlook_reply(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    msg_id    = (args.get("message_id") or "").strip()
-    body      = (args.get("body") or "").strip()
-    reply_all = bool(args.get("reply_all"))
+    from composio_service import execute_action
+    msg_id = (args.get("message_id") or "").strip()
+    body   = (args.get("body") or "").strip()
     if not msg_id or not body:
         return {"error": "message_id and body are required"}
-    endpoint = f"v1.0/me/messages/{msg_id}/{'replyAll' if reply_all else 'reply'}"
-    try:
-        await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", endpoint, json={"comment": body})
-    except RuntimeError as e:
-        return {"error": str(e)}
+    action_args: Dict[str, Any] = {
+        "user_id":    "me",
+        "message_id": msg_id,
+        "comment":    body,
+    }
+    if args.get("cc"):
+        action_args["cc_emails"] = _split_csv(args["cc"])
+    if args.get("bcc"):
+        action_args["bcc_emails"] = _split_csv(args["bcc"])
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_REPLY_EMAIL", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
     return {"status": "replied"}
+
+
+@tool(
+    name="outlook_draft",
+    description=(
+        "Save a draft email in Outlook without sending. Returns the draft message_id. "
+        "Pass 'attachment' ({url, filename}) for a single file."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "to":         {"type": "string", "description": "Comma-separated recipient addresses (To)."},
+            "subject":    {"type": "string"},
+            "body":       {"type": "string"},
+            "is_html":    {"type": "boolean", "description": "Body is HTML. Default false."},
+            "cc":         {"type": "string"},
+            "bcc":        {"type": "string"},
+            "attachment": _OUTLOOK_ATTACHMENT_SCHEMA,
+        },
+        "required": ["to", "subject", "body"],
+    },
+)
+async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    to = (args.get("to") or "").strip()
+    subject = (args.get("subject") or "").strip()
+    body = (args.get("body") or "").strip()
+    if not to or not subject or not body:
+        return {"error": "to, subject, and body are required"}
+    att_dict, err = await _prepare_single_attachment(args.get("attachment"), "OUTLOOK_OUTLOOK_CREATE_DRAFT")
+    if err:
+        return {"error": err}
+    action_args: Dict[str, Any] = {
+        "subject":       subject,
+        "body":          body,
+        "is_html":       bool(args.get("is_html", False)),
+        "to_recipients": _split_csv(to),
+    }
+    if args.get("cc"):
+        action_args["cc_recipients"] = _split_csv(args["cc"])
+    if args.get("bcc"):
+        action_args["bcc_recipients"] = _split_csv(args["bcc"])
+    if att_dict:
+        action_args["attachment"] = att_dict
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_CREATE_DRAFT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    return {"status": "draft_saved", "message_id": inner.get("id"), "attached": bool(att_dict)}
+
+
+@tool(
+    name="outlook_trash_message",
+    description=(
+        "Move an Outlook message to the Deleted Items folder. Recoverable from there. "
+        "Use this when the user asks to delete an email — Composio doesn't expose a "
+        "permanent-delete to agents."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "message_id": {"type": "string", "description": "Outlook message ID to trash."},
+        },
+        "required": ["message_id"],
+    },
+    destructive=True,
+)
+async def outlook_trash_message(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    msg_id = (args.get("message_id") or "").strip()
+    if not msg_id:
+        return {"error": "message_id is required"}
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_MOVE_MESSAGE", {
+        "user_id":        "me",
+        "message_id":     msg_id,
+        "destination_id": "deleteditems",
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "trashed", "message_id": msg_id}
+
+
+# ── Outlook Calendar tools ─────────────────────────────────────────────────────
+
+@tool(
+    name="list_outlook_calendars",
+    description="List the user's Outlook calendars (primary + secondary + shared).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "description": "Max calendars (default 50)."},
+        },
+    },
+)
+async def list_outlook_calendars(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    r = await execute_action(ctx.business_id, "OUTLOOK_LIST_CALENDARS", {
+        "user_id": "me",
+        "top": min(int(args.get("max_results") or 50), 200),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    items = inner.get("value") or inner.get("calendars") or inner.get("items") or []
+    cals = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        cals.append({
+            "calendar_id": c.get("id"),
+            "name":        c.get("name"),
+            "owner_email": ((c.get("owner") or {}).get("address")),
+            "color":       c.get("color"),
+            "is_default":  c.get("isDefaultCalendar", False),
+        })
+    return {"count": len(cals), "calendars": cals}
+
+
+@tool(
+    name="list_outlook_calendar_events",
+    description="List upcoming Outlook calendar events. Use time_min/time_max to constrain the window.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "time_min":    {"type": "string", "description": "Start of window in ISO 8601 (UTC), e.g. '2026-06-01T00:00:00Z'."},
+            "time_max":    {"type": "string", "description": "End of window in ISO 8601 (UTC)."},
+            "timezone":    {"type": "string", "description": "Preferred IANA timezone for displaying times, e.g. 'America/New_York'."},
+            "max_results": {"type": "integer", "description": "Max events (default 25)."},
+        },
+    },
+)
+async def list_outlook_calendar_events(ctx: ToolContext, args: Dict[str, Any]):
+    """Microsoft Graph rejects most OData filters on event start/end (works
+    only via the separate calendarView endpoint, which Composio doesn't
+    expose). We fetch a sorted batch and filter client-side."""
+    from composio_service import execute_action
+    # Fetch more than asked so we have room to filter
+    requested = min(int(args.get("max_results") or 25), 100)
+    fetch_n = min(requested * 3, 250) if (args.get("time_min") or args.get("time_max")) else requested
+    action_args: Dict[str, Any] = {
+        "user_id": "me",
+        "top":     fetch_n,
+        "orderby": ["start/dateTime asc"],
+        "expand_recurring_events": True,
+    }
+    if args.get("timezone"):
+        action_args["timezone"] = args["timezone"]
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("events") or inner.get("items") or []
+
+    # Client-side date filtering (strip Z for naive compare)
+    tmin = (args.get("time_min") or "").rstrip("Z") or None
+    tmax = (args.get("time_max") or "").rstrip("Z") or None
+    events = []
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        start_dt = ((e.get("start") or {}).get("dateTime") or "").rstrip("Z")
+        end_dt = ((e.get("end") or {}).get("dateTime") or "").rstrip("Z")
+        if tmin and end_dt and end_dt < tmin:
+            continue
+        if tmax and start_dt and start_dt > tmax:
+            continue
+        events.append({
+            "event_id":  e.get("id"),
+            "subject":   e.get("subject"),
+            "start":     start_dt,
+            "end":       end_dt,
+            "timezone":  (e.get("start") or {}).get("timeZone"),
+            "location":  (e.get("location") or {}).get("displayName"),
+            "is_online": e.get("isOnlineMeeting", False),
+            "teams_url": (e.get("onlineMeeting") or {}).get("joinUrl"),
+            "attendees": [(a.get("emailAddress") or {}).get("address") for a in (e.get("attendees") or [])],
+            "organizer": ((e.get("organizer") or {}).get("emailAddress") or {}).get("address"),
+            "web_link":  e.get("webLink"),
+        })
+        if len(events) >= requested:
+            break
+    return {"count": len(events), "events": events}
+
+
+@tool(
+    name="create_outlook_calendar_event",
+    description=(
+        "Create an Outlook / Microsoft 365 calendar event. Set is_online_meeting=true to "
+        "attach a Microsoft Teams meeting link automatically. "
+        "NOTE: Teams meetings only work on Microsoft 365 Business / Enterprise accounts — "
+        "consumer outlook.com / hotmail.com / live.com accounts silently ignore "
+        "is_online_meeting (no Teams license). Datetimes are ISO 8601 (UTC) "
+        "or local time with explicit timezone."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["title", "start_datetime", "end_datetime"],
+        "properties": {
+            "title":             {"type": "string", "description": "Event subject."},
+            "start_datetime":    {"type": "string", "description": "ISO 8601 start, e.g. '2026-06-01T14:00:00'."},
+            "end_datetime":      {"type": "string", "description": "ISO 8601 end."},
+            "timezone":          {"type": "string", "description": "IANA timezone for start/end (e.g. 'America/New_York'). Default UTC."},
+            "body":              {"type": "string", "description": "Event description / agenda."},
+            "is_html":           {"type": "boolean", "description": "Body is HTML. Default false."},
+            "location":          {"type": "string", "description": "Free-form location text."},
+            "attendees":         {"type": "string", "description": "Comma-separated attendee email addresses."},
+            "is_online_meeting": {"type": "boolean", "description": "If true, attach a Microsoft Teams meeting link."},
+            "show_as":           {"type": "string", "description": "'free' | 'tentative' | 'busy' | 'oof' | 'workingElsewhere'. Default 'busy'."},
+        },
+    },
+    destructive=True,
+)
+async def create_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    tz = (args.get("timezone") or "UTC").strip()
+    # Strip trailing Z (Composio's Outlook action expects naive ISO + timezone field)
+    start = args["start_datetime"].rstrip("Z")
+    end = args["end_datetime"].rstrip("Z")
+    action_args: Dict[str, Any] = {
+        "user_id":        "me",
+        "subject":        args["title"],
+        "start_datetime": start,
+        "end_datetime":   end,
+        "time_zone":      tz,
+        "body":           args.get("body") or "",
+        "is_html":        bool(args.get("is_html", False)),
+    }
+    if args.get("location"):
+        action_args["location"] = args["location"]
+    if args.get("show_as"):
+        action_args["show_as"] = args["show_as"]
+    if args.get("attendees"):
+        emails = _split_csv(args["attendees"])
+        action_args["attendees_info"] = [{"email": e, "type": "required"} for e in emails]
+    if args.get("is_online_meeting"):
+        action_args["is_online_meeting"] = True
+        action_args["online_meeting_provider"] = "teamsForBusiness"
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_CALENDAR_CREATE_EVENT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    evt = _outlook_response_data(r)
+    return {
+        "status":    "created",
+        "event_id":  evt.get("id"),
+        "web_link":  evt.get("webLink"),
+        "teams_url": (evt.get("onlineMeeting") or {}).get("joinUrl"),
+    }
+
+
+@tool(
+    name="update_outlook_calendar_event",
+    description=(
+        "Update / reschedule an Outlook calendar event by event_id. Only pass fields to change. "
+        "Reusing attendees replaces the existing list — pass the FULL set, not a delta."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["event_id"],
+        "properties": {
+            "event_id":       {"type": "string"},
+            "title":          {"type": "string"},
+            "start_datetime": {"type": "string", "description": "New ISO 8601 start."},
+            "end_datetime":   {"type": "string", "description": "New ISO 8601 end."},
+            "timezone":       {"type": "string", "description": "IANA timezone (required if changing datetimes)."},
+            "body":           {"type": "string"},
+            "is_html":        {"type": "boolean"},
+            "location":       {"type": "string"},
+            "attendees":      {"type": "string", "description": "Comma-separated; replaces existing attendees."},
+            "show_as":        {"type": "string"},
+        },
+    },
+    destructive=True,
+)
+async def update_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    action_args: Dict[str, Any] = {
+        "user_id":  "me",
+        "event_id": args["event_id"],
+    }
+    if args.get("title"):
+        action_args["subject"] = args["title"]
+    if args.get("start_datetime"):
+        action_args["start_datetime"] = args["start_datetime"].rstrip("Z")
+    if args.get("end_datetime"):
+        action_args["end_datetime"] = args["end_datetime"].rstrip("Z")
+    if args.get("timezone"):
+        action_args["time_zone"] = args["timezone"]
+    if args.get("body") is not None:
+        action_args["body"] = {
+            "contentType": "HTML" if args.get("is_html") else "Text",
+            "content": args["body"],
+        }
+    if args.get("location"):
+        action_args["location"] = {"displayName": args["location"]}
+    if args.get("attendees") is not None:
+        emails = _split_csv(args["attendees"])
+        action_args["attendees"] = [
+            {"emailAddress": {"address": e}, "type": "required"} for e in emails
+        ]
+    if args.get("show_as"):
+        action_args["show_as"] = args["show_as"]
+
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_UPDATE_CALENDAR_EVENT", action_args)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    evt = _outlook_response_data(r)
+    return {
+        "status":   "updated",
+        "event_id": evt.get("id") or args["event_id"],
+        "web_link": evt.get("webLink"),
+    }
+
+
+@tool(
+    name="delete_outlook_calendar_event",
+    description="Delete an Outlook calendar event by event_id. Set send_notifications=true to email attendees.",
+    parameters={
+        "type": "object",
+        "required": ["event_id"],
+        "properties": {
+            "event_id":           {"type": "string"},
+            "send_notifications": {"type": "boolean", "description": "Email attendees about the cancellation. Default false."},
+        },
+    },
+    destructive=True,
+)
+async def delete_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_DELETE_EVENT", {
+        "user_id": "me",
+        "event_id": args["event_id"],
+        "send_notifications": bool(args.get("send_notifications", False)),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    return {"status": "deleted", "event_id": args["event_id"]}
+
+
+@tool(
+    name="find_outlook_free_slots",
+    description=(
+        "Get busy intervals for one or more people via Microsoft 365's GetSchedule API. "
+        "The agent can use the returned busy intervals to propose free meeting times."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["time_min", "time_max", "schedules"],
+        "properties": {
+            "time_min":  {"type": "string", "description": "Start of window (ISO 8601)."},
+            "time_max":  {"type": "string", "description": "End of window (ISO 8601)."},
+            "timezone":  {"type": "string", "description": "IANA timezone, default UTC."},
+            "schedules": {"type": "string", "description": "Comma-separated email addresses (use 'me' for the user)."},
+            "interval":  {"type": "integer", "description": "Slot granularity in minutes (default 30, max 1440)."},
+        },
+    },
+)
+async def find_outlook_free_slots(ctx: ToolContext, args: Dict[str, Any]):
+    from composio_service import execute_action
+    tz = (args.get("timezone") or "UTC").strip()
+    emails = _split_csv(args["schedules"]) or ["me"]
+    # Microsoft Graph GetSchedule needs actual email addresses, NOT 'me'.
+    # If the caller passed 'me' (or it's the default), resolve it via the profile.
+    if any(e.lower() == "me" for e in emails):
+        prof = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_PROFILE", {"user_id": "me"})
+        if not (prof.get("success") and prof.get("data")):
+            return {"error": "Could not resolve 'me' to a real email. Pass schedules='actual@email.com'."}
+        prof_inner = prof["data"].get("response_data") or prof["data"]
+        my_email = prof_inner.get("mail") or prof_inner.get("userPrincipalName")
+        if not my_email:
+            return {"error": "Profile lookup returned no email. Pass schedules='actual@email.com'."}
+        emails = [my_email if e.lower() == "me" else e for e in emails]
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_GET_SCHEDULE", {
+        "user_id":   "me",
+        "Schedules": emails,
+        "StartTime": {"dateTime": args["time_min"].rstrip("Z"), "timeZone": tz},
+        "EndTime":   {"dateTime": args["time_max"].rstrip("Z"), "timeZone": tz},
+        "availabilityViewInterval": str(min(max(int(args.get("interval") or 30), 5), 1440)),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    # GetSchedule has an extra layer of wrapping vs other Outlook actions:
+    # {data: {data: {value: [...]}}}
+    inner = _outlook_response_data(r)
+    if isinstance(inner.get("data"), dict):
+        inner = inner["data"]
+    schedules = inner.get("value") or inner.get("schedules") or []
+    out: Dict[str, Any] = {}
+    unavailable: Dict[str, str] = {}
+    for s in schedules:
+        if not isinstance(s, dict):
+            continue
+        email = s.get("scheduleId") or s.get("email")
+        if not email:
+            continue
+        # Per-schedule error (common for consumer outlook.com addresses
+        # that don't support free/busy lookup)
+        if isinstance(s.get("error"), dict):
+            unavailable[email] = s["error"].get("message", "unknown")
+            continue
+        busy = []
+        for b in (s.get("scheduleItems") or []):
+            if not isinstance(b, dict):
+                continue
+            busy.append({
+                "start":  (b.get("start") or {}).get("dateTime"),
+                "end":    (b.get("end") or {}).get("dateTime"),
+                "status": b.get("status"),
+            })
+        out[email] = busy
+    result: Dict[str, Any] = {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "busy_by_email": out,
+    }
+    if unavailable:
+        result["unavailable"] = unavailable
+    return result
+
+
+@tool(
+    name="find_outlook_calendar_event",
+    description=(
+        "Find an Outlook calendar event by subject keywords + optional time window. "
+        "Use this before update/delete when the user describes an event rather than giving event_id."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query":       {"type": "string", "description": "Words to match in the subject."},
+            "time_min":    {"type": "string"},
+            "time_max":    {"type": "string"},
+            "max_results": {"type": "integer", "description": "Default 10."},
+        },
+    },
+)
+async def find_outlook_calendar_event(ctx: ToolContext, args: Dict[str, Any]):
+    """Microsoft Graph's OData contains() on subject isn't reliably supported
+    via this Composio action, so we fetch a sorted batch and substring-match
+    subjects client-side."""
+    from composio_service import execute_action
+    q = (args.get("query") or "").strip()
+    if not q:
+        return {"error": "query is required"}
+    q_lower = q.lower()
+    requested = min(int(args.get("max_results") or 10), 50)
+    # Pull a wider window so client-side filter has something to find
+    r = await execute_action(ctx.business_id, "OUTLOOK_OUTLOOK_LIST_EVENTS", {
+        "user_id": "me",
+        "top": 100,
+        "orderby": ["start/dateTime desc"],  # bias toward recent
+        "expand_recurring_events": True,
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = _outlook_response_data(r)
+    raw = inner.get("value") or inner.get("events") or []
+
+    tmin = (args.get("time_min") or "").rstrip("Z") or None
+    tmax = (args.get("time_max") or "").rstrip("Z") or None
+
+    events = []
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        subject = e.get("subject") or ""
+        if q_lower not in subject.lower():
+            continue
+        start_dt = ((e.get("start") or {}).get("dateTime") or "").rstrip("Z")
+        end_dt = ((e.get("end") or {}).get("dateTime") or "").rstrip("Z")
+        if tmin and end_dt and end_dt < tmin:
+            continue
+        if tmax and start_dt and start_dt > tmax:
+            continue
+        events.append({
+            "event_id":  e.get("id"),
+            "subject":   subject,
+            "start":     start_dt,
+            "end":       end_dt,
+            "location":  (e.get("location") or {}).get("displayName"),
+            "attendees": [(a.get("emailAddress") or {}).get("address") for a in (e.get("attendees") or [])],
+            "web_link":  e.get("webLink"),
+        })
+        if len(events) >= requested:
+            break
+    return {"query": q, "count": len(events), "events": events}
 
 
 @tool(
@@ -9913,39 +11258,7 @@ async def save_document_style(ctx: ToolContext, args: Dict[str, Any]):
     return {"status": "saved", "saved_fields": saved_fields, "profile": updated}
 
 
-@tool(
-    name="outlook_draft",
-    description="Save a draft email in Outlook without sending. Returns the draft message_id.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "to":      {"type": "string"},
-            "subject": {"type": "string"},
-            "body":    {"type": "string"},
-            "cc":      {"type": "string"},
-        },
-        "required": ["to", "subject", "body"],
-    },
-)
-async def outlook_draft(ctx: ToolContext, args: Dict[str, Any]):
-    from .composio_helper import composio_proxy as nango_proxy
-    to = (args.get("to") or "").strip()
-    subject = (args.get("subject") or "").strip()
-    body = (args.get("body") or "").strip()
-    if not to or not subject or not body:
-        return {"error": "to, subject, and body are required"}
-    payload: Dict[str, Any] = {
-        "subject": subject,
-        "body": {"contentType": "Text", "content": body},
-        "toRecipients": _ms_addr_list(to),
-    }
-    if args.get("cc"):
-        payload["ccRecipients"] = _ms_addr_list(args["cc"])
-    try:
-        result = await nango_proxy(ctx.business_id, _MICROSOFT_KEY, "POST", "v1.0/me/messages", json=payload)
-    except RuntimeError as e:
-        return {"error": str(e)}
-    return {"status": "draft_saved", "message_id": result.get("id")}
+# outlook_draft has been moved into the main Outlook section above.
 
 
 
@@ -12617,6 +13930,20 @@ async def _record_and_read_follower_history(
 async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
     days = max(1, min(int(args.get("days") or 7), 30))
     customer_query = (args.get("customer_name_or_email") or "").strip()
+
+    # ── Fast-path: return cached snapshot for business-wide (no customer filter) ──
+    # Customer-specific queries are never cached (fresh state required).
+    if not customer_query:
+        try:
+            from redis_client import cache_get, cache_set
+            _cache_key = f"tenant:{ctx.business_id}:tool_cache:get_business_context:days={days}"
+            _cached = await cache_get(_cache_key)
+            if _cached is not None:
+                logger.debug("[tool_cache] HIT get_business_context user=%s days=%d", ctx.business_id, days)
+                return _cached
+        except Exception as _exc:
+            logger.warning("[tool_cache] get_business_context cache_get skipped: %s", _exc)
+
     limit = 20
 
     # ── Helper: match customer by name/email ─────────────────────────────────────
@@ -12718,7 +14045,7 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
     }
 
     # ── 6. Assemble response ─────────────────────────────────────────────────────
-    return {
+    result = {
         "scope": "customer" if target_customer else "business",
         "customer": target_customer,
         "customers": customers,
@@ -12731,6 +14058,18 @@ async def get_business_context(ctx: ToolContext, args: Dict[str, Any]):
         "quick_stats": quick_stats,
         "window_days": days,
     }
+
+    # Store business-wide snapshots in Redis for 60 s — never cache customer-scoped results
+    if not customer_query:
+        try:
+            from redis_client import cache_set
+            _cache_key = f"tenant:{ctx.business_id}:tool_cache:get_business_context:days={days}"
+            await cache_set(_cache_key, result, ttl=60)
+            logger.debug("[tool_cache] SET get_business_context user=%s days=%d ttl=60s", ctx.business_id, days)
+        except Exception as _exc:
+            logger.warning("[tool_cache] get_business_context cache_set skipped: %s", _exc)
+
+    return result
 
 
 @tool(
@@ -13603,31 +14942,88 @@ async def list_calendar_events(ctx: ToolContext, args: Dict[str, Any]) -> Dict[s
     return result
 
 
+def _split_attendees(s: Any) -> list[str]:
+    if not s:
+        return []
+    if isinstance(s, list):
+        return [str(e).strip() for e in s if str(e).strip()]
+    return [e.strip() for e in str(s).split(",") if e.strip()]
+
+
+def _parse_naive_dt_and_tz(s: str, fallback_tz: str = "UTC") -> tuple[str, str]:
+    """Composio's CREATE/UPDATE_EVENT requires a naive ISO datetime (no Z, no
+    offset) plus a separate `timezone`. Accept user input in either form and
+    normalize. Returns (naive_iso, timezone).
+    """
+    s = (s or "").strip()
+    if s.endswith("Z"):
+        return s[:-1], "UTC"
+    # detect ±HH:MM offset
+    if len(s) >= 6 and s[-3] == ":" and s[-6] in ("+", "-"):
+        # We can't reliably map offset → IANA tz, so warn-default to UTC for
+        # the offset and pass the naive part.
+        return s[:-6], fallback_tz
+    return s, fallback_tz
+
+
+def _duration_from_range(start_iso: str, end_iso: str) -> tuple[int, int]:
+    """Compute (hours, minutes) from two ISO datetimes."""
+    from datetime import datetime
+    def _parse(x: str) -> datetime:
+        x = x.strip().rstrip("Z")
+        # strip offset if present
+        if len(x) >= 6 and x[-3] == ":" and x[-6] in ("+", "-"):
+            x = x[:-6]
+        return datetime.fromisoformat(x)
+    delta = _parse(end_iso) - _parse(start_iso)
+    total_min = max(int(delta.total_seconds() // 60), 1)
+    return total_min // 60, total_min % 60
+
+
 @tool(
     name="create_calendar_event",
-    description="Create a new event in the user's Google Calendar.",
+    description=(
+        "Create a Google Calendar event. Provide either end_datetime or duration_minutes "
+        "(not both). Set create_meeting_room=true to attach a Google Meet link automatically."
+    ),
     parameters={
         "type": "object",
-        "required": ["title", "start_datetime", "end_datetime"],
+        "required": ["title", "start_datetime"],
         "properties": {
             "title": {"type": "string", "description": "Event title/summary."},
             "start_datetime": {
                 "type": "string",
-                "description": "Start time in ISO 8601 format e.g. '2025-05-10T14:00:00Z'.",
+                "description": "Start time in ISO 8601 (Z for UTC, or naive + timezone), e.g. '2026-06-01T14:00:00Z'.",
             },
             "end_datetime": {
                 "type": "string",
-                "description": "End time in ISO 8601 format e.g. '2025-05-10T15:00:00Z'.",
+                "description": "End time in ISO 8601. Either this OR duration_minutes is required.",
             },
-            "description": {"type": "string", "description": "Optional event description/notes."},
+            "duration_minutes": {
+                "type": "integer",
+                "description": "Event duration in minutes (alternative to end_datetime). Default 60.",
+            },
+            "timezone": {
+                "type": "string",
+                "description": "IANA timezone (e.g. 'America/New_York'). Required if start_datetime is naive. Defaults UTC.",
+            },
+            "description": {"type": "string", "description": "Optional event description (can be HTML)."},
             "location": {"type": "string", "description": "Optional event location."},
             "attendees": {
                 "type": "string",
                 "description": "Optional comma-separated attendee email addresses.",
             },
+            "create_meeting_room": {
+                "type": "boolean",
+                "description": "If true, attach a Google Meet video link to the event. Default false.",
+            },
+            "send_updates": {
+                "type": "boolean",
+                "description": "Email invitations to attendees. Default true.",
+            },
             "calendar_id": {
                 "type": "string",
-                "description": "Calendar ID to create the event in (defaults to primary).",
+                "description": "Calendar ID (default 'primary').",
             },
         },
     },
@@ -13641,21 +15037,316 @@ async def create_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[
             "error": "Google Calendar is not connected.",
             "action_required": "Connect Google Calendar in the Integrations page first.",
         }
+
+    explicit_tz = (args.get("timezone") or "").strip()
+    naive_start, inferred_tz = _parse_naive_dt_and_tz(args["start_datetime"], explicit_tz or "UTC")
+    tz = explicit_tz or inferred_tz
+
+    # Resolve duration: end_datetime overrides duration_minutes if both present
+    if args.get("end_datetime"):
+        hours, minutes = _duration_from_range(args["start_datetime"], args["end_datetime"])
+    else:
+        total = max(int(args.get("duration_minutes") or 60), 1)
+        hours, minutes = total // 60, total % 60
+
     params: Dict[str, Any] = {
         "summary": args["title"],
-        "start": {"dateTime": args["start_datetime"]},
-        "end": {"dateTime": args["end_datetime"]},
+        "start_datetime": naive_start,
+        "timezone": tz,
+        "event_duration_hour": hours,
+        "event_duration_minutes": minutes,
         "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": bool(args.get("send_updates", True)),
     }
     if args.get("description"):
         params["description"] = args["description"]
     if args.get("location"):
         params["location"] = args["location"]
-    if args.get("attendees"):
-        emails = [e.strip() for e in args["attendees"].split(",") if e.strip()]
-        params["attendees"] = [{"email": e} for e in emails]
-    result = await execute_action(ctx.business_id, ACTION_CALENDAR_CREATE, params)
-    return result
+    attendees = _split_attendees(args.get("attendees"))
+    if attendees:
+        params["attendees"] = attendees
+    if args.get("create_meeting_room"):
+        params["create_meeting_room"] = True
+
+    r = await execute_action(ctx.business_id, ACTION_CALENDAR_CREATE, params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    evt = inner.get("response_data") or inner
+    return {
+        "status": "created",
+        "event_id": evt.get("id"),
+        "html_link": evt.get("htmlLink"),
+        "meet_link": evt.get("hangoutLink") or None,
+    }
+
+
+@tool(
+    name="update_calendar_event",
+    description=(
+        "Update / reschedule an existing Google Calendar event. Provide event_id plus any "
+        "fields to change. To add a Google Meet link to an existing event, set create_meeting_room=true."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["event_id", "start_datetime"],
+        "properties": {
+            "event_id":           {"type": "string", "description": "Event ID to update."},
+            "title":              {"type": "string", "description": "New title/summary."},
+            "start_datetime":     {"type": "string", "description": "New start time (ISO 8601). Required by the v3 action."},
+            "end_datetime":       {"type": "string", "description": "New end time (ISO 8601). Either this OR duration_minutes."},
+            "duration_minutes":   {"type": "integer", "description": "New duration in minutes (alternative to end_datetime). Default 60."},
+            "timezone":           {"type": "string", "description": "IANA timezone for naive datetimes. Defaults UTC."},
+            "description":        {"type": "string"},
+            "location":           {"type": "string"},
+            "attendees":          {"type": "string", "description": "Comma-separated emails. Replaces existing attendees."},
+            "create_meeting_room": {"type": "boolean", "description": "Add a Google Meet link to the event."},
+            "send_updates":       {"type": "boolean", "description": "Email attendees about the change. Default true."},
+            "calendar_id":        {"type": "string", "description": "Calendar ID (default 'primary')."},
+        },
+    },
+    destructive=True,
+)
+async def update_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+
+    tz = (args.get("timezone") or "").strip() or "UTC"
+    naive_start, inferred_tz = _parse_naive_dt_and_tz(args["start_datetime"], tz)
+    tz = inferred_tz if inferred_tz != "UTC" or not args.get("timezone") else tz
+
+    if args.get("end_datetime"):
+        hours, minutes = _duration_from_range(args["start_datetime"], args["end_datetime"])
+    else:
+        total = max(int(args.get("duration_minutes") or 60), 1)
+        hours, minutes = total // 60, total % 60
+
+    params: Dict[str, Any] = {
+        "event_id": args["event_id"],
+        "start_datetime": naive_start,
+        "timezone": tz,
+        "event_duration_hour": hours,
+        "event_duration_minutes": minutes,
+        "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": bool(args.get("send_updates", True)),
+    }
+    if args.get("title"):
+        params["summary"] = args["title"]
+    if args.get("description"):
+        params["description"] = args["description"]
+    if args.get("location"):
+        params["location"] = args["location"]
+    attendees = _split_attendees(args.get("attendees"))
+    if attendees:
+        params["attendees"] = attendees
+    if args.get("create_meeting_room"):
+        params["create_meeting_room"] = True
+
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_UPDATE_EVENT", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    evt = inner.get("response_data") or inner
+    return {
+        "status": "updated",
+        "event_id": evt.get("id") or args["event_id"],
+        "html_link": evt.get("htmlLink"),
+        "meet_link": evt.get("hangoutLink") or None,
+    }
+
+
+@tool(
+    name="quick_add_calendar_event",
+    description=(
+        "Create a calendar event from a natural-language string. Google parses it "
+        "and infers time, duration, attendees. Examples: 'Lunch with John tomorrow at 1pm', "
+        "'Team standup every Monday at 9am'. Use this when the user describes an event "
+        "casually and exact times aren't easy to extract — saves a round trip."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text":         {"type": "string", "description": "Natural language event description."},
+            "calendar_id":  {"type": "string", "description": "Calendar ID (default 'primary')."},
+            "send_updates": {"type": "string", "description": "'all' | 'externalOnly' | 'none'. Default 'none'."},
+        },
+    },
+    destructive=True,
+)
+async def quick_add_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    params: Dict[str, Any] = {
+        "text": args["text"],
+        "calendar_id": args.get("calendar_id") or "primary",
+        "send_updates": args.get("send_updates") or "none",
+    }
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_QUICK_ADD", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # QUICK_ADD returns {"event": {...}}; fall through to inner for safety
+    evt = inner.get("event") or inner.get("response_data") or inner
+    return {
+        "status": "created",
+        "event_id": evt.get("id"),
+        "summary": evt.get("summary"),
+        "start": (evt.get("start") or {}).get("dateTime") or (evt.get("start") or {}).get("date"),
+        "html_link": evt.get("htmlLink"),
+    }
+
+
+@tool(
+    name="find_calendar_event",
+    description=(
+        "Search the user's calendar for events matching a free-text query. "
+        "Use this to look up a specific event before editing/deleting it (gives you the event_id)."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query":       {"type": "string", "description": "Free-text search terms."},
+            "time_min":    {"type": "string", "description": "Only events ending after this ISO time (optional)."},
+            "time_max":    {"type": "string", "description": "Only events starting before this ISO time (optional)."},
+            "max_results": {"type": "integer", "description": "Max events (default 10, max 50)."},
+            "calendar_id": {"type": "string", "description": "Calendar ID (default 'primary')."},
+        },
+    },
+)
+async def find_calendar_event(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    params: Dict[str, Any] = {
+        "query": args["query"],
+        "calendar_id": args.get("calendar_id") or "primary",
+        "max_results": min(int(args.get("max_results") or 10), 50),
+        "single_events": True,
+        "order_by": "startTime",
+    }
+    if args.get("time_min"):
+        params["timeMin"] = args["time_min"]
+    if args.get("time_max"):
+        params["timeMax"] = args["time_max"]
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_FIND_EVENT", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # FIND_EVENT returns {"event_data": {"event_data": [...]}}; unwrap both layers
+    ed = inner.get("event_data") or inner.get("response_data") or inner
+    if isinstance(ed, dict) and isinstance(ed.get("event_data"), list):
+        items = ed["event_data"]
+    else:
+        items = ed.get("items") or ed.get("events") or ed if isinstance(ed, list) else []
+        if not isinstance(items, list):
+            items = []
+    events = []
+    for e in items:
+        if not isinstance(e, dict):
+            continue
+        start = (e.get("start") or {}).get("dateTime") or (e.get("start") or {}).get("date")
+        end = (e.get("end") or {}).get("dateTime") or (e.get("end") or {}).get("date")
+        events.append({
+            "event_id":  e.get("id"),
+            "summary":   e.get("summary"),
+            "start":     start,
+            "end":       end,
+            "location":  e.get("location"),
+            "attendees": [a.get("email") for a in (e.get("attendees") or []) if isinstance(a, dict)],
+            "meet_link": e.get("hangoutLink"),
+            "html_link": e.get("htmlLink"),
+        })
+    return {"query": args["query"], "count": len(events), "events": events}
+
+
+@tool(
+    name="find_calendar_free_slots",
+    description=(
+        "Find free time slots across one or more calendars in a given window. "
+        "Returns busy intervals; agent can compute gaps to propose meeting times."
+    ),
+    parameters={
+        "type": "object",
+        "required": ["time_min", "time_max"],
+        "properties": {
+            "time_min":  {"type": "string", "description": "Start of search window (ISO 8601)."},
+            "time_max":  {"type": "string", "description": "End of search window (ISO 8601)."},
+            "calendars": {"type": "string", "description": "Comma-separated calendar IDs or emails (default 'primary')."},
+            "timezone":  {"type": "string", "description": "IANA timezone for interpreting times (default UTC)."},
+        },
+    },
+)
+async def find_calendar_free_slots(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    cals = _split_attendees(args.get("calendars")) or ["primary"]
+    params: Dict[str, Any] = {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "items": cals,  # v3 expects an array of strings
+        "timezone": args.get("timezone") or "UTC",
+    }
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_FIND_FREE_SLOTS", params)
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    rd = inner.get("response_data") or inner
+    cal_busy = (rd.get("calendars") or {})
+    out: Dict[str, list] = {}
+    for cal_id, info in cal_busy.items():
+        if isinstance(info, dict):
+            out[cal_id] = info.get("busy") or []
+    return {
+        "time_min": args["time_min"],
+        "time_max": args["time_max"],
+        "busy_by_calendar": out,
+    }
+
+
+@tool(
+    name="list_calendars",
+    description="List all Google Calendars the user has access to (primary + secondary + shared).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "max_results": {"type": "integer", "description": "Max calendars (default 50, max 250)."},
+        },
+    },
+)
+async def list_calendars(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    from composio_service import execute_action, get_connection_status, TOOLKIT_CALENDAR
+    status = await get_connection_status(ctx.business_id, TOOLKIT_CALENDAR)
+    if not status.get("connected"):
+        return {"error": "Google Calendar is not connected."}
+    r = await execute_action(ctx.business_id, "GOOGLECALENDAR_LIST_CALENDARS", {
+        "max_results": min(int(args.get("max_results") or 50), 250),
+    })
+    if "error" in r and not r.get("success"):
+        return {"error": r["error"]}
+    inner = (r.get("data") or {})
+    # LIST_CALENDARS returns {"calendars": [...]}
+    items = inner.get("calendars") or (inner.get("response_data") or {}).get("items") or []
+    cals = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        cals.append({
+            "calendar_id": c.get("id"),
+            "summary":     c.get("summary") or c.get("summaryOverride"),
+            "primary":     bool(c.get("primary")),
+            "access_role": c.get("accessRole"),
+            "timezone":    c.get("timeZone"),
+        })
+    return {"count": len(cals), "calendars": cals}
 
 
 @tool(
@@ -14146,7 +15837,7 @@ async def import_cj_product_to_shopify(ctx: ToolContext, args: Dict[str, Any]) -
             "status":      "active",
             "tags":        f"dropship,cj,{prod.get('categoryName', '')}",
             "variants":    variants,
-            "images":      [{"src": img} for img in images[:5] if img],
+            "images":      [{"src": img} for img in images[:15] if img],
         }
     }
 
@@ -14809,7 +16500,7 @@ async def import_aliexpress_product_to_shopify(ctx: ToolContext, args: Dict[str,
 
     title       = args.get("product_title") or ae_item.get("subject", "")
     description = ae_item.get("detail", "")
-    images      = [i.strip() for i in ae_images.split(";") if i.strip()][:5] if ae_images else []
+    images      = [i.strip() for i in ae_images.split(";") if i.strip()][:15] if ae_images else []
 
     # Cost from first SKU or base price
     cost_price = 0.0
@@ -15366,6 +17057,14 @@ async def publish_blog_post(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str,
 async def shopify_publish_blog_post(ctx: ToolContext, args: Dict[str, Any]):
     from .composio_helper import composio_proxy as nango_proxy
     import httpx as _httpx
+    from plan_enforcement import enforce_blogpost_limit
+    from fastapi import HTTPException
+
+    try:
+        # Enforce subscription plan blogpost limits before publishing
+        await enforce_blogpost_limit(ctx.db, ctx.business_id)
+    except HTTPException as e:
+        return {"error": e.detail, "success": False}
 
     title   = args["title"]
     content = args.get("content", "")
@@ -17391,3 +19090,127 @@ async def manage_gmail_filters(ctx: ToolContext, args: Dict[str, Any]) -> Dict[s
     except Exception as e:
         logger.exception("[manage_gmail_filters] error")
         return {"error": str(e)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# BROWSER AUTOMATION TOOLS (Chrome Extension Integration)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="browser_navigate",
+    description="Navigate the user's active browser window to a specific website/URL.",
+    parameters={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "description": "The destination web address/URL (e.g. 'https://google.com')"}
+        }
+    }
+)
+async def browser_navigate(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        url = args["url"]
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"https://{url}"
+        result = await send_browser_command(ctx.user_id, "navigate", url=url)
+        return result
+    except Exception as e:
+        return {"error": f"Browser navigation tool error: {e}"}
+
+
+@tool(
+    name="browser_click",
+    description="Click an element matching the provided CSS or XPath selector inside the user's browser tab.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The target CSS selector, XPath, or 'text=Label' pattern (e.g. 'button.submit', '//div[@id=\"btn\"]', or 'text=Submit')"}
+        }
+    }
+)
+async def browser_click(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "click", selector=args["selector"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser click tool error: {e}"}
+
+
+@tool(
+    name="browser_type",
+    description="Focus and type text into an input or form field inside the user's browser tab.",
+    parameters={
+        "type": "object",
+        "required": ["selector", "text"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback pattern targeting the input element"},
+            "text": {"type": "string", "description": "The characters/text value to type into the field"}
+        }
+    }
+)
+async def browser_type(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "type", selector=args["selector"], text=args["text"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser typing tool error: {e}"}
+
+
+@tool(
+    name="browser_scroll",
+    description="Smoothly scroll the target element or page viewport into view.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback targeting the element to scroll to"}
+        }
+    }
+)
+async def browser_scroll(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(ctx.user_id, "scroll", selector=args["selector"])
+        return result
+    except Exception as e:
+        return {"error": f"Browser scroll tool error: {e}"}
+
+
+@tool(
+    name="browser_extract",
+    description="Extract raw text, values, HTML elements, or specific attribute contents from matching page elements.",
+    parameters={
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+            "selector": {"type": "string", "description": "The CSS selector, XPath, or text fallback pattern targeting the element to extract from"},
+            "data_type": {
+                "type": "string",
+                "enum": ["text", "value", "html", "attribute"],
+                "default": "text",
+                "description": "What type of data to extract: 'text' (inner text content), 'value' (input form values), 'html' (outer HTML structure), or 'attribute' (custom node properties)"
+            },
+            "attribute_name": {
+                "type": "string",
+                "description": "The name of the attribute to extract (only needed when data_type is set to 'attribute' - e.g. 'href' or 'src')"
+            }
+        }
+    }
+)
+async def browser_extract(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from browser_control.websocket import send_browser_command
+        result = await send_browser_command(
+            ctx.user_id, 
+            "extract", 
+            selector=args["selector"], 
+            data_type=args.get("data_type", "text"),
+            text=args.get("attribute_name")
+        )
+        return result
+    except Exception as e:
+        return {"error": f"Browser extract tool error: {e}"}

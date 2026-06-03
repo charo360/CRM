@@ -74,6 +74,11 @@ async def add_credits(db, user_id: str, credits: float, note: str = "manual") ->
     return float(result["balance_credits"])
 
 _FREQ_DELTA = {
+    "1h":     timedelta(hours=1),
+    "2h":     timedelta(hours=2),
+    "6h":     timedelta(hours=6),
+    "12h":    timedelta(hours=12),
+    "24h":    timedelta(hours=24),
     "daily":  timedelta(hours=24),
     "weekly": timedelta(days=7),
     "manual": None,
@@ -197,7 +202,7 @@ async def run_all_due(db) -> None:
     now = datetime.utcnow()
     due = await db[SCOUTS_COL].find({
         "enabled": True,
-        "frequency": {"$in": ["daily", "weekly"]},
+        "frequency": {"$in": ["1h", "2h", "6h", "12h", "24h", "daily", "weekly"]},
         "$or": [
             {"next_run": {"$lte": now}},
             {"next_run": {"$exists": False}},

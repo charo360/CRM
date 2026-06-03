@@ -260,7 +260,7 @@ export default function ClientSitesPage() {
         </div>
         <button
           onClick={() => { setShowCreate(true); setCreateError(""); }}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand transition-colors"
         >
           <Plus size={15} /> New Client Site
         </button>
@@ -338,7 +338,7 @@ export default function ClientSitesPage() {
               <button
                 onClick={createSite}
                 disabled={creating || !form.business_name.trim() || !form.client_email.trim()}
-                className="flex items-center gap-2 px-5 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 disabled:opacity-50"
+                className="flex items-center gap-2 px-5 py-2 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand disabled:opacity-50"
               >
                 {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                 Create Site
@@ -362,7 +362,7 @@ export default function ClientSitesPage() {
           </p>
           <button
             onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand"
           >
             <Plus size={14} /> Create First Site
           </button>

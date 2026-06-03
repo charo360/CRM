@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import { customersApi, messagesApi, aiApi, Customer, Message } from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
-import { Search, Send, Loader2, MessageSquare, RefreshCw, Sparkles, RotateCcw } from "lucide-react";
+import { timeAgo, cn } from "@/lib/utils";
+import { Search, Send, Loader2, MessageSquare, RefreshCw, Sparkles, ArrowLeft } from "lucide-react";
 
 type Channel = "whatsapp" | "instagram";
 
@@ -152,9 +152,14 @@ export default function MessagesPage() {
   const selectedCustomer = customers.find((c) => c.id === selectedId);
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-[calc(100dvh-3.5rem)] min-h-0 overflow-hidden lg:h-full">
       {/* Left — customer list */}
-      <div className="w-72 shrink-0 border-r border-slate-200 flex flex-col bg-white">
+      <div
+        className={cn(
+          "flex w-full shrink-0 flex-col border-r border-slate-200 bg-white md:w-80 lg:w-72",
+          selectedId ? "hidden md:flex" : "flex"
+        )}
+      >
         {/* Channel switcher */}
         <div className="p-3 border-b border-slate-100">
           <div className="flex rounded-lg bg-slate-100 p-1 gap-1">
@@ -249,17 +254,25 @@ export default function MessagesPage() {
 
       {/* Right — chat */}
       {!selectedId ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 bg-slate-50 text-slate-400">
+        <div className="hidden flex-1 flex-col items-center justify-center gap-3 bg-slate-50 text-slate-400 md:flex">
           <MessageSquare size={48} className="opacity-30" />
           <p className="text-base font-medium">Select a conversation</p>
           <p className="text-sm">Pick a customer from the left to view messages</p>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col bg-slate-50">
+        <div className="flex min-w-0 flex-1 flex-col bg-slate-50">
           {/* Chat header */}
-          <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-slate-200">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-brand/15 flex items-center justify-center">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2.5 sm:px-5 sm:py-3">
+            <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedId(null)}
+                className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 md:hidden"
+                aria-label="Back to conversations"
+              >
+                <ArrowLeft size={18} />
+              </button>
+              <div className="w-9 h-9 shrink-0 rounded-full bg-brand/15 flex items-center justify-center">
                 {selectedCustomer?.profile_picture ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={selectedCustomer.profile_picture} alt={selectedCustomer.name} className="w-9 h-9 rounded-full object-cover" />
@@ -269,13 +282,13 @@ export default function MessagesPage() {
                   </span>
                 )}
               </div>
-              <div>
-                <p className="font-semibold text-slate-900 text-sm">{selectedCustomer?.name}</p>
-                <p className="text-xs text-slate-400">{selectedCustomer?.phone_number}</p>
+              <div className="min-w-0">
+                <p className="truncate font-semibold text-slate-900 text-sm">{selectedCustomer?.name}</p>
+                <p className="truncate text-xs text-slate-400">{selectedCustomer?.phone_number}</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${CHANNEL_CONFIG[channel].bg} ${CHANNEL_CONFIG[channel].color}`}>
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+              <span className={`hidden items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full sm:flex ${CHANNEL_CONFIG[channel].bg} ${CHANNEL_CONFIG[channel].color}`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${CHANNEL_CONFIG[channel].dot}`} />
                 {CHANNEL_CONFIG[channel].label}
               </span>
@@ -287,7 +300,7 @@ export default function MessagesPage() {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 space-y-2 sm:px-5">
             {loadingMessages ? (
               <div className="flex justify-center py-10">
                 <Loader2 size={24} className="animate-spin text-slate-400" />
@@ -302,7 +315,7 @@ export default function MessagesPage() {
                 const isOut = msg.direction === "outgoing";
                 return (
                   <div key={msg.id} className={`flex ${isOut ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[72%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                    <div className={`max-w-[88%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed sm:max-w-[72%] sm:px-4 ${
                       isOut
                         ? "bg-brand-dark text-white rounded-br-sm"
                         : "bg-white text-slate-800 shadow-sm border border-slate-100 rounded-bl-sm"
@@ -324,14 +337,14 @@ export default function MessagesPage() {
           </div>
 
           {/* Input */}
-          <div className="bg-white border-t border-slate-200">
+          <div className="border-t border-slate-200 bg-white">
             {/* AI Controls */}
-            <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100">
-              <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 sm:px-4">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <button
                   onClick={handleAIDraft}
                   disabled={aiDrafting || !selectedId}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand-dark hover:text-brand-dark hover:bg-brand/10 rounded-lg disabled:opacity-50 transition-colors"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-brand-dark hover:bg-brand/10 rounded-lg disabled:opacity-50 transition-colors sm:px-3"
                 >
                   <Sparkles size={12} className={aiDrafting ? "animate-spin" : ""} />
                   {aiDrafting ? "Drafting..." : "AI Draft"}
@@ -359,7 +372,10 @@ export default function MessagesPage() {
               )}
             </div>
             
-            <form onSubmit={handleSend} className="flex items-end gap-2 px-4 py-3">
+            <form
+              onSubmit={handleSend}
+              className="flex items-end gap-2 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4"
+            >
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}

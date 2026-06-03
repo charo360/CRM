@@ -93,9 +93,27 @@ async def ae_call(method: str, params: Dict[str, Any], *, creds: Optional[Dict[s
         err = data["error_response"]
         raise RuntimeError(f"AliExpress API error [{err.get('code')}]: {err.get('msg', err)}")
 
-    # Unwrap the nested response key (e.g. "aliexpress_ds_product_search_get_response")
+    # Unwrap the nested response key (e.g. "aliexpress_ds_text_search_response")
     response_key = method.replace(".", "_") + "_response"
-    return data.get(response_key, data)
+    body = data.get(response_key, data)
+
+    # Some endpoints embed errors inside the unwrapped body (code without a result/data)
+    if isinstance(body, dict):
+        code = body.get("code")
+        if code and not any(k in body for k in ("result", "data", "products")):
+            msg = body.get("message") or body.get("msg") or code
+            if code == "EXCEPTION_TEXT_SEARCH_FOR_DS":
+                msg = "AliExpress DS text search requires an OAuth access_token — connect via /api/aliexpress/oauth/start"
+            raise RuntimeError(f"AliExpress API error [{code}]: {msg}")
+    return body
+
+
+_SORT_MAP = {
+    "SALE_PRICE_ASC":     "min_price,asc",
+    "SALE_PRICE_DESC":    "min_price,desc",
+    "LAST_VOLUME_DESC":   "orders,desc",
+    "LAST_VOLUME_ASC":    "orders,asc",
+}
 
 
 async def ae_ds_search(
@@ -107,22 +125,32 @@ async def ae_ds_search(
     page_size: int = 20,
     page_no: int = 1,
     sort: str = "SALE_PRICE_ASC",
+    country_code: str = "US",
+    currency: str = "USD",
+    local: str = "en_US",
     creds: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Search AliExpress DS product catalog."""
+    """Search AliExpress DS product catalog via aliexpress.ds.text.search.
+
+    Requires an access_token (per-user OAuth) — without it the API returns
+    EXCEPTION_TEXT_SEARCH_FOR_DS.
+    """
     params: Dict[str, Any] = {
-        "keywords":  keyword,
-        "page_size": min(page_size, 50),
-        "page_no":   page_no,
-        "sort":      sort,
+        "keyWord":     keyword,
+        "countryCode": country_code,
+        "currency":    currency,
+        "local":       local,
+        "pageSize":    min(page_size, 50),
+        "pageIndex":   page_no,
+        "sortBy":      _SORT_MAP.get(sort, sort),
     }
     if category_id:
-        params["category_ids"] = category_id
+        params["categoryId"] = category_id
     if min_price is not None:
-        params["min_sale_price"] = int(min_price * 100)  # AE uses cents
+        params["minPrice"] = min_price
     if max_price is not None:
-        params["max_sale_price"] = int(max_price * 100)
-    return await ae_call("aliexpress.ds.product.search.get", params, creds=creds)
+        params["maxPrice"] = max_price
+    return await ae_call("aliexpress.ds.text.search", params, creds=creds)
 
 
 async def ae_ds_product_detail(product_id: str, ship_to: str = "US", *, creds: Optional[Dict[str, str]] = None) -> Dict[str, Any]:

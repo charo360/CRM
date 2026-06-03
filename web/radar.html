@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Market Radar — AI Scout</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    /* ---- Radar Grid ---- */
+    .radar-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      padding: 20px 24px;
+    }
+
+    /* ---- Section ---- */
+    .radar-section {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .section-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .section-dot.red { background: var(--red); }
+    .section-dot.amber { background: var(--amber); }
+    .section-dot.blue { background: var(--blue); }
+    .section-dot.green { background: var(--green); }
+
+    /* ---- Signal Card ---- */
+    .signal-card {
+      background: var(--surface);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      border-left: 3px solid;
+      transition: all 0.15s;
+    }
+
+    .signal-card:hover {
+      box-shadow: var(--shadow-md);
+    }
+
+    .signal-card.red { border-left-color: var(--red); }
+    .signal-card.amber { border-left-color: var(--amber); }
+    .signal-card.blue { border-left-color: var(--blue); }
+    .signal-card.green { border-left-color: var(--green); }
+
+    /* ---- Card Header ---- */
+    .signal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .signal-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .signal-badge {
+      padding: 4px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .signal-badge.hot {
+      background: #FEE2E2;
+      color: var(--red);
+    }
+
+    .signal-badge.hiring {
+      background: #FEF3C7;
+      color: #92400E;
+    }
+
+    .signal-badge.opportunity {
+      background: #FEF3C7;
+      color: #D97706;
+    }
+
+    .signal-badge.seasonal {
+      background: #FEF3C7;
+      color: #D97706;
+    }
+
+    .signal-badge.forecast {
+      background: #DBEAFE;
+      color: #1E40AF;
+    }
+
+    /* ---- Card Body ---- */
+    .signal-body {
+      font-size: 12px;
+      color: var(--text2);
+      line-height: 1.6;
+      margin-bottom: 12px;
+    }
+
+    .signal-body strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    /* ---- Card Meta ---- */
+    .signal-meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .signal-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* ---- Card Actions ---- */
+    .signal-actions {
+      display: flex;
+      gap: 8px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .signal-btn {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.12s;
+      text-align: center;
+    }
+
+    .signal-btn:hover {
+      background: var(--surface2);
+      border-color: var(--border2);
+    }
+
+    .signal-btn.primary {
+      background: var(--green);
+      border-color: var(--green);
+      color: white;
+    }
+
+    .signal-btn.primary:hover {
+      background: #047857;
+      border-color: #047857;
+    }
+
+    .signal-btn.secondary {
+      color: var(--muted);
+    }
+
+    /* ---- Highlight Text ---- */
+    .highlight-text {
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--gdim);
+      color: var(--green);
+      font-weight: 600;
+    }
+
+    .highlight-text.red {
+      background: var(--rdim);
+      color: var(--red);
+    }
+
+    .highlight-text.blue {
+      background: var(--bdim);
+      color: var(--blue);
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <a class="brand" href="#">
+      <div class="brand-dot"></div>
+      <span class="brand-name">AI Scout</span>
+    </a>
+    <div class="top-chips">
+      <div class="chip"><strong>302</strong>&nbsp;scanned</div>
+      <div class="chip"><strong>3</strong>&nbsp;agents live</div>
+      <div class="chip"><strong>KES 0</strong>&nbsp;spent</div>
+      <div class="live-badge"><div class="live-dot"></div> LIVE</div>
+    </div>
+    <div class="avatar">SM</div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Leads</div>
+    <a class="nav-item" href="hunt.html">
+      <i class="ti ti-target nav-icon"></i> Hunt
+      <span class="nav-badge red">7</span>
+    </a>
+    <a class="nav-item" href="pulse.html">
+      <i class="ti ti-radar nav-icon"></i> Pulse
+    </a>
+    <div class="nav-section">Intelligence</div>
+    <a class="nav-item" href="funding.html">
+      <i class="ti ti-moneybag nav-icon"></i> Funding
+      <span class="nav-badge grn">2</span>
+    </a>
+    <a class="nav-item active" href="radar.html">
+      <i class="ti ti-trending-up nav-icon"></i> Market radar
+      <span class="nav-badge blu">5</span>
+    </a>
+    <div class="nav-section">Automation</div>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-adjustments-horizontal nav-icon"></i> Scouts setup
+    </a>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-robot nav-icon"></i> Autopilot
+    </a>
+    <div class="sidebar-bottom">
+      <a class="nav-item" href="setup.html">
+        <i class="ti ti-settings nav-icon"></i> Settings
+      </a>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+    <!-- Page header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">Market radar</div>
+        <div class="page-subtitle">Signals that predict future demand before competitors see it</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn" onclick="runRecon()">
+          <i class="ti ti-building"></i> Recon
+        </button>
+        <button class="btn" onclick="runPredictions()">
+          <i class="ti ti-trending-up"></i> Predict
+        </button>
+        <button class="btn primary" onclick="runFusion()">
+          <i class="ti ti-sparkles"></i> Fuse Signals
+        </button>
+      </div>
+    </div>
+
+    <!-- Main scroll -->
+    <div class="main-scroll">
+      <div class="radar-grid">
+
+        <!-- LEFT COLUMN -->
+        <div class="radar-section">
+          
+          <!-- ACT NOW Section -->
+          <div class="section-header">
+            <div class="section-dot red"></div>
+            ACT NOW
+          </div>
+
+          <!-- Signal 1 -->
+          <div class="signal-card red">
+            <div class="signal-header">
+              <div>
+                <div class="signal-title">New office registered — Upperhill</div>
+              </div>
+              <div class="signal-badge hot">Hot signal</div>
+            </div>
+            <div class="signal-body">
+              <strong>KRA registered Greentech Solutions Inc</strong> in Upperhill last week. Company profile suggests 50+ employees. New offices = furniture orders within 30–90 days.
+            </div>
+            <div class="signal-meta">
+              <div class="signal-meta-item">Upperhill</div>
+              <div class="signal-meta-item">3 days ago</div>
+            </div>
+            <div class="signal-actions">
+              <button class="signal-btn primary" onclick="alert('Reaching out...')">Reach out now</button>
+              <button class="signal-btn secondary" onclick="alert('Signal saved')">Save signal</button>
+            </div>
+          </div>
+
+          <!-- Signal 2 -->
+          <div class="signal-card red">
+            <div class="signal-header">
+              <div>
+                <div class="signal-title">Tender: Govt office refurbishment</div>
+              </div>
+              <div class="signal-badge hot">Hot signal</div>
+            </div>
+            <div class="signal-body">
+              <strong>Ministry of Finance</strong> published a furniture supply tender for 3 Nairobi floors. Budget KES 4.2M. Deadline in 18 days.
+            </div>
+            <div class="signal-meta">
+              <div class="signal-meta-item">18 days left</div>
+              <div class="signal-meta-item">KES 4.2M</div>
+            </div>
+            <div class="signal-actions">
+              <button class="signal-btn primary" onclick="alert('Opening tender...')">View tender</button>
+              <button class="signal-btn secondary" onclick="alert('Signal saved')">Save signal</button>
+            </div>
+          </div>
+
+          <!-- WATCH CLOSELY Section -->
+          <div class="section-header" style="margin-top: 20px;">
+            <div class="section-dot amber"></div>
+            WATCH CLOSELY
+          </div>
+
+          <!-- Signal 3 -->
+          <div class="signal-card amber">
+            <div class="signal-header">
+              <div>
+                <div class="signal-title">Back-to-school surge incoming</div>
+              </div>
+              <div class="signal-badge seasonal">Seasonal</div>
+            </div>
+            <div class="signal-body">
+              Historical data shows a <span class="highlight-text red">35% spike in school furniture orders</span> in Jan–Feb. Schools start sourcing in mid-November — the time to market to principals is now.
+            </div>
+            <div class="signal-meta">
+              <div class="signal-meta-item">Peaks in 6 weeks</div>
+            </div>
+            <div class="signal-actions">
+              <button class="signal-btn primary" onclick="alert('Creating campaign...')">Create campaign</button>
+              <button class="signal-btn secondary" onclick="alert('Reminder set')">Remind me</button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- RIGHT COLUMN -->
+        <div class="radar-section">
+          
+          <!-- HIRING SIGNALS Section -->
+          <div class="section-header">
+            <div class="section-dot green"></div>
+            HIRING SIGNALS
+          </div>
+
+          <!-- Signal 4 -->
+          <div class="signal-card green">
+            <div class="signal-header">
+              <div>
+                <div class="signal-title">Safaricom hiring 80 new staff</div>
+              </div>
+              <div class="signal-badge hiring">Hiring signal</div>
+            </div>
+            <div class="signal-body">
+              LinkedIn shows <strong>Safaricom posted 80 job openings</strong> for a new Westlands office. Mass hiring = office expansion = furniture needed in 60–90 days.
+            </div>
+            <div class="signal-meta">
+              <div class="signal-meta-item">Westlands</div>
+              <div class="signal-meta-item">this month</div>
+            </div>
+            <div class="signal-actions">
+              <button class="signal-btn primary" onclick="alert('Tracking company...')">Track this company</button>
+              <button class="signal-btn secondary" onclick="alert('Signal saved')">Save</button>
+            </div>
+          </div>
+
+          <!-- Signal 5 -->
+          <div class="signal-card green">
+            <div class="signal-header">
+              <div>
+                <div class="signal-title">3 new co-working spaces opening</div>
+              </div>
+              <div class="signal-badge opportunity">Opportunity</div>
+            </div>
+            <div class="signal-body">
+              Permits filed for <span class="highlight-text">3 co-working buildouts</span> in Kilimani and Karen. Each space typically spends KES 500K–2M on furniture at launch.
+            </div>
+            <div class="signal-meta">
+              <div class="signal-meta-item">Kilimani · Karen</div>
+            </div>
+            <div class="signal-actions">
+              <button class="signal-btn primary" onclick="alert('Reaching out...')">Reach out</button>
+              <button class="signal-btn secondary" onclick="alert('Signal saved')">Save</button>
+            </div>
+          </div>
+
+          <!-- ON THE HORIZON Section -->
+          <div class="section-header" style="margin-top: 20px;">
+            <div class="section-dot blue"></div>
+            ON THE HORIZON
+          </div>
+
+          <!-- Signal 6 -->
+          <div class="signal-card blue">
+            <div class="signal-header">
+              <div>
+                <div class="signal-title">Q1 2026 demand forecast</div>
+              </div>
+              <div class="signal-badge forecast">Forecast</div>
+            </div>
+            <div class="signal-body">
+              AI predicts a <span class="highlight-text blue">+22% increase in office furniture demand</span> in Nairobi in Q1 2026, based on business registrations, hiring signals and economic indicators.
+            </div>
+            <div class="signal-meta">
+              <div class="signal-meta-item">In ~10 weeks</div>
+            </div>
+            <div class="signal-actions">
+              <button class="signal-btn primary" onclick="alert('Opening forecast...')">View full forecast</button>
+            </div>
+          </div>
+
+        </div>
+
+      </div><!-- /radar-grid -->
+    </div><!-- /main-scroll -->
+  </main>
+
+</div><!-- /shell -->
+
+<script src="api-client.js"></script>
+<script>
+  let running = {
+    recon: false,
+    predictions: false,
+    fusion: false
+  };
+
+  async function runRecon() {
+    if (running.recon) return;
+    running.recon = true;
+    
+    try {
+      showToast('Running reconnaissance...', 'info');
+      await scoutApi.runRecon();
+      
+      // Wait for results
+      setTimeout(async () => {
+        const data = await scoutApi.getRecon();
+        showToast(`Found ${data.recon?.length || 0} new signals`, 'success');
+        running.recon = false;
+        // Reload page to show new data
+        location.reload();
+      }, 35000);
+    } catch (error) {
+      showToast(error.message, 'error');
+      running.recon = false;
+    }
+  }
+
+  async function runPredictions() {
+    if (running.predictions) return;
+    running.predictions = true;
+    
+    try {
+      showToast('Generating predictions...', 'info');
+      await scoutApi.runPredictions();
+      
+      // Wait for results
+      setTimeout(async () => {
+        const data = await scoutApi.getPredictions();
+        showToast(`Generated ${data.predictions?.length || 0} predictions`, 'success');
+        running.predictions = false;
+        location.reload();
+      }, 35000);
+    } catch (error) {
+      showToast(error.message, 'error');
+      running.predictions = false;
+    }
+  }
+
+  async function runFusion() {
+    if (running.fusion) return;
+    running.fusion = true;
+    
+    try {
+      showToast('Fusion Engine running...', 'info');
+      await scoutApi.runFusion();
+      
+      // Wait for results
+      setTimeout(async () => {
+        const data = await scoutApi.getClusters();
+        showToast(`Found ${data.clusters?.length || 0} signal clusters`, 'success');
+        running.fusion = false;
+        location.reload();
+      }, 35000);
+    } catch (error) {
+      showToast(error.message, 'error');
+      running.fusion = false;
+    }
+  }
+</script>
+</body>
+</html>

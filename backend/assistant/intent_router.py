@@ -318,6 +318,8 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "connect shopify", "shopify sync", "shopify autopilot",
         "run shopify", "shopify discount", "create discount shopify",
         "abandoned cart", "cart recovery", "shopify win-back",
+        "create shopify", "create shop", "build shopify", "build store",
+        "create store", "create a shop", "create a store",
     ],
 
     # ── Payments ──────────────────────────────────────────────────────────────
@@ -355,13 +357,25 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
     ],
     "gmail": [
         "gmail", "google mail", "my email", "email inbox",
-        "send email", "email campaign", "email thread",
-        "gmail draft", "gmail label",
+        "send email", "email thread", "gmail draft", "gmail label",
+        # Inbox cleanup — disambiguates from broadcasts/email-marketing,
+        # which kept stealing requests like "delete my promotions"
+        "delete email", "delete emails", "trash email", "trash emails",
+        "clean inbox", "clean up inbox", "clean my inbox", "empty inbox",
+        "delete promotions", "delete promotional emails", "trash promotions",
+        "delete newsletters", "trash newsletters", "unsubscribe newsletter",
+        "remove emails from", "delete emails from", "bulk delete email",
+        "delete spam", "trash spam", "my gmail",
     ],
     "microsoft": [
         "microsoft", "outlook", "office 365", "microsoft teams",
         "onedrive", "sharepoint", "microsoft calendar",
         "outlook email", "outlook calendar", "ms teams",
+        # Outlook inbox cleanup (mirrors Gmail to keep parity)
+        "delete outlook email", "delete outlook emails", "trash outlook email",
+        "clean outlook inbox", "clean up outlook", "empty outlook inbox",
+        "delete outlook promotions", "delete outlook newsletters",
+        "my outlook", "outlook inbox", "ms 365 inbox",
     ],
     "google_calendar": [
         "google calendar", "calendar event", "my calendar",
@@ -425,6 +439,7 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "investment memo", "investor memo", "fundraising document",
         "press release", "write a press release",
         "meeting minutes", "write minutes", "draft minutes",
+        "meeting notes", "smart notes", "search notes", "recent meetings", "find notes from",
         "contract", "draft a contract", "service agreement", "write an agreement",
         "letter of intent", "loi", "write a letter of intent",
         "client onboarding", "onboarding letter", "welcome letter",
@@ -767,7 +782,7 @@ async def _llm_route_choice(
             "- customers: customer records, segments, VIPs, health scores, at-risk customers\n"
             "- contacts: leads, contact database, import contacts, contact records (not customers)\n"
             "- quotes: short pricing docs — quotes, estimates, scope-of-work for a specific customer\n"
-            "- document: long-form written docs — business plans, pitch decks, contracts, reports, press releases, proposals\n"
+            "- document: long-form written docs — business plans, pitch decks, contracts, reports, press releases, proposals, meeting minutes/notes, smart notes\n"
             "- meta_ads: Facebook/Instagram ad campaigns, budgets, ROAS, ad performance strategy\n"
             "- google_ads: Google Search/Display/Performance Max campaigns, quality score, adwords\n"
             "- creative: generating/refining VISUALS — graphics, flyers, ad images, social post images, carousels\n"
@@ -785,7 +800,7 @@ async def _llm_route_choice(
             "1. 'invoice' / 'create invoice' / 'unpaid invoice' / 'overdue invoice' → invoices (not finance, not stripe)\n"
             "2. 'expense' / 'cash flow' / 'P&L' / 'profit and loss' → finance (not invoices)\n"
             "3. 'stripe [anything]' → stripe; otherwise payment records → payments\n"
-            "4. 'business plan' / 'pitch deck' / 'contract' / 'press release' / 'write a report' → document\n"
+            "4. 'business plan' / 'pitch deck' / 'contract' / 'press release' / 'write a report' / 'meeting notes' / 'smart notes' → document\n"
             "5. 'quote' / 'estimate' / 'scope of work' for a specific customer → quotes (not document)\n"
             "6. 'design an ad' / 'ad graphic' / 'ad image' / 'make a flyer' → creative (not meta_ads)\n"
             "7. 'facebook ad campaign' / 'ad budget' / 'ROAS' / 'ad spend' / 'retargeting' → meta_ads (not creative)\n"

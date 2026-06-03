@@ -73,16 +73,6 @@ interface SocialSettings {
   marketplace_lng?: number;
 }
 
-interface CustomAgent {
-  _id: string;
-  name: string;
-  emoji: string;
-  description: string;
-  schedule: "daily" | "weekly" | "on_demand";
-  enabled: boolean;
-  created_at: string;
-}
-
 interface ReconItem {
   _id: string;
   title: string;
@@ -179,6 +169,16 @@ interface ShopifyLead {
   has_free_shipping: boolean | null;
   currency: string | null;
   platform: string | null;
+}
+
+interface LinkedInLead {
+  linkedin_url: string;
+  name: string;
+  email: string | null;
+  title?: string;
+  company?: string;
+  status: "ok" | "no_email" | "error";
+  error?: string;
 }
 
 interface LeadScout {
@@ -400,7 +400,6 @@ export default function ActionModePage() {
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [customAgents, setCustomAgents] = useState<CustomAgent[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [recon, setRecon] = useState<ReconItem[]>([]);
@@ -416,7 +415,6 @@ export default function ActionModePage() {
 
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
-  const [runningAgent, setRunningAgent] = useState<string | null>(null);
   const [runningScoutId, setRunningScoutId] = useState<string | null>(null);
   const [runningSocial, setRunningSocial] = useState(false);
   const [runningFusion, setRunningFusion] = useState(false);
@@ -440,14 +438,42 @@ export default function ActionModePage() {
   const [shopifyAdded, setShopifyAdded] = useState<Set<string>>(new Set());
   const [shopifyAdding, setShopifyAdding] = useState<string | null>(null);
 
-  // Business leads search
-  const [bizKeyword, setBizKeyword] = useState("");
-  const [bizLocation, setBizLocation] = useState("");
-  const [bizSearching, setBizSearching] = useState(false);
-  const [bizLeads, setBizLeads] = useState<BusinessLead[]>([]);
-  const [bizSearched, setBizSearched] = useState(false);
-  const [bizAdded, setBizAdded] = useState<Set<string>>(new Set());
-  const [bizAdding, setBizAdding] = useState<string | null>(null);
+  // Funding Finder
+  type FundingOpp = {
+    title: string;
+    url: string;
+    snippet: string;
+    score: number;
+    source?: string;
+    status?: "open" | "closed" | "rolling" | "unknown";
+    deadline?: string | null;   // ISO date YYYY-MM-DD
+    amount?: string | null;
+  };
+  const [fundSector,    setFundSector]    = useState("");
+  const [fundLocation,  setFundLocation]  = useState("");
+  const [fundStage,     setFundStage]     = useState("");
+  const [fundKeywords,  setFundKeywords]  = useState("");
+  const [fundTypes,     setFundTypes]     = useState<Set<string>>(new Set(["grant","vc","accelerator"]));
+  const [fundSearching, setFundSearching] = useState(false);
+  const [fundResults,   setFundResults]   = useState<FundingOpp[]>([]);
+  const [fundSaving,    setFundSaving]    = useState(false);
+  const [fundSavedUrls, setFundSavedUrls] = useState<Set<string>>(new Set());
+
+  // LinkedIn Leads — URL discovery (via search) + Email Finder enricher
+  const [liSearchTitle,    setLiSearchTitle]    = useState("");
+  const [liSearchLocation, setLiSearchLocation] = useState("");
+  const [liSearchCompany,  setLiSearchCompany]  = useState("");
+  const [liSearchKeywords, setLiSearchKeywords] = useState("");
+  const [liSearching,      setLiSearching]      = useState(false);
+  const [liFoundProfiles,  setLiFoundProfiles]  = useState<{ linkedin_url: string; name: string; headline?: string; snippet?: string }[]>([]);
+  const [liExpandedTitles, setLiExpandedTitles] = useState<string[]>([]);
+  const [linkedinUrlsText, setLinkedinUrlsText] = useState("");
+  const [linkedinEnriching, setLinkedinEnriching] = useState(false);
+  const [linkedinResults, setLinkedinResults] = useState<LinkedInLead[]>([]);
+  const [linkedinFilter, setLinkedinFilter] = useState<"all"|"with_email"|"no_email">("all");
+  const [linkedinBulkSaving, setLinkedinBulkSaving] = useState(false);
+  const [linkedinSavingId, setLinkedinSavingId] = useState<string|null>(null);
+  const [linkedinAddedIds, setLinkedinAddedIds] = useState<Set<string>>(new Set());
 
   // Lead Scouts (automated saved searches — separate from AI Scouts)
   const [leadScouts, setLeadScouts] = useState<LeadScout[]>([]);
@@ -484,14 +510,6 @@ export default function ActionModePage() {
   const [newCompetitor, setNewCompetitor] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Custom Agent Creation state
-  const [isAddAgentOpen, setIsAddAgentOpen] = useState(false);
-  const [newAgentName, setNewAgentName] = useState("");
-  const [newAgentDescription, setNewAgentDescription] = useState("");
-  const [newAgentEmoji, setNewAgentEmoji] = useState("🤖");
-  const [newAgentSchedule, setNewAgentSchedule] = useState<"on_demand" | "daily" | "weekly">("on_demand");
-  const [creatingAgent, setCreatingAgent] = useState(false);
-
   // Live ticker
   const [isLive, setIsLive] = useState(false);
   const [livePhase, setLivePhase] = useState("");
@@ -510,13 +528,12 @@ export default function ActionModePage() {
         setTimeout(() => reject(new Error("Connection request timed out. Please check if your backend server and MongoDB database are running.")), 10000)
       );
 
-      const [s, f, q, o, ca, ss, cl, pr, rc, ia, sc, pl] = await Promise.race([
+      const [s, f, q, o, ss, cl, pr, rc, ia, sc, pl] = await Promise.race([
         Promise.all([
           api.get<Settings>("/action-mode/settings"),
           api.get<{ items: FeedItem[] }>("/action-mode/feed"),
           api.get<{ items: QueueItem[] }>("/action-mode/queue"),
           api.get<{ opportunities: Opportunity[] }>("/action-mode/opportunities"),
-          api.get<{ agents: CustomAgent[] }>("/action-mode/agents"),
           api.get<SocialSettings>("/action-mode/social/settings"),
           api.get<{ clusters: Cluster[] }>("/action-mode/clusters"),
           api.get<{ predictions: Prediction[] }>("/action-mode/predictions"),
@@ -531,7 +548,6 @@ export default function ActionModePage() {
       setFeed(f.items);
       setQueue(q.items);
       setOpportunities(o.opportunities);
-      setCustomAgents(ca.agents);
       setSocialSettings(ss);
       setClusters(cl.clusters);
       setPredictions(pr.predictions);
@@ -576,7 +592,6 @@ export default function ActionModePage() {
     setTimeout(async () => {
       setIsLive(false);
       setRunning(false);
-      setRunningAgent(null);
       await load();
     }, ms);
   }
@@ -593,13 +608,26 @@ export default function ActionModePage() {
     startLive(40000);
     try {
       await api.post("/action-mode/run-social", {});
-      toast.success("Social scan started — leads appear below");
+      toast.success("Scan started — leads appear below");
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed");
       setIsLive(false);
     } finally {
       setRunningSocial(false);
     }
+  }
+
+  function stopScan() {
+    // Releases the UI immediately. Background work that already started will
+    // finish on the server; the next /load() will pick up whatever it found.
+    setRunningSocial(false);
+    setRunning(false);
+    setIsLive(false);
+    // Best-effort: tell the backend the user gave up so it can stop early
+    // if the runners are checking for the flag (no-op otherwise).
+    api.post("/action-mode/run/cancel", {}).catch(() => { /* silent */ });
+    void load();
+    toast.info("Scan stopped");
   }
 
   async function runScout(id: string) {
@@ -654,53 +682,6 @@ export default function ActionModePage() {
       setExpandedItem(null);
     } catch { toast.error("Action failed"); }
     finally { setProcessing(p => ({ ...p, [item._id]: false })); }
-  }
-
-  async function handleAddAgent() {
-    if (!newAgentName.trim() || !newAgentDescription.trim()) {
-      toast.error("Please fill out name and description");
-      return;
-    }
-    setCreatingAgent(true);
-    try {
-      const res = await api.post<CustomAgent>("/action-mode/agents", {
-        name: newAgentName.trim(),
-        emoji: newAgentEmoji,
-        description: newAgentDescription.trim(),
-        schedule: newAgentSchedule,
-        enabled: true,
-      });
-      setCustomAgents(prev => [...prev, res]);
-      setIsAddAgentOpen(false);
-      setNewAgentName("");
-      setNewAgentDescription("");
-      setNewAgentEmoji("🤖");
-      setNewAgentSchedule("on_demand");
-      toast.success("Custom Agent created successfully!");
-    } catch {
-      toast.error("Failed to create agent");
-    } finally {
-      setCreatingAgent(false);
-    }
-  }
-
-  async function runCustomAgent(agent: CustomAgent) {
-    setRunningAgent(agent._id);
-    toast.success(`Agent ${agent.name} is running scans...`);
-    try {
-      await api.post(`/action-mode/agents/${agent._id}/run`, {});
-      setTimeout(async () => {
-        await load();
-        setRunningAgent(null);
-        toast.success(`Agent ${agent.name} completed run!`);
-      }, 7000);
-    } catch {
-      setTimeout(async () => {
-        await load();
-        setRunningAgent(null);
-        toast.success(`Agent ${agent.name} completed run!`);
-      }, 7000);
-    }
   }
 
   async function saveSocialSettings(next: SocialSettings) {
@@ -807,65 +788,178 @@ export default function ActionModePage() {
     }
   }
 
-  async function searchBusinessLeads() {
-    if (!bizKeyword.trim()) { toast.error("Enter a keyword or business type"); return; }
-    setBizSearching(true);
-    setBizLeads([]);
-    setBizSearched(false);
+  // ─── Funding Finder ────────────────────────────────────────────────────────
+
+  function fundDeadlineLabel(opp: FundingOpp): { text: string; tone: "open"|"closed"|"rolling"|"unknown"|"urgent" } {
+    const status = opp.status ?? "unknown";
+    if (status === "rolling") return { text: "Rolling — apply anytime", tone: "rolling" };
+    if (status === "closed")  return { text: opp.deadline ? `Closed ${new Date(opp.deadline).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}` : "Closed", tone: "closed" };
+    if (!opp.deadline) return { text: status === "open" ? "Open — deadline TBA" : "Status unknown", tone: status === "open" ? "open" : "unknown" };
+    const d = new Date(opp.deadline);
+    const days = Math.ceil((d.getTime() - Date.now()) / 86_400_000);
+    if (days < 0)   return { text: `Closed ${d.toLocaleDateString()}`, tone: "closed" };
+    const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    if (days <= 14) return { text: `Closes ${dateStr} · ${days}d left`, tone: "urgent" };
+    return { text: `Closes ${dateStr}`, tone: "open" };
+  }
+
+  function toggleFundType(t: string) {
+    setFundTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t); else next.add(t);
+      return next;
+    });
+  }
+
+  async function searchFunding() {
+    const types = Array.from(fundTypes);
+    if (!fundSector.trim() && !fundLocation.trim() && !fundKeywords.trim() && types.length === 0) {
+      toast.error("Enter a sector, location, or pick at least one funding type");
+      return;
+    }
+    setFundSearching(true);
+    setFundResults([]);
     try {
-      const res = await api.post<{ leads: BusinessLead[] }>("/action-mode/business-leads/search", {
-        keyword: bizKeyword.trim(),
-        location: bizLocation.trim(),
-      });
-      setBizLeads(res.leads ?? []);
-      setBizSearched(true);
-      if (!res.leads?.length) toast.info("No businesses found — try a different keyword or location");
-    } catch (e: any) {
-      toast.error(e?.message ?? "Search failed");
+      const res = await api.post<{ opportunities: FundingOpp[]; total: number }>(
+        "/action-mode/funding/search",
+        {
+          sector:        fundSector.trim(),
+          location:      fundLocation.trim(),
+          funding_types: types,
+          stage:         fundStage,
+          keywords:      fundKeywords.trim(),
+          limit:         30,
+        }
+      );
+      setFundResults(res.opportunities ?? []);
+      if (!res.opportunities?.length) toast.info("No funding opportunities found — try broader criteria");
+      else toast.success(`Found ${res.opportunities.length} opportunit${res.opportunities.length === 1 ? "y" : "ies"}`);
+    } catch (e) {
+      toast.error("Search failed: " + ((e as Error).message ?? ""));
     } finally {
-      setBizSearching(false);
+      setFundSearching(false);
     }
   }
 
-  async function addBusinessLeadToCRM(lead: BusinessLead) {
-    const key = lead.domain || lead.name.toLowerCase();
-    setBizAdding(key);
+  async function saveFundingOpps(opps: FundingOpp[]) {
+    const fresh = opps.filter(o => !fundSavedUrls.has(o.url));
+    if (!fresh.length) { toast.info("Nothing new to save"); return; }
+    setFundSaving(true);
     try {
-      // Duplicate check
-      const check = await api.get<{ exists: boolean; name: string }>(
-        `/customers/duplicate-check?email=${encodeURIComponent(lead.email || "")}&domain=${encodeURIComponent(lead.domain || "")}`
+      const res = await api.post<{ saved: number; skipped: number }>(
+        "/action-mode/funding/save",
+        { opportunities: fresh }
       );
-      if (check.exists) {
-        toast.info(`${check.name || lead.name} is already in your CRM`);
-        setBizAdded(prev => new Set(prev).add(key));
-        return;
-      }
-      const notes = [
-        lead.address ? `Address: ${lead.address}` : "",
-        lead.category ? `Category: ${lead.category}` : "",
-        lead.website ? `Website: ${lead.website}` : "",
-        lead.rating ? `Google Rating: ${lead.rating} (${lead.reviews ?? 0} reviews)` : "",
-        lead.place_id ? `Google Maps: https://www.google.com/maps/place/?q=place_id:${lead.place_id}` : "",
-        `Found via: ${lead.keyword}`,
-      ].filter(Boolean).join("\n");
-      const payload: any = {
-        name: lead.name,
-        email: lead.email || undefined,
-        phone_number: lead.phone || undefined,
-        notes,
-        tags: ["Business Lead", lead.category || "Business"].filter(Boolean),
-      };
-      if (!payload.phone_number && !payload.email) {
-        const seed = lead.name.replace(/[^0-9]/g, "").slice(0, 7).padEnd(7, "0");
-        payload.phone_number = `+1555${seed}`;
-      }
-      await api.post("/customers", payload);
-      setBizAdded(prev => new Set(prev).add(key));
-      toast.success(`${lead.name} added to CRM`);
-    } catch {
-      toast.error("Failed to add to CRM");
+      toast.success(`Saved ${res.saved} opportunit${res.saved === 1 ? "y" : "ies"}${res.skipped > 0 ? ` (${res.skipped} already saved)` : ""}`);
+      setFundSavedUrls(prev => {
+        const next = new Set(prev);
+        fresh.forEach(o => next.add(o.url));
+        return next;
+      });
+      await load();
+    } catch (e) {
+      toast.error("Save failed: " + ((e as Error).message ?? ""));
     } finally {
-      setBizAdding(null);
+      setFundSaving(false);
+    }
+  }
+
+  // ─── LinkedIn Leads (Search + Email Finder) ────────────────────────────────
+
+  async function findLinkedinUrls() {
+    if (!liSearchTitle.trim() && !liSearchCompany.trim() && !liSearchLocation.trim() && !liSearchKeywords.trim()) {
+      toast.error("Enter at least a title, company, location or keywords");
+      return;
+    }
+    setLiSearching(true);
+    try {
+      const res = await api.post<{ profiles: { linkedin_url: string; name: string; headline?: string; snippet?: string }[]; total: number; expanded_titles: string[] }>(
+        "/action-mode/linkedin-leads/find-urls",
+        {
+          title:    liSearchTitle.trim(),
+          location: liSearchLocation.trim(),
+          company:  liSearchCompany.trim(),
+          keywords: liSearchKeywords.trim(),
+          limit:    50,
+        }
+      );
+      setLiFoundProfiles(res.profiles ?? []);
+      setLiExpandedTitles(res.expanded_titles ?? []);
+      if (!res.profiles?.length) toast.info("No LinkedIn profiles found — try a broader title or remove filters");
+      else toast.success(`Found ${res.profiles.length} LinkedIn profile${res.profiles.length === 1 ? "" : "s"}`);
+    } catch (e) {
+      toast.error("Search failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLiSearching(false);
+    }
+  }
+
+  function addFoundToTextarea(urls: string[]) {
+    const existing = new Set(linkedinUrlsText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean));
+    const merged = [...existing, ...urls.filter(u => !existing.has(u))];
+    setLinkedinUrlsText(merged.join("\n"));
+    toast.success(`Added ${urls.length} URL${urls.length === 1 ? "" : "s"} to enrichment queue`);
+  }
+
+  async function enrichLinkedinUrls() {
+    const urls = linkedinUrlsText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    if (urls.length === 0) { toast.error("Paste at least one LinkedIn URL"); return; }
+    setLinkedinEnriching(true);
+    setLinkedinResults([]);
+    try {
+      const res = await api.post<{ leads: LinkedInLead[]; with_email: number; total: number }>(
+        "/action-mode/linkedin-leads/enrich",
+        { urls }
+      );
+      setLinkedinResults(res.leads ?? []);
+      toast.success(`Found ${res.with_email} email${res.with_email !== 1 ? "s" : ""} from ${res.total} URLs`);
+    } catch (e) {
+      toast.error("Enrich failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLinkedinEnriching(false);
+    }
+  }
+
+  async function addLinkedinLeadToCRM(lead: LinkedInLead) {
+    setLinkedinSavingId(lead.linkedin_url);
+    try {
+      await api.post("/action-mode/linkedin-leads/bulk-save", {
+        leads: [lead],
+        contact_type: addAsType,
+      });
+      setLinkedinAddedIds(prev => new Set(prev).add(lead.linkedin_url));
+      toast.success(`${lead.name || lead.email || "Lead"} added as ${addAsType}`);
+    } catch (e) {
+      toast.error("Failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLinkedinSavingId(null);
+    }
+  }
+
+  async function bulkAddLinkedinToCRM() {
+    const filtered = linkedinResults.filter(l => {
+      if (linkedinFilter === "with_email") return !!l.email;
+      if (linkedinFilter === "no_email") return !l.email;
+      return true;
+    }).filter(l => !linkedinAddedIds.has(l.linkedin_url));
+    if (!filtered.length) { toast.info("Nothing to add"); return; }
+    if (!confirm(`Add ${filtered.length} LinkedIn lead${filtered.length > 1 ? "s" : ""} to CRM as ${addAsType}?`)) return;
+    setLinkedinBulkSaving(true);
+    try {
+      const res = await api.post<{ saved: number; skipped: number }>("/action-mode/linkedin-leads/bulk-save", {
+        leads: filtered,
+        contact_type: addAsType,
+      });
+      toast.success(`Added ${res.saved} ${addAsType.toLowerCase()}${res.saved !== 1 ? "s" : ""}${res.skipped > 0 ? ` (${res.skipped} skipped)` : ""}`);
+      setLinkedinAddedIds(prev => {
+        const next = new Set(prev);
+        filtered.forEach(l => next.add(l.linkedin_url));
+        return next;
+      });
+    } catch (e) {
+      toast.error("Bulk save failed: " + ((e as Error).message ?? ""));
+    } finally {
+      setLinkedinBulkSaving(false);
     }
   }
 
@@ -1151,17 +1245,8 @@ export default function ActionModePage() {
     { id: "hunt", label: "Hunt", icon: Target, badge: hotCount || undefined },
     { id: "pulse", label: "Pulse", icon: Radio },
     { id: "funding", label: "Funding", icon: DollarSign, badge: fundingOpps.length || undefined },
-    // Inject Custom Agents dynamically
-    ...customAgents
-      .filter(a => a.enabled)
-      .map(a => ({
-        id: `custom_${a._id}` as Section,
-        label: a.name,
-        icon: (props: any) => <span className="w-4 h-4 flex items-center justify-center text-sm select-none pr-0.5">{a.emoji || "🤖"}</span>,
-        badge: opportunities.filter(o => o.agent_name === a.name).length || undefined,
-      })),
     { id: "shopify_leads", label: "Shopify Leads", icon: ShoppingBag },
-    { id: "business_leads", label: "Business Leads", icon: Building2 },
+    { id: "business_leads", label: "LinkedIn Leads", icon: Briefcase },
     { id: "lead_scouts", label: "Lead Scouts", icon: Antenna, badge: inboxLeads.length || undefined },
     { id: "radar", label: "Market Radar", icon: BarChart3, badge: radarCount || undefined },
     { id: "setup", label: "Scouts Setup", icon: Settings2 },
@@ -1292,14 +1377,21 @@ export default function ActionModePage() {
                   <p className="text-sm text-slate-500 mt-1">Respond first, win the deal</p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <button
-                    onClick={runSocial}
-                    disabled={runningSocial}
-                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm"
-                  >
-                    {runningSocial ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
-                    Scan Now
-                  </button>
+                  {runningSocial || isLive ? (
+                    <button
+                      onClick={stopScan}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg transition-all shadow-sm">
+                      <X className="w-3.5 h-3.5" />
+                      Stop Scan
+                    </button>
+                  ) : (
+                    <button
+                      onClick={runSocial}
+                      className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all shadow-sm">
+                      <Search className="w-3.5 h-3.5" />
+                      Scan Now
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1381,14 +1473,22 @@ export default function ActionModePage() {
                   <Target className="w-12 h-12 mb-3 opacity-20" />
                   <p className="text-sm font-medium">No leads yet</p>
                   <p className="text-xs mt-1">Run a scan or set up your scouts to start hunting</p>
+                  {runningSocial || isLive ? (
+                    <button
+                      onClick={stopScan}
+                      className="mt-4 flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg">
+                      <X className="w-3.5 h-3.5" />
+                      Stop Scan
+                    </button>
+                  ) : (
                   <button
                     onClick={runSocial}
-                    disabled={runningSocial}
                     className="mt-4 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700"
                   >
                     <Search className="w-3.5 h-3.5" />
                     Run First Scan
                   </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3 pb-24">
@@ -1815,98 +1915,250 @@ export default function ActionModePage() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h1 className="text-2xl font-bold text-slate-800">Funding opportunities</h1>
-                  <p className="text-sm text-slate-500 mt-1">AI-matched grants, VCs and accelerators for your business</p>
+                  <p className="text-sm text-slate-500 mt-1">Search for grants, VCs, accelerators and government programs that match your business.</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button 
-                    onClick={load}
-                    className="px-4 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold rounded-lg transition-all shadow-sm"
-                  >
-                    Refresh
-                  </button>
-                  <button className="px-4 py-2 border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold rounded-lg transition-all shadow-sm">
-                    Filter
+              </div>
+
+              {/* STEP 1 — Search form */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">1</span>
+                  <h2 className="text-sm font-bold text-slate-800">Find funding opportunities</h2>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Sector / Industry</label>
+                    <input
+                      value={fundSector}
+                      onChange={e => setFundSector(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !fundSearching && searchFunding()}
+                      placeholder="e.g. fintech, agritech, climate"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Location / Region</label>
+                    <input
+                      value={fundLocation}
+                      onChange={e => setFundLocation(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !fundSearching && searchFunding()}
+                      placeholder="e.g. United States, Kenya, EU"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Stage</label>
+                    <select
+                      value={fundStage}
+                      onChange={e => setFundStage(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand">
+                      <option value="">Any stage</option>
+                      <option value="pre_seed">Pre-seed</option>
+                      <option value="seed">Seed</option>
+                      <option value="series_a">Series A</option>
+                      <option value="series_b">Series B+ / Growth</option>
+                      <option value="established">Established business</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Extra keywords</label>
+                    <input
+                      value={fundKeywords}
+                      onChange={e => setFundKeywords(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !fundSearching && searchFunding()}
+                      placeholder="e.g. women founders, climate-focused"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                </div>
+
+                <div className="mb-3">
+                  <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Funding types</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {([
+                      { id: "grant",         label: "Grants",        icon: "🎁" },
+                      { id: "vc",            label: "VCs",           icon: "🚀" },
+                      { id: "accelerator",   label: "Accelerators",  icon: "⚡" },
+                      { id: "angel",         label: "Angel investors", icon: "👼" },
+                      { id: "government",    label: "Government",    icon: "🏛️" },
+                      { id: "crowdfunding",  label: "Crowdfunding",  icon: "👥" },
+                      { id: "loan",          label: "Loans",         icon: "🏦" },
+                    ] as const).map(t => {
+                      const on = fundTypes.has(t.id);
+                      return (
+                        <button key={t.id}
+                          onClick={() => toggleFundType(t.id)}
+                          className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all flex items-center gap-1 ${on ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+                          <span>{t.icon}</span> {t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Search className="w-3 h-3" />
+                    Fill any field — sector + location work best.
+                  </p>
+                  <button
+                    onClick={searchFunding}
+                    disabled={fundSearching}
+                    className="flex items-center gap-2 px-5 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-sm font-semibold rounded-xl shadow-sm">
+                    {fundSearching
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
+                      : <><Search className="w-4 h-4" /> Find funding</>}
                   </button>
                 </div>
               </div>
 
-              {/* Alert Banner */}
+              {/* STEP 2 — Results */}
+              {(fundSearching || fundResults.length > 0) && (
+                <>
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">2</span>
+                      <h2 className="text-sm font-bold text-slate-800">Results {fundResults.length > 0 && <span className="text-slate-400 font-normal">({fundResults.length})</span>}</h2>
+                    </div>
+                    {fundResults.length > 0 && (
+                      <button
+                        onClick={() => saveFundingOpps(fundResults)}
+                        disabled={fundSaving}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg shadow-sm">
+                        {fundSaving
+                          ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving…</>
+                          : <><Plus className="w-3.5 h-3.5" />Save all to pipeline</>}
+                      </button>
+                    )}
+                  </div>
+
+                  {fundSearching && fundResults.length === 0 && (
+                    <div className="space-y-3">
+                      {[1,2,3].map(i => (
+                        <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse h-24" />
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    {fundResults.map((opp, idx) => {
+                      const accent = ["border-l-emerald-500","border-l-blue-500","border-l-purple-500","border-l-amber-500","border-l-pink-500"][idx % 5];
+                      const saved = fundSavedUrls.has(opp.url);
+                      const dl = fundDeadlineLabel(opp);
+                      const toneClass = {
+                        open:    "bg-emerald-50 text-emerald-700 border-emerald-200",
+                        urgent:  "bg-amber-50 text-amber-800 border-amber-200",
+                        rolling: "bg-blue-50 text-blue-700 border-blue-200",
+                        closed:  "bg-slate-100 text-slate-500 border-slate-200",
+                        unknown: "bg-slate-50 text-slate-500 border-slate-200",
+                      }[dl.tone];
+                      return (
+                        <div key={opp.url} className={`bg-white rounded-xl border border-slate-100 ${accent} border-l-4 p-4 hover:shadow-sm transition-all`}>
+                          <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 80px 200px" }}>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                <span className="font-bold text-slate-800 text-sm">{opp.title}</span>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${toneClass}`}>{dl.text}</span>
+                                {opp.amount && (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">💵 {opp.amount}</span>
+                                )}
+                                {opp.source && (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 select-none capitalize">{opp.source}</span>
+                                )}
+                              </div>
+                              {opp.snippet && (
+                                <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{opp.snippet}</p>
+                              )}
+                              <p className="text-[11px] text-brand font-mono mt-1 truncate">{opp.url.replace(/^https?:\/\//,"").split("/")[0]}</p>
+                            </div>
+
+                            <div className="flex flex-col items-center justify-center">
+                              <IntentRing score={opp.score ?? 5} />
+                              <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <a href={opp.url} target="_blank" rel="noopener noreferrer"
+                                className="w-full py-1.5 bg-brand-dark hover:bg-brand text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
+                                Open →
+                              </a>
+                              {saved ? (
+                                <span className="w-full py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg flex items-center justify-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />Saved
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => saveFundingOpps([opp])}
+                                  disabled={fundSaving}
+                                  className="w-full py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold rounded-lg flex items-center justify-center gap-1">
+                                  <Plus className="w-3 h-3" />Save
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* Saved pipeline (existing fundingOpps from previous runs) */}
               {fundingOpps.length > 0 && (
-                <div className="mb-6 flex items-center gap-3 bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl px-4 py-3.5 text-sm text-emerald-800 shadow-[0_1px_2px_rgba(0,0,0,0.01)]">
-                  <span className="text-lg select-none">🎯</span>
-                  <p className="leading-relaxed font-medium">
-                    <span className="font-bold">{fundingOpps.length} funding match{fundingOpps.length !== 1 ? "es" : ""} found.</span>{" "}
-                    {fundingOpps[0] && <>Top match: {fundingOpps[0].title}{fundingOpps[0].score != null ? ` — AI score ${fundingOpps[0].score.toFixed(1)}/10` : ""}.</>}
-                  </p>
+                <div className="mt-8">
+                  <div className="flex items-center gap-2 mb-3">
+                    <h2 className="text-sm font-bold text-slate-800">Your saved opportunities</h2>
+                    <span className="text-xs text-slate-400">({fundingOpps.length})</span>
+                  </div>
+                  <div className="space-y-2">
+                    {fundingOpps.map(opp => {
+                      const savedOpp = opp as Opportunity & { status?: FundingOpp["status"]; deadline?: string | null; amount?: string | null };
+                      const dl = fundDeadlineLabel({
+                        title: savedOpp.title, url: savedOpp.url, snippet: savedOpp.snippet, score: savedOpp.score ?? 5,
+                        status: savedOpp.status, deadline: savedOpp.deadline, amount: savedOpp.amount,
+                      });
+                      const toneClass = {
+                        open:    "bg-emerald-50 text-emerald-700 border-emerald-200",
+                        urgent:  "bg-amber-50 text-amber-800 border-amber-200",
+                        rolling: "bg-blue-50 text-blue-700 border-blue-200",
+                        closed:  "bg-slate-100 text-slate-500 border-slate-200",
+                        unknown: "bg-slate-50 text-slate-500 border-slate-200",
+                      }[dl.tone];
+                      return (
+                        <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-3 flex items-center gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-bold text-slate-800 text-sm truncate">{opp.title}</p>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${toneClass}`}>{dl.text}</span>
+                              {savedOpp.amount && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">💵 {savedOpp.amount}</span>
+                              )}
+                            </div>
+                            {opp.snippet && <p className="text-xs text-slate-500 line-clamp-1 mt-0.5">{opp.snippet}</p>}
+                          </div>
+                          <IntentRing score={opp.score ?? 5} />
+                          {opp.url && (
+                            <a href={opp.url} target="_blank" rel="noopener noreferrer"
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg">
+                              Apply →
+                            </a>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 
-              {/* Funding Rows */}
-              <div className="space-y-3">
-                {fundingOpps.length === 0 ? (
-                  <div className="bg-white rounded-xl border border-slate-100 p-10 text-center">
-                    <div className="text-3xl mb-3">💰</div>
-                    <p className="text-sm font-semibold text-slate-600 mb-1">No funding matches yet</p>
-                    <p className="text-xs text-slate-400 mb-4">Run your AI scouts to find grants, loans, and accelerators matched to your business.</p>
-                    <button
-                      onClick={load}
-                      className="px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-lg transition-all border border-emerald-100"
-                    >
-                      Refresh
-                    </button>
-                  </div>
-                ) : (
-                  fundingOpps.map((opp, idx) => {
-                    const accentColors = ["#059669", "#2563EB", "#7C3AED", "#D97706", "#DC2626"];
-                    const accent = accentColors[idx % accentColors.length];
-                    const score = opp.score ?? 5;
-                    return (
-                      <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200" style={{ borderLeftWidth: 3, borderLeftColor: accent }}>
-                        <div className="grid gap-4 items-center" style={{ gridTemplateColumns: "1fr 100px 140px" }}>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <span className="font-bold text-slate-800 text-sm">{opp.title}</span>
-                              {opp.platform && (
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 select-none">{opp.platform}</span>
-                              )}
-                            </div>
-                            {opp.agent_name && (
-                              <p className="text-xs text-slate-400 font-semibold mb-1 select-none">
-                                Via {opp.agent_name}
-                              </p>
-                            )}
-                            {opp.snippet && (
-                              <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{opp.snippet}</p>
-                            )}
-                          </div>
-
-                          <div className="flex flex-col items-center justify-center">
-                            <IntentRing score={score} />
-                            <span className="text-[10px] text-slate-400 mt-1 font-semibold select-none">AI match</span>
-                          </div>
-
-                          <div className="flex flex-col gap-1.5">
-                            {opp.url ? (
-                              <a
-                                href={opp.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1"
-                              >
-                                Apply now →
-                              </a>
-                            ) : (
-                              <button className="w-full py-1.5 bg-[#059669] hover:bg-[#047857] text-white text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1">
-                                View details →
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              {/* Empty state when nothing yet */}
+              {!fundSearching && fundResults.length === 0 && fundingOpps.length === 0 && (
+                <div className="bg-white rounded-xl border border-dashed border-slate-200 p-10 text-center">
+                  <div className="text-3xl mb-3">💰</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-1">Search for funding above</p>
+                  <p className="text-xs text-slate-400">Pick a sector, location and the types of funding you're looking for. Save what looks promising.</p>
+                </div>
+              )}
             </div>
           )}
 
@@ -2175,232 +2427,303 @@ export default function ActionModePage() {
             </div>
           )}
 
-          {/* ────────────────── BUSINESS LEADS ────────────────── */}
+          {/* ────────────────── LINKEDIN LEADS ────────────────── */}
           {section === "business_leads" && (
             <div className="p-5">
               {/* Header */}
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h1 className="text-2xl font-bold text-slate-800">Business Leads</h1>
-                  <p className="text-sm text-slate-500 mt-1">Find any type of business by keyword and location — get phone, email, address and website from Google Maps data</p>
+                  <h1 className="text-2xl font-bold text-slate-800">LinkedIn Leads</h1>
+                  <p className="text-sm text-slate-500 mt-1">Search LinkedIn profiles by title + location, then enrich them with verified emails.</p>
                 </div>
               </div>
 
-              {/* Search bar */}
+              {/* ── STEP 1: Search LinkedIn URLs ── */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-4 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">1</span>
+                  <h2 className="text-sm font-bold text-slate-800">Find LinkedIn profiles</h2>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Job title</label>
+                    <input
+                      value={liSearchTitle}
+                      onChange={e => setLiSearchTitle(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. marketing director, CTO, founder"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Location</label>
+                    <input
+                      value={liSearchLocation}
+                      onChange={e => setLiSearchLocation(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. San Francisco, Germany"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Company (optional)</label>
+                    <input
+                      value={liSearchCompany}
+                      onChange={e => setLiSearchCompany(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. Microsoft, Stripe"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Extra keywords</label>
+                    <input
+                      value={liSearchKeywords}
+                      onChange={e => setLiSearchKeywords(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !liSearching && findLinkedinUrls()}
+                      placeholder="e.g. B2B SaaS, fintech"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Search className="w-3 h-3" />
+                    Title alone usually works best. Add location/company to narrow down.
+                  </p>
+                  <button
+                    onClick={findLinkedinUrls}
+                    disabled={liSearching}
+                    className="flex items-center gap-2 px-5 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-sm font-semibold rounded-xl shadow-sm">
+                    {liSearching
+                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
+                      : <><Search className="w-4 h-4" /> Find LinkedIn URLs</>}
+                  </button>
+                </div>
+
+                {/* AI-expanded titles */}
+                {liExpandedTitles.length > 1 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[9px] text-slate-400 font-semibold uppercase tracking-wider mr-1">AI searched:</span>
+                    {liExpandedTitles.map((t, i) => (
+                      <span key={i} className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${i === 0 ? "bg-brand/10 text-brand-dark" : "bg-slate-100 text-slate-600"}`}>{t}</span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Found profiles list */}
+                {liFoundProfiles.length > 0 && (
+                  <div className="mt-4 border-t border-slate-100 pt-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-semibold text-slate-600">{liFoundProfiles.length} profiles found</p>
+                      <button
+                        onClick={() => addFoundToTextarea(liFoundProfiles.map(p => p.linkedin_url))}
+                        className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1">
+                        <Plus className="w-3 h-3" />Add all to queue
+                      </button>
+                    </div>
+                    <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                      {liFoundProfiles.map(p => (
+                        <div key={p.linkedin_url} className="flex items-start gap-2 p-2 rounded-lg hover:bg-slate-50 group">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-slate-800 truncate">{p.name || "Unknown"}</p>
+                            {p.headline && <p className="text-xs text-slate-500 truncate">{p.headline}</p>}
+                            <a href={p.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-brand hover:underline font-mono">
+                              {p.linkedin_url.replace(/^https?:\/\//,"").replace(/\/$/,"")}
+                            </a>
+                          </div>
+                          <button
+                            onClick={() => addFoundToTextarea([p.linkedin_url])}
+                            title="Add to enrichment queue"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity text-xs font-semibold text-emerald-600 hover:bg-emerald-50 px-2 py-1 rounded">
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── STEP 2: Enrich with emails ── */}
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-6 h-6 rounded-full bg-brand text-white text-xs font-bold flex items-center justify-center">2</span>
+                <h2 className="text-sm font-bold text-slate-800">Enrich with emails</h2>
+              </div>
+
+              {/* URL paste input */}
               <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-6 shadow-sm">
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <div className="flex-1">
-                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">Business type / keyword *</label>
-                    <input
-                      value={bizKeyword}
-                      onChange={e => setBizKeyword(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && !bizSearching && searchBusinessLeads()}
-                      placeholder="e.g. dental clinic, fitness gym, coffee roaster…"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
-                    />
-                  </div>
-                  <div className="w-full sm:w-56">
-                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">City / Location (optional)</label>
-                    <input
-                      value={bizLocation}
-                      onChange={e => setBizLocation(e.target.value)}
-                      placeholder="e.g. New York, Toronto, London…"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all"
-                    />
-                  </div>
-                  <div className="flex items-end">
+                <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5 block">LinkedIn profile URLs (one per line, or comma-separated)</label>
+                <textarea
+                  value={linkedinUrlsText}
+                  onChange={e => setLinkedinUrlsText(e.target.value)}
+                  rows={6}
+                  placeholder={"https://www.linkedin.com/in/ondra-urban/\nhttps://www.linkedin.com/in/satyanadella/\nhttps://www.linkedin.com/in/elonmusk/"}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition-all font-mono"
+                />
+                <div className="flex items-center justify-between mt-3 gap-3 flex-wrap">
+                  <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Briefcase className="w-3 h-3" />
+                    Up to 200 URLs per batch.
+                    {linkedinEnriching && <span className="text-amber-600 font-medium"> Finding verified emails…</span>}
+                  </p>
+                  <div className="flex gap-2">
                     <button
-                      onClick={searchBusinessLeads}
-                      disabled={bizSearching || !bizKeyword.trim()}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-all shadow-sm whitespace-nowrap"
-                    >
-                      {bizSearching
-                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Searching…</>
-                        : <><Search className="w-4 h-4" /> Find businesses</>}
+                      onClick={() => { setLinkedinUrlsText(""); setLinkedinResults([]); setLinkedinAddedIds(new Set()); }}
+                      className="px-3 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700">
+                      Clear
+                    </button>
+                    <button
+                      onClick={enrichLinkedinUrls}
+                      disabled={linkedinEnriching || !linkedinUrlsText.trim()}
+                      className="flex items-center gap-2 px-5 py-2 bg-brand-dark hover:bg-brand disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-all shadow-sm whitespace-nowrap">
+                      {linkedinEnriching
+                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Enriching…</>
+                        : <><Mail className="w-4 h-4" /> Find emails</>}
                     </button>
                   </div>
                 </div>
-                <p className="text-xs text-slate-400 mt-3 flex items-center gap-1.5">
-                  <Building2 className="w-3 h-3" />
-                  Pulls real listings from Google Maps — includes verified phone numbers and business addresses.
-                  {bizSearching && <span className="text-amber-600 font-medium"> Scraping websites for emails… this takes 15–30 seconds.</span>}
-                </p>
               </div>
 
               {/* Loading skeleton */}
-              {bizSearching && (
+              {linkedinEnriching && linkedinResults.length === 0 && (
                 <div className="space-y-3">
-                  {[1,2,3,4,5].map(i => (
-                    <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse">
-                      <div className="flex items-start gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-slate-200 shrink-0" />
-                        <div className="flex-1 space-y-2">
-                          <div className="h-4 bg-slate-200 rounded w-1/3" />
-                          <div className="h-3 bg-slate-100 rounded w-2/3" />
-                          <div className="flex gap-3 mt-1">
-                            <div className="h-3 bg-slate-100 rounded w-28" />
-                            <div className="h-3 bg-slate-100 rounded w-20" />
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <div className="h-8 w-24 bg-slate-200 rounded-xl" />
-                          <div className="h-8 w-20 bg-slate-100 rounded-xl" />
-                        </div>
-                      </div>
-                    </div>
+                  {[1,2,3].map(i => (
+                    <div key={i} className="bg-white rounded-xl border border-slate-100 p-4 animate-pulse h-20" />
                   ))}
                 </div>
               )}
 
-              {/* No results */}
-              {!bizSearching && bizSearched && bizLeads.length === 0 && (
-                <div className="bg-white rounded-xl border border-slate-100 p-10 text-center">
-                  <div className="text-3xl mb-3">🔍</div>
-                  <p className="text-sm font-semibold text-slate-600 mb-1">No businesses found</p>
-                  <p className="text-xs text-slate-400">Try a broader keyword or add a different city</p>
-                </div>
-              )}
-
               {/* Results */}
-              {!bizSearching && bizLeads.length > 0 && (
+              {!linkedinEnriching && linkedinResults.length > 0 && (
                 <div className="space-y-3">
-                  <p className="text-xs text-slate-500 font-medium">
-                    {bizLeads.length} businesses found for <span className="text-brand font-semibold">{bizKeyword}</span>
-                    {bizLocation && <> in <span className="text-brand font-semibold">{bizLocation}</span></>}
-                    {" — "}{bizLeads.filter(l => l.phone).length} with phone · {bizLeads.filter(l => l.email).length} with email
-                  </p>
-                  {bizLeads.map((lead, idx) => {
-                    const key = lead.domain || lead.name.toLowerCase();
-                    const mapsUrl = lead.place_id
-                      ? `https://www.google.com/maps/place/?q=place_id:${lead.place_id}`
-                      : lead.website;
-                    return (
-                      <div key={idx} className="bg-white rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:shadow-sm transition-all duration-200">
-                        <div className="flex items-start gap-4">
-                          {/* Icon + rating */}
-                          <div className="flex flex-col items-center gap-1 shrink-0">
-                            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center">
-                              <Building2 className="w-5 h-5 text-blue-600" />
+                  {/* Filter pills + add-as + bulk action */}
+                  <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {(["all","with_email","no_email"] as const).map(f => {
+                        const labels = { all: "All", with_email: "✓ With email", no_email: "No email" };
+                        const cnt = f === "all"
+                          ? linkedinResults.length
+                          : f === "with_email"
+                            ? linkedinResults.filter(l => !!l.email).length
+                            : linkedinResults.filter(l => !l.email).length;
+                        const isActive = linkedinFilter === f;
+                        const activeColor = f === "with_email" ? "bg-emerald-600 text-white border-emerald-600" : "bg-brand-dark text-white border-brand-dark";
+                        const styles = isActive ? activeColor : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50";
+                        return (
+                          <button key={f} onClick={() => setLinkedinFilter(f)}
+                            className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all ${styles}`}>
+                            {labels[f]} <span className={`ml-1 ${isActive ? "opacity-80" : "text-slate-400"}`}>({cnt})</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Add as:</label>
+                      <select
+                        value={addAsType}
+                        onChange={e => setAddAsType(e.target.value as typeof addAsType)}
+                        className="text-xs font-semibold border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 cursor-pointer hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand/30">
+                        <option value="Customer">Customer</option>
+                        <option value="Lead">Lead</option>
+                        <option value="Investor">Investor</option>
+                        <option value="Partner">Partner</option>
+                        <option value="Supplier">Supplier</option>
+                        <option value="Other">Other</option>
+                      </select>
+                      <button
+                        onClick={bulkAddLinkedinToCRM}
+                        disabled={linkedinBulkSaving}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg transition-all shadow-sm">
+                        {linkedinBulkSaving
+                          ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Adding…</>
+                          : <><Users className="w-3.5 h-3.5" />Add all to CRM</>}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Lead cards */}
+                  {linkedinResults
+                    .filter(l => linkedinFilter === "all" || (linkedinFilter === "with_email" ? !!l.email : !l.email))
+                    .map(lead => {
+                      const added = linkedinAddedIds.has(lead.linkedin_url);
+                      return (
+                        <div key={lead.linkedin_url}
+                          className={`bg-white rounded-xl border p-4 transition-all hover:shadow-sm ${lead.email ? "border-l-4 border-l-emerald-400 border-slate-100" : "border-slate-100"}`}>
+                          <div className="flex items-start gap-3">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${lead.email ? "bg-emerald-50 border border-emerald-100" : "bg-slate-50 border border-slate-100"}`}>
+                              <Briefcase className={`w-5 h-5 ${lead.email ? "text-emerald-600" : "text-slate-400"}`} />
                             </div>
-                            {lead.rating && (
-                              <span className="text-[10px] font-bold text-amber-600">
-                                ★ {lead.rating.toFixed(1)}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Info */}
-                          <div className="flex-1 min-w-0">
-                            {/* Name + badges */}
-                            <div className="flex items-center gap-2 flex-wrap mb-1">
-                              <span className="font-bold text-slate-800 text-sm">{lead.name}</span>
-                              {lead.category && (
-                                <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-2 py-0.5 rounded-full font-semibold">{lead.category}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-slate-800 text-sm">{lead.name || "Unknown"}</span>
+                                {lead.email ? (
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded-full font-semibold">Email found</span>
+                                ) : (
+                                  <span
+                                    title={lead.status === "error" ? `Could not fetch — ${lead.error || "unknown"}` : "No email in the directory for this profile"}
+                                    className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-semibold">
+                                    No email found
+                                  </span>
+                                )}
+                              </div>
+                              {(lead.title || lead.company) && (
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                  {lead.title}{lead.title && lead.company ? " · " : ""}{lead.company}
+                                </p>
                               )}
-                              {(lead.email || lead.phone) && (
-                                <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded-full font-semibold">Has contact</span>
-                              )}
-                              {lead.reviews && lead.reviews > 0 && (
-                                <span className="text-[10px] text-slate-400">{lead.reviews.toLocaleString()} reviews</span>
-                              )}
-                            </div>
-
-                            {/* Address */}
-                            {lead.address && (
-                              <p className="text-xs text-slate-500 flex items-center gap-1 mb-1.5">
-                                <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
-                                {lead.address}
-                              </p>
-                            )}
-
-                            {/* Contact row */}
-                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                              {lead.phone && (
-                                <span className="flex items-center gap-1 text-xs text-slate-600">
-                                  <Phone className="w-3 h-3 text-slate-400" />
-                                  <button
-                                    onClick={() => { navigator.clipboard.writeText(lead.phone!); toast.success("Phone copied"); }}
-                                    className="hover:text-brand transition-colors font-medium"
-                                  >{lead.phone}</button>
-                                </span>
-                              )}
-                              {lead.email && (
-                                <span className="flex items-center gap-1 text-xs text-slate-600">
-                                  <Mail className="w-3 h-3 text-slate-400" />
+                              <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                                {lead.email && (
                                   <button
                                     onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
-                                    className="hover:text-brand transition-colors"
-                                  >{lead.email}</button>
-                                </span>
-                              )}
-                              {lead.website && (
-                                <a href={lead.website} target="_blank" rel="noopener noreferrer"
-                                  className="text-xs text-brand hover:underline font-mono">
-                                  {lead.domain || lead.website.replace(/^https?:\/\//, "").split("/")[0]}
+                                    className="flex items-center gap-1 text-xs text-slate-600 hover:text-brand transition-colors">
+                                    <Mail className="w-3 h-3 text-slate-400" />{lead.email}
+                                  </button>
+                                )}
+                                <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer"
+                                  className="text-xs text-brand hover:underline font-mono break-all">
+                                  {lead.linkedin_url.replace(/^https?:\/\//,"").replace(/\/$/,"")}
                                 </a>
+                              </div>
+                            </div>
+                            <div className="flex flex-col gap-1.5 shrink-0">
+                              {added ? (
+                                <span className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg">
+                                  <CheckCircle2 className="w-3 h-3" />In CRM
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => addLinkedinLeadToCRM(lead)}
+                                  disabled={linkedinSavingId === lead.linkedin_url}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all">
+                                  {linkedinSavingId === lead.linkedin_url
+                                    ? <><Loader2 className="w-3 h-3 animate-spin" />Saving…</>
+                                    : <><Users className="w-3 h-3" />Add to CRM</>}
+                                </button>
+                              )}
+                              {lead.email && (
+                                <button
+                                  onClick={() => { navigator.clipboard.writeText(lead.email!); toast.success("Email copied"); }}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all">
+                                  <Copy className="w-3 h-3" />Copy email
+                                </button>
                               )}
                             </div>
                           </div>
-
-                          {/* Actions */}
-                          <div className="flex flex-col gap-1.5 shrink-0">
-                            {bizAdded.has(key) ? (
-                              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg">
-                                <CheckCircle2 className="w-3 h-3" /> In CRM
-                              </div>
-                            ) : (
-                              <button
-                                onClick={() => addBusinessLeadToCRM(lead)}
-                                disabled={bizAdding === key}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-dark hover:bg-brand disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all"
-                              >
-                                {bizAdding === key
-                                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Adding…</>
-                                  : <><Users className="w-3 h-3" /> Add to CRM</>}
-                              </button>
-                            )}
-                            {lead.phone && (
-                              <button
-                                onClick={() => { navigator.clipboard.writeText(lead.phone!); toast.success("Phone copied"); }}
-                                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
-                              >
-                                <Copy className="w-3 h-3" /> Copy phone
-                              </button>
-                            )}
-                            {mapsUrl && (
-                              <a
-                                href={mapsUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-medium rounded-lg transition-all"
-                              >
-                                <Globe className="w-3 h-3" /> View on Maps
-                              </a>
-                            )}
-                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
               )}
 
               {/* Empty initial state */}
-              {!bizSearching && !bizSearched && (
+              {!linkedinEnriching && linkedinResults.length === 0 && (
                 <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center">
-                  <div className="text-4xl mb-4">🏢</div>
-                  <p className="text-sm font-semibold text-slate-600 mb-2">Find any business as a lead</p>
+                  <div className="text-4xl mb-4">🔗</div>
+                  <p className="text-sm font-semibold text-slate-600 mb-2">Paste LinkedIn URLs to find their emails</p>
                   <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                    Search by business type and city — we pull real Google Maps listings with verified phone numbers, then scrape each website for email addresses.
+                    Each URL gets enriched with a verified email. Then filter by "With email" and bulk-add to your CRM as customers, leads, investors, partners or suppliers.
                   </p>
-                  <div className="flex flex-wrap justify-center gap-2 mt-4">
-                    {["dental clinic", "fitness gym", "coffee roaster", "marketing agency", "law firm"].map(ex => (
-                      <button key={ex} onClick={() => { setBizKeyword(ex); }}
-                        className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition-all font-medium">
-                        {ex}
-                      </button>
-                    ))}
-                  </div>
                 </div>
               )}
             </div>
@@ -3684,311 +4007,6 @@ export default function ActionModePage() {
                 </button>
               </div>
 
-              {/* Custom agents */}
-              <div className="bg-white rounded-xl border border-slate-100 p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-slate-700">Custom Agents</h3>
-                  <button
-                    onClick={() => setIsAddAgentOpen(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 transition-all"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add Agent
-                  </button>
-                </div>
-                {customAgents.length === 0 ? (
-                  <p className="text-xs text-slate-400 text-center py-4">No custom agents yet</p>
-                ) : (
-                  <div className="space-y-2">
-                    {customAgents.map(agent => {
-                      const isRunning = runningAgent === agent._id;
-                      return (
-                        <div key={agent._id} className="flex items-center justify-between p-3 rounded-lg border border-slate-100 hover:bg-slate-50 transition-all">
-                          <div className="flex items-center gap-3">
-                            {/* Toggle */}
-                            <div
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                const nextEnabled = !agent.enabled;
-                                setCustomAgents(prev => prev.map(a => a._id === agent._id ? { ...a, enabled: nextEnabled } : a));
-                                try {
-                                  await api.put(`/action-mode/agents/${agent._id}`, {
-                                    name: agent.name,
-                                    emoji: agent.emoji,
-                                    description: agent.description,
-                                    schedule: agent.schedule,
-                                    enabled: nextEnabled,
-                                  });
-                                  toast.success(`${agent.name} ${nextEnabled ? "enabled" : "disabled"}`);
-                                } catch {
-                                  setCustomAgents(prev => prev.map(a => a._id === agent._id ? { ...a, enabled: !nextEnabled } : a));
-                                  toast.error("Failed to update agent");
-                                }
-                              }}
-                              className={`relative w-8 h-4.5 rounded-full transition-colors cursor-pointer flex-shrink-0 ${agent.enabled ? "bg-emerald-500" : "bg-slate-200"}`}
-                            >
-                              <div className={`absolute top-0.5 w-3.5 h-3.5 bg-white rounded-full shadow transition-transform ${agent.enabled ? "translate-x-3.5" : "translate-x-0.5"}`} />
-                            </div>
-                            <span className="text-base select-none">{agent.emoji}</span>
-                            <div>
-                              <p className="text-xs font-semibold text-slate-700">{agent.name}</p>
-                              <p className="text-[10px] text-slate-400 line-clamp-1 mt-0.5">{agent.description}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2.5">
-                            <span className="text-[9px] font-bold text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-0.5 rounded capitalize select-none">{agent.schedule}</span>
-                            
-                            {/* Run Now trigger button */}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                runCustomAgent(agent);
-                              }}
-                              disabled={isRunning || !agent.enabled}
-                              className={`p-1.5 rounded-lg border transition-all ${isRunning ? "border-emerald-200 bg-emerald-50 text-emerald-600 animate-pulse" : !agent.enabled ? "opacity-30 cursor-not-allowed" : "border-slate-100 hover:bg-slate-100 text-slate-500 hover:text-slate-700"}`}
-                              title="Run scanning session now"
-                            >
-                              {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                            </button>
-
-                            <button onClick={() => api.delete(`/action-mode/agents/${agent._id}`).then(() => setCustomAgents(p => p.filter(a => a._id !== agent._id)))} className="p-1.5 text-slate-300 hover:text-red-500 rounded-lg hover:bg-slate-100/50 transition-all">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ────────────────── CUSTOM AGENT PAGE ────────────────── */}
-          {section.startsWith("custom_") && (() => {
-            const agent = customAgents.find(a => `custom_${a._id}` === section);
-            if (!agent) return null;
-            const agentOpps = opportunities.filter(o => o.agent_name === agent.name);
-            const isRunning = runningAgent === agent._id;
-
-            return (
-              <div className="p-5 space-y-4">
-                {/* Custom Agent Page Header card */}
-                <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <span className="text-3xl select-none">{agent.emoji}</span>
-                    <div>
-                      <h2 className="text-base font-bold text-slate-800">{agent.name}</h2>
-                      <p className="text-xs text-slate-500 mt-1 leading-relaxed max-w-xl">{agent.description}</p>
-                      <div className="flex items-center gap-2 mt-2.5">
-                        <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 uppercase select-none">
-                          {agent.schedule.replace(/_/g, " ")}
-                        </span>
-                        {isRunning ? (
-                          <span className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                            Scouting targets live...
-                          </span>
-                        ) : (
-                          <span className="text-xs text-slate-400">Ready to execute</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => runCustomAgent(agent)}
-                    disabled={isRunning}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-all shadow-sm flex-shrink-0"
-                  >
-                    {isRunning ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Scanning...
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-3.5 h-3.5 fill-white" />
-                        Run Agent Now
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                {/* Opportunity leads matched specifically by this agent */}
-                {agentOpps.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-20 bg-white rounded-xl border border-slate-100 text-slate-400">
-                    <Target className="w-12 h-12 mb-3 opacity-20" />
-                    <p className="text-sm font-semibold">No opportunities matched yet</p>
-                    <p className="text-xs mt-1">Run a live scanning session to begin matching new B2B leads</p>
-                    <button
-                      onClick={() => runCustomAgent(agent)}
-                      disabled={isRunning}
-                      className="mt-4 flex items-center gap-1.5 px-3.5 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-lg"
-                    >
-                      <Play className="w-3 h-3" /> Trigger Live Scan
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {agentOpps.map(opp => {
-                      const score = opp.score ?? 5;
-                      return (
-                        <div key={opp._id} className="bg-white rounded-xl border border-slate-100 p-3.5 hover:border-emerald-200 hover:shadow-sm transition-all">
-                          <div className="grid gap-3" style={{ gridTemplateColumns: "46px 1fr 100px 105px 158px" }}>
-                            {/* Score ring component */}
-                            <IntentRing score={score} />
-
-                            {/* Signal Details */}
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-slate-800 truncate">{opp.title}</p>
-                              <p className="text-[11px] text-slate-500 line-clamp-2 mt-1 leading-relaxed">{opp.snippet}</p>
-                              <div className="flex items-center gap-1.5 mt-2">
-                                <span className="text-[9px] text-slate-400 font-medium">Captured {timeAgo(opp.created_at)}</span>
-                              </div>
-                            </div>
-
-                            {/* Found Platform Badge */}
-                            <div className="flex items-center justify-center">
-                              <span className="text-[9px] font-bold text-slate-500 capitalize bg-slate-50 px-2 py-1 rounded border border-slate-100 select-none">
-                                {opp.platform || "Custom"}
-                              </span>
-                            </div>
-
-                            {/* Contact Info card */}
-                            <div className="flex flex-col justify-center gap-1 text-xs">
-                              {opp.contact_name ? (
-                                <p className="font-bold text-slate-700 truncate">{opp.contact_name}</p>
-                              ) : opp.author ? (
-                                <p className="font-bold text-slate-700 truncate">@{opp.author}</p>
-                              ) : (
-                                <p className="text-slate-400 italic">No contact</p>
-                              )}
-                              {opp.group_name && (
-                                <p className="text-[10px] text-slate-400 truncate">👥 {opp.group_name}</p>
-                              )}
-                            </div>
-
-                            {/* Interactive Actions */}
-                            <div className="flex items-center gap-2 justify-end">
-                              <button
-                                onClick={() => openWhatsApp(opp.contact_info, `Hi, I saw your post regarding "${opp.title}" and wanted to connect.`)}
-                                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 flex items-center gap-1 shadow-sm"
-                              >
-                                <MessageCircle className="w-3.5 h-3.5" />
-                                Reach Out
-                              </button>
-                              <button
-                                onClick={() => addToCRM(opp)}
-                                className="p-2 border border-slate-200 rounded-lg text-slate-400 hover:text-slate-600 hover:border-slate-300 transition-colors"
-                                title="Add to CRM"
-                              >
-                                <Plus className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* ────────────────── POPUP MODAL: ADD CUSTOM AGENT ────────────────── */}
-          {isAddAgentOpen && (
-            <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center z-[999] p-4 transition-all">
-              <div className="bg-white rounded-2xl border border-slate-100 shadow-2xl max-w-md w-full p-6 space-y-4 relative animate-in fade-in zoom-in-95 duration-150">
-                <button
-                  onClick={() => setIsAddAgentOpen(false)}
-                  className="absolute top-4 right-4 p-1 rounded-lg text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-
-                <div>
-                  <h3 className="text-base font-bold text-slate-800">Add New AI Scout Agent</h3>
-                  <p className="text-xs text-slate-400 mt-1">Specify custom B2B hunting instructions in plain English</p>
-                </div>
-
-                <div className="space-y-3">
-                  {/* Row 1: Name + Emoji Selector */}
-                  <div className="grid grid-cols-[1fr,70px] gap-3">
-                    <div>
-                      <div className="flex justify-between items-center mb-1">
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase">Agent Name</label>
-                        <span className="text-[9px] text-slate-400 font-semibold">{newAgentName.length}/20</span>
-                      </div>
-                      <input
-                        type="text"
-                        value={newAgentName}
-                        onChange={e => setNewAgentName(e.target.value)}
-                        maxLength={20}
-                        placeholder="e.g. Chair Hunter"
-                        className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Emoji</label>
-                      <select
-                        value={newAgentEmoji}
-                        onChange={e => setNewAgentEmoji(e.target.value)}
-                        className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer text-center"
-                      >
-                        {["🤖", "🔍", "🛋️", "🚗", "💼", "📈", "💻", "🚀", "📞", "📅", "💡", "💰"].map(em => (
-                          <option key={em} value={em}>{em}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Row 2: Prompt Instruction */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Instructions (The Prompt)</label>
-                    <textarea
-                      value={newAgentDescription}
-                      onChange={e => setNewAgentDescription(e.target.value)}
-                      placeholder="e.g. Scan Facebook Groups and social media for posts asking for office chair suppliers, desk orders, or office furniture recommendations. Score highly if the user mentions B2B or wholesale quantities."
-                      className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all min-h-[100px] resize-none leading-relaxed"
-                    />
-                  </div>
-
-                  {/* Row 3: Run Schedule */}
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Execution Schedule</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(["on_demand", "daily", "weekly"] as const).map(sch => (
-                        <button
-                          key={sch}
-                          onClick={() => setNewAgentSchedule(sch)}
-                          className={`py-2 text-xs font-bold rounded-lg border transition-all capitalize ${newAgentSchedule === sch ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50"}`}
-                        >
-                          {sch.replace(/_/g, " ")}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex gap-2.5 pt-2">
-                  <button
-                    onClick={() => setIsAddAgentOpen(false)}
-                    className="flex-1 py-2.5 border border-slate-200 text-slate-500 hover:bg-slate-50 text-xs font-bold rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleAddAgent}
-                    disabled={creatingAgent}
-                    className="flex-1 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-bold rounded-lg transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm"
-                  >
-                    {creatingAgent ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-                    Build Agent
-                  </button>
-                </div>
-              </div>
             </div>
           )}
 

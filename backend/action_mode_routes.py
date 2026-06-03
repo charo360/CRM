@@ -63,14 +63,6 @@ class QueueAction(BaseModel):
     edited_content: Optional[str] = None
 
 
-class CustomAgentBody(BaseModel):
-    name: str
-    emoji: Optional[str] = "🤖"
-    description: str
-    schedule: Optional[str] = "on_demand"
-    enabled: Optional[bool] = True
-
-
 class SocialEngagementSettings(BaseModel):
     platforms: Optional[List[str]] = []
     keywords: Optional[List[str]] = []
@@ -116,6 +108,9 @@ class ScoutBody(BaseModel):
     frequency: Optional[str] = "12h"
     scout_type: Optional[str] = "custom"
     is_active: Optional[bool] = True
+
+
+_VALID_CONTACT_TYPES = {"Customer", "Lead", "Investor", "Partner", "Supplier", "Other"}
 
 
 def make_action_mode_router(db, user_dep):
@@ -213,21 +208,46 @@ def make_action_mode_router(db, user_dep):
     # Run agents manually (also called by scheduler)
     # ─────────────────────────────────────────────────────────────────────────
 
+    async def _build_rich_biz_context(uid: str) -> Dict[str, Any]:
+        """
+        Pull EVERY signal that helps agents target the user's actual business —
+        not just industry/country, but what they sell, who they sell to, where.
+        Read directly from the same place the assistant uses (business_knowledge).
+        """
+        biz = await db.users.find_one({"_id": uid}) or {}
+        bk = biz.get("business_knowledge") or {}
+        settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
+        country_code = (biz.get("country_code") or "").upper()
+        country_names = {
+            "US": "United States", "GB": "United Kingdom", "CA": "Canada",
+            "AU": "Australia", "NZ": "New Zealand", "IE": "Ireland",
+            "KE": "Kenya", "NG": "Nigeria", "ZA": "South Africa", "GH": "Ghana",
+            "UG": "Uganda", "TZ": "Tanzania", "ET": "Ethiopia", "RW": "Rwanda",
+            "FI": "Finland", "DE": "Germany", "FR": "France", "NL": "Netherlands",
+            "IN": "India", "SG": "Singapore",
+        }
+        country = country_names.get(country_code, biz.get("country") or country_code or "")
+        return {
+            "business_name":        biz.get("business_name", "") or "",
+            "business_type":        bk.get("business_type", "") or biz.get("business_type", "") or "",
+            "country":              country,
+            "country_code":         country_code,
+            "goals":                settings.get("goals", "") or "",
+            "products_services":    bk.get("products_services", "") or "",
+            "business_description": bk.get("business_description", "") or "",
+            "target_customer":      bk.get("target_customer", "") or bk.get("ideal_customer", "") or "",
+            "pricing_info":         bk.get("pricing_info", "") or "",
+            "business_location":    bk.get("business_location", "") or biz.get("business_location", "") or "",
+        }
+
     @router.post("/run")
     async def run_now(bg: BackgroundTasks, user=Depends(user_dep)):
         """Trigger all enabled agents immediately."""
         uid = _uid(user)
         settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
         agents_cfg = settings.get("agents", _default_agents())
-        goals = settings.get("goals", "")
 
-        biz = await db.users.find_one({"_id": uid}) or {}
-        biz_context = {
-            "business_name": biz.get("business_name", ""),
-            "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", ""),
-            "goals": goals,
-        }
+        biz_context = await _build_rich_biz_context(uid)
 
         if agents_cfg.get("funding_hunter", True):
             bg.add_task(_run_funding_hunter, db, uid, biz_context)
@@ -245,18 +265,26 @@ def make_action_mode_router(db, user_dep):
 
         return {"status": "started", "message": "All agents are running in background"}
 
+    @router.post("/run/cancel")
+    async def cancel_run(user=Depends(user_dep)):
+        """
+        Best-effort cancel: records the user's intent so any agent checking the
+        flag can stop early. Already-running synchronous work cannot be aborted
+        mid-call, but no new work for this user will start.
+        """
+        uid = _uid(user)
+        await db.action_mode_settings.update_one(
+            {"user_id": uid},
+            {"$set": {"cancel_requested_at": datetime.utcnow()}},
+            upsert=True,
+        )
+        return {"status": "cancel_requested"}
+
     @router.post("/run/{agent}")
     async def run_agent(agent: str, bg: BackgroundTasks, user=Depends(user_dep)):
         """Run a specific agent."""
         uid = _uid(user)
-        biz = await db.users.find_one({"_id": uid}) or {}
-        settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
-        biz_context = {
-            "business_name": biz.get("business_name", ""),
-            "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", ""),
-            "goals": settings.get("goals", ""),
-        }
+        biz_context = await _build_rich_biz_context(uid)
         runners = {
             "funding_hunter": _run_funding_hunter,
             "lead_gen": _run_lead_gen,
@@ -315,6 +343,74 @@ def make_action_mode_router(db, user_dep):
         leads = await search_shopify_leads(niche, country=country, limit=limit)
         return {"leads": leads, "total": len(leads), "niche": niche}
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Funding Finder — user-driven funding discovery
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.post("/funding/search")
+    async def funding_search(body: Dict[str, Any], user=Depends(user_dep)):
+        """
+        Search the web for funding opportunities matching the user's criteria.
+        Body: { sector?, location?, funding_types?: [grant|vc|accelerator|angel|government|crowdfunding|loan],
+                stage?, keywords?, limit? }
+        """
+        sector        = (body.get("sector")   or "").strip()
+        location      = (body.get("location") or "").strip()
+        funding_types = body.get("funding_types") or []
+        stage         = (body.get("stage")    or "").strip()
+        keywords      = (body.get("keywords") or "").strip()
+        limit         = min(int(body.get("limit") or 30), 60)
+        if not isinstance(funding_types, list):
+            funding_types = []
+
+        if not any([sector, location, funding_types, stage, keywords]):
+            raise HTTPException(400, "Provide at least one of: sector, location, funding_types, stage, keywords")
+
+        from funding_finder import find_funding
+        results = await find_funding(
+            sector=sector, location=location, funding_types=funding_types,
+            stage=stage, keywords=keywords, limit=limit,
+        )
+        return {"opportunities": results, "total": len(results)}
+
+    @router.post("/funding/save")
+    async def funding_save(body: Dict[str, Any], user=Depends(user_dep)):
+        """Save a batch of discovered funding opportunities into the user's pipeline."""
+        uid = _uid(user)
+        opps = body.get("opportunities") or []
+        if not isinstance(opps, list) or not opps:
+            raise HTTPException(400, "opportunities (list) is required")
+
+        saved, skipped = 0, 0
+        for opp in opps:
+            if not isinstance(opp, dict):
+                skipped += 1; continue
+            url = (opp.get("url") or "").strip()
+            title = (opp.get("title") or "").strip()
+            if not url or not title:
+                skipped += 1; continue
+            # Skip if same URL already saved for this user
+            existing = await db.action_mode_opportunities.find_one({"user_id": uid, "url": url})
+            if existing:
+                skipped += 1; continue
+            await db.action_mode_opportunities.insert_one({
+                "_id":        str(uuid.uuid4()),
+                "user_id":    uid,
+                "kind":       "funding",
+                "agent":      "funding_finder",
+                "title":      title,
+                "url":        url,
+                "snippet":    (opp.get("snippet") or "")[:500],
+                "score":      float(opp.get("score") or 5),
+                "platform":   opp.get("source") or None,
+                "status":     opp.get("status") or "unknown",
+                "deadline":   opp.get("deadline") or None,
+                "amount":     opp.get("amount") or None,
+                "created_at": datetime.utcnow(),
+            })
+            saved += 1
+        return {"saved": saved, "skipped": skipped, "total": len(opps)}
+
     @router.post("/business-leads/search")
     async def search_business_leads_route(body: Dict[str, Any], user=Depends(user_dep)):
         """Find any type of business by keyword + location using Google Maps data."""
@@ -325,6 +421,109 @@ def make_action_mode_router(db, user_dep):
         from business_leads import search_business_leads
         leads = await search_business_leads(keyword, location=location)
         return {"leads": leads, "total": len(leads), "keyword": keyword}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # LinkedIn Leads — paste URLs, get emails enriched via RapidAPI
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @router.post("/linkedin-leads/find-urls")
+    async def linkedin_find_urls(body: Dict[str, Any], user=Depends(user_dep)):
+        """
+        Find LinkedIn profile URLs by title / location / company via web search.
+        Body: { title?, location?, company?, keywords?, limit? }
+        """
+        title    = (body.get("title")    or "").strip()
+        location = (body.get("location") or "").strip()
+        company  = (body.get("company")  or "").strip()
+        keywords = (body.get("keywords") or "").strip()
+        limit    = min(int(body.get("limit") or 30), 60)
+        expand   = bool(body.get("expand_title", True))
+
+        if not any([title, location, company, keywords]):
+            raise HTTPException(400, "Provide at least one of: title, location, company, keywords")
+
+        from linkedin_leads import find_linkedin_urls
+        result = await find_linkedin_urls(
+            title=title, location=location, company=company,
+            keywords=keywords, limit=limit, expand_title=expand,
+        )
+        return {
+            "profiles":        result["profiles"],
+            "total":           len(result["profiles"]),
+            "expanded_titles": result["expanded_titles"],
+        }
+
+    @router.post("/linkedin-leads/enrich")
+    async def linkedin_enrich(body: Dict[str, Any], user=Depends(user_dep)):
+        """Enrich LinkedIn profile URLs with emails. Body: { urls: [str] }"""
+        raw_urls = body.get("urls")
+        if not isinstance(raw_urls, list) or not raw_urls:
+            raise HTTPException(400, "urls (list) is required")
+        urls = [str(u) for u in raw_urls if isinstance(u, (str, int))][:200]   # cap at 200 per request
+        from linkedin_leads import enrich_linkedin_urls
+        leads = await enrich_linkedin_urls(urls)
+        return {
+            "leads":     leads,
+            "total":     len(leads),
+            "with_email": sum(1 for l in leads if l.get("email")),
+            "errors":    sum(1 for l in leads if l.get("status") == "error"),
+        }
+
+    @router.post("/linkedin-leads/bulk-save")
+    async def linkedin_bulk_save(body: Dict[str, Any], user=Depends(user_dep)):
+        """Add a batch of enriched LinkedIn leads to the CRM. Body: { leads: [...], contact_type?: str }"""
+        uid = _uid(user)
+        leads = body.get("leads") or []
+        if not isinstance(leads, list) or not leads:
+            raise HTTPException(400, "leads (list) is required")
+        contact_type = (body.get("contact_type") or "Lead").strip().title()
+        if contact_type not in _VALID_CONTACT_TYPES:
+            contact_type = "Lead"
+
+        saved, skipped = 0, 0
+        for l in leads:
+            if not isinstance(l, dict):
+                skipped += 1
+                continue
+            name  = (l.get("name") or "").strip()
+            email = (l.get("email") or "").strip().lower() or None
+            url   = (l.get("linkedin_url") or "").strip()
+            if not name and not email and not url:
+                skipped += 1
+                continue
+            notes = "\n".join(filter(None, [
+                f"LinkedIn: {url}" if url else "",
+                f"Title: {l.get('title')}" if l.get("title") else "",
+                f"Company: {l.get('company')}" if l.get("company") else "",
+                "Added via LinkedIn Email Finder",
+            ]))
+            payload: Dict[str, Any] = {
+                "_id":            str(uuid.uuid4()),
+                "user_id":        uid,
+                "name":           name or (email or url),
+                "email":          email,
+                "phone_number":   "",
+                "notes":          notes,
+                "tags":           [contact_type, "LinkedIn"],
+                "contact_type":   contact_type,
+                "linkedin_url":   url or None,
+                "purchase_count": 0,
+                "total_spent":    0.0,
+                "last_message":   None,
+                "last_contacted": None,
+                "created_at":     datetime.utcnow(),
+                "is_customer":    contact_type == "Customer",
+            }
+            if not payload["email"]:
+                # Customer collection requires a unique key — synthesize a placeholder phone
+                seed = (payload["name"] or "li").replace(" ", "")[:7].encode().hex()[:7]
+                payload["phone_number"] = f"+1555{seed}"
+            try:
+                await db.customers.insert_one(payload)
+                saved += 1
+            except Exception:
+                skipped += 1
+        return {"saved": saved, "skipped": skipped, "total": len(leads), "contact_type": contact_type}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Lead Scouts — saved searches that discover new leads automatically
@@ -512,8 +711,6 @@ def make_action_mode_router(db, user_dep):
             raise HTTPException(404, "Lead not found")
         return {"status": "restored"}
 
-    _VALID_CONTACT_TYPES = {"Customer", "Lead", "Investor", "Partner", "Supplier", "Other"}
-
     @router.post("/lead-scouts/inbox/{lead_id}/save")
     async def save_inbox_lead(lead_id: str, body: Dict[str, Any] = None, user=Depends(user_dep)):
         uid = _uid(user)
@@ -664,66 +861,6 @@ def make_action_mode_router(db, user_dep):
         note = str(body.get("note") or "admin_grant")
         new_balance = await add_credits(db, target_uid, credits, note)
         return {"status": "ok", "new_balance": new_balance, "credits_added": credits}
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Custom Agents — users build their own agents in plain English
-    # ─────────────────────────────────────────────────────────────────────────
-
-    @router.post("/agents")
-    async def create_custom_agent(body: CustomAgentBody, user=Depends(user_dep)):
-        uid = _uid(user)
-        doc = {
-            "_id": str(uuid.uuid4()),
-            "user_id": uid,
-            "name": body.name,
-            "emoji": body.emoji or "🤖",
-            "description": body.description,
-            "schedule": body.schedule or "on_demand",
-            "enabled": True if body.enabled is None else body.enabled,
-            "created_at": datetime.utcnow(),
-        }
-        await db.action_mode_custom_agents.insert_one(doc)
-        doc["created_at"] = doc["created_at"].isoformat()
-        return doc
-
-    @router.get("/agents")
-    async def list_custom_agents(user=Depends(user_dep)):
-        uid = _uid(user)
-        items = await db.action_mode_custom_agents.find(
-            {"user_id": uid}
-        ).sort("created_at", -1).to_list(50)
-        for i in items:
-            if hasattr(i.get("created_at"), "isoformat"):
-                i["created_at"] = i["created_at"].isoformat()
-        return {"agents": items}
-
-    @router.put("/agents/{agent_id}")
-    async def update_custom_agent(agent_id: str, body: CustomAgentBody, user=Depends(user_dep)):
-        uid = _uid(user)
-        result = await db.action_mode_custom_agents.update_one(
-            {"_id": agent_id, "user_id": uid},
-            {"$set": {
-                "name": body.name,
-                "emoji": body.emoji or "🤖",
-                "description": body.description,
-                "schedule": body.schedule or "on_demand",
-                "enabled": True if body.enabled is None else body.enabled,
-                "updated_at": datetime.utcnow(),
-            }}
-        )
-        if result.matched_count == 0:
-            raise HTTPException(404, "Agent not found")
-        return {"status": "updated"}
-
-    @router.delete("/agents/{agent_id}")
-    async def delete_custom_agent(agent_id: str, user=Depends(user_dep)):
-        uid = _uid(user)
-        result = await db.action_mode_custom_agents.delete_one(
-            {"_id": agent_id, "user_id": uid}
-        )
-        if result.deleted_count == 0:
-            raise HTTPException(404, "Agent not found")
-        return {"status": "deleted"}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Social Engagement Agent — find conversations, draft replies, queue for review
@@ -1216,25 +1353,6 @@ def make_action_mode_router(db, user_dep):
         )
         return {"ok": True}
 
-    @router.post("/run-custom/{agent_id}")
-    async def run_custom_agent_route(agent_id: str, bg: BackgroundTasks, user=Depends(user_dep)):
-        uid = _uid(user)
-        agent_doc = await db.action_mode_custom_agents.find_one(
-            {"_id": agent_id, "user_id": uid}
-        )
-        if not agent_doc:
-            raise HTTPException(404, "Agent not found")
-        biz = await db.users.find_one({"_id": uid}) or {}
-        settings = await db.action_mode_settings.find_one({"user_id": uid}) or {}
-        biz_context = {
-            "business_name": biz.get("business_name", ""),
-            "business_type": biz.get("business_type", ""),
-            "country": biz.get("country", ""),
-            "goals": settings.get("goals", ""),
-        }
-        bg.add_task(_run_custom_agent, db, uid, agent_doc, biz_context)
-        return {"status": "started", "agent": agent_id}
-
     # ─────────────────────────────────────────────────────────────────────────
     # Zilo Scouts — scheduled keyword monitors (Open Scouts pattern)
     # ─────────────────────────────────────────────────────────────────────────
@@ -1508,22 +1626,34 @@ async def _run_funding_hunter(db, uid: str, ctx: Dict[str, Any]):
     try:
         biz_name = ctx.get("business_name", "my business")
         biz_type = ctx.get("business_type", "business")
-        country = ctx.get("country", "")
-        goals = ctx.get("goals", "")
-        region = "East Africa" if country in ("Kenya", "Uganda", "Tanzania", "Rwanda", "Ethiopia") else \
-                 "West Africa" if country in ("Nigeria", "Ghana", "Senegal", "Ivory Coast") else \
-                 "Southern Africa" if country in ("South Africa", "Zimbabwe", "Zambia") else "Africa"
+        country  = ctx.get("country", "")
+        goals    = ctx.get("goals", "")
+        products = (ctx.get("products_services") or "").strip()
+        desc     = (ctx.get("business_description") or "").strip()
+
+        sector = products or biz_type
+        loc    = country or "global"
 
         await _log_activity(db, uid, "funding_hunter",
                             "🔍 Funding Hunter started",
-                            f"Running deep multi-strategy search for {biz_name}...")
+                            f"Searching grants, VCs and accelerators for {biz_name} ({sector[:60]})...")
 
-        biz_context = f"{biz_name} is a {biz_type} business in {country}. Goals: {goals or 'grow and scale'}."
+        biz_context_parts = [
+            f"{biz_name} is a {biz_type} business in {country or 'global'}.",
+            f"What they sell: {products}" if products else "",
+            f"About: {desc}" if desc else "",
+            f"Goals: {goals}" if goals else "Goal: grow and raise capital.",
+        ]
+        biz_context = " ".join(p for p in biz_context_parts if p)
 
         # ── Step 1: Smart multi-engine search ────────────────────────────────
         from search_engine import smart_search as _smart_search
         raw_results = await _smart_search(
-            agent_goal=f"Find funding opportunities, grants, accelerators, VCs, angel investors, government programs for a {biz_type} business in {country}",
+            agent_goal=(
+                f"Find funding opportunities for a {sector} business in {loc} — "
+                f"grants, accelerators, VC firms, angel investor networks, government programs, "
+                f"and competitions matching this sector and region."
+            ),
             biz_context=biz_context,
             country=country,
             n_queries=16,
@@ -1634,23 +1764,42 @@ async def _run_lead_gen(db, uid: str, ctx: Dict[str, Any]):
     try:
         biz_name = ctx.get("business_name", "my business")
         biz_type = ctx.get("business_type", "business")
-        country = ctx.get("country", "")
-        goals   = ctx.get("goals", "")
+        country  = ctx.get("country", "")
+        goals    = ctx.get("goals", "")
+        products = (ctx.get("products_services") or "").strip()
+        desc     = (ctx.get("business_description") or "").strip()
+        target   = (ctx.get("target_customer") or "").strip()
+        location = (ctx.get("business_location") or "").strip()
+
+        # The single most useful signal for matching buyer-intent is what the
+        # business actually SELLS. Fall back to biz_type only if not set.
+        offering = products or biz_type
+        loc      = location or country or "anywhere"
 
         await _log_activity(db, uid, "lead_gen",
                             "🎯 Lead Gen started",
-                            f"Running deep buyer-intent search for {biz_name}...")
+                            f"Searching for people looking to buy {offering[:60]} in {loc}...")
 
-        biz_context = f"{biz_name} is a {biz_type} business in {country}. Goals: {goals or 'find new customers'}."
+        biz_context_parts = [
+            f"{biz_name} is a {biz_type} business in {country or 'global'}.",
+            f"What they sell: {products}" if products else "",
+            f"About: {desc}" if desc else "",
+            f"Ideal customer: {target}" if target else "",
+            f"Goals: {goals}" if goals else "Goal: find new customers.",
+        ]
+        biz_context = " ".join(p for p in biz_context_parts if p)
 
         # ── Step 1: Smart multi-engine search ────────────────────────────────
         from search_engine import smart_search as _smart_search
         raw_results = await _smart_search(
             agent_goal=(
-                f"Find active buyer-intent signals for {biz_type} in {country}: "
-                f"people and groups actively looking to buy, needing this service, or asking for recommendations. "
-                f"Include classifieds (Jiji, OLX, Craigslist, Facebook Marketplace), community groups, "
-                f"WhatsApp/Telegram directories, Reddit, LinkedIn, local forums."
+                f"Find active buyer-intent signals for: {offering}. "
+                f"Locate real people, businesses, or groups in {loc} who are "
+                f"asking for, recommending, hiring, or about to purchase {offering}. "
+                + (f"Target customer profile: {target}. " if target else "")
+                + "Search classifieds (OLX, Jiji, Craigslist, Facebook Marketplace), "
+                  "community groups (Facebook Groups, Reddit, WhatsApp/Telegram directories), "
+                  "Quora, LinkedIn posts, and local forums."
             ),
             biz_context=biz_context,
             country=country,
@@ -1666,7 +1815,12 @@ async def _run_lead_gen(db, uid: str, ctx: Dict[str, Any]):
         enriched = await _ai_score_results(
             unique,
             context=biz_context,
-            agent_goal=f"Find active buyer-intent signals — real people or groups looking to buy {biz_type} in {country}",
+            agent_goal=(
+                f"Score 10 ONLY when the post is a real human or organisation actively "
+                f"asking for, hiring, or about to purchase {offering}"
+                + (f" (target: {target})" if target else "")
+                + f" in {loc}. Score 1 if it's a generic article, listicle, or unrelated topic."
+            ),
         )
 
         # ── Step 3: Save best results ─────────────────────────────────────────
@@ -1731,20 +1885,36 @@ async def _run_social_scout(db, uid: str, ctx: Dict[str, Any]):
         country  = ctx.get("country", "")
         biz_name = ctx.get("business_name", "")
         goals    = ctx.get("goals", "")
+        products = (ctx.get("products_services") or "").strip()
+        desc     = (ctx.get("business_description") or "").strip()
+        target   = (ctx.get("target_customer") or "").strip()
+        location = (ctx.get("business_location") or "").strip()
+
+        offering = products or biz_type
+        loc      = location or country or "anywhere"
 
         await _log_activity(db, uid, "social_scout",
                             "🌐 Social Scout started",
-                            "Scanning multiple platforms for live engagement opportunities...")
+                            f"Finding social posts about {offering[:60]}...")
 
-        biz_context = f"{biz_name} is a {biz_type} business in {country}. Goals: {goals or 'engage with potential customers'}."
+        biz_context_parts = [
+            f"{biz_name} is a {biz_type} business in {country or 'global'}.",
+            f"What they sell: {products}" if products else "",
+            f"About: {desc}" if desc else "",
+            f"Ideal customer: {target}" if target else "",
+            f"Goals: {goals}" if goals else "Goal: engage potential customers.",
+        ]
+        biz_context = " ".join(p for p in biz_context_parts if p)
 
         # ── Step 1: Smart multi-engine search ────────────────────────────────
         from search_engine import smart_search as _smart_search
         raw_results = await _smart_search(
             agent_goal=(
-                f"Find live social media conversations, forum threads, and community posts "
-                f"where people are asking about, looking for, or discussing {biz_type} in {country}. "
-                f"Include Facebook, Reddit, Quora, LinkedIn, Twitter/X, local forums, review sites."
+                f"Find live social media posts and forum threads in {loc} where people are "
+                f"asking about, recommending, complaining about, or comparing {offering}. "
+                + (f"Their audience matches: {target}. " if target else "")
+                + "Search Reddit, Facebook Groups, Quora, LinkedIn posts, Twitter/X, "
+                  "review sites, and local discussion forums."
             ),
             biz_context=biz_context,
             country=country,
@@ -1760,7 +1930,12 @@ async def _run_social_scout(db, uid: str, ctx: Dict[str, Any]):
         enriched = await _ai_score_results(
             unique,
             context=biz_context,
-            agent_goal=f"Find real social posts where commenting as {biz_name} would be genuine, welcome, and likely to generate leads",
+            agent_goal=(
+                f"Score 10 ONLY when this post is a recent, live conversation where "
+                f"commenting as {biz_name} (we sell {offering}) would be a natural, "
+                f"value-adding response and likely to start a sales conversation. "
+                f"Score 1 for promotional listicles, old archived threads, or unrelated topics."
+            ),
         )
 
         # ── Step 3: Save & draft contextual comments ─────────────────────────
@@ -2339,90 +2514,6 @@ def _draft_social_comment(biz_name: str, biz_type: str, keyword: str, location: 
         f"This is our area of expertise at {biz_name}! We handle {service} {loc} and would be happy to discuss your needs. Send us a message! 📩",
     ]
     return random.choice(templates)
-
-
-async def _run_custom_agent(db, uid: str, agent_doc: Dict[str, Any], ctx: Dict[str, Any]):
-    agent_id = str(agent_doc["_id"])
-    name = agent_doc.get("name", "Custom Agent")
-    emoji = agent_doc.get("emoji", "🤖")
-    description = agent_doc.get("description", "")
-    biz_name = ctx.get("business_name", "my business")
-    biz_type = ctx.get("business_type", "business")
-    country = ctx.get("country", "")
-    goals   = ctx.get("goals", "")
-
-    try:
-        await _log_activity(db, uid, f"custom:{agent_id}",
-                            f"{emoji} {name} started",
-                            f"Generating search strategy for: {description[:120]}...")
-
-        biz_context = f"{biz_name} is a {biz_type} business in {country}. Goals: {goals or 'grow'}."
-
-        # Smart multi-engine search from plain-English description
-        from search_engine import smart_search as _smart_search
-        raw_results = await _smart_search(
-            agent_goal=description,
-            biz_context=biz_context,
-            country=country,
-            n_queries=12,
-            max_results=100,
-        )
-        unique = raw_results
-
-        # AI scores & filters
-        await _log_activity(db, uid, f"custom:{agent_id}",
-                            f"🧠 {name} — AI scoring results",
-                            f"Analysing {len(unique)} AI-sourced results...")
-        enriched = await _ai_score_results(
-            unique,
-            context=biz_context,
-            agent_goal=f"{name}: {description}",
-        )
-
-        saved = 0
-        for r in enriched[:8]:
-            url = r.get("url", "")
-            if not url or not r.get("title"):
-                continue
-            existing = await db.action_mode_opportunities.find_one({"user_id": uid, "url": url})
-            if existing:
-                continue
-            await db.action_mode_opportunities.insert_one({
-                "_id":        str(uuid.uuid4()),
-                "user_id":    uid,
-                "kind":       "custom",
-                "agent":      f"custom:{agent_id}",
-                "agent_name": name,
-                "title":      r["title"],
-                "url":        url,
-                "snippet":    r["snippet"],
-                "score":      r.get("score", 7),
-                "created_at": datetime.utcnow(),
-            })
-            saved += 1
-
-            draft = (
-                f"Found by {emoji} {name}:\n\n"
-                f"Title: {r['title']}\n"
-                f"URL: {url}\n\n"
-                f"Insight: {r['snippet']}\n\n"
-                f"Agent goal: {description[:200]}\n\n"
-                f"Suggested action: Review this result and take action for {biz_name}."
-            )
-            await _add_to_queue(db, uid, f"custom:{agent_id}", "review_result",
-                                f"{emoji} {r['title'][:60]}",
-                                draft,
-                                {"url": url, "agent_name": name})
-
-        await _log_activity(db, uid, f"custom:{agent_id}",
-                            f"{emoji} {name}: {saved} results found",
-                            f"Goal: {description[:120]}",
-                            kind="opportunity")
-
-    except Exception as e:
-        logger.error("[custom_agent:%s] error: %s", name, e)
-        await _log_activity(db, uid, f"custom:{agent_id}",
-                            f"⚠️ {name} error", str(e), kind="warning")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

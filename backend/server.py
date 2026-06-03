@@ -1365,6 +1365,9 @@ class BroadcastResponse(BaseModel):
 async def create_broadcast(broadcast: BroadcastCreate, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
     """Create and send a broadcast message"""
     business_id = user.get("business_id", user["_id"])
+    # Rate-limit: max 5 new broadcasts per minute per tenant
+    from rate_limiter import check_rate_limit
+    await check_rate_limit("broadcast", business_id)
     # Get recipients based on filter
     query = {"user_id": business_id}
 
@@ -1382,6 +1385,10 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
     # else filter_type == "all" — no extra filter, send to everyone
 
     customers = await db.customers.find(query).to_list(None)  # no hard cap
+    
+    # Enforce subscription plan message limits for all broadcast recipients
+    from plan_enforcement import enforce_message_limit
+    await enforce_message_limit(db, business_id, len(customers))
     
     # Handle images: Normalize to image_urls list
     image_urls = broadcast.image_urls or []
@@ -1409,6 +1416,19 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
     }
     
     await db.broadcasts.insert_one(broadcast_doc)
+
+    # Dispatch outbound webhook
+    try:
+        from webhooks.schemas import BroadcastSentEvent
+        event_payload = BroadcastSentEvent.create(
+            tenant_id=business_id,
+            broadcast_id=broadcast_id,
+            recipient_count=len(customers),
+            message=broadcast.message
+        )
+        await dispatch_webhook_event(db, business_id, "broadcast.sent", event_payload)
+    except Exception as exc:
+        logging.warning(f"[outbound_webhook] Failed to dispatch broadcast.sent: {exc}")
 
     # Send messages in background (only if not scheduled)
     if not broadcast.scheduled_at:
@@ -2961,7 +2981,7 @@ async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str
                 "business_name": biz_name,
                 "owner_name": invite.name.strip(),
                 "role": canonical_role,
-                "business_id": business_id,  # linked to the inviting business
+                "business_id": new_user_id,  # user's own business (data isolation)
                 "auth_provider": "email_web",
                 "subscription_active": False,
                 "setup_complete": True,
@@ -3774,6 +3794,10 @@ async def dismiss_classification(customer_id: str, user = Depends(get_current_us
 @api_router.post("/customers", response_model=CustomerResponse)
 async def create_customer(customer: CustomerCreate, user = Depends(get_current_user)):
     """Create a new customer"""
+    business_id = user.get("business_id", user["_id"])
+    # Rate-limit: max 30 new customers per minute per tenant
+    from rate_limiter import check_rate_limit
+    await check_rate_limit("customer", business_id)
     # Sanitize inputs
     clean_name = sanitize_string(customer.name, 200)
     clean_phone = sanitize_phone(customer.phone_number)
@@ -3787,7 +3811,6 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         raise HTTPException(status_code=400, detail="A valid phone number or email is required")
 
     customer_id = str(uuid.uuid4())
-    business_id = user.get("business_id", user["_id"])
     customer_doc = {
         "_id": customer_id,
         "user_id": business_id,
@@ -3861,6 +3884,19 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         except Exception as e:
             logging.debug(f"New customer analysis failed: {e}")
     asyncio.create_task(_analyze_new_customer(business_id, customer_id))
+
+    # Dispatch outbound webhook
+    try:
+        from webhooks.schemas import CustomerCreatedEvent
+        event_payload = CustomerCreatedEvent.create(
+            tenant_id=business_id,
+            customer_id=customer_id,
+            name=customer_doc["name"],
+            phone=customer_doc["phone_number"] or ""
+        )
+        await dispatch_webhook_event(db, business_id, "customer.created", event_payload)
+    except Exception as exc:
+        logging.warning(f"[outbound_webhook] Failed to dispatch customer.created: {exc}")
 
     return CustomerResponse(
         id=customer_id,
@@ -4403,6 +4439,20 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
         if update.sms_opt_in is True:
             op["$unset"] = {"sms_opt_out_at": ""}
         await db.customers.update_one({"_id": customer_id}, op)
+
+        from assistant.audit_service import write_audit_event
+        asyncio.create_task(write_audit_event(
+            db=db,
+            user_id=business_id,
+            actor_id=user["_id"],
+            event_type="data_write",
+            payload={
+                "severity": "write",
+                "tool": "PUT /customers",
+                "arguments": {"customer_id": customer_id, "update_data": update_data},
+                "success": True
+            }
+        ))
     
     updated = await db.customers.find_one({"_id": customer_id})
     
@@ -4427,10 +4477,23 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, user = Depends(get_current_user)):
     """Delete a customer"""
-    business_id = user.get("business_id", user["_id"])
     result = await db.customers.delete_one({"_id": customer_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    from assistant.audit_service import write_audit_event
+    asyncio.create_task(write_audit_event(
+        db=db,
+        user_id=business_id,
+        actor_id=user["_id"],
+        event_type="data_delete",
+        payload={
+            "severity": "destructive",
+            "tool": "DELETE /customers",
+            "arguments": {"customer_id": customer_id},
+            "success": True
+        }
+    ))
     return {"status": "success", "message": "Customer deleted"}
 
 # ============ FOLLOW-UP ENDPOINTS ============
@@ -4465,6 +4528,9 @@ async def _followup_assignee_labels(business_id: str, assignee_ids: set) -> dict
 async def create_followup(followup: FollowUpCreate, user = Depends(get_current_user)):
     """Create a follow-up reminder"""
     business_id = user.get("business_id", user["_id"])
+    # Rate-limit: max 20 new follow-ups per minute per tenant
+    from rate_limiter import check_rate_limit
+    await check_rate_limit("followup", business_id)
     # Verify customer exists
     customer = await db.customers.find_one({"_id": followup.customer_id, "user_id": business_id})
     if not customer:
@@ -4501,6 +4567,20 @@ async def create_followup(followup: FollowUpCreate, user = Depends(get_current_u
     }
 
     await db.followups.insert_one(followup_doc)
+
+    # Dispatch outbound webhook
+    try:
+        from webhooks.schemas import FollowUpDueEvent
+        event_payload = FollowUpDueEvent.create(
+            tenant_id=business_id,
+            followup_id=followup_id,
+            customer_name=customer.get("name", "Unknown"),
+            message=followup.message
+        )
+        await dispatch_webhook_event(db, business_id, "followup.due", event_payload)
+    except Exception as exc:
+        logging.warning(f"[outbound_webhook] Failed to dispatch followup.due: {exc}")
+
     labels = await _followup_assignee_labels(business_id, {resolved_assignee} if resolved_assignee else set())
     aname = labels.get(resolved_assignee) if resolved_assignee else None
     
@@ -5235,6 +5315,19 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
     }
     
     await db.sales.insert_one(sale_doc)
+
+    # Dispatch outbound webhook
+    try:
+        from webhooks.schemas import SaleRecordedEvent
+        event_payload = SaleRecordedEvent.create(
+            tenant_id=business_id,
+            sale_id=sale_id,
+            amount=float(sale.amount),
+            customer_id=sale.customer_id
+        )
+        await dispatch_webhook_event(db, business_id, "sale.recorded", event_payload)
+    except Exception as exc:
+        logging.warning(f"[outbound_webhook] Failed to dispatch sale.recorded: {exc}")
     
     # Update CRM customer stats (skip walk-in — not a real customer document)
     if not is_walk_in:
@@ -5526,6 +5619,19 @@ async def create_order(order: OrderCreate, user = Depends(get_current_user)):
         )
 
     await db.orders.insert_one(order_doc)
+
+    # Dispatch outbound webhook
+    try:
+        from webhooks.schemas import OrderCreatedEvent
+        event_payload = OrderCreatedEvent.create(
+            tenant_id=business_id,
+            order_id=order_id,
+            total=float(total_amount),
+            items=items or [{"product_name": product_label, "quantity": quantity, "price": price}]
+        )
+        await dispatch_webhook_event(db, business_id, "order.created", event_payload)
+    except Exception as exc:
+        logging.warning(f"[outbound_webhook] Failed to dispatch order.created: {exc}")
 
     return OrderResponse(
         id=order_id,
@@ -6172,6 +6278,19 @@ async def _insert_sale_from_order_document(order: dict, user: dict, business_id:
         "source_order_id": str(order["_id"]),
     }
     await db.sales.insert_one(sale_doc)
+
+    # Dispatch outbound webhook
+    try:
+        from webhooks.schemas import SaleRecordedEvent
+        event_payload = SaleRecordedEvent.create(
+            tenant_id=business_id,
+            sale_id=sale_id,
+            amount=float(order_amount),
+            customer_id=order.get("customer_id")
+        )
+        await dispatch_webhook_event(db, business_id, "sale.recorded", event_payload)
+    except Exception as exc:
+        logging.warning(f"[outbound_webhook] Failed to dispatch sale.recorded from order: {exc}")
 
     if order.get("customer_id") != "walk-in":
         customer = await db.customers.find_one({"_id": order["customer_id"]})
@@ -8117,6 +8236,12 @@ async def send_whatsapp_media(
     Upload and send a media file (image or document) to a customer via WhatsApp.
     """
     try:
+        business_id = user.get("business_id", user["_id"])
+        
+        # Enforce subscription plan message limits
+        from plan_enforcement import enforce_message_limit
+        await enforce_message_limit(db, business_id, 1)
+        
         from image_handler import ImageUploadHandler
         
         # Determine media type from file extension/content type
@@ -8179,6 +8304,10 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
     try:
         business_id = user.get("business_id", user["_id"])
         
+        # Enforce subscription plan message limits
+        from plan_enforcement import enforce_message_limit
+        await enforce_message_limit(db, business_id, 1)
+        
         # Find customer to check assignment
         customer = await db.customers.find_one({
             "user_id": business_id,
@@ -8237,9 +8366,28 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
 COMPOSIO_WEBHOOK_SECRET = (os.environ.get("COMPOSIO_WEBHOOK_SECRET") or "").strip()
 
 
+async def _process_composio_webhook_bg(payload: dict) -> None:
+    """Run Composio webhook processing in the background.
+
+    Composio's delivery timeout is short (~5-10s) but our sync can take 10-30s
+    against a real Gmail account. Responding 200 immediately and processing
+    out-of-band keeps Composio happy and avoids retries/dropped deliveries.
+    """
+    from composio_webhooks import handle_composio_webhook
+    try:
+        result = await handle_composio_webhook(payload, db)
+        logging.info("[composio-webhook] Result: %s", result)
+    except Exception as exc:
+        logging.error("[composio-webhook] Handler error: %s", exc, exc_info=True)
+
+
 @api_router.post("/webhooks/composio")
-async def composio_webhook(request: Request):
-    """Receive Composio trigger webhooks (e.g. Gmail new message)."""
+async def composio_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive Composio trigger webhooks (e.g. Gmail new message).
+
+    Responds 200 quickly and defers actual processing to a background task —
+    Composio drops deliveries that don't ack within a few seconds.
+    """
     raw_body = await request.body()
     signature = request.headers.get("X-Composio-Signature", "")
 
@@ -8263,23 +8411,48 @@ async def composio_webhook(request: Request):
             logging.warning("[composio-webhook] Invalid JSON payload")
             raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    trigger_name = payload.get("trigger_name")
-    logging.info("[composio-webhook] Received: %s", trigger_name)
+    background_tasks.add_task(_process_composio_webhook_bg, payload)
+    logging.info("[composio-webhook] Accepted; processing in background")
+    return {"status": "accepted"}
 
-    from composio_webhooks import handle_composio_webhook
+
+# ============ OUTLOOK WEBHOOK ============
+
+@api_router.post("/webhooks/outlook")
+async def outlook_webhook(request: Request, background_tasks: BackgroundTasks, validationToken: Optional[str] = None):
+    """
+    Microsoft Graph Webhook notification/validation endpoint for Outlook.
+    Validates subscriptions (via validationToken parameter) and processes incoming email events.
+    """
+    if validationToken:
+        logging.info(f"[outlook-webhook] Received subscription validation handshake: {validationToken}")
+        from fastapi import Response
+        return Response(content=validationToken, media_type="text/plain")
 
     try:
-        result = await handle_composio_webhook(payload, db)
-    except Exception as exc:
-        logging.error("[composio-webhook] Handler error: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Webhook processing error")
+        payload = await request.json()
+    except Exception:
+        logging.warning("[outlook-webhook] Invalid JSON payload received")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    if not isinstance(result, dict):
-        result = {"status": "ok"}
-    else:
-        result.setdefault("status", "error" if "error" in result else "ok")
+    from outlook_webhook_service import handle_outlook_notification
+    background_tasks.add_task(handle_outlook_notification, payload, db)
+    return {"status": "accepted"}
 
-    return result
+
+# ============ BROWSER CONTROL STATUS ============
+
+@api_router.get("/browser/status")
+async def browser_control_status(user = Depends(get_current_user)):
+    """
+    Check if the authenticated user has an active Zilo Browser Control session connected.
+    """
+    from browser_control.websocket import is_browser_connected
+    user_id = str(user.get("business_id") or user["_id"])
+    return {
+        "connected": is_browser_connected(user_id),
+        "user_id": user_id
+    }
 
 
 # ============ EVOLUTION API WEBHOOK ============
@@ -10473,6 +10646,10 @@ async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_
         raise HTTPException(status_code=403, detail="Auto-reply is not enabled")
     
     business_id = user.get("business_id", user["_id"])
+    
+    # Enforce subscription plan message limits
+    from plan_enforcement import enforce_message_limit
+    await enforce_message_limit(db, business_id, 1)
     # Get customer
     customer = await db.customers.find_one({"_id": request.customer_id, "user_id": business_id})
     if not customer:
@@ -11205,82 +11382,101 @@ async def shopify_partner_create_store(request: Request, user=Depends(get_curren
         raise HTTPException(422, "store_name must contain letters or numbers")
 
     partner_id    = os.environ.get("SHOPIFY_PARTNER_ID",           "").strip()
-    partner_token = os.environ.get("SHOPIFY_PARTNER_ACCESS_TOKEN", "").strip()
-    if not partner_id or not partner_token:
+    if not partner_id:
         raise HTTPException(503,
             "Shopify Partner credentials not configured. "
-            "Add SHOPIFY_PARTNER_ID and SHOPIFY_PARTNER_ACCESS_TOKEN to your .env file."
+            "Add SHOPIFY_PARTNER_ID to your .env file."
         )
 
-    mutation = """
-    mutation CreateDevStore($input: ShopifyDevStoreInput!) {
-      shopifyDevStoreCreate(input: $input) {
-        shop {
-          id
-          myshopifyDomain
-          name
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-    """
-    variables = {
-        "input": {
-            "storeName":   store_name,
-            "storeType":   "DEVELOPMENT",
-            "login":       email,
-            "firstName":   first_name,
-            "lastName":    last_name or first_name,
-            "countryCode": country_code,
-        }
-    }
-
-    import httpx as _httpx
-    gql_url = f"https://partners.shopify.com/{partner_id}/api/2024-10/graphql.json"
-    try:
-        async with _httpx.AsyncClient(timeout=20) as hc:
-            r = await hc.post(
-                gql_url,
-                json={"query": mutation, "variables": variables},
-                headers={
-                    "X-Shopify-Access-Token": partner_token,
-                    "Content-Type": "application/json",
-                },
-            )
-    except Exception as exc:
-        logging.error("[partner/create-store] network error: %s", exc)
-        raise HTTPException(502, f"Could not reach Shopify Partners API: {exc}")
-
-    if r.status_code == 401:
-        raise HTTPException(401, "Invalid SHOPIFY_PARTNER_ACCESS_TOKEN")
-    if r.status_code >= 400:
-        raise HTTPException(502, f"Shopify Partners API returned {r.status_code}: {r.text[:300]}")
-
-    try:
-        data = r.json()
-    except Exception:
-        raise HTTPException(502, f"Non-JSON response from Shopify: {r.text[:300]}")
-
-    result = data.get("data", {}).get("shopifyDevStoreCreate", {})
-    user_errors = result.get("userErrors", [])
-    if user_errors:
-        msg = "; ".join(f"{e.get('field','')}: {e.get('message','')}" for e in user_errors)
-        raise HTTPException(422, f"Shopify error: {msg}")
-
-    shop = result.get("shop")
-    if not shop:
-        raise HTTPException(502, f"Unexpected response from Shopify Partners API: {data}")
-
-    domain = shop.get("myshopifyDomain", f"{store_name}.myshopify.com")
-    logging.info("[partner/create-store] created store=%s user=%s", domain, user.get("_id"))
+    domain = f"{store_name}.myshopify.com"
+    logging.info("[partner/create-store] guided setup initiated store=%s user=%s", domain, user.get("_id"))
 
     return {
-        "ok":     True,
-        "domain": domain,
-        "name":   shop.get("name", store_name),
+        "ok":          True,
+        "domain":      domain,
+        "name":        store_name,
+        "partner_id":  partner_id,
+    }
+
+
+
+@api_router.get("/shopify/partner/earnings")
+async def shopify_partner_earnings(user=Depends(get_current_user)):
+    """
+    Return Shopify Partner revenue share earnings + referral pipeline.
+    Queries: local shopify_partner_referrals collection + Shopify Partner API for transactions.
+    """
+    partner_id    = os.environ.get("SHOPIFY_PARTNER_ID",           "").strip()
+    partner_token = os.environ.get("SHOPIFY_PARTNER_ACCESS_TOKEN", "").strip()
+
+    referrals_cursor = db.shopify_partner_referrals.find(
+        {},
+        {"business_id": 1, "store_name": 1, "domain": 1, "email": 1, "status": 1, "created_at": 1, "connected_at": 1}
+    ).sort("created_at", -1).limit(100)
+    referrals = await referrals_cursor.to_list(length=100)
+    for r in referrals:
+        r["_id"] = str(r["_id"])
+
+    summary = {
+        "total":     len(referrals),
+        "pending":   sum(1 for r in referrals if r.get("status") == "pending"),
+        "connected": sum(1 for r in referrals if r.get("status") == "connected"),
+    }
+
+    # Query Shopify Partner API for revenue share transactions
+    transactions = []
+    gql_error = None
+    if partner_id and partner_token:
+        try:
+            import httpx as _httpx
+            gql = """
+            {
+              transactions(first: 50, transactionTypes: [APP_SUBSCRIPTION_REVENUE_SHARE]) {
+                edges {
+                  node {
+                    id
+                    createdAt
+                    netAmount { amount currencyCode }
+                    shop { myshopifyDomain name }
+                  }
+                }
+              }
+            }
+            """
+            async with _httpx.AsyncClient(timeout=15.0) as _hc:
+                resp = await _hc.post(
+                    f"https://partners.shopify.com/{partner_id}/api/unstable/graphql.json",
+                    json={"query": gql},
+                    headers={"X-Shopify-Access-Token": partner_token, "Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    edges = (data.get("data") or {}).get("transactions", {}).get("edges") or []
+                    for edge in edges:
+                        node = edge.get("node") or {}
+                        transactions.append({
+                            "id":        node.get("id"),
+                            "date":      node.get("createdAt"),
+                            "amount":    (node.get("netAmount") or {}).get("amount"),
+                            "currency":  (node.get("netAmount") or {}).get("currencyCode"),
+                            "shop":      (node.get("shop") or {}).get("myshopifyDomain"),
+                            "shop_name": (node.get("shop") or {}).get("name"),
+                        })
+                else:
+                    gql_error = f"Partner API returned HTTP {resp.status_code}"
+        except Exception as _exc:
+            gql_error = str(_exc)
+
+    total_earned = sum(float(t["amount"] or 0) for t in transactions)
+
+    return {
+        "ok":           True,
+        "summary":      summary,
+        "referrals":    referrals,
+        "transactions": transactions,
+        "total_earned": round(total_earned, 2),
+        "currency":     transactions[0]["currency"] if transactions else "USD",
+        "partner_api_error": gql_error,
     }
 
 
@@ -11475,6 +11671,19 @@ async def shopify_oauth_callback(
             currency = shop_info.get("currency") or "USD"
             country_code = shop_info.get("country_code") or "US"
 
+            # Tag as zilo_referred if a pending referral exists for this domain
+            _is_referred = False
+            try:
+                _ref = await db.shopify_partner_referrals.find_one({"domain": shop, "status": "pending"})
+                if _ref:
+                    _is_referred = True
+                    await db.shopify_partner_referrals.update_one(
+                        {"_id": _ref["_id"]},
+                        {"$set": {"status": "connected", "connected_at": datetime.utcnow(), "user_id": user_id}},
+                    )
+            except Exception as _ref_exc:
+                logging.warning(f"[shopify-install] referral tag failed: {_ref_exc}")
+
             await db.users.insert_one({
                 "_id":                    user_id,
                 "email":                  email,
@@ -11491,10 +11700,11 @@ async def shopify_oauth_callback(
                 "country_code":           country_code,
                 "setup_complete":         True,
                 "settings":               {"onboarding_v1_completed": True},
+                "shopify_zilo_referred":  _is_referred,
                 "created_at":             datetime.utcnow(),
                 **token_fields,
             })
-            logging.info(f"[shopify-install] Created new user shop={shop} user={user_id} email={email}")
+            logging.info(f"[shopify-install] Created new user shop={shop} user={user_id} email={email} referred={_is_referred}")
 
         # Register webhooks in background
         try:
@@ -11525,6 +11735,18 @@ async def shopify_oauth_callback(
         query = {"$or": [{"business_id": user_id}]}
         if oid:
             query["$or"].append({"_id": oid})
+
+        # Tag as zilo_referred if a pending referral exists for this domain
+        try:
+            referral = await db.shopify_partner_referrals.find_one({"domain": shop, "status": "pending"})
+            if referral:
+                token_fields["shopify_zilo_referred"] = True
+                await db.shopify_partner_referrals.update_one(
+                    {"_id": referral["_id"]},
+                    {"$set": {"status": "connected", "connected_at": datetime.utcnow(), "user_id": user_id}},
+                )
+        except Exception as _ref_exc:
+            logging.warning(f"[shopify-oauth] referral tag failed: {_ref_exc}")
 
         await db.users.update_one(query, {"$set": token_fields})
 
@@ -12007,8 +12229,48 @@ async def _auto_fulfill_order_bg(user_id: str, order: dict) -> None:
             {"user_id": user_id, "shopify_product_id": product_id}
         )
         if ali_mapping:
-            logging.info(f"[shopify-autofulfill] AliExpress auto-fulfill order={order_name} product={product_id} (manual review recommended)")
-            fulfilled_items.append({"product_id": product_id, "supplier": "aliexpress", "status": "pending_manual"})
+            try:
+                from aliexpress_client import create_aliexpress_dropship_order
+                ali_item_id = ali_mapping.get("aliexpress_id") or ali_mapping.get("aliexpress_product_id") or product_id
+                ali_sku_id  = ali_mapping.get("aliexpress_sku_id") or ali_mapping.get("sku_id") or ""
+                
+                ali_order_id = await create_aliexpress_dropship_order(
+                    db=db,
+                    user_id=user_id,
+                    aliexpress_product_id=str(ali_item_id),
+                    sku_id=str(ali_sku_id),
+                    quantity=quantity,
+                    shipping_address=ship_addr
+                )
+                
+                if ali_order_id:
+                    await db.aliexpress_products.update_one(
+                        {"user_id": user_id, "shopify_product_id": product_id},
+                        {"$push": {"orders": {"shopify_order_id": order_id, "aliexpress_order_id": ali_order_id,
+                                              "quantity": quantity, "created_at": __import__("datetime").datetime.utcnow()}}},
+                    )
+                    fulfilled_items.append({
+                        "product_id": product_id,
+                        "supplier": "aliexpress",
+                        "ali_order_id": ali_order_id,
+                        "status": "success"
+                    })
+                    logging.info(f"[shopify-autofulfill] AliExpress order {ali_order_id} placed for shopify order {order_name}")
+                else:
+                    fulfilled_items.append({
+                        "product_id": product_id,
+                        "supplier": "aliexpress",
+                        "status": "failed",
+                        "error": "API purchase request rejected"
+                    })
+            except Exception as exc:
+                logging.error(f"[shopify-autofulfill] AliExpress fulfillment error order={order_name}: {exc}")
+                fulfilled_items.append({
+                    "product_id": product_id,
+                    "supplier": "aliexpress",
+                    "status": "failed",
+                    "error": str(exc)
+                })
 
     if fulfilled_items:
         await db.shopify_auto_fulfillments.update_one(
@@ -12117,6 +12379,248 @@ async def shopify_webhook_products_sync(request: Request):
                 upsert=True,
             )
     return {"status": "ok"}
+
+
+# ── GDPR Webhooks (Mandatory for Shopify App Store Approval) ──────────────────
+
+def _verify_shopify_hmac(body_bytes: bytes, hmac_header: str) -> bool:
+    import hashlib, hmac as _hmac, base64 as _b64
+    client_secret = os.environ.get("SHOPIFY_CLIENT_SECRET", "").strip()
+    if not client_secret:
+        return True
+    if not hmac_header:
+        return False
+    expected = _b64.b64encode(
+        _hmac.new(client_secret.encode(), body_bytes, hashlib.sha256).digest()
+    ).decode()
+    return _hmac.compare_digest(expected, hmac_header)
+
+
+@api_router.post("/shopify/webhook/gdpr/customers-data-request")
+async def shopify_gdpr_customers_data_request(request: Request):
+    """
+    Shopify triggered: Customers request their data.
+    We return 200 OK and log request for compliance review.
+    """
+    body_bytes = await request.body()
+    hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+    if not _verify_shopify_hmac(body_bytes, hmac_header):
+        raise HTTPException(status_code=401, detail="Invalid HMAC")
+
+    try:
+        import json as _json
+        payload = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logging.info(f"[GDPR] Customer data request payload: {payload}")
+    return {"status": "success", "message": "GDPR request acknowledged and logged"}
+
+
+@api_router.post("/shopify/webhook/gdpr/customers-redact")
+async def shopify_gdpr_customers_redact(request: Request):
+    """
+    Shopify triggered: Delete personal data for a customer.
+    We delete the customer record and associated messages in our database.
+    """
+    body_bytes = await request.body()
+    hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+    if not _verify_shopify_hmac(body_bytes, hmac_header):
+        raise HTTPException(status_code=401, detail="Invalid HMAC")
+
+    try:
+        import json as _json
+        payload = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    customer_email = payload.get("customer", {}).get("email")
+    shop_domain = payload.get("shop_domain")
+
+    if not customer_email or not shop_domain:
+        logging.warning("[GDPR] Missing email or shop_domain in customer/redact payload")
+        return {"status": "success"}
+
+    # Find the user matching the shop
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    )
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        # Find matching customer
+        cust_doc = await db.customers.find_one({"user_id": user_id, "email": customer_email})
+        if cust_doc:
+            customer_id = cust_doc["_id"]
+            # 1. Delete customer document
+            await db.customers.delete_one({"_id": customer_id})
+            # 2. Delete messages
+            await db.messages.delete_many({"customer_id": customer_id, "user_id": user_id})
+            logging.info(f"[GDPR] Redacted customer {customer_id} ({customer_email}) for shop {shop_domain}")
+
+    return {"status": "success", "message": "GDPR customer redaction complete"}
+
+
+@api_router.post("/shopify/webhook/gdpr/shop-redact")
+async def shopify_gdpr_shop_redact(request: Request):
+    """
+    Shopify triggered: 48 hours after uninstall. Delete all shop-specific data.
+    """
+    body_bytes = await request.body()
+    hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+    if not _verify_shopify_hmac(body_bytes, hmac_header):
+        raise HTTPException(status_code=401, detail="Invalid HMAC")
+
+    try:
+        import json as _json
+        payload = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    shop_domain = payload.get("shop_domain")
+    if not shop_domain:
+        logging.warning("[GDPR] Missing shop_domain in shop/redact payload")
+        return {"status": "success"}
+
+    # Find user matching the shop
+    user = await db.users.find_one(
+        {"shopify_domain": {"$regex": shop_domain.replace(".myshopify.com", ""), "$options": "i"}}
+    )
+    if user:
+        user_id = str(user.get("business_id") or user["_id"])
+        # 1. Clear caches
+        await db.shopify_orders_cache.delete_many({"user_id": user_id})
+        await db.shopify_products_cache.delete_many({"user_id": user_id})
+        logging.info(f"[GDPR] Redacted all cached Shopify store data for {shop_domain}")
+
+    return {"status": "success", "message": "GDPR shop redaction complete"}
+
+
+# ── Storefront Customer Chat Widget Public Endpoints ─────────────────────────
+
+@api_router.get("/shopify/store-chat-widget/config/{business_id}")
+async def get_store_chat_widget_config(business_id: str):
+    """
+    Public Endpoint: Returns the storefront chat widget styling and WhatsApp/CRM channels.
+    """
+    import bson as _bson
+    try:
+        _oid = _bson.ObjectId(business_id)
+    except Exception:
+        _oid = None
+        
+    _q = {"$or": [{"business_id": business_id}]}
+    if _oid:
+        _q["$or"].append({"_id": _oid})
+        
+    user = await db.users.find_one(_q)
+    if not user:
+        raise HTTPException(status_code=404, detail="Business not found")
+        
+    settings = user.get("settings", {})
+    whatsapp = settings.get("whatsapp_phone_number") or user.get("phone") or ""
+    # Clean up phone number format (remove non-digits)
+    whatsapp_clean = "".join(c for i, c in enumerate(whatsapp) if c.isdigit() or (i == 0 and c == "+"))
+    
+    return {
+        "business_name":   user.get("business_name") or "Support Team",
+        "whatsapp_number": whatsapp_clean,
+        "brand_color":     settings.get("brand_color") or "#10b981",
+        "welcome_message": settings.get("chat_welcome_message") or "Hi there! 👋 Welcome to our store. How can we help you today?",
+        "enabled":         settings.get("chat_widget_enabled", True)
+    }
+
+
+class StorefrontInquiryRequest(BaseModel):
+    name: str
+    contact: str  # email or phone
+    message: str
+
+
+@api_router.post("/shopify/store-chat-widget/message/{business_id}")
+async def submit_storefront_inquiry(business_id: str, request: StorefrontInquiryRequest):
+    """
+    Public Endpoint: Shopper submits an inquiry directly via the widget.
+    Integrates it into Zilo CRM's inbox and assigns the contact.
+    """
+    import bson as _bson
+    import uuid
+    from datetime import datetime
+    
+    try:
+        _oid = _bson.ObjectId(business_id)
+    except Exception:
+        _oid = None
+        
+    _q = {"$or": [{"business_id": business_id}]}
+    if _oid:
+        _q["$or"].append({"_id": _oid})
+        
+    user = await db.users.find_one(_q)
+    if not user:
+        raise HTTPException(status_code=404, detail="Business not found")
+        
+    biz_id = str(user.get("business_id") or user["_id"])
+    
+    # 1. Parse contact type (email vs phone)
+    is_email = "@" in request.contact
+    cust_query = {"user_id": biz_id}
+    if is_email:
+        cust_query["email"] = request.contact.lower().strip()
+    else:
+        # Clean phone
+        cleaned_phone = "".join(c for c in request.contact if c.isdigit())
+        cust_query["phone_number"] = cleaned_phone
+        
+    # 2. Find or create customer
+    customer = await db.customers.find_one(cust_query)
+    if not customer:
+        customer_id = str(uuid.uuid4())
+        customer_doc = {
+            "_id": customer_id,
+            "user_id": biz_id,
+            "name": request.name,
+            "email": request.contact.lower().strip() if is_email else None,
+            "phone_number": request.contact if not is_email else None,
+            "tags": "Storefront Web Inquiry",
+            "created_at": datetime.utcnow(),
+            "last_contacted": datetime.utcnow()
+        }
+        await db.customers.insert_one(customer_doc)
+        customer = customer_doc
+    else:
+        customer_id = customer["_id"]
+        await db.customers.update_one(
+            {"_id": customer_id},
+            {"$set": {"last_contacted": datetime.utcnow()}}
+        )
+        
+    # 3. Insert incoming message into CRM chat inbox
+    msg_id = str(uuid.uuid4())
+    await db.messages.insert_one({
+        "_id": msg_id,
+        "user_id": biz_id,
+        "customer_id": customer_id,
+        "direction": "incoming",
+        "content": request.message,
+        "message_type": "text",
+        "created_at": datetime.utcnow(),
+        "source": "storefront_chat_widget"
+    })
+    
+    # 4. Trigger Real-Time Notification (if setup exists)
+    try:
+        from notification_service import get_notification_service
+        notifier = get_notification_service(db)
+        await notifier.send_push_notification(
+            user_id=biz_id,
+            title=f"💬 New Web Inquiry from {request.name}",
+            body=request.message[:100] + ("..." if len(request.message) > 100 else ""),
+            data={"customer_id": customer_id, "type": "message"}
+        )
+    except Exception as exc:
+        logging.warning(f"[WidgetInquiry] push notification non-fatal: {exc}")
+        
+    return {"status": "success", "message": "Inquiry submitted to Zilo CRM inbox"}
 
 
 @api_router.post("/integrations/shopify/sync-products")
@@ -12346,6 +12850,85 @@ async def get_products(
         }
         for p in products
     ])
+
+
+# ── Unified compare endpoint (AE + CJ in one call) ───────────────────────────
+@api_router.get("/products/compare")
+async def compare_products(
+    keyword: str,
+    max_price: Optional[float] = None,
+    sort: str = "price_asc",
+    user=Depends(get_current_user),
+):
+    """Search both AliExpress and CJ simultaneously and return a unified list."""
+    try:
+        from aliexpress.client import ae_ds_search
+        from cj_dropship.client import cj_get
+    except ImportError as exc:
+        raise HTTPException(503, f"Supplier module not available: {exc}")
+
+    business_id = user.get("business_id") or str(user["_id"])
+    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
+    cj_creds = await _get_supplier_creds(business_id, "cj")
+
+    variants = await _ae_expand_keywords(keyword)
+
+    async def _ae_one(kw: str) -> list[dict]:
+        try:
+            data = await ae_ds_search(keyword=kw, max_price=max_price, page_size=50,
+                                       sort="LAST_VOLUME_DESC", creds=ae_creds)
+            return _parse_ae_products(data)
+        except Exception as e:
+            logging.warning("[compare/ae] '%s': %s", kw, e)
+            return []
+
+    async def _cj_one(kw: str) -> list[dict]:
+        params: dict = {"pageNum": 1, "pageSize": 50, "productNameEn": kw}
+        if max_price is not None:
+            params["maxPrice"] = max_price
+        try:
+            data = await cj_get("/product/list", params, creds=cj_creds)
+            return _parse_cj_products(data)
+        except Exception as e:
+            logging.warning("[compare/cj] '%s': %s", kw, e)
+            return []
+
+    all_tasks = [_ae_one(kw) for kw in variants] + [_cj_one(kw) for kw in variants]
+    batches = await asyncio.gather(*all_tasks)
+
+    # Normalise to a unified schema and deduplicate
+    seen: set[str] = set()
+    unified: list[dict] = []
+    for batch in batches:
+        for p in batch:
+            source = p.get("source", "ae")
+            uid = f"{source}:{p.get('ae_pid') or p.get('cj_pid', '')}"
+            if uid in seen:
+                continue
+            seen.add(uid)
+            unified.append({
+                "source":           source,
+                "id":               p.get("ae_pid") or p.get("cj_pid", ""),
+                "title":            p.get("title", ""),
+                "image_url":        p.get("image_url", ""),
+                "category":         p.get("category", ""),
+                "cost_price":       p.get("cost_price", 0),
+                "suggested_price":  p.get("suggested_price", 0),
+                "popularity":       p.get("orders_count") or p.get("listed_count") or 0,
+                "is_free_shipping": p.get("is_free_shipping", False),
+                "shipping_time":    p.get("shipping_time", ""),
+                "store_name":       p.get("store_name", "") or p.get("supplier", ""),
+            })
+
+    if sort == "price_asc":
+        unified.sort(key=lambda p: p["cost_price"])
+    elif sort == "price_desc":
+        unified.sort(key=lambda p: p["cost_price"], reverse=True)
+    elif sort == "popular":
+        unified.sort(key=lambda p: p["popularity"], reverse=True)
+
+    return {"products": unified[:300], "total": len(unified)}
+
 
 @api_router.get("/products/{product_id}")
 async def get_product(product_id: str, user = Depends(get_current_user)):
@@ -13154,7 +13737,15 @@ async def startup_tasks():
 
         # Customers — most queried collection
         await db.customers.create_index("user_id")
-        await db.customers.create_index([("user_id", 1), ("phone_number", 1)], unique=True)
+        try:
+            await db.customers.drop_index("user_id_1_phone_number_1")
+        except Exception:
+            pass
+        await db.customers.create_index(
+            [("user_id", 1), ("phone_number", 1)],
+            unique=True,
+            partialFilterExpression={"phone_number": {"$type": "string", "$gt": ""}}
+        )
         await db.customers.create_index([("user_id", 1), ("last_contacted", 1)])
         await db.customers.create_index([("user_id", 1), ("tags", 1)])
         await db.customers.create_index([("user_id", 1), ("created_at", -1)])
@@ -13231,6 +13822,7 @@ async def startup_tasks():
         # Assistant audit log — compliance and debugging queries
         await db.assistant_audit_log.create_index([("user_id", 1), ("created_at", -1)])
         await db.assistant_audit_log.create_index([("actor_id", 1), ("created_at", -1)])
+        await db.assistant_audit_log.create_index("created_at", expireAfterSeconds=31536000)  # 365 days
 
         # Assistant agent events (telemetry) — auto-expire after 30 days, queried by conversation
         await db.assistant_agent_events.create_index("ts", expireAfterSeconds=2592000)
@@ -13247,8 +13839,10 @@ async def startup_tasks():
         await db.seo_agent_conversations.create_index([("user_id", 1), ("created_at", -1)])
         await db.seo_serp_rankings.create_index([("user_id", 1), ("keyword", 1), ("domain", 1)])
         await db.seo_serp_rankings.create_index([("user_id", 1), ("checked_at", -1)])
-        # TTL policy: auto-delete SERP rankings older than 1 year
-        await db.seo_serp_rankings.create_index("checked_at", expireAfterSeconds=31536000)
+        # Action Mode Queue indexes to optimize email and whatsapp background sweeps
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("metadata.thread_id", 1)])
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("metadata.customer_id", 1)])
+        await db.action_mode_queue.create_index([("user_id", 1), ("status", 1), ("action_type", 1)])
 
         logging.info("Database indexes ensured successfully")
     except Exception as e:
@@ -13461,7 +14055,7 @@ async def _email_sync_runner(db) -> None:
             for u in users:
                 uid = str(u.get("business_id") or u["_id"])
                 try:
-                    await sync_emails_for_user(uid, db, max_results=10)
+                    await sync_emails_for_user(uid, db, max_results=10, trigger_briefing_ingest=True)
                 except Exception as e:
                     logging.warning(f"[email-sync] Failed for user {uid}: {e}")
                 await _asyncio.sleep(5)  # space out users to keep backend responsive
@@ -14127,6 +14721,11 @@ async def composio_connections(user=Depends(get_current_user)):
     if update:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update})
 
+    if statuses.get("gmail"):
+        import asyncio
+        from composio_webhooks import register_gmail_webhook_for_user
+        asyncio.create_task(register_gmail_webhook_for_user(user_id, db))
+
     return {"connected": statuses}
 
 
@@ -14457,6 +15056,73 @@ async def composio_gmail_mark_read(request: Request, user=Depends(get_current_us
     return {"ok": True}
 
 
+@api_router.get("/composio/calendar/events")
+async def composio_calendar_list_events(
+    timeMin: str = "",
+    timeMax: str = "",
+    provider: str = "",
+    user=Depends(get_current_user),
+):
+    """List Google Calendar or Outlook events via Composio execute_action."""
+    from composio_calendar import list_calendar_events as _list
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        return await _list(user_id, time_min=timeMin, time_max=timeMax, provider=provider or None)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.post("/composio/calendar/events")
+async def composio_calendar_create_event(request: Request, user=Depends(get_current_user)):
+    from composio_calendar import create_calendar_event as _create
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    provider = str(body.get("provider") or "google")
+    try:
+        event = await _create(user_id, body, provider)
+        return {"event": event}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.patch("/composio/calendar/events")
+async def composio_calendar_update_event(request: Request, user=Depends(get_current_user)):
+    from composio_calendar import update_calendar_event as _update
+    user_id = str(user.get("business_id") or user["_id"])
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    provider = str(body.get("provider") or "google")
+    if not body.get("eventId"):
+        raise HTTPException(status_code=400, detail="eventId required")
+    try:
+        event = await _update(user_id, body, provider)
+        return {"event": event}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@api_router.delete("/composio/calendar/events")
+async def composio_calendar_delete_event(
+    eventId: str = "",
+    provider: str = "google",
+    user=Depends(get_current_user),
+):
+    from composio_calendar import delete_calendar_event as _delete
+    user_id = str(user.get("business_id") or user["_id"])
+    if not eventId:
+        raise HTTPException(status_code=400, detail="eventId required")
+    try:
+        await _delete(user_id, eventId, provider)
+        return {"ok": True}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EMAIL DB — Store emails in MongoDB for instant loading & full control
 # ══════════════════════════════════════════════════════════════════════════════
@@ -14473,7 +15139,7 @@ async def email_db_sync(user=Depends(get_current_user)):
     await ensure_indexes(db)
 
     # Quick sync — get latest emails from Gmail + Outlook
-    result = await sync_emails_for_user(user_id, db, max_results=10)
+    result = await sync_emails_for_user(user_id, db, max_results=10, trigger_briefing_ingest=True)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
 
@@ -14498,6 +15164,20 @@ async def email_db_sync_status(user=Depends(get_current_user)):
         "progress_pct":   status.get("progress_pct", 0),
         "completed_at":   str(status.get("completed_at", "")),
     }
+
+
+@api_router.post("/emails/outlook/subscribe")
+async def register_outlook_webhook(user = Depends(get_current_user)):
+    """
+    Manually register or re-register a Microsoft Graph push notification subscription
+    for Outlook Inbox changes.
+    """
+    user_id = str(user.get("business_id") or user["_id"])
+    from outlook_webhook_service import create_outlook_subscription
+    res = await create_outlook_subscription(user_id, db)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return {"status": "success", "subscription_id": res.get("subscription_id")}
 
 
 @api_router.get("/email-db/threads")
@@ -15376,12 +16056,17 @@ async def disconnect_cj(user=Depends(get_current_user)):
 async def connect_aliexpress(body: AEConnectBody, user=Depends(get_current_user)):
     """Save and test AliExpress credentials for this user."""
     business_id = user.get("business_id") or str(user["_id"])
+    app_key = body.app_key.strip() or os.environ.get("ALIEXPRESS_APP_KEY", "").strip()
+    app_secret = body.app_secret.strip() or os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
+    access_token = body.access_token.strip()
+    if not app_key or not app_secret or not access_token:
+        raise HTTPException(400, "App Key, App Secret, and Access Token are all required (either in request or server environment).")
     try:
         from aliexpress.client import ae_get_categories
         creds = {
-            "app_key":      body.app_key.strip(),
-            "app_secret":   body.app_secret.strip(),
-            "access_token": body.access_token.strip(),
+            "app_key":      app_key,
+            "app_secret":   app_secret,
+            "access_token": access_token,
         }
         await ae_get_categories(creds=creds)
     except Exception as e:
@@ -15393,9 +16078,9 @@ async def connect_aliexpress(body: AEConnectBody, user=Depends(get_current_user)
             "user_id":      business_id,
             "supplier":     "aliexpress",
             "credentials":  {
-                "app_key":      body.app_key.strip(),
-                "app_secret":   body.app_secret.strip(),
-                "access_token": body.access_token.strip(),
+                "app_key":      app_key,
+                "app_secret":   app_secret,
+                "access_token": access_token,
             },
             "connected_at": _dt.utcnow(),
         }},
@@ -15434,10 +16119,14 @@ async def ae_oauth_start(user=Depends(get_current_user)):
         {"$set": {"state": state, "business_id": business_id, "created_at": _dt.utcnow()}},
         upsert=True,
     )
-    base_url = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    base_url = (
+        os.environ.get("BASE_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     auth_url = (
-        "https://oauth.aliexpress.com/auth"
+        "https://api-sg.aliexpress.com/oauth/authorize"
         f"?response_type=code"
         f"&client_id={app_key}"
         f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
@@ -15453,12 +16142,22 @@ async def ae_oauth_callback(code: str = "", state: str = "", error: str = ""):
     from starlette.responses import HTMLResponse
     import urllib.parse
 
+    frontend_url = (
+        os.environ.get("FRONTEND_URL")
+        or "http://localhost:3000"
+    ).rstrip("/")
+
     def _close_popup(ok: bool, msg: str = "") -> HTMLResponse:
+        if not ok:
+            logging.error("[ae/oauth/callback] failed: %s", msg)
         js_event = "ae_connected" if ok else "ae_connect_failed"
+        encoded_msg = urllib.parse.quote(msg or "", safe="")
         return HTMLResponse(f"""<!DOCTYPE html><html><body>
+<pre style="font-family:monospace;padding:24px">AliExpress OAuth: {'success' if ok else 'FAILED'}
+{msg}</pre>
 <script>
-if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},window.location.origin);window.close();}}
-else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else '0'}";}}
+if(window.opener){{window.opener.postMessage({{type:"{js_event}",msg:{json.dumps(msg)}}},"*");window.close();}}
+else{{window.location.href="{frontend_url}/dashboard/integrations?ae_connected={'1' if ok else '0'}&msg={encoded_msg}";}}
 </script></body></html>""")
 
     if error:
@@ -15478,25 +16177,50 @@ else{{window.location.href="/dashboard/integrations?ae_connected={'1' if ok else
     app_secret = os.environ.get("ALIEXPRESS_APP_SECRET", "").strip()
     if not app_key or not app_secret:
         return _close_popup(False, "Server not configured")
-    base_url     = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+    base_url = (
+        os.environ.get("BASE_URL")
+        or os.environ.get("PUBLIC_BASE_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
     redirect_uri = f"{base_url}/api/aliexpress/oauth/callback"
     try:
+        import time as _time
+        # AliExpress requires signed token exchange via the REST system-tool endpoint.
+        # Params: app_key, timestamp, sign_method, code; signed with HMAC-SHA256.
+        token_params = {
+            "app_key":     app_key,
+            "timestamp":   str(int(_time.time() * 1000)),
+            "sign_method": "sha256",
+            "code":        code,
+        }
+        sorted_keys = sorted(token_params.keys())
+        sign_base   = "/auth/token/create" + "".join(f"{k}{token_params[k]}" for k in sorted_keys)
+        token_params["sign"] = hmac.new(
+            app_secret.encode("utf-8"),
+            sign_base.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest().upper()
         async with httpx.AsyncClient(timeout=20) as hc:
-            r = await hc.post("https://oauth.aliexpress.com/token", data={
-                "grant_type":    "authorization_code",
-                "code":          code,
-                "client_id":     app_key,
-                "client_secret": app_secret,
-                "redirect_uri":  redirect_uri,
-            })
+            r = await hc.post(
+                "https://api-sg.aliexpress.com/rest/auth/token/create",
+                data=token_params,
+            )
         token_data = r.json()
+        logging.info("[ae/oauth/callback] token response: %s", token_data)
     except Exception as e:
         return _close_popup(False, f"Token exchange failed: {e}")
 
     access_token  = token_data.get("access_token", "")
     refresh_token = token_data.get("refresh_token", "")
     if not access_token:
-        return _close_popup(False, token_data.get("error_description", "No access token returned"))
+        err_msg = (
+            token_data.get("error_description")
+            or token_data.get("error_msg")
+            or token_data.get("message")
+            or f"No access token returned. Full response: {token_data}"
+        )
+        err_code = token_data.get("error_code") or token_data.get("code") or ""
+        return _close_popup(False, f"[{err_code}] {err_msg}" if err_code else err_msg)
 
     from datetime import datetime as _dt
     await db.supplier_connections.update_one(
@@ -15647,24 +16371,53 @@ async def _ae_expand_keywords(keyword: str) -> list[str]:
 
 
 def _parse_ae_products(data: dict) -> list[dict]:
-    raw = (
-        data.get("products", {}).get("product", [])
-        or data.get("result", {}).get("products", {}).get("product", [])
-        or []
-    )
+    # ds.text.search:        data.products.selection_search_product[]
+    # ds.recommend.feed.get: result.products.traffic_product_d_t_o[]
+    # legacy:                products.product[]  /  result.products.product[]
+    containers = [
+        data.get("data", {}).get("products", {}),
+        data.get("result", {}).get("products", {}),
+        data.get("products", {}),
+    ]
+    raw: list = []
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        for key in ("selection_search_product", "traffic_product_d_t_o", "product"):
+            if c.get(key):
+                raw = c[key]
+                break
+        if raw:
+            break
+
     out = []
     for p in raw:
-        cost = float(p.get("sale_price") or p.get("target_sale_price") or 0)
+        cost = float(
+            p.get("targetSalePrice")
+            or p.get("target_sale_price")
+            or p.get("salePrice")
+            or p.get("sale_price")
+            or p.get("min_price")
+            or 0
+        )
+        try:
+            orders = int(p.get("orders") or p.get("lastest_volume") or p.get("orders_count") or 0)
+        except (TypeError, ValueError):
+            orders = 0
+        item_url = p.get("itemUrl") or ""
+        if item_url and item_url.startswith("//"):
+            item_url = "https:" + item_url
         out.append({
-            "ae_pid":          str(p.get("product_id", "")),
-            "title":           p.get("product_title", ""),
-            "category":        p.get("second_level_category_name") or p.get("first_level_category_name", ""),
+            "ae_pid":          str(p.get("itemId") or p.get("product_id") or ""),
+            "title":           p.get("title") or p.get("product_title") or p.get("subject", ""),
+            "category":        p.get("second_level_category_name") or p.get("first_level_category_name") or p.get("cateId", ""),
             "cost_price":      cost,
             "suggested_price": round(cost * 2.5, 2),
-            "image_url":       p.get("product_main_image_url", ""),
-            "orders_count":    int(p.get("lastest_volume", 0) or 0),
+            "image_url":       p.get("itemMainPic") or p.get("product_main_image_url") or p.get("main_image_url", ""),
+            "orders_count":    orders,
             "shipping_time":   p.get("shipping_lead_time", ""),
             "store_name":      p.get("shop_name", ""),
+            "product_url":     item_url,
             "source":          "aliexpress",
         })
     return out
@@ -15693,6 +16446,8 @@ async def ae_search_products(
     # Expand keyword into variants for broader coverage
     variants = await _ae_expand_keywords(keyword) if keyword else [keyword]
 
+    errors = []
+
     async def _search_one(kw: str) -> list[dict]:
         try:
             data = await ae_ds_search(
@@ -15707,13 +16462,17 @@ async def ae_search_products(
             return _parse_ae_products(data)
         except Exception as e:
             logging.warning("[ae/products] variant '%s' failed: %s", kw, e)
+            errors.append(e)
             return []
 
     try:
         results_per_variant = await asyncio.gather(*[_search_one(kw) for kw in variants])
+        if len(errors) == len(variants) and errors:
+            raise errors[0]
     except Exception as e:
         logging.error("[ae/products] error: %s", e, exc_info=True)
         raise HTTPException(502, f"AliExpress API error: {e}")
+
 
     # Deduplicate by ae_pid, keeping first occurrence, then sort by order volume
     seen: set[str] = set()
@@ -15728,83 +16487,6 @@ async def ae_search_products(
     merged.sort(key=lambda p: p["orders_count"], reverse=True)
     return {"products": merged[:200], "total": len(merged)}
 
-
-# ── Unified compare endpoint (AE + CJ in one call) ───────────────────────────
-@api_router.get("/products/compare")
-async def compare_products(
-    keyword: str,
-    max_price: Optional[float] = None,
-    sort: str = "price_asc",
-    user=Depends(get_current_user),
-):
-    """Search both AliExpress and CJ simultaneously and return a unified list."""
-    try:
-        from aliexpress.client import ae_ds_search
-        from cj_dropship.client import cj_get
-    except ImportError as exc:
-        raise HTTPException(503, f"Supplier module not available: {exc}")
-
-    business_id = user.get("business_id") or str(user["_id"])
-    ae_creds = await _get_supplier_creds(business_id, "aliexpress")
-    cj_creds = await _get_supplier_creds(business_id, "cj")
-
-    variants = await _ae_expand_keywords(keyword)
-
-    async def _ae_one(kw: str) -> list[dict]:
-        try:
-            data = await ae_ds_search(keyword=kw, max_price=max_price, page_size=50,
-                                       sort="LAST_VOLUME_DESC", creds=ae_creds)
-            return _parse_ae_products(data)
-        except Exception as e:
-            logging.warning("[compare/ae] '%s': %s", kw, e)
-            return []
-
-    async def _cj_one(kw: str) -> list[dict]:
-        params: dict = {"pageNum": 1, "pageSize": 50, "productNameEn": kw}
-        if max_price is not None:
-            params["maxPrice"] = max_price
-        try:
-            data = await cj_get("/product/list", params, creds=cj_creds)
-            return _parse_cj_products(data)
-        except Exception as e:
-            logging.warning("[compare/cj] '%s': %s", kw, e)
-            return []
-
-    all_tasks = [_ae_one(kw) for kw in variants] + [_cj_one(kw) for kw in variants]
-    batches = await asyncio.gather(*all_tasks)
-
-    # Normalise to a unified schema and deduplicate
-    seen: set[str] = set()
-    unified: list[dict] = []
-    for batch in batches:
-        for p in batch:
-            source = p.get("source", "ae")
-            uid = f"{source}:{p.get('ae_pid') or p.get('cj_pid', '')}"
-            if uid in seen:
-                continue
-            seen.add(uid)
-            unified.append({
-                "source":           source,
-                "id":               p.get("ae_pid") or p.get("cj_pid", ""),
-                "title":            p.get("title", ""),
-                "image_url":        p.get("image_url", ""),
-                "category":         p.get("category", ""),
-                "cost_price":       p.get("cost_price", 0),
-                "suggested_price":  p.get("suggested_price", 0),
-                "popularity":       p.get("orders_count") or p.get("listed_count") or 0,
-                "is_free_shipping": p.get("is_free_shipping", False),
-                "shipping_time":    p.get("shipping_time", ""),
-                "store_name":       p.get("store_name", "") or p.get("supplier", ""),
-            })
-
-    if sort == "price_asc":
-        unified.sort(key=lambda p: p["cost_price"])
-    elif sort == "price_desc":
-        unified.sort(key=lambda p: p["cost_price"], reverse=True)
-    elif sort == "popular":
-        unified.sort(key=lambda p: p["popularity"], reverse=True)
-
-    return {"products": unified[:300], "total": len(unified)}
 
 
 @api_router.get("/ae/categories")
@@ -16500,6 +17182,16 @@ except Exception as _e:
 @api_router.get("/blog/debug")
 async def blog_debug():
     return {"mounted": not bool(_blog_mount_error), "error": _blog_mount_error or None}
+
+
+# ── Browser Control WebSocket ──────────────────────────────────────────────────
+try:
+    from browser_control.websocket import router as _browser_router
+    api_router.include_router(_browser_router)
+    logging.info("[browser-control] routes mounted at /api/browser/*")
+except Exception as _e:
+    logging.error(f"[browser-control] failed to mount routes: {_e}")
+
 
 # NOTE: app.include_router(api_router) is deferred to end of file so all routes and
 # sub-routers are registered first (avoids missing routes with uvicorn --reload on Windows).
@@ -17787,6 +18479,109 @@ try:
     logging.info("[gmail-filters] routes mounted at /api/gmail/filters/*")
 except Exception as _gfe:
     logging.error("[gmail-filters] failed to mount routes: %s", _gfe)
+
+# ── Rex (Phase 11+ Day 0 Onboarding, future Briefing/Notebook/Journal/Ledger) ─
+try:
+    from rex_routes import init_rex_routes
+    app.include_router(init_rex_routes(get_current_user, db))
+    logging.info("[rex] routes mounted at /api/rex/*")
+except Exception as _rxe:
+    logging.error("[rex] failed to mount routes: %s", _rxe)
+
+
+# ── Outbound Webhooks System ─────────────────────────────────────────────────
+
+async def dispatch_webhook_event(db, tenant_id: str, event_type: str, event_payload: Any):
+    """
+    Checks if there are any active webhook subscriptions for tenant_id matching event_type.
+    If yes, enqueues them via enqueue_webhook.
+    """
+    try:
+        from webhooks.delivery import enqueue_webhook
+        cursor = db.webhook_subscriptions.find({
+            "user_id": tenant_id,
+            "events": event_type
+        })
+        subscriptions = await cursor.to_list(length=100)
+        for sub in subscriptions:
+            await enqueue_webhook(
+                db=db,
+                tenant_id=tenant_id,
+                event=event_payload,
+                endpoint_url=sub["url"],
+                secret=sub["secret"]
+            )
+    except Exception as exc:
+        logging.error(f"[outbound_webhook] Failed to dispatch {event_type} for {tenant_id}: {exc}")
+
+
+class WebhookSubscriptionCreate(BaseModel):
+    url: str
+    events: List[str]
+    secret: Optional[str] = None
+
+class WebhookSubscriptionResponse(BaseModel):
+    id: str
+    url: str
+    events: List[str]
+    secret: str
+    created_at: datetime
+
+
+@api_router.get("/webhooks/subscriptions", response_model=List[WebhookSubscriptionResponse])
+async def get_webhook_subscriptions(user = Depends(get_current_user)):
+    """List all registered outbound webhook subscriptions for this business"""
+    business_id = user.get("business_id", user["_id"])
+    cursor = db.webhook_subscriptions.find({"user_id": business_id})
+    subs = await cursor.to_list(length=100)
+    return [
+        WebhookSubscriptionResponse(
+            id=s["_id"],
+            url=s["url"],
+            events=s["events"],
+            secret=s["secret"],
+            created_at=s["created_at"]
+        )
+        for s in subs
+    ]
+
+
+@api_router.post("/webhooks/subscriptions", response_model=WebhookSubscriptionResponse)
+async def create_webhook_subscription(body: WebhookSubscriptionCreate, user = Depends(get_current_user)):
+    """Create a new outbound webhook subscription"""
+    business_id = user.get("business_id", user["_id"])
+    import uuid
+    sub_id = str(uuid.uuid4())
+    secret = body.secret or f"whsec_{uuid.uuid4().hex[:24]}"
+    
+    doc = {
+        "_id": sub_id,
+        "user_id": business_id,
+        "url": body.url,
+        "events": body.events,
+        "secret": secret,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.webhook_subscriptions.insert_one(doc)
+    return WebhookSubscriptionResponse(
+        id=sub_id,
+        url=body.url,
+        events=body.events,
+        secret=secret,
+        created_at=doc["created_at"]
+    )
+
+
+@api_router.delete("/webhooks/subscriptions/{subscription_id}")
+async def delete_webhook_subscription(subscription_id: str, user = Depends(get_current_user)):
+    """Delete an outbound webhook subscription"""
+    business_id = user.get("business_id", user["_id"])
+    res = await db.webhook_subscriptions.delete_one({"_id": subscription_id, "user_id": business_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Webhook subscription not found")
+    return {"status": "success", "message": "Subscription removed"}
+
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)

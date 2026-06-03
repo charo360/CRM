@@ -880,7 +880,25 @@ function EmailPageInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProvider]);
 
-  useEffect(() => { loadThreads(); }, [loadThreads]);
+  useEffect(() => {
+    const q = (searchParams.get("q") || searchParams.get("query"))?.trim() || "";
+    if (q) {
+      setSearchInput(q);
+      setActiveSearch(q);
+      loadThreads(q);
+      // Clean up the search parameter from the URL so it behaves as a one-time prefill
+      try {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete("q");
+        cleanUrl.searchParams.delete("query");
+        window.history.replaceState(null, "", cleanUrl.pathname + cleanUrl.search);
+      } catch (e) {
+        console.error("Failed to clean up URL search params:", e);
+      }
+    } else {
+      loadThreads();
+    }
+  }, [searchParams, loadThreads]);
 
   useEffect(() => {
     const to = searchParams.get("to")?.trim() || "";
@@ -1039,12 +1057,11 @@ function EmailPageInner() {
           if (data.status === "complete" || data.status === "never_synced") {
             if (syncPollRef.current) clearInterval(syncPollRef.current);
             setSyncStatus(null);
+            await loadThreadsRef.current("", undefined, threadLimit);
           }
         }
-        // Always refresh thread list using latest loadThreads ref
-        await loadThreadsRef.current("", undefined, threadLimit);
       } catch { /* ignore */ }
-    }, 5000);
+    }, 15000);
   }
 
   // Cleanup poll on unmount

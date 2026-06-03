@@ -15,7 +15,10 @@ export function normalizeCrmApiBase(raw: string): string {
   return t;
 }
 
-export const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
+/** Local default uses Next `/proxy` rewrite (see web/next.config.ts). */
+export const API_BASE = normalizeCrmApiBase(
+  process.env.NEXT_PUBLIC_API_URL || (typeof window !== "undefined" ? "/proxy" : "http://127.0.0.1:8000/api"),
+);
 
 function formatErrorBody(res: Response, rawText: string): string {
   let err: { detail?: unknown; error?: unknown; message?: unknown; details?: unknown } = {};
@@ -2129,6 +2132,15 @@ export const smartNotesApi = {
   list: () => api.get<{ notes: Record<string, unknown>[] }>("/smart-notes"),
   save: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes", body),
   get: (id: string) => api.get<Record<string, unknown>>(`/smart-notes/${id}`),
+  update: (id: string, body: { 
+    title?: string; 
+    summary?: string; 
+    action_items?: string[]; 
+    key_points?: string[]; 
+    decisions?: string[]; 
+    next_steps?: string; 
+    transcript?: string; 
+  }) => api.patch<Record<string, unknown>>(`/smart-notes/${id}`, body),
   delete: (id: string) => api.delete<{ ok: boolean }>(`/smart-notes/${id}`),
 };
 

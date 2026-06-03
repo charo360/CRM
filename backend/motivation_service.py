@@ -151,7 +151,7 @@ class MotivationService:
     
     async def get_monday_motivation(self, user_id: str) -> Dict[str, str]:
         """Get Monday motivation with no-repeat tracking"""
-        if self.db:
+        if self.db is not None:
             quote_data = await self._get_next_quote(user_id, "monday")
         else:
             quote_data = random.choice(self.MONDAY_QUOTES)
@@ -159,7 +159,7 @@ class MotivationService:
     
     async def get_midweek_motivation(self, user_id: str) -> Dict[str, str]:
         """Get weekday motivation with no-repeat tracking"""
-        if self.db:
+        if self.db is not None:
             quote_data = await self._get_next_quote(user_id, "weekday")
         else:
             quote_data = random.choice(self.MOTIVATIONAL_QUOTES)
@@ -242,6 +242,6 @@ def get_motivation_service(db: Optional[AsyncIOMotorDatabase] = None) -> Motivat
     global _motivation_service
     if _motivation_service is None:
         _motivation_service = MotivationService(db)
-    elif db and not _motivation_service.db:
+    elif db is not None and _motivation_service.db is None:
         _motivation_service.db = db
     return _motivation_service

@@ -66,6 +66,7 @@ function AssistantPageInner() {
   // Bumped every time the user explicitly clicks "New" so the chat component
   // remounts with a clean slate even if activeId was already null.
   const [newNonce, setNewNonce] = useState(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // Track whether the initial auto-select has already happened so re-loads
   // (e.g. after saving a new message) don't override an intentional "New" click.
   const initialLoadDone = useRef(false);
@@ -137,8 +138,17 @@ function AssistantPageInner() {
     setEditingId(null);
   }
 
+  function startNewChat() {
+    const next = newNonce + 1;
+    setActiveId(null);
+    setEditingId(null);
+    setNewNonce(next);
+    setChatKey(`new-${next}`);
+    setHistoryOpen(false);
+  }
+
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col">
+    <div className="flex h-[calc(100dvh-3.5rem)] flex-col lg:h-[calc(100vh-4rem)]">
       {loadError ? (
         <div
           className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-950"
@@ -161,20 +171,38 @@ function AssistantPageInner() {
           </button>
         </div>
       ) : null}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
+      {historyOpen && (
+        <button
+          type="button"
+          aria-label="Close chat history"
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          onClick={() => setHistoryOpen(false)}
+        />
+      )}
+
       {/* Conversations sidebar */}
-      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-slate-50">
+      <aside
+        className={`fixed top-14 bottom-0 left-0 z-50 flex w-[min(18rem,88vw)] shrink-0 flex-col border-r border-slate-200 bg-slate-50 transition-transform duration-200 ease-out lg:relative lg:top-auto lg:bottom-auto lg:z-auto lg:h-auto lg:w-64 lg:translate-x-0 ${
+          historyOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        }`}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-3 lg:hidden">
+          <p className="text-sm font-semibold text-slate-900">Chats</p>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(false)}
+            className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-200"
+            aria-label="Close chat list"
+          >
+            <X size={18} />
+          </button>
+        </div>
         {/* New chat button */}
         <div className="px-3 pt-3 pb-2">
           <button
             type="button"
-            onClick={() => {
-              const next = newNonce + 1;
-              setActiveId(null);
-              setEditingId(null);
-              setNewNonce(next);
-              setChatKey(`new-${next}`);
-            }}
+            onClick={startNewChat}
             className="flex w-full items-center gap-2.5 rounded-lg bg-[#009B3A] px-3 py-2 text-[13px] font-medium text-white shadow-sm ring-2 ring-transparent transition hover:bg-[#4CD137] hover:text-[#0a2614] hover:ring-[#4CD137]/40 active:scale-[0.98]"
           >
             <Plus size={15} className="shrink-0" aria-hidden />
@@ -232,7 +260,13 @@ function AssistantPageInner() {
                           ? "bg-white font-semibold text-brand-dark shadow-sm"
                           : "text-slate-700 hover:bg-white hover:text-slate-900"
                       }`}
-                      onClick={() => { if (!editing) { setActiveId(c.id); setChatKey(c.id); } }}
+                      onClick={() => {
+                        if (!editing) {
+                          setActiveId(c.id);
+                          setChatKey(c.id);
+                          setHistoryOpen(false);
+                        }
+                      }}
                       onDoubleClick={(e) => { e.stopPropagation(); startEdit(c); }}
                     >
                       {editing ? (
@@ -289,11 +323,13 @@ function AssistantPageInner() {
       </aside>
 
       {/* Chat pane */}
-      <main className="min-w-0 flex-1 overflow-hidden bg-white">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
+        <div className="min-h-0 flex-1 overflow-hidden">
         <AssistantChat
           key={chatKey}
           conversationId={activeId}
           initialMessage={templateMessage ?? undefined}
+          onOpenHistory={() => setHistoryOpen(true)}
           onConversationChange={(id) => {
             setActiveId(id);
             if (!id) return;
@@ -314,6 +350,7 @@ function AssistantPageInner() {
             setTimeout(() => void load(true), 3200);
           }}
         />
+        </div>
       </main>
       </div>
     </div>

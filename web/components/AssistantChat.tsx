@@ -45,6 +45,7 @@ import {
   ChevronDown,
   Trash2,
   Plus,
+  Menu,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { TemplateGallery } from "@/components/TemplateGallery";
@@ -68,6 +69,12 @@ interface Props {
   /** Fired when a new conversation id is created, or pass `null` when the thread is reset (e.g. agent switch). */
   onConversationChange?: (id: string | null) => void;
   compact?: boolean;
+  /** Hide the built-in header when the parent shell provides its own chrome. */
+  hideHeader?: boolean;
+  /** Close handler for floating / mobile shells. */
+  onClose?: () => void;
+  /** Open the conversation history drawer (full-page mobile layout). */
+  onOpenHistory?: () => void;
   /** Pre-fill the message input on mount (e.g. from a template clone). */
   initialMessage?: string;
 }
@@ -135,6 +142,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_owner_info:        "Getting business info…",
   list_design_library_assets: "Loading design assets…",
   // Shopify
+  shopify_partner_create_store: "Creating Shopify store…",
   list_shopify_orders:   "Fetching Shopify orders…",
   list_shopify_products: "Fetching Shopify products…",
   get_shopify_analytics: "Pulling Shopify analytics…",
@@ -268,7 +276,7 @@ const BASE_PROMPTS = [
   "Schedule a WhatsApp check-in with my top 5 customers",
 ];
 
-export default function AssistantChat({ conversationId, onConversationChange, compact, initialMessage }: Props) {
+export default function AssistantChat({ conversationId, onConversationChange, compact, hideHeader, onClose, onOpenHistory, initialMessage }: Props) {
   const [models, setModels] = useState<AssistantModel[]>([]);
   const [modelId, setModelId] = useState<string>("");
   /** Last resolved agent id (for specialist persona badge). */
@@ -387,6 +395,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
 
   const loadConversation = useCallback(async (id: string) => {
     setLoadingConv(true);
+    setError(null);
     try {
       const conv: AssistantConversation = await assistantApi.getConversation(id);
       const msgs = conv.messages || [];
@@ -398,12 +407,21 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       else setActiveAgent("general");
       const docs = await assistantApi.listDocuments(id).catch(() => ({ documents: [] }));
       setDocuments(docs.documents || []);
-    } catch {
-      setError("Could not load that conversation");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      const gone = /404|not found/i.test(msg);
+      if (gone) {
+        setConvId(null);
+        setMessages([]);
+        setDocuments([]);
+        onConversationChange?.(null);
+      } else {
+        setError(msg || "Could not load that conversation");
+      }
     } finally {
       setLoadingConv(false);
     }
-  }, []);
+  }, [onConversationChange]);
 
   useEffect(() => {
     if (!shareOpen) return;
@@ -1147,22 +1165,33 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   const headerPersona = getAgentPersona(activeAgent);
 
   return (
-    <div className="flex h-full flex-col bg-white">
+    <div className="flex h-full min-h-0 flex-col bg-white">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-100 bg-white/80 px-4 py-2.5 backdrop-blur">
-        <div className="flex items-center gap-1">
+      {!hideHeader && (
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 bg-white/80 px-3 py-2 backdrop-blur sm:px-4 sm:py-2.5">
+        <div className="flex min-w-0 items-center gap-1">
+          {onOpenHistory ? (
+            <button
+              type="button"
+              onClick={onOpenHistory}
+              className="mr-1 inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 lg:hidden"
+              aria-label="Open chat history"
+            >
+              <Menu size={16} />
+            </button>
+          ) : null}
           <ZiloLogo size={28} className="shrink-0" />
-          <div>
-            <div className="text-sm font-semibold text-slate-900">Zilo Chat</div>
-            <div className="text-[10px] text-slate-400">
-              {compact ? "Ask me anything" : "Namedff specialists for each area — Zilo picks who fits best"}
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-slate-900">Zilo Chat</div>
+            <div className="hidden truncate text-[10px] text-slate-400 sm:block">
+              {compact ? "Ask me anything" : "Named specialists for each area — Zilo picks who fits best"}
             </div>
           </div>
         </div>
-        <div className="flex flex-nowrap items-center gap-2">
+        <div className="flex shrink-0 flex-nowrap items-center gap-1 sm:gap-2">
           {/* Which named specialist is active (router picks; user always sees a person + specialty). */}
           <span
-            className={`inline-flex max-w-56 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
+            className={`${compact ? "hidden sm:inline-flex" : "inline-flex"} max-w-32 sm:max-w-56 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
             title={
               activeAgent === "general"
                 ? "Zilo is your main guide. A named specialist will join when your question needs one."
@@ -1172,9 +1201,9 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <Bot size={10} />
             <span className="truncate">{personaBadgeLabel(activeAgent)}</span>
           </span>
-          {convId ? (
+          {convId && !compact ? (
             <span
-              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+              className={`hidden rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide sm:inline ${
                 convVisibility === "private"
                   ? "bg-amber-100 text-amber-800"
                   : "bg-slate-100 text-slate-600"
@@ -1184,11 +1213,11 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               {convVisibility === "private" ? "Private" : "Team"}
             </span>
           ) : null}
-          {convId ? (
+          {convId && !compact ? (
             <button
               type="button"
               onClick={() => setShareOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              className="hidden items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-600 hover:border-brand/50 hover:text-brand-dark sm:inline-flex"
               title="Invite teammates to this chat"
             >
               <UserPlus size={11} /> Share
@@ -1197,7 +1226,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           {!compact && (
             <Link
               href="/dashboard/assistant/audit"
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-500 hover:border-brand/50 hover:text-brand-dark"
+              className="hidden items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-500 hover:border-brand/50 hover:text-brand-dark sm:inline-flex"
               title="View audit log"
             >
               <ShieldCheck size={11} /> Audit
@@ -1211,7 +1240,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               persistAssistantModelId(v);
             }}
             disabled={!models.length}
-            className="max-w-35 truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none disabled:opacity-50"
+            className={`${compact ? "max-w-[5.5rem] sm:max-w-35" : "max-w-35"} truncate rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[10px] text-slate-700 focus:outline-none disabled:opacity-50 sm:px-2 sm:text-[11px]`}
           >
             {models.map((m) => (
               <option key={m.id} value={m.id}>
@@ -1220,8 +1249,19 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             ))}
             {!models.length && <option>No models</option>}
           </select>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              aria-label="Close chat"
+            >
+              <XIcon size={16} />
+            </button>
+          ) : null}
         </div>
       </div>
+      )}
 
       {shareOpen ? (
         <div
@@ -1284,13 +1324,13 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       ) : null}
 
       {/* Messages — centered ChatGPT/Claude column */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-4 py-6">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-3 py-4 sm:px-4 sm:py-6">
           {empty ? (
-            <div className="flex min-h-[60vh] flex-col items-center justify-center gap-6 text-center">
-              <ZiloLogo size={56} className="shrink-0" />
+            <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center sm:min-h-[60vh] sm:gap-6">
+              <ZiloLogo size={compact ? 44 : 56} className="shrink-0" />
               <div>
-                <p className="text-2xl font-semibold text-slate-900">How can I help today?</p>
+                <p className="text-xl font-semibold text-slate-900 sm:text-2xl">How can I help today?</p>
                 <p className="mx-auto mt-2 max-w-lg text-sm text-slate-500">
                   Ask anything — I&apos;ll bring in the right context and tools as we go. Attach a document and I&apos;ll read it with you.
                 </p>
@@ -1487,8 +1527,8 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       )}
 
       {/* Composer — centered Claude/ChatGPT-style pill */}
-      <div className="border-t border-slate-100 bg-linear-to-b from-white to-slate-50/40">
-        <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3">
+      <div className="shrink-0 border-t border-slate-100 bg-linear-to-b from-white to-slate-50/40">
+        <div className="mx-auto w-full max-w-3xl px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-4 sm:pb-4 sm:pt-3">
           {/* Uploading progress chips */}
           {uploadingFiles.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">

@@ -4,9 +4,125 @@ import {
   detectCalendarProvider,
   nangoProxy,
 } from "@/lib/nango-proxy";
+import { buildInternalCrmApiUrl } from "@/lib/server-crm-api";
 
 function err(msg: string, status = 400) {
   return NextResponse.json({ error: msg }, { status });
+}
+
+type CalendarConnection = {
+  provider: "google" | "microsoft";
+  via: "nango" | "composio";
+  integrationKey: string;
+  connectionId: string;
+};
+
+/** Nango (legacy) or Composio — matches Integrations page connect flow. */
+async function composioToolkitConnected(
+  authHeader: string,
+  toolkit: string,
+): Promise<boolean> {
+  try {
+    const url = buildInternalCrmApiUrl(`/composio/connections/${toolkit}`);
+    const res = await fetch(url, { headers: { Authorization: authHeader } });
+    if (!res.ok) return false;
+    const data = await res.json() as { connected?: boolean };
+    return Boolean(data.connected);
+  } catch {
+    return false;
+  }
+}
+
+async function detectCalendarConnection(
+  _req: NextRequest,
+  userId: string,
+  authHeader: string | null,
+): Promise<CalendarConnection | null> {
+  if (authHeader) {
+    const [googleConnected, outlookConnected] = await Promise.all([
+      composioToolkitConnected(authHeader, "googlecalendar"),
+      composioToolkitConnected(authHeader, "outlook"),
+    ]);
+    if (googleConnected) {
+      return { provider: "google", via: "composio", integrationKey: "googlecalendar", connectionId: userId };
+    }
+    if (outlookConnected) {
+      return { provider: "microsoft", via: "composio", integrationKey: "outlook", connectionId: userId };
+    }
+  }
+
+  const nango = await detectCalendarProvider(userId);
+  if (nango?.provider) {
+    return {
+      provider: nango.provider,
+      via: "nango",
+      integrationKey: nango.integrationKey,
+      connectionId: nango.connectionId,
+    };
+  }
+
+  return null;
+}
+
+async function composioCalendarFetch(
+  authHeader: string,
+  method: string,
+  opts?: { query?: Record<string, string>; body?: Record<string, unknown> },
+) {
+  const qs = opts?.query ? `?${new URLSearchParams(opts.query).toString()}` : "";
+  const url = buildInternalCrmApiUrl(`/composio/calendar/events${qs}`);
+  const res = await fetch(url, {
+    method,
+    headers: { Authorization: authHeader, "Content-Type": "application/json" },
+    body: opts?.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (!res.ok) {
+    let msg = `Calendar API ${res.status}`;
+    try {
+      const data = await res.json() as { detail?: string; error?: string };
+      msg = data.detail || data.error || msg;
+    } catch {
+      msg = await res.text().catch(() => msg);
+    }
+    throw new Error(msg);
+  }
+  return res.json() as Promise<Record<string, unknown>>;
+}
+
+function buildGCalEventPayload(body: EventBody) {
+  const event: Record<string, unknown> = {
+    summary: body.title,
+    description: body.description ?? "",
+    location: body.location ?? "",
+    start: body.allDay
+      ? { date: body.start.slice(0, 10) }
+      : { dateTime: body.start, timeZone: body.timeZone ?? "UTC" },
+    end: body.allDay
+      ? { date: body.end.slice(0, 10) }
+      : { dateTime: body.end, timeZone: body.timeZone ?? "UTC" },
+  };
+  if (body.attendees?.length) {
+    event.attendees = body.attendees.map((e) => ({ email: e }));
+  }
+  return event;
+}
+
+function buildMSEventPayload(body: EventBody) {
+  const event: Record<string, unknown> = {
+    subject: body.title,
+    body: { contentType: "Text", content: body.description ?? "" },
+    location: { displayName: body.location ?? "" },
+    start: { dateTime: body.start, timeZone: body.timeZone ?? "UTC" },
+    end: { dateTime: body.end, timeZone: body.timeZone ?? "UTC" },
+    isAllDay: body.allDay ?? false,
+  };
+  if (body.attendees?.length) {
+    event.attendees = body.attendees.map((e) => ({
+      emailAddress: { address: e },
+      type: "required",
+    }));
+  }
+  return event;
 }
 
 // ── Google Calendar ───────────────────────────────────────────────────────────
@@ -67,20 +183,7 @@ function normalizeGCalEvent(e: GCalEvent) {
 }
 
 async function gCalCreateEvent(connectionId: string, body: EventBody) {
-  const event: Record<string, unknown> = {
-    summary: body.title,
-    description: body.description ?? "",
-    location: body.location ?? "",
-    start: body.allDay
-      ? { date: body.start.slice(0, 10) }
-      : { dateTime: body.start, timeZone: body.timeZone ?? "UTC" },
-    end: body.allDay
-      ? { date: body.end.slice(0, 10) }
-      : { dateTime: body.end, timeZone: body.timeZone ?? "UTC" },
-  };
-  if (body.attendees?.length) {
-    event.attendees = body.attendees.map((e) => ({ email: e }));
-  }
+  const event = buildGCalEventPayload(body);
 
   const res = await nangoProxy({
     integrationKey: "google-calendar",
@@ -188,20 +291,7 @@ async function msListEvents(connectionId: string, opts: {
 }
 
 async function msCreateEvent(connectionId: string, body: EventBody) {
-  const event: Record<string, unknown> = {
-    subject: body.title,
-    body: { contentType: "Text", content: body.description ?? "" },
-    location: { displayName: body.location ?? "" },
-    start: { dateTime: body.start, timeZone: body.timeZone ?? "UTC" },
-    end: { dateTime: body.end, timeZone: body.timeZone ?? "UTC" },
-    isAllDay: body.allDay ?? false,
-  };
-  if (body.attendees?.length) {
-    event.attendees = body.attendees.map((e) => ({
-      emailAddress: { address: e },
-      type: "required",
-    }));
-  }
+  const event = buildMSEventPayload(body);
 
   const res = await nangoProxy({
     integrationKey: "microsoft",
@@ -256,6 +346,139 @@ type EventBody = {
   attendees?: string[];
 };
 
+/** Composio requires YYYY-MM-DDTHH:MM:SS (naive). */
+function toComposioDateTime(value: string): string {
+  const s = (value || "").trim();
+  if (!s) return s;
+  if (s.length <= 10 && !s.includes("T")) return `${s.slice(0, 10)}T00:00:00`;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) return `${s}:00`;
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    return d.toISOString().replace(/\.\d{3}Z$/, "").replace(/Z$/, "");
+  }
+  return s.includes("T") ? s : `${s.slice(0, 10)}T00:00:00`;
+}
+
+function composioEventTimes(body: EventBody): { start: string; end: string } {
+  const start = toComposioDateTime(body.start);
+  let end = toComposioDateTime(body.end || body.start);
+  if (body.allDay) {
+    const startDay = start.slice(0, 10);
+    let endDay = end.slice(0, 10);
+    if (endDay < startDay) endDay = startDay;
+    const endDate = new Date(`${endDay}T00:00:00`);
+    endDate.setDate(endDate.getDate() + 1);
+    end = `${endDate.toISOString().slice(0, 10)}T00:00:00`;
+  } else if (end <= start) {
+    const endDate = new Date(start.includes("T") ? start : `${start.slice(0, 10)}T00:00:00`);
+    endDate.setHours(endDate.getHours() + 1);
+    end = toComposioDateTime(endDate.toISOString());
+  }
+  return { start, end };
+}
+
+async function listCalendarEvents(
+  req: NextRequest,
+  cal: CalendarConnection,
+  authHeader: string,
+  opts: { timeMin?: string; timeMax?: string; q?: string },
+) {
+  if (cal.via === "nango") {
+    if (cal.provider === "google") {
+      return (await gCalListEvents(cal.connectionId, opts)).map(normalizeGCalEvent);
+    }
+    return msListEvents(cal.connectionId, opts);
+  }
+
+  if (cal.provider === "google" || cal.provider === "microsoft") {
+    const data = await composioCalendarFetch(authHeader, "GET", {
+      query: {
+        provider: cal.provider,
+        ...(opts.timeMin ? { timeMin: opts.timeMin } : {}),
+        ...(opts.timeMax ? { timeMax: opts.timeMax } : {}),
+      },
+    });
+    return (data.events ?? []) as ReturnType<typeof normalizeGCalEvent>[];
+  }
+
+  return [];
+}
+
+async function createCalendarEvent(
+  req: NextRequest,
+  cal: CalendarConnection,
+  authHeader: string,
+  body: EventBody,
+) {
+  if (cal.via === "nango") {
+    return cal.provider === "google"
+      ? gCalCreateEvent(cal.connectionId, body)
+      : msCreateEvent(cal.connectionId, body);
+  }
+
+  const { start, end } = composioEventTimes(body);
+  const payload = {
+    title: body.title,
+    description: body.description ?? "",
+    location: body.location ?? "",
+    start,
+    end,
+    allDay: body.allDay ?? false,
+    timeZone: body.timeZone ?? "UTC",
+    attendees: body.attendees ?? [],
+    provider: cal.provider,
+  };
+  const data = await composioCalendarFetch(authHeader, "POST", { body: payload });
+  return data.event as ReturnType<typeof normalizeGCalEvent>;
+}
+
+async function updateCalendarEvent(
+  req: NextRequest,
+  cal: CalendarConnection,
+  authHeader: string,
+  eventId: string,
+  body: EventBody,
+) {
+  if (cal.via === "nango") {
+    return cal.provider === "google"
+      ? gCalUpdateEvent(cal.connectionId, eventId, body)
+      : msUpdateEvent(cal.connectionId, eventId, body);
+  }
+
+  const { start, end } = composioEventTimes(body);
+  const payload = {
+    eventId,
+    title: body.title,
+    description: body.description,
+    location: body.location,
+    start,
+    end,
+    allDay: body.allDay ?? false,
+    timeZone: body.timeZone ?? "UTC",
+    attendees: body.attendees ?? [],
+    provider: cal.provider,
+  };
+  const data = await composioCalendarFetch(authHeader, "PATCH", { body: payload });
+  return data.event as ReturnType<typeof normalizeGCalEvent>;
+}
+
+async function deleteCalendarEvent(
+  req: NextRequest,
+  cal: CalendarConnection,
+  authHeader: string,
+  eventId: string,
+) {
+  if (cal.via === "nango") {
+    if (cal.provider === "google") await gCalDeleteEvent(cal.connectionId, eventId);
+    else await msDeleteEvent(cal.connectionId, eventId);
+    return;
+  }
+
+  await composioCalendarFetch(authHeader, "DELETE", {
+    query: { eventId, provider: cal.provider },
+  });
+}
+
 // ── Route Handlers ────────────────────────────────────────────────────────────
 
 /** GET /api/calendar/events?timeMin=...&timeMax=...&q=... */
@@ -264,7 +487,7 @@ export async function GET(req: NextRequest) {
   const userId = await resolveUserId(auth);
   if (!userId) return err("Unauthorized", 401);
 
-  const cal = await detectCalendarProvider(userId);
+  const cal = await detectCalendarConnection(req, userId, auth);
   if (!cal) return NextResponse.json({ events: [], provider: null, connected: false });
 
   const sp = req.nextUrl.searchParams;
@@ -273,11 +496,7 @@ export async function GET(req: NextRequest) {
   const q = sp.get("q") ?? "";
 
   try {
-    const events =
-      cal.provider === "google"
-        ? (await gCalListEvents(cal.connectionId, { timeMin, timeMax, q: q || undefined })).map(normalizeGCalEvent)
-        : await msListEvents(cal.connectionId, { timeMin, timeMax });
-
+    const events = await listCalendarEvents(req, cal, auth!, { timeMin, timeMax, q: q || undefined });
     return NextResponse.json({ events, provider: cal.provider, connected: true });
   } catch (e) {
     return err(e instanceof Error ? e.message : "Failed to load events", 500);
@@ -290,17 +509,14 @@ export async function POST(req: NextRequest) {
   const userId = await resolveUserId(auth);
   if (!userId) return err("Unauthorized", 401);
 
-  const cal = await detectCalendarProvider(userId);
+  const cal = await detectCalendarConnection(req, userId, auth);
   if (!cal) return err("No calendar connected", 400);
 
   const body = await req.json() as EventBody;
   if (!body.title || !body.start || !body.end) return err("title, start, end required");
 
   try {
-    const event =
-      cal.provider === "google"
-        ? await gCalCreateEvent(cal.connectionId, body)
-        : await msCreateEvent(cal.connectionId, body);
+    const event = await createCalendarEvent(req, cal, auth!, body);
     return NextResponse.json({ event });
   } catch (e) {
     return err(e instanceof Error ? e.message : "Create failed", 500);
@@ -313,17 +529,14 @@ export async function PATCH(req: NextRequest) {
   const userId = await resolveUserId(auth);
   if (!userId) return err("Unauthorized", 401);
 
-  const cal = await detectCalendarProvider(userId);
+  const cal = await detectCalendarConnection(req, userId, auth);
   if (!cal) return err("No calendar connected", 400);
 
   const body = await req.json() as EventBody & { eventId: string };
   if (!body.eventId) return err("eventId required");
 
   try {
-    const event =
-      cal.provider === "google"
-        ? await gCalUpdateEvent(cal.connectionId, body.eventId, body)
-        : await msUpdateEvent(cal.connectionId, body.eventId, body);
+    const event = await updateCalendarEvent(req, cal, auth!, body.eventId, body);
     return NextResponse.json({ event });
   } catch (e) {
     return err(e instanceof Error ? e.message : "Update failed", 500);
@@ -336,15 +549,14 @@ export async function DELETE(req: NextRequest) {
   const userId = await resolveUserId(auth);
   if (!userId) return err("Unauthorized", 401);
 
-  const cal = await detectCalendarProvider(userId);
+  const cal = await detectCalendarConnection(req, userId, auth);
   if (!cal) return err("No calendar connected", 400);
 
   const eventId = req.nextUrl.searchParams.get("eventId");
   if (!eventId) return err("eventId required");
 
   try {
-    if (cal.provider === "google") await gCalDeleteEvent(cal.connectionId, eventId);
-    else await msDeleteEvent(cal.connectionId, eventId);
+    await deleteCalendarEvent(req, cal, auth!, eventId);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return err(e instanceof Error ? e.message : "Delete failed", 500);

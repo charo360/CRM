@@ -955,6 +955,8 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str, extra_d
 
     """Initiate OAuth for a toolkit and return the redirect URL."""
 
+    _ACCOUNTS_CACHE.pop(user_id, None)
+
     key = _get_key()
 
     if not key:
@@ -1110,6 +1112,8 @@ _CONNECTED_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "SUCCESS", "ENABLED"}
 
 # OAuth in progress — must NOT show as connected in the UI
 _PENDING_STATUSES = {"INITIATED", "INITIALIZING", "PENDING", "IN_PROGRESS"}
+_ACCOUNTS_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+CACHE_TTL = 30.0  # cache connection status for 30 seconds
 
 
 def _normalize_app(s: str) -> str:
@@ -1123,6 +1127,13 @@ async def _v3_list_user_accounts(user_id: str) -> List[Dict[str, Any]]:
     The v1 endpoint /api/v1/connectedAccounts was deprecated and now returns
     HTTP 410 Gone, so this is the only working list endpoint.
     """
+    import time
+    now = time.time()
+    if user_id in _ACCOUNTS_CACHE:
+        ts, cached = _ACCOUNTS_CACHE[user_id]
+        if now - ts < CACHE_TTL:
+            return cached
+
     items: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
     async with httpx.AsyncClient(timeout=12.0) as client:
@@ -1150,6 +1161,7 @@ async def _v3_list_user_accounts(user_id: str) -> List[Dict[str, Any]]:
             cursor = data.get("next_cursor")
             if not cursor or not page:
                 break
+    _ACCOUNTS_CACHE[user_id] = (now, items)
     return items
 
 
@@ -1262,6 +1274,8 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
 async def disconnect(user_id: str, toolkit: str) -> Dict[str, Any]:
 
     """Disconnect a user's connection(s) for a toolkit (active + stale pending OAuth)."""
+
+    _ACCOUNTS_CACHE.pop(user_id, None)
 
     if not _get_key():
 

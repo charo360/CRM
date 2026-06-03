@@ -290,4 +290,29 @@ async def queue_deal_alert(
         )
 
     logger.info("[deal_alerts] queued user=%s platform=%s author=%s", user_id, platform, author)
+
+    # Fire workflow trigger
+    try:
+        from workflows.engine import fire_trigger
+        from workflows.models import WorkflowEvent
+        from whatsapp_service import get_whatsapp_service
+        ws = get_whatsapp_service(db)
+        event = WorkflowEvent(
+            trigger_type="social_lead_discovered",
+            user_id=user_id,
+            from_number="",
+            data={
+                "lead_author": author,
+                "lead_text": text,
+                "platform": platform,
+                "url": url,
+                "keyword": matched_kw,
+                "suggested_reply": draft,
+            }
+        )
+        import asyncio
+        asyncio.create_task(fire_trigger(db, event, ws))
+    except Exception as e:
+        logger.warning(f"[deal_alerts] fire_trigger social_lead failed: {e}")
+
     return True
