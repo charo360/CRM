@@ -49,6 +49,7 @@ from rex.loop.routing import (
 )
 from rex.memory.notebook import Notebook
 from rex.memory.citations import scan_and_attach_citations
+from rex.memory.notebook_sync import on_trust_event as _notebook_on_event
 from rex.ranks.engine import RankEngine
 from rex.ranks.events import EventType, Rank, TrustEvent
 from rex.ranks.store import EventStore, InMemoryEventStore
@@ -272,6 +273,8 @@ class Orchestrator:
             actor_name="User", reason=reason,
         )
         self._emit_trust_events(events)
+        for e in events:
+            _notebook_on_event(e, action, self.notebook)
 
         dispatched = self._dispatch_action(action)
         return ApprovalResult(
@@ -283,12 +286,14 @@ class Orchestrator:
 
     def reject(self, action_id: str, *, reason: str | None = None) -> tuple[TrustEvent, ...]:
         """User rejects a STAGED action."""
-        self._must_get(action_id)
+        action = self._must_get(action_id)
         _, events = self.ledger.transition(
             action_id=action_id, to_state=ActionState.REJECTED,
             actor_name="User", reason=reason,
         )
         self._emit_trust_events(events)
+        for e in events:
+            _notebook_on_event(e, action, self.notebook)
         return events
 
     def dismiss(self, action_id: str, *, reason: str | None = None) -> tuple[TrustEvent, ...]:
@@ -303,12 +308,14 @@ class Orchestrator:
 
     def undo(self, action_id: str, *, reason: str | None = None) -> tuple[TrustEvent, ...]:
         """User undoes a SENT action (only valid within the undo window)."""
-        self._must_get(action_id)
+        action = self._must_get(action_id)
         _, events = self.ledger.transition(
             action_id=action_id, to_state=ActionState.UNDONE,
             actor_name="User", reason=reason,
         )
         self._emit_trust_events(events)
+        for e in events:
+            _notebook_on_event(e, action, self.notebook)
         return events
 
     # ------------------------------------------------------------------

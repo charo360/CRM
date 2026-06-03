@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Bumping this invalidates the in-memory reflection cache for prior sessions.
 # Bump whenever the prompt changes meaningfully.
-PROMPT_VERSION = "v11"
+PROMPT_VERSION = "v14"
 
 # Words/phrases the AI must never use. Each one is a report-voice tell or an
 # AI-fluff cliche. Match is case-insensitive substring.
@@ -66,6 +66,16 @@ _FORBIDDEN_WORDS = (
     "usual routines", "usual routine", "the routines", "settled in",
     "nothing shifted", "around me", "the office", "the team meeting",
     "the room", "earlier patterns", "previous patterns",
+    # Corporate buzzwords — Zilo never speaks like a consultant
+    "synergize", "paradigm", "deliverable", "deliverables", "actionable",
+    "circle back", "bandwidth", "going forward",
+    # Zilo voice rules — specific prohibitions
+    "i apologize", "apologies", "sorry about",  # Zilo never apologizes
+    "great question", "good question", "excellent question",  # Zilo never compliments
+    "certainly", "absolutely", "of course",  # Zilo never performs eagerness
+    "i think", "i believe", "i feel that", "in my opinion",  # Zilo states facts
+    "perhaps", "maybe", "possibly", "might be",  # Zilo is direct
+    "i noticed that", "i have noticed",  # Too formal — just state the observation
 )
 
 _PHASE_GUIDANCE: dict[JournalPhase, str] = {
@@ -202,6 +212,23 @@ def _facts_block(
         for cat, n in by_cat.items():
             lines.append(f"- {n} {cat} action{'s' if n != 1 else ''} undone.")
 
+    # Background work events — parse the counts from the reason field
+    bg_events = [e for e in events if e.type is EventType.BACKGROUND_WORK]
+    for e in bg_events:
+        parts = dict(p.split(":") for p in (e.reason or "").split(";") if ":" in p)
+        ds = int(parts.get("drafts_staged", 0))
+        es = int(parts.get("emails_swept", 0))
+        lf = int(parts.get("leads_found", 0))
+        as_ = int(parts.get("actions_sent", 0))
+        if ds:
+            lines.append(f"- {ds} draft{'s' if ds != 1 else ''} staged for review.")
+        if es:
+            lines.append(f"- {es} email{'s' if es != 1 else ''} swept and processed.")
+        if lf:
+            lines.append(f"- {lf} lead{'s' if lf != 1 else ''} found and queued.")
+        if as_:
+            lines.append(f"- {as_} action{'s' if as_ != 1 else ''} sent autonomously.")
+
     # Real subject names from the action ledger — the one detail Zilo can
     # honestly mention to make the entry feel real ("the Acme follow-up",
     # "the Patel reply") instead of generic ("one draft").
@@ -323,6 +350,13 @@ NOW WRITE TODAY'S ENTRY. RULES — strict:
    - "I'm excited / thrilled / ready / proud / nervous"
    - "Their work has been solid" / "I'm seeing growth" / "shows promise"
    Replace with what you observed or did.
+
+5b. ZILO VOICE RULES — absolute:
+   - NEVER apologize. Not "I apologize", not "Apologies", not "Sorry about". Zilo owns mistakes without performing remorse.
+   - NEVER compliment a question. Not "Great question", not "Good point". Zilo just answers.
+   - NEVER perform eagerness. Not "Certainly", not "Absolutely", not "Of course". Zilo just acts.
+   - NEVER hedge. Not "I think", not "perhaps", not "maybe", not "possibly". Zilo states facts.
+   - NEVER use "I noticed that" or "I have noticed". Zilo just states the observation directly.
 
 6. END WITH EXACTLY ONE VERDICT — 1 to 5 WORDS, on its own final line, preceded by a blank line.
    - The verdict is the LAST line. Nothing comes after it.
@@ -499,20 +533,27 @@ async def generate_daily_reflection_entry(
             events=events,
         )
 
-    subjects = _subjects_for_day(orch, relationship_day)
-
-    # DAY 1 HARD GUARD: with no real events AND no real subjects from the ledger,
-    # there is nothing for the AI to honestly say about Day 1. The model loves
-    # to hallucinate ("inbox of inquiries", "founder's concise responses",
-    # "usual routines"). Use the canonical template directly — it says only
-    # what we actually know: this is the first day.
-    if relationship_day == 1 and not events and not subjects:
+    # DAY 1 HARD GUARD: always use the canonical template on Day 1.
+    # The AI has nothing honest to say — no history exists yet.
+    # Subjects from the ledger on Day 1 are scout/system noise, not trust events.
+    if relationship_day == 1:
         return synthesize_daily_reflection(
             relationship_day=relationship_day,
             events=events,
         )
 
-    facts = _facts_block(events, subjects=subjects)
+    subjects = _subjects_for_day(orch, relationship_day)
+
+    # Only pass subjects that correspond to meaningful trust-event categories.
+    # Raw scout action subjects (lead IDs, opportunity numbers) must not reach the AI.
+    _NOISE_CATEGORIES = {"leads", "scout", "opportunities", "pipeline_scan"}
+    clean_subjects = [
+        s for s in subjects
+        if not any(noise in s.lower() for noise in ("scout", "opportunity", "opportunities", "pipeline"))
+        and not s.strip().isdigit()
+        and not all(c.isdigit() or c in ", " for c in s.strip())
+    ]
+    facts = _facts_block(events, subjects=clean_subjects)
     prompt = _build_prompt(day=relationship_day, phase=phase, facts=facts)
 
     # Try up to 2 attempts. Reject report-voice tells (forbidden words) or

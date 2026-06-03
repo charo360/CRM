@@ -72,11 +72,72 @@ class DesignTemplateCreate(BaseModel):
     is_default: bool = False
 
 
-async def _persist_brand_upload(file: UploadFile) -> tuple[str, str, str]:
+async def _persist_brand_upload(file: UploadFile, remove_white_bg: bool = False) -> tuple[str, str, str]:
     """Store upload; returns ``(file_url, asset_kind, thumbnail_url)``."""
     raw_name = file.filename or "upload"
     ext = raw_name.rsplit(".", 1)[-1].lower() if "." in raw_name else ""
     if ext in IMG_EXT:
+        if remove_white_bg:
+            try:
+                from PIL import Image
+                import io
+                from collections import deque
+                
+                file_bytes = await file.read()
+                img = Image.open(io.BytesIO(file_bytes))
+                img = img.convert("RGBA")
+                width, height = img.size
+                
+                # Flood fill starting from the 4 corners to find edge-connected background pixels
+                mask = Image.new("L", (width, height), 0)
+                
+                def is_white(pos):
+                    r, g, b, a = img.getpixel(pos)
+                    # Consider pixels with RGB channels all > 235 as white background
+                    return r > 235 and g > 235 and b > 235
+                
+                visited = set()
+                queue = deque()
+                corners = [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]
+                for c in corners:
+                    if is_white(c):
+                        queue.append(c)
+                        visited.add(c)
+                
+                while queue:
+                    x, y = queue.popleft()
+                    mask.putpixel((x, y), 255)
+                    
+                    for nx, ny in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]:
+                        if 0 <= nx < width and 0 <= ny < height:
+                            if (nx, ny) not in visited and is_white((nx, ny)):
+                                visited.add((nx, ny))
+                                queue.append((nx, ny))
+                
+                # Apply transparency mask
+                datas = img.getdata()
+                new_data = []
+                for idx, item in enumerate(datas):
+                    x = idx % width
+                    y = idx // width
+                    if mask.getpixel((x, y)) == 255:
+                        new_data.append((255, 255, 255, 0))  # Transparent
+                    else:
+                        new_data.append(item)
+                img.putdata(new_data)
+                
+                out_bytes = io.BytesIO()
+                img.save(out_bytes, format="PNG")
+                out_bytes.seek(0)
+                
+                stem = Path(raw_name).stem
+                new_filename = f"{stem}.png"
+                
+                file = UploadFile(file=out_bytes, filename=new_filename)
+            except Exception as exc:
+                logger.warning("[design-templates] remove background failed: %s", exc)
+                await file.seek(0)
+                
         up = await ImageUploadHandler.save_image(file)
         u = (up.get("image_url") or "").strip()
         if not u:
@@ -283,7 +344,7 @@ def make_design_templates_router(db, user_dep):
                 logger.warning("[design-templates] brand-assets skip non-image: %s", raw_name)
                 continue
             try:
-                file_url, asset_kind, thumb = await _persist_brand_upload(file)
+                file_url, asset_kind, thumb = await _persist_brand_upload(file, remove_white_bg=(mt == "brand_logo"))
             except HTTPException:
                 raise
             except Exception as exc:
@@ -335,7 +396,7 @@ def make_design_templates_router(db, user_dep):
         mt = material_type if material_type in BRAND_CONTENT_TYPES else "brand_other"
         default_flag = is_default_logo.strip().lower() in ("1", "true", "yes", "on")
         try:
-            file_url, asset_kind, thumb = await _persist_brand_upload(file)
+            file_url, asset_kind, thumb = await _persist_brand_upload(file, remove_white_bg=(mt == "brand_logo"))
         except HTTPException:
             raise
         except Exception as exc:
@@ -572,5 +633,86 @@ def make_design_templates_router(db, user_dep):
         """Create or update the Document Style Profile."""
         updated = await upsert_document_style(db, _tid(user), payload)
         return {"status": "saved", "profile": updated}
+
+    class CleanBackgroundRequest(BaseModel):
+        file_url: str
+
+    @router.post("/clean-background")
+    async def clean_image_background(payload: CleanBackgroundRequest, user=user_dep):
+        """Fetch an image URL, remove its white background, and upload the transparent version."""
+        url = payload.file_url.strip()
+        if not url:
+            raise HTTPException(400, "file_url is required")
+        import httpx
+        from PIL import Image
+        import io
+        from collections import deque
+        try:
+            if url.startswith("http://") or url.startswith("https://"):
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    file_bytes = resp.content
+            else:
+                backend_dir = Path(__file__).resolve().parent
+                local_path = backend_dir / url.lstrip("/")
+                if not local_path.is_file():
+                    raise HTTPException(404, "Local image not found")
+                async with aiofiles.open(local_path, "rb") as fh:
+                    file_bytes = await fh.read()
+        except Exception as e:
+            raise HTTPException(502, f"Failed to retrieve image: {e}")
+        try:
+            img = Image.open(io.BytesIO(file_bytes))
+            img = img.convert("RGBA")
+            width, height = img.size
+            mask = Image.new("L", (width, height), 0)
+            def is_white(pos):
+                r, g, b, a = img.getpixel(pos)
+                return r > 235 and g > 235 and b > 235
+            visited = set()
+            queue = deque()
+            corners = [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]
+            for c in corners:
+                if is_white(c):
+                    queue.append(c)
+                    visited.add(c)
+            while queue:
+                x, y = queue.popleft()
+                mask.putpixel((x, y), 255)
+                for nx, ny in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]:
+                    if 0 <= nx < width and 0 <= ny < height:
+                        if (nx, ny) not in visited and is_white((nx, ny)):
+                            visited.add((nx, ny))
+                            queue.append((nx, ny))
+            datas = img.getdata()
+            new_data = []
+            for idx, item in enumerate(datas):
+                x = idx % width
+                y = idx // width
+                if mask.getpixel((x, y)) == 255:
+                    new_data.append((255, 255, 255, 0))
+                else:
+                    new_data.append(item)
+            img.putdata(new_data)
+            out_bytes = io.BytesIO()
+            img.save(out_bytes, format="PNG")
+            out_bytes.seek(0)
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            filename = Path(parsed_url.path).name or "cleaned_logo.png"
+            if not filename.endswith(".png"):
+                filename = f"{Path(filename).stem}.png"
+            file = UploadFile(file=out_bytes, filename=filename)
+            up = await ImageUploadHandler.save_image(file)
+            new_url = (up.get("image_url") or "").strip()
+            if not new_url:
+                raise HTTPException(502, "Upload failed to return URL")
+            from image_handler import S3Handler
+            resolved_url = S3Handler.resolve_accessible_url(new_url)
+            return {"status": "success", "file_url": resolved_url}
+        except Exception as e:
+            logger.exception("[design-templates.clean-background] conversion failed")
+            raise HTTPException(500, f"Background removal failed: {e}")
 
     return router

@@ -40,6 +40,14 @@ const nextConfig: NextConfig = {
         source: "/api/document-preview/:key*",
         destination: `${BACKEND_ORIGIN}/api/document-preview/:key*`,
       },
+      {
+        source: "/api/images/s3/:path*",
+        destination: `${BACKEND_ORIGIN}/api/images/s3/:path*`,
+      },
+      {
+        source: "/uploads/:path*",
+        destination: `${BACKEND_ORIGIN}/uploads/:path*`,
+      },
     ];
   },
 };

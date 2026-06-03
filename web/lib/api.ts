@@ -683,6 +683,15 @@ export const designTemplatesApi = {
     }
     return res.json() as Promise<Record<string, unknown>>;
   },
+  list: (params?: { platform?: string; content_type?: string; source?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.platform) query.set("platform", params.platform);
+    if (params?.content_type) query.set("content_type", params.content_type);
+    if (params?.source) query.set("source", params.source);
+    return api.get<any[]>(`/design-templates?${query.toString()}`);
+  },
+  cleanBackground: (file_url: string) =>
+    api.post<{ status: string; file_url: string }>("/design-templates/clean-background", { file_url }),
 };
 
 export const teamApi = {
@@ -1467,7 +1476,7 @@ export const assistantApi = {
     api.get<AssistantAuditEntry[]>(`/assistant/audit?limit=${limit}`),
   exportDocument: async (
     content: string,
-    format: "pdf" | "docx",
+    format: "pdf" | "docx" | "xlsx",
     filename?: string
   ): Promise<void> => {
     const token = getToken();

@@ -120,10 +120,11 @@ async def _get_orchestrator(
             _ORCHESTRATORS[uid] = orch
         return orch
 
-    store = ZiloSessionStore(db)
     global _SESSION
-    _SESSION = store
-    await store.ensure_indexes()
+    if _SESSION is None:
+        _SESSION = ZiloSessionStore(db)
+        await _SESSION.ensure_indexes()
+    store = _SESSION
     orch = await store.load(uid, business_id=bid)
     wire_action_mode_executor(orch, db, uid)
 
@@ -166,8 +167,11 @@ async def _background_briefing_refresh(user: dict, db: Any, uid: str, bid: str) 
         return
     _BG_REFRESH_INFLIGHT.add(uid)
     try:
-        store = ZiloSessionStore(db)
-        await store.ensure_indexes()
+        global _SESSION
+        if _SESSION is None:
+            _SESSION = ZiloSessionStore(db)
+            await _SESSION.ensure_indexes()
+        store = _SESSION
         orch = await store.load(uid, business_id=bid)
         wire_action_mode_executor(orch, db, uid)
         await light_briefing_refresh(db, user, orch)
@@ -581,20 +585,40 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
 
     @router.post("/notebook/refresh")
     async def refresh_notebook(user=Depends(get_current_user)):
+        uid = _uid(user)
+        bid = _business_id(user)
+        # Bust the in-memory cache so load() hits MongoDB fresh
+        if _SESSION is not None:
+            _SESSION._cache.pop(uid, None)
         orch = await _get_orchestrator(user, db, refresh=False)
+        # Clear stale auto-generated entries; keep anything the user has edited
         for entry in list(orch.notebook.all()):
-            orch.notebook.delete(entry.id)
+            if not entry.edited_by_user:
+                orch.notebook.delete(entry.id)
         if hasattr(orch, "_companies"):
             orch._companies = []
         from rex.persistence.extractor import extract_and_populate_notebook
-        uid = _uid(user)
-        bid = _business_id(user)
         try:
             await extract_and_populate_notebook(db, uid, orch)
         except Exception as e:
             logger.exception("[zilo-session] failed during manual refresh: %s", e)
         await _persist(user, db, orch)
         return {"ok": True, "notebook": serialize_notebook(orch)}
+
+    @router.post("/bootstrap")
+    async def rex_bootstrap(user=Depends(get_current_user)):
+        """
+        Full account bootstrap: sync emails from Composio then rebuild notebook.
+        Call this once after connecting Gmail/Outlook on any account.
+        Returns immediately; all heavy work runs in background.
+        """
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Requires live database")
+        uid = _uid(user)
+        from server import _bootstrap_new_account
+        import asyncio
+        asyncio.create_task(_bootstrap_new_account(uid, db))
+        return {"ok": True, "status": "bootstrapping in background — notebook will update within 60s"}
 
     @router.get("/notebook/export")
     async def export_notebook(user=Depends(get_current_user)):
@@ -623,16 +647,19 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
         await _persist(user, db, orch)
         return payload
 
-    @router.post("/journal/advance")
-    async def rex_journal_advance(user=Depends(get_current_user)):
-        orch = await _get_orchestrator(user, db, refresh=False)
-        day = getattr(orch, "_relationship_day", 1)
-        next_day = day + 1
-        orch._relationship_day = next_day  # type: ignore[attr-defined]
-        orch._relationship_day_override = next_day  # type: ignore[attr-defined]
-        payload = await serialize_journal(orch)  # mutates streak + shown_milestones
-        await _persist(user, db, orch)
-        return payload
+    @router.post("/journal/clear-day-override")
+    async def rex_journal_clear_day_override(user=Depends(get_current_user)):
+        """One-time fix: remove any relationship_day_override so the day is
+        computed naturally from created_at. Safe to call repeatedly."""
+        uid = _uid(user)
+        if _use_live_db(db):
+            store = await _session_store()
+            await db[store._col.name].update_one(
+                {"user_id": uid},
+                {"$unset": {"relationship_day_override": ""}},
+            )
+            store.invalidate_cache(uid)
+        return {"ok": True}
 
     @router.get("/standings")
     async def rex_standings(user=Depends(get_current_user)):

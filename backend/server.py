@@ -502,6 +502,15 @@ async def start_lead_scout_worker():
         logging.warning("[lead_scout] could not start background worker: %s", e)
 
 @app.on_event("startup")
+async def start_weekly_report_worker():
+    # Dormant unless WEEKLY_REPORTS_ENABLED=1 and tenants opt in; the loop self-checks.
+    try:
+        asyncio.create_task(run_weekly_report_loop())
+        logging.info("[weekly-report] startup hook registered")
+    except Exception as e:
+        logging.warning("[weekly-report] could not start loop: %s", e)
+
+@app.on_event("startup")
 async def fix_team_members_index():
     try:
         await db.team_members.drop_index("business_id_1_email_1")
@@ -6518,6 +6527,471 @@ async def create_expense(expense: ExpenseCreate, user = Depends(get_current_user
         description=expense.description,
         created_at=expense_doc["created_at"]
     )
+
+@api_router.get("/export/{dataset}.xlsx")
+async def export_crm_dataset(dataset: str, user = Depends(get_current_user)):
+    """One-click branded Excel export of a CRM dataset for the current tenant.
+
+    dataset ∈ customers | sales | orders | invoices | followups | products | expenses
+    """
+    from fastapi.responses import FileResponse
+    from assistant.document_generator import generate_data_xlsx
+
+    business_id = user.get("business_id", user["_id"])
+    q = {"user_id": business_id}
+
+    # Brand style for headers (best-effort)
+    doc_style: Dict[str, Any] = {}
+    try:
+        from saved_designs import get_document_style as _gds
+        doc_style = await _gds(db, business_id) or {}
+    except Exception:
+        doc_style = {}
+
+    business_name = ""
+    try:
+        urec = await db.users.find_one({"_id": business_id})
+        if urec:
+            business_name = urec.get("business_name") or urec.get("owner_name") or ""
+    except Exception:
+        pass
+
+    # (title, sheet, columns, mongo-doc -> row mapper, total_keys, highlight)
+    if dataset == "customers":
+        docs = await db.customers.find(q).sort("total_spent", -1).to_list(5000)
+        columns = [
+            {"header": "Name", "key": "name", "width": 24},
+            {"header": "Phone", "key": "phone", "width": 16},
+            {"header": "Email", "key": "email", "width": 26},
+            {"header": "Stage", "key": "stage", "width": 14},
+            {"header": "Total Spent", "key": "spent", "fmt": "money", "width": 14},
+            {"header": "Purchases", "key": "count", "fmt": "int", "width": 11},
+            {"header": "Last Contacted", "key": "last", "width": 20},
+        ]
+        rows = [{
+            "name": d.get("name", ""), "phone": d.get("phone_number", ""),
+            "email": d.get("email", ""), "stage": d.get("stage") or d.get("status", ""),
+            "spent": float(d.get("total_spent", 0) or 0), "count": int(d.get("purchase_count", 0) or 0),
+            "last": str(d.get("last_contacted", "") or ""),
+        } for d in docs]
+        title, sheet, totals, hl = "Customers", "Customers", {"spent"}, None
+
+    elif dataset == "sales":
+        docs = await db.sales.find(q).sort("created_at", -1).to_list(5000)
+        columns = [
+            {"header": "Date", "key": "date", "width": 20},
+            {"header": "Customer", "key": "customer", "width": 24},
+            {"header": "Item", "key": "item", "width": 28},
+            {"header": "Amount", "key": "amount", "fmt": "money", "width": 14},
+            {"header": "Method", "key": "method", "width": 14},
+        ]
+        rows = [{
+            "date": str(d.get("created_at", "") or ""), "customer": d.get("customer_name", ""),
+            "item": d.get("item", ""), "amount": float(d.get("amount", 0) or 0),
+            "method": d.get("payment_method", ""),
+        } for d in docs]
+        title, sheet, totals, hl = "Sales", "Sales", {"amount"}, None
+
+    elif dataset in ("orders", "invoices"):
+        docs = await db.orders.find(q).sort("created_at", -1).to_list(5000)
+        if dataset == "invoices":
+            docs = [d for d in docs if float(d.get("amount_remaining", 0) or 0) > 0
+                    or (d.get("payment_status", "") not in ("paid", "completed") and float(d.get("total_amount", 0) or 0) > 0)]
+        columns = [
+            {"header": "Date", "key": "date", "width": 20},
+            {"header": "Order #", "key": "num", "width": 14},
+            {"header": "Customer", "key": "customer", "width": 24},
+            {"header": "Total", "key": "total", "fmt": "money", "width": 13},
+            {"header": "Paid", "key": "paid", "fmt": "money", "width": 13},
+            {"header": "Remaining", "key": "remaining", "fmt": "money", "width": 13},
+            {"header": "Payment", "key": "pay", "width": 13},
+        ]
+        rows = [{
+            "date": str(d.get("created_at", "") or ""), "num": d.get("order_number", "") or "",
+            "customer": d.get("customer_name", ""), "total": float(d.get("total_amount", 0) or 0),
+            "paid": float(d.get("amount_paid", 0) or 0), "remaining": float(d.get("amount_remaining", 0) or 0),
+            "pay": d.get("payment_status", ""),
+        } for d in docs]
+        title = "Outstanding Invoices" if dataset == "invoices" else "Orders"
+        sheet = title
+        totals = {"total", "paid", "remaining"}
+        hl = ("remaining", ">", 0) if dataset == "invoices" else None
+
+    elif dataset == "followups":
+        docs = await db.followups.find(q).sort("reminder_date", 1).to_list(5000)
+        columns = [
+            {"header": "Due", "key": "due", "width": 20},
+            {"header": "Customer", "key": "customer", "width": 24},
+            {"header": "Type", "key": "type", "width": 12},
+            {"header": "Status", "key": "status", "width": 12},
+            {"header": "Message", "key": "msg", "width": 40},
+        ]
+        rows = [{
+            "due": str(d.get("reminder_date", "") or ""), "customer": d.get("customer_name", ""),
+            "type": d.get("type", ""), "status": d.get("status", ""), "msg": d.get("message", "") or "",
+        } for d in docs]
+        title, sheet, totals, hl = "Follow-ups", "Followups", set(), None
+
+    elif dataset == "products":
+        docs = await db.products.find(q).to_list(5000)
+        columns = [
+            {"header": "Name", "key": "name", "width": 30},
+            {"header": "Price", "key": "price", "fmt": "money", "width": 13},
+            {"header": "Stock", "key": "stock", "fmt": "int", "width": 10},
+            {"header": "Category", "key": "category", "width": 18},
+            {"header": "In Stock", "key": "instock", "width": 10},
+        ]
+        rows = [{
+            "name": d.get("name", ""), "price": float(d.get("price", 0) or 0),
+            "stock": int(d.get("stock_quantity", 0) or 0), "category": d.get("category", "") or "",
+            "instock": "Yes" if d.get("in_stock", True) else "No",
+        } for d in docs]
+        title, sheet, totals, hl = "Products", "Products", set(), None
+
+    elif dataset == "expenses":
+        docs = await db.expenses.find(q).sort("created_at", -1).to_list(5000)
+        columns = [
+            {"header": "Date", "key": "date", "width": 20},
+            {"header": "Category", "key": "category", "width": 20},
+            {"header": "Amount", "key": "amount", "fmt": "money", "width": 14},
+            {"header": "Description", "key": "desc", "width": 40},
+        ]
+        rows = [{
+            "date": str(d.get("created_at", "") or ""), "category": d.get("category", ""),
+            "amount": float(d.get("amount", 0) or 0), "desc": d.get("description", "") or "",
+        } for d in docs]
+        title, sheet, totals, hl = "Expenses", "Expenses", {"amount"}, None
+
+    else:
+        raise HTTPException(400, "Unknown dataset. Use one of: customers, sales, orders, invoices, followups, products, expenses")
+
+    if hl:
+        doc_style = {**doc_style, "_highlight": hl}
+
+    filename = f"{(business_name or 'zilo').lower().replace(' ', '_')}_{dataset}.xlsx"
+    filepath = generate_data_xlsx(
+        title=title, columns=columns, rows=rows, business_name=business_name,
+        style=doc_style, total_keys=totals, sheet_name=sheet, filename=filename,
+    )
+    return FileResponse(
+        path=filepath,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+    )
+
+
+@api_router.post("/import/{dataset}")
+async def import_crm_dataset(dataset: str, file: UploadFile = File(...), user = Depends(get_current_user)):
+    """Bulk-import a CRM dataset from an uploaded .xlsx file.
+
+    dataset ∈ customers | products
+    Returns a summary: {inserted, skipped, errors:[{row, reason}]}.
+    Header row is matched case-insensitively. Accepted headers:
+      customers: name (required), phone/phone_number, email, tags, notes
+      products:  name (required), price, category, stock/stock_quantity, description
+    """
+    from assistant.document_generator import read_xlsx
+
+    if dataset not in ("customers", "products"):
+        raise HTTPException(400, "Unknown dataset. Use 'customers' or 'products'.")
+    fname = (file.filename or "").lower()
+    if not fname.endswith(".xlsx"):
+        raise HTTPException(400, "Please upload an .xlsx file.")
+
+    raw = await file.read()
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 5MB).")
+    try:
+        rows = read_xlsx(raw)
+    except Exception as e:
+        raise HTTPException(400, f"Could not read spreadsheet: {e}")
+    if not rows:
+        raise HTTPException(400, "No data rows found.")
+
+    business_id = user.get("business_id", user["_id"])
+
+    def _g(row: dict, *names):
+        """First non-empty value among candidate header names."""
+        for n in names:
+            if n in row and row[n] is not None and str(row[n]).strip():
+                return str(row[n]).strip()
+        return ""
+
+    inserted, skipped = 0, 0
+    errors: List[Dict[str, Any]] = []
+
+    if dataset == "customers":
+        for idx, row in enumerate(rows, start=2):  # row 1 = header
+            name = sanitize_string(_g(row, "name", "customer", "customer name"), 200)
+            phone = sanitize_phone(_g(row, "phone", "phone_number", "phone number", "mobile"))
+            email = (_g(row, "email", "e-mail") or "").lower() or None
+            if not name:
+                errors.append({"row": idx, "reason": "missing name"}); continue
+            if (not phone or len(phone) < 6) and not email:
+                errors.append({"row": idx, "reason": "need a valid phone or email"}); continue
+            # Dedup within tenant by phone or email
+            dq = {"user_id": business_id, "$or": []}
+            if phone:
+                dq["$or"].append({"phone_number": phone})
+            if email:
+                dq["$or"].append({"email": email})
+            if dq["$or"] and await db.customers.find_one(dq):
+                skipped += 1; continue
+            tags_raw = _g(row, "tags", "tag")
+            tags = [sanitize_string(t, 50) for t in tags_raw.replace(";", ",").split(",") if t.strip()][:20] if tags_raw else ["Imported"]
+            try:
+                await db.customers.insert_one({
+                    "_id": str(uuid.uuid4()), "user_id": business_id, "name": name,
+                    "phone_number": phone or "", "email": email,
+                    "notes": sanitize_string(_g(row, "notes", "note"), 2000) or None,
+                    "tags": tags, "purchase_count": 0, "total_spent": 0.0,
+                    "last_message": None, "last_contacted": None,
+                    "created_at": datetime.utcnow(), "is_customer": True,
+                })
+                inserted += 1
+            except Exception as e:
+                if "duplicate" in str(e).lower() or "E11000" in str(e):
+                    skipped += 1
+                else:
+                    errors.append({"row": idx, "reason": str(e)[:120]})
+
+    else:  # products
+        for idx, row in enumerate(rows, start=2):
+            name = sanitize_string(_g(row, "name", "product", "product name"), 200)
+            if not name:
+                errors.append({"row": idx, "reason": "missing name"}); continue
+            price_raw = _g(row, "price", "amount", "unit price")
+            try:
+                price = float(str(price_raw).replace(",", "").replace("$", "")) if price_raw else 0.0
+            except ValueError:
+                errors.append({"row": idx, "reason": f"invalid price '{price_raw}'"}); continue
+            if price < 0:
+                errors.append({"row": idx, "reason": "negative price"}); continue
+            stock_raw = _g(row, "stock", "stock_quantity", "stock quantity", "qty", "quantity")
+            try:
+                stock = int(float(stock_raw)) if stock_raw else 0
+            except ValueError:
+                stock = 0
+            try:
+                await db.products.insert_one({
+                    "_id": str(uuid.uuid4()), "user_id": business_id, "name": name,
+                    "price": price, "discount_price": None,
+                    "category": sanitize_string(_g(row, "category") or "Other", 100),
+                    "sub_category": None, "image_url": None, "images": [],
+                    "description": sanitize_string(_g(row, "description", "desc"), 1000) or None,
+                    "stock_quantity": stock, "in_stock": stock > 0 if stock_raw else True,
+                    "created_at": datetime.utcnow(),
+                })
+                inserted += 1
+            except Exception as e:
+                errors.append({"row": idx, "reason": str(e)[:120]})
+
+    return {
+        "dataset": dataset,
+        "total_rows": len(rows),
+        "inserted": inserted,
+        "skipped": skipped,
+        "errors": errors[:50],
+    }
+
+
+async def _build_weekly_report_file(business_id: str, business_name: str = "") -> tuple[str, dict]:
+    """Assemble a multi-sheet weekly Excel report for a tenant. Returns (filepath, summary)."""
+    from datetime import timedelta
+    from assistant.document_generator import generate_multi_sheet_xlsx
+
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+    week_ahead = now + timedelta(days=7)
+
+    doc_style: Dict[str, Any] = {}
+    try:
+        from saved_designs import get_document_style as _gds
+        doc_style = await _gds(db, business_id) or {}
+    except Exception:
+        doc_style = {}
+
+    sales = await db.sales.find({"user_id": business_id, "created_at": {"$gte": week_ago}}).sort("created_at", -1).to_list(2000)
+    new_customers = await db.customers.find({"user_id": business_id, "created_at": {"$gte": week_ago}}).sort("created_at", -1).to_list(2000)
+    orders = await db.orders.find({"user_id": business_id}).sort("created_at", -1).to_list(5000)
+    unpaid = [o for o in orders if float(o.get("amount_remaining", 0) or 0) > 0
+              or (o.get("payment_status", "") not in ("paid", "completed") and float(o.get("total_amount", 0) or 0) > 0)]
+    followups = await db.followups.find({
+        "user_id": business_id, "status": {"$ne": "completed"},
+        "reminder_date": {"$lte": week_ahead.isoformat()},
+    }).sort("reminder_date", 1).to_list(2000)
+
+    total_sales = sum(float(s.get("amount", 0) or 0) for s in sales)
+    outstanding = sum(float(o.get("amount_remaining", 0) or 0) for o in unpaid)
+
+    summary = [
+        ("Week", f"{week_ago.strftime('%d %b')} – {now.strftime('%d %b %Y')}", None),
+        ("Sales this week", total_sales, "money"),
+        ("Number of sales", len(sales), "int"),
+        ("New customers", len(new_customers), "int"),
+        ("Outstanding invoices", outstanding, "money"),
+        ("Follow-ups due (next 7d)", len(followups), "int"),
+    ]
+
+    sheets = [
+        {"title": "Sales", "total_keys": {"amount"}, "columns": [
+            {"header": "Date", "key": "date", "width": 20},
+            {"header": "Customer", "key": "customer", "width": 24},
+            {"header": "Item", "key": "item", "width": 28},
+            {"header": "Amount", "key": "amount", "fmt": "money", "width": 14},
+        ], "rows": [{"date": str(s.get("created_at", "") or ""), "customer": s.get("customer_name", ""),
+                     "item": s.get("item", ""), "amount": float(s.get("amount", 0) or 0)} for s in sales]},
+        {"title": "New Customers", "columns": [
+            {"header": "Name", "key": "name", "width": 24},
+            {"header": "Phone", "key": "phone", "width": 16},
+            {"header": "Email", "key": "email", "width": 26},
+            {"header": "Added", "key": "added", "width": 20},
+        ], "rows": [{"name": c.get("name", ""), "phone": c.get("phone_number", ""),
+                     "email": c.get("email", ""), "added": str(c.get("created_at", "") or "")} for c in new_customers]},
+        {"title": "Outstanding Invoices", "total_keys": {"total", "remaining"},
+         "highlight": ("remaining", ">", 0), "columns": [
+            {"header": "Order #", "key": "num", "width": 14},
+            {"header": "Customer", "key": "customer", "width": 24},
+            {"header": "Total", "key": "total", "fmt": "money", "width": 13},
+            {"header": "Remaining", "key": "remaining", "fmt": "money", "width": 13},
+            {"header": "Payment", "key": "pay", "width": 13},
+        ], "rows": [{"num": o.get("order_number", "") or "", "customer": o.get("customer_name", ""),
+                     "total": float(o.get("total_amount", 0) or 0), "remaining": float(o.get("amount_remaining", 0) or 0),
+                     "pay": o.get("payment_status", "")} for o in unpaid]},
+        {"title": "Follow-ups Due", "columns": [
+            {"header": "Due", "key": "due", "width": 20},
+            {"header": "Customer", "key": "customer", "width": 24},
+            {"header": "Type", "key": "type", "width": 12},
+            {"header": "Status", "key": "status", "width": 12},
+        ], "rows": [{"due": str(f.get("reminder_date", "") or ""), "customer": f.get("customer_name", ""),
+                     "type": f.get("type", ""), "status": f.get("status", "")} for f in followups]},
+    ]
+
+    fname = f"{(business_name or 'zilo').lower().replace(' ', '_')}_weekly_report.xlsx"
+    filepath = generate_multi_sheet_xlsx(
+        title="Weekly Report", sheets=sheets, summary=summary,
+        business_name=business_name, style=doc_style, filename=fname,
+    )
+    summary_dict = {"total_sales": total_sales, "num_sales": len(sales),
+                    "new_customers": len(new_customers), "outstanding": outstanding,
+                    "followups_due": len(followups)}
+    return filepath, summary_dict
+
+
+@api_router.get("/reports/weekly.xlsx")
+async def export_weekly_report(user = Depends(get_current_user)):
+    """On-demand multi-sheet weekly Excel report for the current tenant."""
+    from fastapi.responses import FileResponse
+    business_id = user.get("business_id", user["_id"])
+    business_name = ""
+    try:
+        urec = await db.users.find_one({"_id": business_id})
+        if urec:
+            business_name = urec.get("business_name") or urec.get("owner_name") or ""
+    except Exception:
+        pass
+    filepath, _ = await _build_weekly_report_file(business_id, business_name)
+    filename = os.path.basename(filepath)
+    return FileResponse(
+        path=filepath,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+    )
+
+
+async def _email_weekly_report(business_id: str) -> dict:
+    """Build the weekly report and email an HTML summary to the tenant owner.
+    Uses the tenant's configured email provider (db.email_settings), platform default
+    otherwise. Returns {sent, to, reason?}."""
+    from email_marketing.client import send_email as _send_email
+
+    urec = await db.users.find_one({"_id": business_id}) or {}
+    to_addr = (urec.get("email") or "").strip()
+    business_name = urec.get("business_name") or urec.get("owner_name") or ""
+    if not to_addr:
+        return {"sent": False, "reason": "no owner email on file"}
+
+    _, s = await _build_weekly_report_file(business_id, business_name)
+
+    settings = await db.email_settings.find_one({"user_id": business_id}) or {
+        "provider": "platform", "from_name": business_name or "Zilo", "from_email": "", "credentials": {},
+    }
+    cur = (settings.get("currency_symbol") or urec.get("currency_symbol") or "$")
+    rows_html = "".join(
+        f"<tr><td style='padding:6px 12px'>{label}</td>"
+        f"<td style='padding:6px 12px;text-align:right;font-weight:600'>{val}</td></tr>"
+        for label, val in [
+            ("Sales this week", f"{cur}{s['total_sales']:,.2f}"),
+            ("Number of sales", f"{s['num_sales']:,}"),
+            ("New customers", f"{s['new_customers']:,}"),
+            ("Outstanding invoices", f"{cur}{s['outstanding']:,.2f}"),
+            ("Follow-ups due (next 7 days)", f"{s['followups_due']:,}"),
+        ]
+    )
+    html = (
+        f"<div style='font-family:system-ui,Arial,sans-serif;max-width:560px'>"
+        f"<h2 style='color:#111827'>Your weekly report{(' — ' + business_name) if business_name else ''}</h2>"
+        f"<table style='border-collapse:collapse;width:100%;border:1px solid #e5e7eb'>{rows_html}</table>"
+        f"<p style='color:#6b7280;font-size:13px;margin-top:16px'>"
+        f"Open Zilo to download the full multi-sheet Excel report (Sales, New Customers, "
+        f"Outstanding Invoices, Follow-ups).</p></div>"
+    )
+    await _send_email(settings, [to_addr], "Your Zilo weekly report", html,
+                      text="Your weekly report is ready. Open Zilo to download the full Excel.")
+    return {"sent": True, "to": to_addr}
+
+
+@api_router.post("/reports/weekly/send")
+async def send_weekly_report_now(user = Depends(get_current_user)):
+    """Email this week's report summary to the current tenant owner now (manual trigger)."""
+    business_id = user.get("business_id", user["_id"])
+    try:
+        result = await _email_weekly_report(business_id)
+    except Exception as e:
+        logging.exception("[weekly-report] manual send failed")
+        raise HTTPException(500, f"Could not send weekly report: {e}")
+    if not result.get("sent"):
+        raise HTTPException(400, result.get("reason", "Could not send"))
+    return result
+
+
+async def run_weekly_report_loop():
+    """Background loop that emails weekly reports to opted-in tenants.
+
+    DORMANT by default. Activates only when BOTH are true:
+      • env WEEKLY_REPORTS_ENABLED = 1/true
+      • the tenant's email_settings has weekly_report_enabled = True
+    Dedupes via email_settings.weekly_last_sent (min 6 days between sends).
+    """
+    from datetime import timedelta
+    if os.environ.get("WEEKLY_REPORTS_ENABLED", "").lower() not in ("1", "true", "yes"):
+        logging.info("[weekly-report] loop disabled (set WEEKLY_REPORTS_ENABLED=1 to enable)")
+        return
+    logging.info("[weekly-report] loop active")
+    while True:
+        try:
+            now = datetime.utcnow()
+            cursor = db.email_settings.find({"weekly_report_enabled": True})
+            async for st in cursor:
+                bid = st.get("user_id")
+                if not bid:
+                    continue
+                last = st.get("weekly_last_sent")
+                if isinstance(last, datetime) and (now - last) < timedelta(days=6):
+                    continue
+                try:
+                    res = await _email_weekly_report(bid)
+                    if res.get("sent"):
+                        await db.email_settings.update_one(
+                            {"user_id": bid}, {"$set": {"weekly_last_sent": now}}
+                        )
+                        logging.info("[weekly-report] sent to tenant %s", bid)
+                except Exception:
+                    logging.exception("[weekly-report] send failed for tenant %s", bid)
+        except Exception:
+            logging.exception("[weekly-report] loop iteration failed")
+        await asyncio.sleep(6 * 3600)  # re-scan every 6 hours
+
 
 @api_router.get("/expenses", response_model=List[ExpenseResponse])
 async def get_expenses(user = Depends(get_current_user)):
@@ -14040,6 +14514,52 @@ async def startup_tasks():
     asyncio.create_task(_prewarm_seo_graph())
 
 
+async def _bootstrap_new_account(user_id: str, db) -> None:
+    """
+    Called once when a user connects Gmail for the first time.
+    1. Deep-syncs the last 3 months of email in the background.
+    2. After the first batch lands, forces a notebook extraction so the
+       notebook is populated immediately — not waiting for the next session load.
+    """
+    try:
+        from email_sync import sync_emails_for_user, deep_sync_user, ensure_indexes
+        await ensure_indexes(db)
+
+        # Quick sync first — get the last 50 emails fast
+        logging.info("[bootstrap] starting email sync for new account uid=%s", user_id)
+        result = await sync_emails_for_user(user_id, db, max_results=50, trigger_briefing_ingest=False)
+        logging.info("[bootstrap] quick sync done uid=%s result=%s", user_id, result)
+
+        # Now populate the notebook from whatever landed
+        try:
+            from rex.persistence.session import ZiloSessionStore
+            from rex.persistence.extractor import extract_and_populate_notebook
+            store = ZiloSessionStore(db)
+            # Evict cache so we load fresh
+            store._cache.pop(user_id, None)
+            user_doc = await db.users.find_one({"_id": user_id}) or {"_id": user_id}
+            bid = str(user_doc.get("business_id") or user_id)
+            orch = await store.load(user_id, business_id=bid)
+            # Clear any empty/stale entries before extraction
+            for entry in list(orch.notebook.all()):
+                if not entry.edited_by_user:
+                    orch.notebook.delete(entry.id)
+            orch._companies = []
+            await extract_and_populate_notebook(db, user_id, orch)
+            await store.save(user_id, business_id=bid, orch=orch)
+            logging.info("[bootstrap] notebook populated uid=%s entries=%d", user_id, len(orch.notebook.all()))
+        except Exception as e:
+            logging.warning("[bootstrap] notebook extraction failed uid=%s: %s", user_id, e)
+
+        # Kick off full historical deep sync in background (non-blocking)
+        import asyncio as _asyncio
+        _asyncio.create_task(deep_sync_user(user_id, db))
+        logging.info("[bootstrap] deep sync started uid=%s", user_id)
+
+    except Exception as e:
+        logging.error("[bootstrap] failed uid=%s: %s", user_id, e)
+
+
 async def _email_sync_runner(db) -> None:
     """Background task: sync emails for all users with Gmail connected every 10 minutes."""
     import asyncio as _asyncio
@@ -14725,6 +15245,13 @@ async def composio_connections(user=Depends(get_current_user)):
         import asyncio
         from composio_webhooks import register_gmail_webhook_for_user
         asyncio.create_task(register_gmail_webhook_for_user(user_id, db))
+        # Mark gmail in composio_connected_apps so _email_sync_runner picks up this user
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$addToSet": {"composio_connected_apps": "gmail"}},
+        )
+        # Immediately kick off email sync + notebook bootstrap for new account
+        asyncio.create_task(_bootstrap_new_account(user_id, db))
 
     return {"connected": statuses}
 

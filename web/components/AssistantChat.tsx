@@ -2514,7 +2514,7 @@ function MessageBubble({
   ) => void;
   onUserResend?: (text: string) => void;
 }) {
-  const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
+  const [exporting, setExporting] = useState<"pdf" | "docx" | "xlsx" | null>(null);
   const [showWaPicker, setShowWaPicker] = useState(false);
   const [showEmailPreview, setShowEmailPreview] = useState(false);
   const [editingUserPrompt, setEditingUserPrompt] = useState(false);
@@ -2548,7 +2548,7 @@ function MessageBubble({
     return extractInlineOptionList(msg.content ?? "");
   }, [msg.role, msg.content, inlineForm, documentChecklist, allMessages, messageIndex]);
 
-  async function handleExport(format: "pdf" | "docx") {
+  async function handleExport(format: "pdf" | "docx" | "xlsx") {
     if (!msg.content || exporting) return;
     setExporting(format);
     try {
@@ -2882,6 +2882,17 @@ function MessageBubble({
                   {exporting === "docx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
                   Word
                 </button>
+                {msg.content && msg.content.includes("|") && (
+                  <button
+                    type="button"
+                    onClick={() => void handleExport("xlsx")}
+                    disabled={!!exporting}
+                    className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2 py-0.5 text-[10.5px] font-medium text-green-700 hover:bg-green-100 hover:border-green-400 disabled:opacity-50"
+                  >
+                    {exporting === "xlsx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
+                    Excel
+                  </button>
+                )}
                 <span className="text-[10px] text-slate-300">|</span>
                 <button
                   type="button"
@@ -3666,6 +3677,7 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
   const filename = (result.filename as string | undefined) ?? "document";
   const s3Url = (result.download_url ?? result.pdf_url) as string | undefined;
   const contentMd = result.content_md as string | undefined;
+  const isXlsx = result.format === "xlsx" || filename.toLowerCase().endsWith(".xlsx");
 
   /** Download as Word — reuses the existing assistantApi.exportDocument helper */
   const handleDownloadWord = async () => {
@@ -3698,13 +3710,17 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
                   window.open(s3Url, "_blank", "noopener,noreferrer")
                 )
               }
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10.5px] font-medium ${
+                isXlsx
+                  ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100 hover:border-green-400"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              }`}
             >
               <Download size={10} />
-              PDF
+              {isXlsx ? "Excel" : "PDF"}
             </button>
           )}
-          {contentMd && (
+          {contentMd && !isXlsx && (
             <button
               type="button"
               onClick={() => void handleDownloadWord()}

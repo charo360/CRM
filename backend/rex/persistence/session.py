@@ -41,11 +41,10 @@ def _relationship_day(created_at: datetime) -> int:
 class ZiloSessionStore:
     """Mongo-backed orchestrator sessions keyed by CRM user id."""
 
-    _cache: dict[str, Orchestrator] = {}
-
     def __init__(self, db: Any) -> None:
         self._db = db
         self._col = db[COLLECTION]
+        self._cache: dict[str, Orchestrator] = {}
 
     async def ensure_indexes(self) -> None:
         global _INDEX_ENSURED
@@ -121,14 +120,50 @@ class ZiloSessionStore:
                 elif notebook_seeded:
                     await self.save(user_id, business_id=business_id, orch=orch)
             else:
-                # For live mode, dynamically extract and populate notebook if empty
-                if len(orch.notebook.all()) == 0 or not getattr(orch, "_companies", None):
+                # For live mode, extract notebook if:
+                #   a) it's completely empty, OR
+                #   b) companies are missing, OR
+                #   c) the notebook entries are stale (oldest entry > 7 days)
+                #      — ensures new emails/contacts are picked up weekly
+                notebook_entries = orch.notebook.all()
+                is_empty = len(notebook_entries) == 0
+                no_companies = not getattr(orch, "_companies", None)
+                is_stale = False
+                if not is_empty and not no_companies:
+                    oldest = min((e.created_at for e in notebook_entries), default=None)
+                    if oldest:
+                        age_days = (_utc_now() - (oldest if oldest.tzinfo else oldest.replace(tzinfo=timezone.utc))).days
+                        is_stale = age_days >= 7
+
+                if is_empty or no_companies or is_stale:
                     try:
                         from rex.persistence.extractor import extract_and_populate_notebook
+                        if not is_empty:
+                            # Clear stale entries before re-extraction
+                            # Keep user-edited entries — they contain real knowledge
+                            for entry in list(notebook_entries):
+                                if not entry.edited_by_user:
+                                    orch.notebook.delete(entry.id)
+                            orch._companies = []
                         await extract_and_populate_notebook(self._db, user_id, orch)
                         await self.save(user_id, business_id=business_id, orch=orch)
+                        logger.info("[zilo-session] notebook re-extracted uid=%s stale=%s", user_id, is_stale)
                     except Exception as e:
                         logger.exception("[zilo-session] failed during dynamic extraction: %s", e)
+
+                # Sync any trust events that happened since last session into notebook
+                try:
+                    from rex.memory.notebook_sync import sync_events_to_notebook
+                    synced = sync_events_to_notebook(
+                        events=orch.event_store.all_events(),
+                        ledger=orch.ledger,
+                        notebook=orch.notebook,
+                    )
+                    if synced:
+                        logger.info("[zilo-session] notebook synced %d events on load uid=%s", synced, user_id)
+                        await self.save(user_id, business_id=business_id, orch=orch)
+                except Exception as e:
+                    logger.warning("[zilo-session] notebook sync on load failed: %s", e)
                 
             return orch
 

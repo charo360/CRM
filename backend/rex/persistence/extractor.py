@@ -144,10 +144,6 @@ async def extract_and_populate_notebook(db: Any, user_id: str, orch: Orchestrato
     Queries customers and email_messages for the active user_id, extracts
     unique domains/contacts, builds Company summaries, and seeds Notebook entries.
     """
-    if len(orch.notebook.all()) > 0:
-        logger.info("[zilo-extractor] notebook already has entries, skipping extraction.")
-        return
-
     logger.info("[zilo-extractor] starting dynamic data extraction for user_id=%s", user_id)
 
     # 1. Fetch user email — only the actual account owner's address(es).

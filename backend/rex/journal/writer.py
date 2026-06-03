@@ -164,6 +164,8 @@ def _kind_for(event_type: EventType) -> JournalEventKind | None:
         EventType.ACTION_FLAGGED_MISTAKE,
     }:
         return JournalEventKind.OPERATIONAL_SETBACK
+    if event_type is EventType.BACKGROUND_WORK:
+        return JournalEventKind.BACKGROUND_ACTION
     return None
 
 

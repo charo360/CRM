@@ -5506,13 +5506,155 @@ async def delete_automation(ctx: ToolContext, args: Dict[str, Any]):
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+def _parse_cell_value(val: str) -> tuple[Any, str | None]:
+    val_clean = val.strip()
+    if not val_clean:
+        return "", None
+    
+    # Try parsing formulas
+    if val_clean.startswith("="):
+        return val_clean, None
+    
+    # Try parsing percent
+    if val_clean.endswith("%"):
+        try:
+            num = float(val_clean[:-1].strip()) / 100.0
+            return num, "pct"
+        except ValueError:
+            pass
+            
+    # Try parsing money
+    is_money = False
+    if val_clean.startswith("$") or val_clean.startswith("-$"):
+        is_money = True
+    elif val_clean.startswith("€") or val_clean.startswith("-€"):
+        is_money = True
+        
+    if is_money:
+        clean_num = val_clean.replace("$", "").replace("€", "").replace(",", "")
+        try:
+            return float(clean_num), "money"
+        except ValueError:
+            pass
+            
+    # Try parsing date (e.g. YYYY-MM-DD or YYYY-MM-DD HH:MM)
+    for date_fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M"):
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(val_clean, date_fmt)
+            return dt, "date"
+        except ValueError:
+            pass
+            
+    # Try parsing normal number
+    clean_num = val_clean.replace(",", "")
+    try:
+        # Check if it is integer
+        if clean_num.isdigit() or (clean_num.startswith("-") and clean_num[1:].isdigit()):
+            return int(clean_num), "int"
+        
+        # Check if it is float
+        val_float = float(clean_num)
+        if "." in clean_num:
+            return val_float, "money"
+        return val_float, None
+    except ValueError:
+        pass
+        
+    return val, None
+
+
+def _parse_markdown_tables_to_sheets(content: str) -> list[dict]:
+    lines = content.splitlines()
+    sheets = []
+    table_index = 1
+    last_header = ""
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("#"):
+            last_header = line.lstrip("#").strip()
+            last_header = "".join(c for c in last_header if c.isalnum() or c in " _-")[:31].strip()
+        
+        if line.startswith("|") and i + 1 < len(lines):
+            next_line = lines[i+1].strip()
+            if next_line.startswith("|") and all(c in "| -:." for c in next_line):
+                raw_headers = [h.strip() for h in line.split("|")]
+                if raw_headers and not raw_headers[0]:
+                    raw_headers.pop(0)
+                if raw_headers and not raw_headers[-1]:
+                    raw_headers.pop()
+                    
+                headers = raw_headers
+                rows = []
+                i += 2
+                while i < len(lines):
+                    row_line = lines[i].strip()
+                    if not row_line.startswith("|") and "|" not in row_line:
+                        break
+                    raw_row = [r.strip() for r in row_line.split("|")]
+                    if raw_row and not raw_row[0]:
+                        raw_row.pop(0)
+                    if raw_row and not raw_row[-1]:
+                        raw_row.pop()
+                    if len(raw_row) < len(headers):
+                        raw_row += [""] * (len(headers) - len(raw_row))
+                    else:
+                        raw_row = raw_row[:len(headers)]
+                    rows.append(raw_row)
+                    i += 1
+                
+                columns = []
+                for idx, h in enumerate(headers):
+                    key = f"col_{idx}"
+                    columns.append({
+                        "header": h or f"Column {idx + 1}",
+                        "key": key,
+                        "fmt": None
+                    })
+                
+                row_dicts = []
+                for r_cells in rows:
+                    rd = {}
+                    for col_idx, cell_val in enumerate(r_cells):
+                        key = columns[col_idx]["key"]
+                        parsed_val, detected_fmt = _parse_cell_value(cell_val)
+                        rd[key] = parsed_val
+                        if detected_fmt and columns[col_idx]["fmt"] is None:
+                            columns[col_idx]["fmt"] = detected_fmt
+                    row_dicts.append(rd)
+                
+                sheet_title = last_header or f"Table {table_index}"
+                if not sheet_title:
+                    sheet_title = f"Table {table_index}"
+                    
+                existing_titles = [s["title"] for s in sheets]
+                base_title = sheet_title[:28]
+                suffix = 1
+                while sheet_title in existing_titles:
+                    sheet_title = f"{base_title}_{suffix}"
+                    suffix += 1
+                
+                sheets.append({
+                    "title": sheet_title,
+                    "columns": columns,
+                    "rows": row_dicts
+                })
+                table_index += 1
+                last_header = ""
+                continue
+        i += 1
+    return sheets
+
+
 @tool(
     name="generate_document",
     description=(
-        "Convert markdown content into a downloadable PDF or DOCX file and return a download link. "
+        "Convert markdown content into a downloadable PDF, DOCX, or Excel (XLSX) file and return a download link. "
         "Call after check_document_requirements returns ready=true and you have drafted the full document. "
         "Pass doc_type so logo, template, and hero image follow document-type rules automatically. "
-        "Set `format` to 'pdf' or 'docx'. Set `filename` to a short descriptive name without extension. "
+        "Set `format` to 'pdf', 'docx', or 'xlsx'. Set `filename` to a short descriptive name without extension. "
         "Templates: professional (default business), minimal (invoices/contracts/memos), executive (proposals/plans). "
         "Logo: included automatically for client-facing docs when a logo exists in Design library; omitted for internal memos/minutes. "
         "Hero image: auto-generated for proposals/business plans; never for invoices, contracts, or loan letters."
@@ -5521,7 +5663,7 @@ async def delete_automation(ctx: ToolContext, args: Dict[str, Any]):
         "type": "object",
         "properties": {
             "content":  {"type": "string", "description": "The full Markdown content to export."},
-            "format":   {"type": "string", "enum": ["pdf", "docx"], "default": "pdf"},
+            "format":   {"type": "string", "enum": ["pdf", "docx", "xlsx"], "default": "pdf"},
             "filename": {"type": "string", "description": "Base filename without extension, e.g. 'q1-report'."},
             "template": {
                 "type": "string",
@@ -5566,7 +5708,7 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
     if not content:
         return {"error": "content is required"}
     fmt = (args.get("format") or "pdf").lower()
-    if fmt not in ("pdf", "docx"):
+    if fmt not in ("pdf", "docx", "xlsx"):
         fmt = "pdf"
 
     from .document_plan import (
@@ -5675,6 +5817,22 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
                 filepath = await generate_pdf_from_html_async(html_doc, filename)
             except Exception as e2:
                 return {"error": f"PDF generation failed: {e2}"}
+    elif fmt == "xlsx":
+        sheets = _parse_markdown_tables_to_sheets(content)
+        if not sheets:
+            return {"error": "No tables found in the document content to export as Excel. Excel format requires at least one markdown table."}
+        try:
+            from .document_generator import generate_multi_sheet_xlsx
+            filepath = generate_multi_sheet_xlsx(
+                title=_title,
+                sheets=sheets,
+                business_name=business_name,
+                style=doc_style,
+                filename=filename,
+            )
+        except Exception as e:
+            logger.exception("[generate_document] XLSX generation failed")
+            return {"error": f"Excel generation failed: {e}"}
     else:
         # DOCX with brand styling
         try:
@@ -5692,9 +5850,16 @@ async def generate_document(ctx: ToolContext, args: Dict[str, Any]):
         _filepath = _Path(filepath) if isinstance(filepath, str) else filepath
         file_bytes = _filepath.read_bytes()
         b64 = base64.b64encode(file_bytes).decode()
-        ext = "pdf" if fmt == "pdf" else "docx"
+        if fmt == "pdf":
+            ext = "pdf"
+            content_type = "application/pdf"
+        elif fmt == "xlsx":
+            ext = "xlsx"
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            ext = "docx"
+            content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         s3_name = f"doc-{_uuid.uuid4().hex[:8]}.{ext}"
-        content_type = "application/pdf" if fmt == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         file_url = await S3Handler.upload_file(b64, s3_name, content_type=content_type)
     except Exception as e:
         logger.warning("[generate_document] S3 upload failed, serving from temp: %s", e)
@@ -19214,3 +19379,314 @@ async def browser_extract(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, A
         return result
     except Exception as e:
         return {"error": f"Browser extract tool error: {e}"}
+
+
+# ── Forms Agent Tools ─────────────────────────────────────────────────────────
+
+@tool(
+    name="create_form_from_description",
+    description="Create a new form with the specified title, description, fields, settings, and branding.",
+    parameters={
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+            "title": {"type": "string", "description": "The title of the form"},
+            "description": {"type": "string", "description": "A short description of the form's purpose"},
+            "fields": {
+                "type": "array",
+                "description": "List of fields to include in the form",
+                "items": {
+                    "type": "object",
+                    "required": ["type", "label"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["text", "email", "phone", "dropdown", "checklist", "checkbox", "textarea"]
+                        },
+                        "label": {"type": "string"},
+                        "placeholder": {"type": "string"},
+                        "required": {"type": "boolean"},
+                        "options": {
+                            "type": "array",
+                            "description": "List of options for dropdown or checklist types",
+                            "items": {"type": "string"}
+                        }
+                    }
+                }
+            },
+            "settings": {
+                "type": "object",
+                "properties": {
+                    "success_message": {"type": "string"},
+                    "create_contact": {"type": "boolean"},
+                    "auto_whatsapp": {"type": "boolean"}
+                }
+            },
+            "branding": {
+                "type": "object",
+                "description": "Custom color and logo settings for the form's visual appearance.",
+                "properties": {
+                    "logo_url": {"type": "string", "description": "URL of the logo image"},
+                    "header_bg": {"type": "string", "description": "Header background hex color (e.g. #0f172a)"},
+                    "header_text": {"type": "string", "description": "Header text hex color"},
+                    "button_bg": {"type": "string", "description": "Button background hex color"},
+                    "button_text": {"type": "string", "description": "Button text hex color"},
+                    "page_bg": {"type": "string", "description": "Page background hex color"}
+                }
+            }
+        }
+    },
+    destructive=False
+)
+async def create_form_from_description(ctx: ToolContext, args: Dict[str, Any]):
+    title = args.get("title", "").strip()
+    if not title:
+        return {"error": "Form title is required"}
+    
+    description = args.get("description", "").strip()
+    
+    # Construct fields
+    raw_fields = args.get("fields") or []
+    fields = []
+    for f in raw_fields:
+        ftype = f.get("type", "text")
+        flabel = f.get("label", "").strip()
+        if not flabel:
+            continue
+        fid = f.get("id") or str(uuid.uuid4())[:8]
+        fields.append({
+            "id": fid,
+            "type": ftype,
+            "label": flabel,
+            "placeholder": f.get("placeholder", "").strip(),
+            "required": bool(f.get("required", False)),
+            "options": f.get("options") or []
+        })
+        
+    if not fields:
+        # Default fields if none provided
+        fields = [
+            {"id": str(uuid.uuid4())[:8], "type": "text", "label": "Full Name", "placeholder": "Your name", "required": True},
+            {"id": str(uuid.uuid4())[:8], "type": "phone", "label": "Phone Number", "placeholder": "+1...", "required": True},
+            {"id": str(uuid.uuid4())[:8], "type": "email", "label": "Email Address", "placeholder": "you@example.com", "required": False}
+        ]
+        
+    settings = args.get("settings") or {}
+    success_message = settings.get("success_message") or "Thank you! We'll be in touch soon."
+    create_contact = settings.get("create_contact", True)
+    auto_whatsapp = settings.get("auto_whatsapp", False)
+    
+    # Resolve default branding from owner's brand settings
+    default_logo_url = ""
+    brand_primary_color = ""
+    try:
+        from saved_designs import get_primary_logo_url, get_brand_settings
+        default_logo_url = (await get_primary_logo_url(ctx.db, ctx.business_id)) or ""
+        brand = await get_brand_settings(ctx.db, ctx.business_id) or {}
+        brand_primary_color = (brand.get("brand_primary_color") or "") if brand else ""
+    except Exception:
+        pass
+        
+    branding = args.get("branding") or {}
+    logo_url = branding.get("logo_url") or default_logo_url or ""
+    button_bg = branding.get("button_bg") or brand_primary_color or "#0f172a"
+    header_bg = branding.get("header_bg") or brand_primary_color or "#0f172a"
+    header_text = branding.get("header_text") or "#ffffff"
+    button_text = branding.get("button_text") or "#ffffff"
+    page_bg = branding.get("page_bg") or "#f8fafc"
+    
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+    
+    doc = {
+        "_id": str(uuid.uuid4()),
+        "user_id": ctx.user_id,
+        "title": title,
+        "description": description,
+        "slug": slug,
+        "fields": fields,
+        "settings": {
+            "success_message": success_message,
+            "create_contact": create_contact,
+            "auto_whatsapp": auto_whatsapp
+        },
+        "branding": {
+            "logo_url": logo_url,
+            "header_bg": header_bg,
+            "header_text": header_text,
+            "button_bg": button_bg,
+            "button_text": button_text,
+            "page_bg": page_bg
+        },
+        "active": True,
+        "response_count": 0,
+        "created_at": datetime.utcnow()
+    }
+    
+    await ctx.db.forms.insert_one(doc)
+    
+    frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:3000").rstrip("/")
+    share_url = f"{frontend_url}/f/{slug}"
+    preview_url = f"{frontend_url}/dashboard/forms/{doc['_id']}"
+    
+    return {
+        "status": "created",
+        "form_id": doc["_id"],
+        "title": title,
+        "slug": slug,
+        "share_url": share_url,
+        "preview_url": preview_url,
+        "fields_summary": [f"{f['label']} ({f['type']})" for f in fields]
+    }
+
+
+@tool(
+    name="send_form_via_whatsapp",
+    description="Send a form link to a customer via WhatsApp.",
+    parameters={
+        "type": "object",
+        "required": ["form_id"],
+        "properties": {
+            "form_id": {"type": "string", "description": "The ID of the form to send"},
+            "customer_id": {"type": "string", "description": "The ID of the customer to send to"},
+            "phone_number": {"type": "string", "description": "The phone number in international format (use if customer_id not available)"},
+            "custom_message": {"type": "string", "description": "Optional custom intro message before the form link"}
+        }
+    },
+    destructive=True
+)
+async def send_form_via_whatsapp(ctx: ToolContext, args: Dict[str, Any]):
+    from whatsapp_service import get_whatsapp_service
+    wa = get_whatsapp_service(ctx.db)
+    
+    form_id = args["form_id"]
+    form = await ctx.db.forms.find_one({"_id": form_id, "user_id": ctx.user_id})
+    if not form:
+        return {"error": "Form not found"}
+        
+    to_number = ""
+    customer_name = ""
+    
+    if args.get("customer_id"):
+        cust = await ctx.db.customers.find_one({"_id": args["customer_id"], "user_id": ctx.business_id})
+        if not cust:
+            return {"error": f"Customer '{args['customer_id']}' not found."}
+        to_number = cust.get("phone_number", "")
+        customer_name = cust.get("name", "")
+    elif args.get("phone_number"):
+        to_number = args["phone_number"].strip()
+        cust = await ctx.db.customers.find_one({"phone_number": to_number, "user_id": ctx.business_id})
+        customer_name = cust.get("name", "") if cust else ""
+    else:
+        return {"error": "Provide either customer_id or phone_number."}
+        
+    if not to_number:
+        return {"error": "No phone number available."}
+        
+    frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:3000").rstrip("/")
+    slug = form.get("slug", "")
+    form_url = f"{frontend_url}/f/{slug}"
+    
+    title = form.get("title", "Form")
+    custom_msg = args.get("custom_message", "").strip()
+    
+    if custom_msg:
+        message = f"{custom_msg}\n\nLink: {form_url}"
+    else:
+        greet = f"Hi {customer_name},\n\n" if customer_name else "Hello,\n\n"
+        message = f"{greet}Please fill out this form: {title}\nLink: {form_url}"
+        
+    try:
+        res = await wa.send_message(
+            user_id=ctx.business_id,
+            to_number=to_number,
+            message=message,
+            customer_name=customer_name,
+            send_context="assistant"
+        )
+        return {"status": "sent", "to": to_number, "provider_response": res}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@tool(
+    name="list_forms",
+    description="List all forms created by the user, showing their title, description, and status.",
+    parameters={
+        "type": "object",
+        "properties": {}
+    },
+    destructive=False
+)
+async def list_forms(ctx: ToolContext, args: Dict[str, Any]):
+    items = await ctx.db.forms.find({"user_id": ctx.user_id}).sort("created_at", -1).to_list(100)
+    result = []
+    for item in items:
+        frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:3000").rstrip("/")
+        slug = item.get("slug", "")
+        share_url = f"{frontend_url}/f/{slug}"
+        preview_url = f"{frontend_url}/dashboard/forms/{item['_id']}"
+        result.append({
+            "form_id": item["_id"],
+            "title": item.get("title", ""),
+            "description": item.get("description", ""),
+            "slug": slug,
+            "active": item.get("active", True),
+            "response_count": item.get("response_count", 0),
+            "created_at": item["created_at"].isoformat() if hasattr(item.get("created_at"), "isoformat") else str(item.get("created_at")),
+            "share_url": share_url,
+            "preview_url": preview_url,
+            "fields": [f"{f['label']} ({f['type']})" for f in item.get("fields", [])]
+        })
+    return {"forms": result}
+
+
+@tool(
+    name="get_form_details",
+    description="Retrieve details about a specific form by ID or title, including its fields and settings.",
+    parameters={
+        "type": "object",
+        "required": [],
+        "properties": {
+            "form_id": {"type": "string", "description": "The ID of the form to retrieve"},
+            "title": {"type": "string", "description": "The title of the form to search for (if ID is not known)"}
+        }
+    },
+    destructive=False
+)
+async def get_form_details(ctx: ToolContext, args: Dict[str, Any]):
+    form_id = args.get("form_id")
+    title = args.get("title")
+    
+    query = {"user_id": ctx.user_id}
+    if form_id:
+        query["_id"] = form_id
+    elif title:
+        query["title"] = {"$regex": re.escape(title), "$options": "i"}
+    else:
+        return {"error": "Either form_id or title is required"}
+        
+    doc = await ctx.db.forms.find_one(query)
+    if not doc:
+        return {"error": "Form not found"}
+        
+    frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:3000").rstrip("/")
+    slug = doc.get("slug", "")
+    share_url = f"{frontend_url}/f/{slug}"
+    preview_url = f"{frontend_url}/dashboard/forms/{doc['_id']}"
+    
+    return {
+        "form_id": doc["_id"],
+        "title": doc.get("title", ""),
+        "description": doc.get("description", ""),
+        "slug": slug,
+        "active": doc.get("active", True),
+        "fields": doc.get("fields", []),
+        "settings": doc.get("settings", {}),
+        "branding": doc.get("branding", {}),
+        "response_count": doc.get("response_count", 0),
+        "share_url": share_url,
+        "preview_url": preview_url,
+        "created_at": doc["created_at"].isoformat() if hasattr(doc.get("created_at"), "isoformat") else str(doc.get("created_at"))
+    }
+

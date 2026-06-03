@@ -18,6 +18,12 @@ from typing import Any, Dict, List, Optional, Tuple
 TEMP_DIR = Path(tempfile.gettempdir()) / "zilo_docs"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
+from .zilo_excel_styles import (
+    title_band, section_hdr, col_hdr, label, value as zilo_value, total_row as zilo_total_row,
+    gap as zilo_gap, set_col as zilo_set_col, setup_sheet as zilo_setup_sheet, tab_color as zilo_tab_color,
+    DARK, GREEN, WHITE, LGRAY, MGRAY, AMBER_L, GREEN_L, GREEN_D, AMBER, RED_L, RED_D, DGRAY, BLUE, BLACK, GREEN_TX, MUTED, CARD
+)
+
 # Backend root (…/backend) — for local /uploads/ logo paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -659,15 +665,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   strong { color: var(--ink); }
 
   /* Tables */
-  .table-wrap { width: 100%; overflow-x: hidden; }
+  .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table {
     width: 100%;
     border-collapse: collapse;
     margin: 16px 0 20px;
     font-size: 10pt;
-    table-layout: fixed;
-    word-break: break-word;
-    overflow-wrap: break-word;
+    table-layout: auto;
   }
   thead tr {
     background: var(--secondary);
@@ -679,16 +683,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     font-weight: 700;
     color: var(--ink);
     letter-spacing: 0.01em;
-    word-break: break-word;
-    overflow-wrap: break-word;
   }
   tbody tr { border-bottom: 1px solid var(--rule); }
   tbody tr:nth-child(even) { background: var(--table-alt); }
   tbody td {
     padding: 9px 14px;
     vertical-align: top;
-    word-break: break-word;
-    overflow-wrap: break-word;
     line-height: 1.55;
   }
 
@@ -899,15 +899,13 @@ _HTML_TEMPLATE_MINIMAL = """<!DOCTYPE html>
   li { margin-bottom: 3px; }
   hr { border: none; border-top: 1px solid var(--rule); margin: 20px 0; }
   strong { color: var(--ink); font-weight: 600; }
-  .table-wrap { width: 100%; overflow-x: hidden; }
+  .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table {
     width: 100%;
     border-collapse: collapse;
     margin: 14px 0 18px;
     font-size: 9.5pt;
-    table-layout: fixed;
-    word-break: break-word;
-    overflow-wrap: break-word;
+    table-layout: auto;
   }
   thead th {
     padding: 9px 12px;
@@ -915,15 +913,11 @@ _HTML_TEMPLATE_MINIMAL = """<!DOCTYPE html>
     font-weight: 600;
     color: var(--ink);
     border-bottom: 1.5px solid var(--ink);
-    word-break: break-word;
-    overflow-wrap: break-word;
   }
   tbody tr { border-bottom: 1px solid var(--rule); }
   tbody td {
     padding: 8px 12px;
     vertical-align: top;
-    word-break: break-word;
-    overflow-wrap: break-word;
   }
   pre, code {
     font-family: 'Courier New', monospace;
@@ -1102,15 +1096,13 @@ _HTML_TEMPLATE_EXECUTIVE = """<!DOCTYPE html>
   li { margin-bottom: 4px; }
   hr { border: none; border-top: 1px solid var(--rule); margin: 22px 0; }
   strong { color: var(--ink); font-weight: 600; }
-  .table-wrap { width: 100%; overflow-x: hidden; }
+  .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table {
     width: 100%;
     border-collapse: collapse;
     margin: 16px 0 20px;
     font-size: 10pt;
-    table-layout: fixed;
-    word-break: break-word;
-    overflow-wrap: break-word;
+    table-layout: auto;
   }
   thead tr { background: var(--dark-hdr); }
   thead th {
@@ -1119,16 +1111,12 @@ _HTML_TEMPLATE_EXECUTIVE = """<!DOCTYPE html>
     font-weight: 600;
     color: #fff;
     letter-spacing: 0.02em;
-    word-break: break-word;
-    overflow-wrap: break-word;
   }
   tbody tr { border-bottom: 1px solid var(--rule); }
   tbody tr:nth-child(even) { background: var(--table-alt); }
   tbody td {
     padding: 9px 14px;
     vertical-align: top;
-    word-break: break-word;
-    overflow-wrap: break-word;
   }
   pre, code {
     font-family: 'Courier New', monospace;
@@ -1719,6 +1707,974 @@ def generate_docx(
 
     doc.save(str(filepath))
     return str(filepath)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Excel (.xlsx) — SaaS financial model with live formulas (openpyxl)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Builds a multi-sheet, formula-driven SaaS model. Every projected value is an
+# Excel formula referencing the editable Assumptions sheet — change one input and
+# the whole model recalculates when opened in Excel / Google Sheets / LibreOffice.
+#
+# Sheets: Assumptions · Revenue · P&L · CashFlow · Summary
+#
+# `assumptions` keys (all optional — sensible SaaS defaults applied):
+#   arpa, starting_customers, new_customers_m1, new_growth, churn,
+#   gross_margin, cac, opex_m1, opex_growth, starting_cash
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Default monthly SaaS assumptions (USD). Tuned for an early-stage product.
+_XLSX_DEFAULT_ASSUMPTIONS: dict = {
+    "arpa": 49.0,              # avg revenue per account / month
+    "starting_customers": 50,
+    "new_customers_m1": 25,    # new customers acquired in month 1
+    "new_growth": 0.08,        # month-over-month growth in new-customer adds
+    "churn": 0.03,             # monthly logo churn
+    "gross_margin": 0.80,      # gross margin %
+    "cac": 120.0,              # customer acquisition cost
+    "opex_m1": 18000.0,        # fixed opex in month 1 (salaries, tools, etc.)
+    "opex_growth": 0.04,       # month-over-month opex growth
+    "starting_cash": 250000.0, # cash on hand at month 0
+}
+
+
+def generate_xlsx(
+    assumptions: dict | None = None,
+    filename: str | None = None,
+    business_name: str = "",
+    style: dict | None = None,
+    months: int = 36,
+) -> str:
+    """Generate a formula-driven SaaS financial model workbook. Returns the file path."""
+    from openpyxl import Workbook
+    from openpyxl.chart import BarChart, LineChart, Reference
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    a = {**_XLSX_DEFAULT_ASSUMPTIONS, **(assumptions or {})}
+    style = style or {}
+    months = max(1, min(int(months or 36), 120))
+
+    filename = filename or f"zilo_model_{uuid.uuid4().hex[:8]}.xlsx"
+    if not filename.endswith(".xlsx"):
+        filename += ".xlsx"
+    filepath = TEMP_DIR / filename
+
+    # ── palette (brand-aware, same convention as generate_docx) ───────────────
+    PRIMARY_HEX = _safe_hex(style.get("primary_color", ""), "#4F46E5").lstrip("#").upper()
+    HEADER_FILL = PatternFill("solid", fgColor=PRIMARY_HEX)
+    INPUT_FILL = PatternFill("solid", fgColor="FFF7E6")   # editable inputs = soft amber
+    BAND_FILL = PatternFill("solid", fgColor="F3F4F6")
+    WHITE = Font(color="FFFFFF", bold=True, size=11)
+    BOLD = Font(bold=True)
+    MUTED = Font(color="6B7280", italic=True, size=9)
+    THIN = Side(style="thin", color="E5E7EB")
+    BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    CENTER = Alignment(horizontal="center", vertical="center")
+    MONEY = '#,##0;[Red](#,##0)'
+    MONEY2 = '$#,##0'
+    PCT = '0.0%'
+    INT = '#,##0'
+
+    wb = Workbook()
+
+    def _hdr(ws, row, headers, *, fill=HEADER_FILL, font=WHITE):
+        for j, h in enumerate(headers, start=1):
+            c = ws.cell(row=row, column=j, value=h)
+            c.fill = fill
+            c.font = font
+            c.alignment = CENTER
+            c.border = BORDER
+
+    # ── Sheet 1: Assumptions (the single source of truth) ─────────────────────
+    aw = wb.active
+    aw.title = "Assumptions"
+    aw["A1"] = f"{business_name or 'Zilo'} — SaaS Financial Model"
+    aw["A1"].font = Font(bold=True, size=15, color="111827")
+    aw["A2"] = "Edit the amber cells. Every other sheet recalculates from these."
+    aw["A2"].font = MUTED
+
+    # (label, key, number_format) — values land in column B, referenced as $B$<row>
+    rows = [
+        ("Avg revenue per account / month (ARPA)", "arpa", MONEY2),
+        ("Starting customers", "starting_customers", INT),
+        ("New customers — month 1", "new_customers_m1", INT),
+        ("New-customer growth (MoM)", "new_growth", PCT),
+        ("Monthly churn", "churn", PCT),
+        ("Gross margin", "gross_margin", PCT),
+        ("Customer acquisition cost (CAC)", "cac", MONEY2),
+        ("Operating expenses — month 1", "opex_m1", MONEY2),
+        ("Opex growth (MoM)", "opex_growth", PCT),
+        ("Starting cash", "starting_cash", MONEY2),
+    ]
+    # Scenario tuning factors per driver: (best_multiplier, worst_multiplier).
+    # "Good when higher" drivers improve >1 in Best; "good when lower" (churn, CAC,
+    # opex) improve <1 in Best. Neutral drivers stay at 1.0.
+    _SCN_FACTORS = {
+        "arpa": (1.15, 0.90), "starting_customers": (1.0, 1.0),
+        "new_customers_m1": (1.25, 0.70), "new_growth": (1.5, 0.5),
+        "churn": (0.6, 1.6), "gross_margin": (1.08, 0.88),
+        "cac": (0.8, 1.35), "opex_m1": (0.95, 1.15),
+        "opex_growth": (0.8, 1.3), "starting_cash": (1.0, 1.0),
+    }
+
+    def _scn(key: str, mult: float) -> float:
+        v = a[key] * mult
+        if fmt_for[key] == PCT:  # keep rates sane
+            return round(max(0.0, min(0.99, v)), 4)
+        return round(v, 2) if isinstance(a[key], float) else int(round(v))
+
+    fmt_for = {key: fmt for (_l, key, fmt) in rows}
+
+    # Scenario selector (drives every CHOOSE below). 1=Base, 2=Best, 3=Worst.
+    aw["D2"] = "Scenario →"
+    aw["D2"].font = BOLD
+    aw["D2"].alignment = Alignment(horizontal="right")
+    sel = aw["E2"]
+    sel.value = 1
+    sel.fill = INPUT_FILL
+    sel.border = BORDER
+    sel.alignment = CENTER
+    sel.font = Font(bold=True, color=PRIMARY_HEX)
+    dv = DataValidation(type="list", formula1='"1,2,3"', allow_blank=False)
+    aw.add_data_validation(dv)
+    dv.add(sel)
+    aw["F2"] = "1 = Base · 2 = Best · 3 = Worst"
+    aw["F2"].font = MUTED
+
+    # Column headers for the driver table.
+    _hdr(aw, 3, ["Driver", "Active", "", "Base", "Best", "Worst"])
+
+    key_row: dict[str, int] = {}
+    r0 = 4
+    for i, (label, key, fmt) in enumerate(rows):
+        r = r0 + i
+        key_row[key] = r
+        aw.cell(row=r, column=1, value=label).font = BOLD
+        # Active value = CHOOSE(selector, Base, Best, Worst) — whole model follows it.
+        ac = aw.cell(row=r, column=2, value=f"=CHOOSE($E$2,D{r},E{r},F{r})")
+        ac.number_format = fmt
+        ac.border = BORDER
+        ac.alignment = Alignment(horizontal="right")
+        ac.font = BOLD
+        # Editable scenario inputs (Base / Best / Worst).
+        best_m, worst_m = _SCN_FACTORS[key]
+        for col, val in ((4, a[key]), (5, _scn(key, best_m)), (6, _scn(key, worst_m))):
+            sc = aw.cell(row=r, column=col, value=val)
+            sc.number_format = fmt
+            sc.fill = INPUT_FILL
+            sc.border = BORDER
+            sc.alignment = Alignment(horizontal="right")
+    for col, w in zip("ABCDEF", (40, 14, 2, 14, 14, 14)):
+        aw.column_dimensions[col].width = w
+
+    def AS(key: str) -> str:
+        """Absolute reference to the ACTIVE assumption value, e.g. Assumptions!$B$4."""
+        return f"Assumptions!$B${key_row[key]}"
+
+    # ── Sheet 2: Revenue (months as rows) ─────────────────────────────────────
+    rv = wb.create_sheet("Revenue")
+    _hdr(rv, 1, ["Month", "Customers (start)", "New", "Churned", "Customers (end)", "MRR", "ARR"])
+    for m in range(1, months + 1):
+        row = m + 1
+        prev = row - 1
+        rv.cell(row=row, column=1, value=m).alignment = CENTER
+        if m == 1:
+            rv.cell(row=row, column=2, value=f"={AS('starting_customers')}")
+            rv.cell(row=row, column=3, value=f"={AS('new_customers_m1')}")
+        else:
+            rv.cell(row=row, column=2, value=f"=E{prev}")
+            rv.cell(row=row, column=3, value=f"=ROUND(C{prev}*(1+{AS('new_growth')}),0)")
+        rv.cell(row=row, column=4, value=f"=ROUND(B{row}*{AS('churn')},0)")
+        rv.cell(row=row, column=5, value=f"=B{row}+C{row}-D{row}")
+        rv.cell(row=row, column=6, value=f"=E{row}*{AS('arpa')}")
+        rv.cell(row=row, column=7, value=f"=F{row}*12")
+        for col in range(1, 8):
+            cell = rv.cell(row=row, column=col)
+            cell.border = BORDER
+            if col in (6, 7):
+                cell.number_format = MONEY2
+            elif col != 1:
+                cell.number_format = INT
+            if m % 2 == 0:
+                cell.fill = BAND_FILL
+    for col, w in zip("ABCDEFG", (8, 16, 10, 10, 16, 14, 16)):
+        rv.column_dimensions[col].width = w
+
+    # ── Sheet 3: P&L (months as rows) ─────────────────────────────────────────
+    pl = wb.create_sheet("P&L")
+    _hdr(pl, 1, ["Month", "Revenue", "COGS", "Gross Profit", "Sales & Mktg", "Other Opex", "EBITDA"])
+    for m in range(1, months + 1):
+        row = m + 1
+        pl.cell(row=row, column=1, value=m).alignment = CENTER
+        pl.cell(row=row, column=2, value=f"=Revenue!F{row}")
+        pl.cell(row=row, column=3, value=f"=B{row}*(1-{AS('gross_margin')})")
+        pl.cell(row=row, column=4, value=f"=B{row}-C{row}")
+        pl.cell(row=row, column=5, value=f"=Revenue!C{row}*{AS('cac')}")
+        pl.cell(row=row, column=6, value=f"={AS('opex_m1')}*(1+{AS('opex_growth')})^({m}-1)")
+        pl.cell(row=row, column=7, value=f"=D{row}-E{row}-F{row}")
+        for col in range(1, 8):
+            cell = pl.cell(row=row, column=col)
+            cell.border = BORDER
+            if col != 1:
+                cell.number_format = MONEY
+            if m % 2 == 0:
+                cell.fill = BAND_FILL
+    for col, w in zip("ABCDEFG", (8, 14, 14, 14, 14, 14, 14)):
+        pl.column_dimensions[col].width = w
+
+    # ── Sheet 4: Cash Flow (running balance) ──────────────────────────────────
+    cf = wb.create_sheet("CashFlow")
+    _hdr(cf, 1, ["Month", "Beginning Cash", "Net Cash (EBITDA)", "Ending Cash"])
+    for m in range(1, months + 1):
+        row = m + 1
+        prev = row - 1
+        cf.cell(row=row, column=1, value=m).alignment = CENTER
+        cf.cell(row=row, column=2, value=(f"={AS('starting_cash')}" if m == 1 else f"=D{prev}"))
+        cf.cell(row=row, column=3, value=f"='P&L'!G{row}")
+        cf.cell(row=row, column=4, value=f"=B{row}+C{row}")
+        for col in range(1, 5):
+            cell = cf.cell(row=row, column=col)
+            cell.border = BORDER
+            if col != 1:
+                cell.number_format = MONEY
+            if m % 2 == 0:
+                cell.fill = BAND_FILL
+    for col, w in zip("ABCD", (8, 18, 20, 18)):
+        cf.column_dimensions[col].width = w
+    # Highlight any month the cash balance goes negative (runway cliff).
+    red_fill = PatternFill("solid", fgColor="FECACA")
+    red_font = Font(color="991B1B", bold=True)
+    cf.conditional_formatting.add(
+        f"D2:D{months + 1}",
+        CellIsRule(operator="lessThan", formula=["0"], fill=red_fill, font=red_font),
+    )
+
+    # ── Sheet 5: Summary / dashboard ──────────────────────────────────────────
+    sm = wb.create_sheet("Summary")
+    sm["A1"] = f"{business_name or 'Zilo'} — Key Metrics"
+    sm["A1"].font = Font(bold=True, size=15, color="111827")
+    last = months + 1  # last data row across the monthly sheets
+    metrics = [
+        ("Projection horizon (months)", str(months), INT, False),
+        ("Ending customers", f"=Revenue!E{last}", INT, False),
+        ("Ending MRR", f"=Revenue!F{last}", MONEY2, False),
+        ("Ending ARR", f"=Revenue!G{last}", MONEY2, True),
+        ("Year-1 revenue", "=SUM('P&L'!B2:B13)", MONEY2, False),
+        ("Year-1 EBITDA", "=SUM('P&L'!G2:G13)", MONEY, False),
+        ("Ending cash", f"=CashFlow!D{last}", MONEY2, False),
+        ("Lowest cash balance", "=MIN(CashFlow!D2:D" + str(last) + ")", MONEY, True),
+        ("LTV (per customer)", f"=({AS('arpa')}*{AS('gross_margin')})/{AS('churn')}", MONEY2, False),
+        ("LTV : CAC", f"=(({AS('arpa')}*{AS('gross_margin')})/{AS('churn')})/{AS('cac')}", '0.0"x"', True),
+        ("CAC payback (months)", f"={AS('cac')}/({AS('arpa')}*{AS('gross_margin')})", '0.0', False),
+    ]
+    _hdr(sm, 3, ["Metric", "Value"])
+    for i, (label, val, fmt, emphasize) in enumerate(metrics):
+        r = 4 + i
+        lc = sm.cell(row=r, column=1, value=label)
+        vc = sm.cell(row=r, column=2, value=val)
+        vc.number_format = fmt
+        vc.alignment = Alignment(horizontal="right")
+        lc.border = vc.border = BORDER
+        if emphasize:
+            lc.font = vc.font = Font(bold=True, color=PRIMARY_HEX)
+    sm.column_dimensions["A"].width = 34
+    sm.column_dimensions["B"].width = 18
+    sm.cell(row=4 + len(metrics) + 1, column=1,
+            value=f"Generated by Zilo · {datetime.utcnow().strftime('%d %b %Y')}").font = MUTED
+
+    # ── Sheet 6: Charts (native Excel charts, recalc with the model) ───────────
+    ch = wb.create_sheet("Charts")
+    ch.sheet_view.showGridLines = False
+    cats = Reference(rv, min_col=1, min_row=2, max_row=last)  # month numbers
+
+    def _line(title, src_ws, col, anchor, color=None):
+        c = LineChart()
+        c.title = title
+        c.height, c.width = 7.5, 15
+        c.style = 12
+        data = Reference(src_ws, min_col=col, min_row=1, max_row=last)  # incl. header = series name
+        c.add_data(data, titles_from_data=True)
+        c.set_categories(cats)
+        c.x_axis.title = "Month"
+        c.y_axis.numFmt = "#,##0"
+        if c.series and color:
+            c.series[0].graphicalProperties.line.solidFill = color
+        ch.add_chart(c, anchor)
+
+    _line("MRR", rv, 6, "B2", PRIMARY_HEX)
+    _line("Customers", rv, 5, "L2", "10B981")
+    _line("Ending Cash", cf, 4, "B18", "F59E0B")
+
+    # EBITDA bar
+    bar = BarChart()
+    bar.title = "Monthly EBITDA"
+    bar.height, bar.width = 7.5, 15
+    bar.style = 10
+    bar.add_data(Reference(pl, min_col=7, min_row=1, max_row=last), titles_from_data=True)
+    bar.set_categories(cats)
+    bar.x_axis.title = "Month"
+    bar.y_axis.numFmt = "#,##0"
+    ch.add_chart(bar, "L18")
+
+    # ── Cover Sheet (First Tab) ──────────────────────────────────────────────
+    cv = wb.create_sheet("Cover", 0)
+    cv.sheet_view.showGridLines = False
+
+    # Accent Strip (Column A)
+    BRAND_ACCENT_FILL = PatternFill("solid", fgColor=PRIMARY_HEX)
+    for r_idx in range(1, 30):
+        cv.cell(row=r_idx, column=1).fill = BRAND_ACCENT_FILL
+
+    cv.column_dimensions["A"].width = 3
+    cv.column_dimensions["B"].width = 4
+    cv.column_dimensions["C"].width = 45
+
+    # Title
+    c_title = cv.cell(row=4, column=3, value=f"{business_name or 'Zilo'} SaaS Financial Model")
+    c_title.font = Font(name="Arial", bold=True, size=22, color=PRIMARY_HEX)
+
+    # Subtitle
+    c_sub = cv.cell(row=5, column=3, value="FINANCIAL PROJECTIONS & SCENARIO ANALYSIS")
+    c_sub.font = Font(name="Arial", bold=True, size=11, color="6B7280")
+
+    # Divider line
+    BORDER_SIDE = Side(style="medium", color="D1D5DB")
+    for col_idx in range(3, 8):
+        cv.cell(row=6, column=col_idx).border = Border(bottom=BORDER_SIDE)
+
+    # Metadata Block
+    cv.cell(row=8, column=3, value="Prepared For:").font = Font(name="Arial", italic=True, size=9, color="6B7280")
+    cv.cell(row=9, column=3, value=business_name or "Internal Use").font = Font(name="Arial", bold=True, size=11, color="111827")
+
+    cv.cell(row=11, column=3, value="Date:").font = Font(name="Arial", italic=True, size=9, color="6B7280")
+    cv.cell(row=12, column=3, value=datetime.utcnow().strftime('%B %d, %Y')).font = Font(name="Arial", bold=True, size=11, color="111827")
+
+    cv.cell(row=14, column=3, value="Confidentiality:").font = Font(name="Arial", italic=True, size=9, color="6B7280")
+    cv.cell(row=15, column=3, value="CONFIDENTIAL — FOR INTERNAL USE ONLY").font = Font(name="Arial", bold=True, size=10, color="991B1B")
+
+    # Open on the Cover sheet first.
+    wb.active = wb.sheetnames.index("Cover")
+
+    # Turn off grid lines and set tab colors on all sheets
+    for ws in wb.worksheets:
+        ws.sheet_view.showGridLines = False
+        name = ws.title.lower()
+        if "cover" in name:
+            ws.sheet_properties.tabColor = PRIMARY_HEX
+        elif "assumption" in name:
+            ws.sheet_properties.tabColor = "22C55E"  # Green
+        elif "revenue" in name or "mrr" in name:
+            ws.sheet_properties.tabColor = "111111"  # Dark
+        elif "p&l" in name or "cashflow" in name or "opex" in name or "burn" in name or "cost" in name:
+            ws.sheet_properties.tabColor = "EF4444"  # Red
+        elif "summary" in name or "kpi" in name:
+            ws.sheet_properties.tabColor = "F59E0B"  # Amber
+        elif "chart" in name or "analysis" in name:
+            ws.sheet_properties.tabColor = "8B5CF6"  # Purple
+
+    wb.save(str(filepath))
+    return str(filepath)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spreadsheet styling and utility helpers (contrast and tinting)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_tint_color(hex_color: str, factor: float) -> str:
+    """Mix the hex color with white. factor = 0.0 is pure white, 1.0 is original color."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) == 3:
+        hex_color = "".join(c*2 for c in hex_color)
+    if len(hex_color) != 6:
+        return "FFFFFF"
+    try:
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+    except ValueError:
+        return "FFFFFF"
+    
+    # Mix with white (255, 255, 255)
+    r = int(r * factor + 255 * (1 - factor))
+    g = int(g * factor + 255 * (1 - factor))
+    b = int(b * factor + 255 * (1 - factor))
+    
+    return f"{r:02X}{g:02X}{b:02X}"
+
+
+def _is_light_color(hex_color: str) -> bool:
+    """Check if hex color is light (luminance > 180)."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) == 3:
+        hex_color = "".join(c*2 for c in hex_color)
+    if len(hex_color) != 6:
+        return True
+    try:
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+    except ValueError:
+        return True
+    # Perceptive luminance formula
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return luminance > 180
+
+
+def _write_xlsx_table_rows(
+    ws,
+    columns: list[dict],
+    rows: list[dict],
+    start_row: int,
+    style: dict,
+    total_keys: set,
+    hl: tuple | None,
+    PRIMARY_HEX: str,
+):
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    
+    ALT_ROW_HEX = _get_tint_color(PRIMARY_HEX, 0.03)  # very subtle 3% brand tint
+    TOTAL_ROW_HEX = _get_tint_color(PRIMARY_HEX, 0.08)  # 8% brand tint for totals
+    
+    HEADER_TEXT_COLOR = "000000" if _is_light_color(PRIMARY_HEX) else "FFFFFF"
+    
+    THIN = Side(style="thin", color="D1D5DB")
+    BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    FMT = {
+        "money": "$#,##0;($#,##0);-",
+        "int": "#,##0;(#,##0);-",
+        "pct": "0.0%",
+        "date": "yyyy-mm-dd hh:mm"
+    }
+    
+    BAND_FILL = PatternFill("solid", fgColor=ALT_ROW_HEX)
+    SECTION_FILL = PatternFill("solid", fgColor=PRIMARY_HEX)
+    TOTAL_FILL = PatternFill("solid", fgColor=TOTAL_ROW_HEX)
+    FLAG_FILL = PatternFill("solid", fgColor="FEF3C7")  # Amber row highlight
+    
+    # Financial Highlight Row Fills & Fonts
+    GP_FILL = PatternFill("solid", fgColor="E6F4EA")  # Soft green
+    GP_FONT = Font(name="Arial", bold=True, color="065F46", size=10)
+    
+    OPEX_FILL = PatternFill("solid", fgColor="FCE8E6")  # Soft red
+    OPEX_FONT = Font(name="Arial", bold=True, color="991B1B", size=10)
+    
+    NP_FILL = PatternFill("solid", fgColor="FEF7E0")  # Soft yellow
+    NP_FONT = Font(name="Arial", bold=True, color="92400E", size=10)
+    
+    for i, rowdata in enumerate(rows):
+        r = start_row + i
+        
+        # A. Detect Row Types
+        val_first = rowdata.get(columns[0]["key"])
+        val_first_str = str(val_first).strip() if val_first is not None else ""
+        
+        # Check if other columns are empty or have minor divider indicators
+        other_non_empty_count = 0
+        for col in columns[1:]:
+            v = rowdata.get(col["key"])
+            if v is not None and str(v).strip() != "":
+                other_non_empty_count += 1
+        
+        is_section = False
+        if val_first_str:
+            clean_text = re.sub(r"\*\*|\*", "", val_first_str).strip()
+            is_upper = clean_text.isupper()
+            starts_with_num = re.match(r"^(?:Section|Part|Category|Phase|\d+|[IVXLCDM]+)[\s.:\-]", clean_text, re.IGNORECASE) is not None
+            if other_non_empty_count == 0:
+                is_section = True
+            elif (is_upper or "section" in clean_text.lower() or "break" in clean_text.lower() or starts_with_num) and other_non_empty_count <= 1:
+                is_section = True
+        
+        # Set Row heights dynamically per type
+        if is_section:
+            ws.row_dimensions[r].height = 22
+        else:
+            ws.row_dimensions[r].height = 17
+            
+        # B. Check Financial Highlights
+        header_clean = re.sub(r"\*\*|\*", "", val_first_str).lower().strip()
+        is_gp = "gross profit" in header_clean or "gross margin" in header_clean or header_clean == "gp"
+        is_opex = "operating expense" in header_clean or "opex" in header_clean or "total expense" in header_clean or "operating cost" in header_clean
+        is_np = "net profit" in header_clean or "net income" in header_clean or "net margin" in header_clean or "net earnings" in header_clean
+        is_any_total = "total" in header_clean and not (is_gp or is_opex or is_np)
+        
+        # C. Process Highlight Conditions
+        flag = False
+        if hl:
+            hk, op, hv = hl
+            v = rowdata.get(hk)
+            try:
+                flag = (op == ">" and v > hv) or (op == "<" and v < hv) or (op == "==" and v == hv)
+            except TypeError:
+                flag = False
+                
+        # D. Write and style cells
+        for j, col in enumerate(columns, start=1):
+            val = rowdata.get(col["key"])
+            cell = ws.cell(row=r, column=j, value=val)
+            cell.border = BORDER
+            
+            # Formats
+            f = col.get("fmt")
+            if f in ("money", "int", "pct"):
+                cell.number_format = FMT[f]
+            elif f == "date":
+                cell.number_format = FMT[f]
+                
+            # Alignments
+            col_header = str(col.get("header") or "").lower()
+            val_str = str(val).strip() if val is not None else ""
+            
+            if f in ("money", "int", "pct") or val_str.startswith("="):
+                align_h = "right"
+            elif f == "date" or col_header in ("status", "flag", "code", "id") or len(val_str) <= 5:
+                align_h = "center"
+            else:
+                align_h = "left"
+                
+            cell.alignment = Alignment(horizontal=align_h, vertical="center")
+            
+            # Fills and Fonts
+            if is_section:
+                cell.fill = SECTION_FILL
+                cell.font = Font(name="Arial", bold=True, color=HEADER_TEXT_COLOR, size=10)
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            elif is_gp:
+                cell.fill = GP_FILL
+                cell.font = GP_FONT
+            elif is_opex:
+                cell.fill = OPEX_FILL
+                cell.font = OPEX_FONT
+            elif is_np:
+                cell.fill = NP_FILL
+                cell.font = NP_FONT
+            elif is_any_total:
+                cell.fill = TOTAL_FILL
+                cell.font = Font(name="Arial", bold=True, color="111827", size=10)
+            else:
+                if flag:
+                    cell.fill = FLAG_FILL
+                elif i % 2 == 1:
+                    cell.fill = BAND_FILL
+                    
+                # Content-based font color coding
+                is_note_col = any(keyword in col_header for keyword in ("note", "comment", "remark", "desc", "unit", "spec"))
+                
+                if is_note_col:
+                    cell.font = Font(name="Arial", italic=True, color="6B7280", size=10)
+                elif val_str.startswith("="):
+                    if "!" in val_str:
+                        cell.font = Font(name="Arial", bold=True, color="15803D", size=10)
+                    else:
+                        cell.font = Font(name="Arial", color="111827", size=10)
+                elif isinstance(val, (int, float)):
+                    cell.font = Font(name="Arial", color="1A56DB", size=10)
+                else:
+                    cell.font = Font(name="Arial", color="111827", size=10)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic CRM data export (.xlsx) — branded table with totals + highlights
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# columns: list of dicts — {"header", "key", "fmt"?, "width"?, "align"?}
+#   fmt: "money" | "int" | "pct" | "date" | None (text)
+# rows:    list of dicts keyed by the column "key"s
+# total_keys: keys to SUM in a footer row
+# highlight: optional (key, operator, value) — shades a row's cells when the row's
+#            value for `key` satisfies the comparison (e.g. ("remaining", ">", 0))
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_data_xlsx(
+    *,
+    title: str,
+    columns: list[dict],
+    rows: list[dict],
+    business_name: str = "",
+    style: dict | None = None,
+    total_keys: set | None = None,
+    sheet_name: str = "Data",
+    filename: str | None = None,
+) -> str:
+    """Build a branded, filterable Excel table from a list of row dicts. Returns path."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    style = style or {}
+    total_keys = total_keys or set()
+
+    filename = filename or f"zilo_export_{uuid.uuid4().hex[:8]}.xlsx"
+    if not filename.endswith(".xlsx"):
+        filename += ".xlsx"
+    filepath = TEMP_DIR / filename
+
+    PRIMARY_HEX = _safe_hex(style.get("primary_color", ""), "#4F46E5").lstrip("#").upper()
+    HEADER_FILL = PatternFill("solid", fgColor=PRIMARY_HEX)
+    HEADER_TEXT_COLOR = "000000" if _is_light_color(PRIMARY_HEX) else "FFFFFF"
+    HEADER_FONT = Font(name="Arial", color=HEADER_TEXT_COLOR, bold=True, size=10)
+    WHITE = Font(color="FFFFFF", bold=True)
+    BOLD = Font(bold=True)
+    THIN = Side(style="thin", color="D1D5DB")
+    BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    CENTER = Alignment(horizontal="center", vertical="center")
+    FMT = {
+        "money": "$#,##0;($#,##0);-",
+        "int": "#,##0;(#,##0);-",
+        "pct": "0.0%",
+        "date": "yyyy-mm-dd hh:mm"
+    }
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name[:31] or "Data"
+    ws.sheet_view.showGridLines = False
+
+    # Row 1: Header Band (Company Brand Color)
+    ws.row_dimensions[1].height = 44
+    for col_idx in range(1, max(20, len(columns) + 1)):
+        ws.cell(row=1, column=col_idx).fill = HEADER_FILL
+    ws.cell(row=1, column=1, value=f"{business_name + ' — ' if business_name else ''}{title}").font = Font(name="Arial", bold=True, size=16, color=HEADER_TEXT_COLOR)
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+    # Row 2: Subtitle
+    ws.row_dimensions[2].height = 20
+    ws.cell(row=2, column=1, value=f"{len(rows)} rows · generated {datetime.utcnow().strftime('%d %b %Y %H:%M')} UTC").font = Font(name="Arial", italic=True, size=9, color="6B7280")
+    ws.cell(row=2, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+    head_row = 4
+    ws.row_dimensions[head_row].height = 24
+    for j, col in enumerate(columns, start=1):
+        c = ws.cell(row=head_row, column=j, value=col["header"])
+        c.fill = HEADER_FILL
+        c.font = HEADER_FONT
+        c.alignment = CENTER
+        c.border = BORDER
+
+    hl = style.get("_highlight")  # (key, op, value)
+    _write_xlsx_table_rows(
+        ws,
+        columns=columns,
+        rows=rows,
+        start_row=head_row + 1,
+        style=style,
+        total_keys=total_keys,
+        hl=hl,
+        PRIMARY_HEX=PRIMARY_HEX,
+    )
+
+    # Totals footer
+    if total_keys and rows:
+        r = head_row + 1 + len(rows)
+        ws.row_dimensions[r].height = 22
+        
+        TOTAL_ROW_HEX = _get_tint_color(PRIMARY_HEX, 0.08)
+        TOTAL_FILL = PatternFill("solid", fgColor=TOTAL_ROW_HEX)
+        
+        DOUBLE = Side(style="double", color="111827")
+        TOTALS_BORDER = Border(top=THIN, bottom=DOUBLE, left=THIN, right=THIN)
+        
+        for j, col in enumerate(columns, start=1):
+            cell = ws.cell(row=r, column=j)
+            cell.border = TOTALS_BORDER
+            cell.fill = TOTAL_FILL
+            
+            if j == 1:
+                cell.value = "TOTAL"
+                cell.font = Font(name="Arial", bold=True, color="111827", size=10)
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            elif col["key"] in total_keys:
+                first = head_row + 1
+                last = head_row + len(rows)
+                colletter = cell.column_letter
+                cell.value = f"=SUM({colletter}{first}:{colletter}{last})"
+                cell.font = Font(name="Arial", bold=True, color="111827", size=10)
+                cell.number_format = FMT.get(col.get("fmt"), "#,##0;(#,##0);-")
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+
+    # Column widths (dynamic) + freeze + autofilter
+    for j, col in enumerate(columns, start=1):
+        # Calculate max length of values in this column
+        max_len = 0
+        for row in rows:
+            val_str = str(row.get(col["key"]) or "")
+            if len(val_str) > max_len:
+                max_len = len(val_str)
+        col_width = max(len(col["header"]), max_len) + 4
+        col_letter = ws.cell(row=head_row, column=j).column_letter
+        ws.column_dimensions[col_letter].width = max(12, min(col_width, 50))
+
+    ws.freeze_panes = "A5"
+    if columns:
+        last_col = ws.cell(row=head_row, column=len(columns)).column_letter
+        ws.auto_filter.ref = f"A{head_row}:{last_col}{head_row + len(rows)}"
+
+    wb.save(str(filepath))
+    return str(filepath)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-sheet workbook (e.g. weekly report) — one table per sheet + totals
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# sheets: list of dicts — {"title", "columns", "rows", "total_keys"?, "highlight"?}
+#   (same column/row shape as generate_data_xlsx)
+# An optional leading "Summary" sheet of key→value pairs can be supplied via
+# `summary` = list of (label, value, fmt).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_multi_sheet_xlsx(
+    *,
+    title: str,
+    sheets: list[dict],
+    summary: list[tuple] | None = None,
+    business_name: str = "",
+    style: dict | None = None,
+    filename: str | None = None,
+) -> str:
+    """Build a multi-tab workbook (one table per sheet) with an optional Summary tab."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    style = style or {}
+    filename = filename or f"zilo_report_{uuid.uuid4().hex[:8]}.xlsx"
+    if not filename.endswith(".xlsx"):
+        filename += ".xlsx"
+    filepath = TEMP_DIR / filename
+
+    PRIMARY_HEX = _safe_hex(style.get("primary_color", ""), "#4F46E5").lstrip("#").upper()
+    HEADER_FILL = PatternFill("solid", fgColor=PRIMARY_HEX)
+    HEADER_TEXT_COLOR = "000000" if _is_light_color(PRIMARY_HEX) else "FFFFFF"
+    HEADER_FONT = Font(name="Arial", color=HEADER_TEXT_COLOR, bold=True, size=10)
+    WHITE = Font(color="FFFFFF", bold=True)
+    BOLD = Font(bold=True)
+    THIN = Side(style="thin", color="D1D5DB")
+    BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+    CENTER = Alignment(horizontal="center", vertical="center")
+    RIGHT = Alignment(horizontal="right")
+    FMT = {
+        "money": "$#,##0;($#,##0);-",
+        "int": "#,##0;(#,##0);-",
+        "pct": "0.0%",
+        "date": "yyyy-mm-dd hh:mm"
+    }
+
+    wb = Workbook()
+
+    def _write_table(ws, tbl):
+        cols = tbl["columns"]
+        rows = tbl.get("rows") or []
+        total_keys = tbl.get("total_keys") or set()
+        hl = tbl.get("highlight")  # (key, op, value)
+        head = 4
+
+        # Turn off gridlines
+        ws.sheet_view.showGridLines = False
+
+        # Row 1: Header Band (Company Brand Color)
+        ws.row_dimensions[1].height = 44
+        for col_idx in range(1, max(20, len(cols) + 1)):
+            ws.cell(row=1, column=col_idx).fill = HEADER_FILL
+        title_val = tbl.get("title", ws.title)
+        ws.cell(row=1, column=1, value=title_val).font = Font(name="Arial", bold=True, size=16, color=HEADER_TEXT_COLOR)
+        ws.cell(row=1, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Row 2: Subtitle
+        ws.row_dimensions[2].height = 20
+        subtitle_text = f"{business_name} · {len(rows)} rows" if business_name else f"{len(rows)} rows"
+        ws.cell(row=2, column=1, value=subtitle_text).font = Font(name="Arial", italic=True, size=9, color="6B7280")
+        ws.cell(row=2, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Row 4: Table headers
+        ws.row_dimensions[head].height = 24
+        for j, col in enumerate(cols, start=1):
+            c = ws.cell(row=head, column=j, value=col["header"])
+            c.fill, c.font, c.alignment, c.border = HEADER_FILL, HEADER_FONT, CENTER, BORDER
+
+        _write_xlsx_table_rows(
+            ws,
+            columns=cols,
+            rows=rows,
+            start_row=head + 1,
+            style=style,
+            total_keys=total_keys,
+            hl=hl,
+            PRIMARY_HEX=PRIMARY_HEX,
+        )
+
+        if total_keys and rows:
+            r = head + 1 + len(rows)
+            ws.row_dimensions[r].height = 22
+            
+            TOTAL_ROW_HEX = _get_tint_color(PRIMARY_HEX, 0.08)
+            TOTAL_FILL = PatternFill("solid", fgColor=TOTAL_ROW_HEX)
+            
+            DOUBLE = Side(style="double", color="111827")
+            TOTALS_BORDER = Border(top=THIN, bottom=DOUBLE, left=THIN, right=THIN)
+            
+            for j, col in enumerate(cols, start=1):
+                cell = ws.cell(row=r, column=j)
+                cell.border = TOTALS_BORDER
+                cell.fill = TOTAL_FILL
+                
+                if j == 1:
+                    cell.value = "TOTAL"
+                    cell.font = Font(name="Arial", bold=True, color="111827", size=10)
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+                elif col["key"] in total_keys:
+                    first = head + 1
+                    last = head + len(rows)
+                    letter = cell.column_letter
+                    cell.value = f"=SUM({letter}{first}:{letter}{last})"
+                    cell.font = Font(name="Arial", bold=True, color="111827", size=10)
+                    cell.number_format = FMT.get(col.get("fmt"), "#,##0;(#,##0);-")
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
+
+        # Column widths (dynamic) + freeze + autofilter
+        for j, col in enumerate(cols, start=1):
+            max_len = 0
+            for row in rows:
+                val_str = str(row.get(col["key"]) or "")
+                if len(val_str) > max_len:
+                    max_len = len(val_str)
+            col_width = max(len(col["header"]), max_len) + 4
+            col_letter = ws.cell(row=head, column=j).column_letter
+            ws.column_dimensions[col_letter].width = max(12, min(col_width, 50))
+
+        ws.freeze_panes = "A5"
+        if cols:
+            last_col = ws.cell(row=head, column=len(cols)).column_letter
+            ws.auto_filter.ref = f"A{head}:{last_col}{head + len(rows)}"
+
+    # Summary tab first
+    if summary is not None:
+        sm = wb.active
+        sm.title = "Summary"
+        sm.sheet_view.showGridLines = False
+
+        # Row 1: Header Band (Company Brand Color)
+        sm.row_dimensions[1].height = 44
+        for col_idx in range(1, 21):
+            sm.cell(row=1, column=col_idx).fill = HEADER_FILL
+        sm.cell(row=1, column=1, value=f"{business_name + ' — ' if business_name else ''}{title}").font = Font(name="Arial", bold=True, size=16, color=HEADER_TEXT_COLOR)
+        sm.cell(row=1, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Row 2: Subtitle
+        sm.row_dimensions[2].height = 20
+        sm.cell(row=2, column=1, value=f"Generated {datetime.utcnow().strftime('%d %b %Y %H:%M')} UTC").font = Font(name="Arial", italic=True, size=9, color="6B7280")
+        sm.cell(row=2, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Table headers
+        sm.row_dimensions[4].height = 24
+        for j, h in enumerate(("Metric", "Value"), start=1):
+            c = sm.cell(row=4, column=j, value=h)
+            c.fill, c.font, c.alignment, c.border = HEADER_FILL, HEADER_FONT, CENTER, BORDER
+            
+        ALT_ROW_HEX = _get_tint_color(PRIMARY_HEX, 0.03)
+        BAND_FILL = PatternFill("solid", fgColor=ALT_ROW_HEX)
+        
+        for i, (label, value, fmt) in enumerate(summary):
+            r = 5 + i
+            sm.row_dimensions[r].height = 20
+            
+            c1 = sm.cell(row=r, column=1, value=label)
+            c1.border = BORDER
+            c1.font = Font(name="Arial", bold=True, color="111827", size=10)
+            c1.alignment = Alignment(horizontal="left", vertical="center")
+            
+            c2 = sm.cell(row=r, column=2, value=value)
+            c2.border = BORDER
+            c2.font = Font(name="Arial", color="111827", size=10)
+            
+            if fmt in FMT:
+                c2.number_format = FMT[fmt]
+                c2.alignment = Alignment(horizontal="right", vertical="center")
+                if isinstance(value, (int, float)):
+                    c2.font = Font(name="Arial", color="1A56DB", size=10)
+            else:
+                c2.alignment = Alignment(horizontal="left", vertical="center")
+                
+            if i % 2 == 1:
+                c1.fill = BAND_FILL
+                c2.fill = BAND_FILL
+                
+        sm.column_dimensions["A"].width = 32
+        sm.column_dimensions["B"].width = 18
+        first = True
+    else:
+        first = True
+
+    for tbl in sheets:
+        name = (tbl.get("title") or "Sheet")[:31]
+        if first and summary is None:
+            ws = wb.active
+            ws.title = name
+            first = False
+        else:
+            ws = wb.create_sheet(name)
+        _write_table(ws, tbl)
+
+    # Set Tab Colors on all sheets
+    for ws in wb.worksheets:
+        name = ws.title.lower()
+        if "cover" in name:
+            ws.sheet_properties.tabColor = PRIMARY_HEX
+        elif "assumption" in name:
+            ws.sheet_properties.tabColor = "22C55E"  # Green
+        elif "revenue" in name or "mrr" in name or "sales" in name:
+            ws.sheet_properties.tabColor = "111111"  # Dark
+        elif "p&l" in name or "cashflow" in name or "opex" in name or "burn" in name or "cost" in name or "expense" in name:
+            ws.sheet_properties.tabColor = "EF4444"  # Red
+        elif "summary" in name or "kpi" in name:
+            ws.sheet_properties.tabColor = "F59E0B"  # Amber
+        elif "chart" in name or "analysis" in name:
+            ws.sheet_properties.tabColor = "8B5CF6"  # Purple
+        elif "tracker" in name or "pipeline" in name or "customer" in name:
+            ws.sheet_properties.tabColor = "3B82F6"  # Blue
+
+    wb.save(str(filepath))
+    return str(filepath)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Excel reader — parse an uploaded .xlsx into a list of row dicts
+# ─────────────────────────────────────────────────────────────────────────────
+
+def read_xlsx(file_bytes: bytes, *, sheet: str | None = None, max_rows: int = 10000) -> list[dict]:
+    """Parse the first (or named) worksheet into a list of dicts keyed by the
+    normalized header row (lower-cased, stripped). Fully-blank rows are skipped.
+    """
+    import io as _io
+    from openpyxl import load_workbook
+
+    wb = load_workbook(_io.BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    rows_iter = ws.iter_rows(values_only=True)
+    headers: list[str] = []
+    for raw in rows_iter:
+        if raw and any(c is not None and str(c).strip() for c in raw):
+            headers = [str(c).strip().lower() if c is not None else "" for c in raw]
+            break
+    if not headers:
+        return []
+
+    out: list[dict] = []
+    for raw in rows_iter:
+        if raw is None or not any(c is not None and str(c).strip() for c in raw):
+            continue
+        row = {}
+        for i, h in enumerate(headers):
+            if h:
+                row[h] = raw[i] if i < len(raw) else None
+        out.append(row)
+        if len(out) >= max_rows:
+            break
+    wb.close()
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────

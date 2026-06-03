@@ -184,6 +184,43 @@ async def run_platform_sweep(
         logger.warning("[zilo] relationship health scoring failed uid=%s: %s", uid, e)
         report["relationship_health"] = {"error": str(e)}
 
+    # 7) Sync all historical trust events into the Notebook (idempotent — skips already-synced)
+    try:
+        from rex.memory.notebook_sync import sync_events_to_notebook as _sync_nb
+        synced_count = _sync_nb(
+            events=orch.event_store.all_events(),
+            ledger=orch.ledger,
+            notebook=orch.notebook,
+        )
+        if synced_count:
+            logger.info("[zilo] notebook synced %d new events", synced_count)
+    except Exception as e:
+        logger.warning("[zilo] notebook sync failed: %s", e)
+
+    # 8) Emit a BACKGROUND_WORK trust event so the journal has honest daily content.
+    # Only emit if real work happened — don't record empty sweeps.
+    try:
+        from rex.ranks.events import TrustEvent as _TrustEvent
+        _drafts_staged = int(report.get("staged") or 0)
+        _email_report = report.get("email") or {}
+        _emails_swept = int(_email_report.get("fetched") or _email_report.get("total") or 0)
+        _leads_found = int((report.get("opps_imported") or 0))
+        _actions_sent = sum(
+            1 for a in orch.ledger.all_actions()
+            if orch.ledger.current_state(a.id).value == "sent"
+        )
+        if _drafts_staged or _emails_swept or _leads_found or _actions_sent:
+            _bg_event = _TrustEvent.background_work(
+                drafts_staged=_drafts_staged,
+                emails_swept=_emails_swept,
+                leads_found=_leads_found,
+                actions_sent=_actions_sent,
+            )
+            orch.event_store.append(_bg_event)
+            report["background_work_event"] = "emitted"
+    except Exception as e:
+        logger.warning("[zilo] background_work event emit failed: %s", e)
+
     return report
 
 

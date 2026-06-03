@@ -317,6 +317,12 @@ const MAP: Record<string, AgentPersona> = {
     role: "Documents & business writing specialist",
     cls: "bg-violet-100 text-violet-900",
   },
+  forms: {
+    firstName: "Fiona",
+    tag: "Forms",
+    role: "Forms & feedback specialist",
+    cls: "bg-purple-100 text-purple-900 border border-purple-200",
+  },
   zilo_support: {
     firstName: "Zoe",
     tag: "Zilo Support",

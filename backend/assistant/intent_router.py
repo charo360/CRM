@@ -556,6 +556,17 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "zilo cost", "about zilo", "free plan", "growth plan", "zilo feature list",
         "billing on zilo", "subscription plans", "billing info zilo", "tell me about zilo",
     ],
+    "forms": [
+        "create a form", "make a form", "build a form", "new form",
+        "create form", "make form", "build form", "generate a form",
+        "booking form", "feedback form", "contact form", "survey form",
+        "registration form", "application form", "order form", "intake form",
+        "inquiry form", "appointment form", "lead form", "sign up form",
+        "collect information", "collect details", "gather information",
+        "send a form", "share a form", "form to collect",
+        "my forms", "list forms", "show my forms",
+        "edit form", "update form", "delete form",
+    ],
 
     # ── Spreadsheet / Workspace integrations ──────────────────────────────────
     "google_sheets": [
@@ -794,6 +805,7 @@ async def _llm_route_choice(
             "- follow_ups: follow-up reminders, overdue contacts, reconnect scheduling\n"
             "- bookings: appointments, reservations, scheduling services, availability\n"
             "- automations: workflow triggers, auto-reply rules, sequences, automation setup\n"
+            "- forms: creating, managing, sharing, or previewing lead-capture/booking/feedback/survey forms conversationally\n"
             "- zilo_support: questions about Zilo (features, CRM capabilities, help guides, subscription plans, and billing/upgrade prices)\n"
             "- general: account status questions, cross-domain fallback\n\n"
             "DISAMBIGUATION RULES (apply in order):\n"
@@ -811,7 +823,8 @@ async def _llm_route_choice(
             "12. 'schedule post' / 'content calendar' / 'when to post' → social_scheduler (not creative)\n"
             "13. 'social DM' / 'social inbox' / 'reply to social message' → social_inbox (not messages — messages=WhatsApp)\n"
             "14. 'send to all customers' / 'bulk message' / 'mass message' → broadcasts (not messages)\n"
-            "15. 'how many social accounts' / 'connected integrations' → general\n\n"
+            "15. 'how many social accounts' / 'connected integrations' → general\n"
+            "16. 'form' / 'create a form' / 'survey' / 'feedback form' → forms\n\n"
             f"Available agents:\n{agent_menu}\n\n"
             f"Recent context:\n{recent}\n\n"
             f"User message: \"{message}\"\n\n"
