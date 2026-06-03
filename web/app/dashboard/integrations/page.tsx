@@ -6,7 +6,7 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { API_BASE, telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections } from "@/lib/api";
+import { API_BASE, telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections, composioSocialApi } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
