@@ -6,15 +6,16 @@ import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { API_BASE, telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections } from "@/lib/api";
+import { API_BASE, telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections, composioSocialApi, type ComposioFacebookPage, type ComposioSocialSettings } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
-import { zernioApi } from "@/lib/api";
 import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
 import { Plug, Mail, Calendar, CheckCircle, CheckCircle2, Loader2, AlertCircle, X, ExternalLink } from "lucide-react";
 
 // ── Glyphs ────────────────────────────────────────────────────────────────────
+
+
 
 function SlackGlyph({ className }: { className?: string }) {
   return (
@@ -514,19 +515,9 @@ const NANGO_IDS = {
 
 type NangoKey = keyof typeof NANGO_IDS;
 
-interface ZernioAccount { id: string; platform: string; name?: string; username?: string; }
-interface FacebookHeadlessPage { id: string; name?: string; username?: string; category?: string; }
+const COMPOSIO_SOCIAL_IDS = new Set(["facebook", "instagram", "youtube"]);
 
-function toFacebookHeadlessPage(input: Record<string, unknown>): FacebookHeadlessPage | null {
-  const rawId = input.id;
-  if (typeof rawId !== "string" || !rawId.trim()) return null;
-  return {
-    id: rawId,
-    name: typeof input.name === "string" ? input.name : undefined,
-    username: typeof input.username === "string" ? input.username : undefined,
-    category: typeof input.category === "string" ? input.category : undefined,
-  };
-}
+interface ZernioAccount { id: string; platform: string; name?: string; username?: string; }
 
 function IntegrationsPageInner() {
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
@@ -536,31 +527,23 @@ function IntegrationsPageInner() {
   const zernioAccounts = rawZernioAccounts as ZernioAccount[];
   const [zernioConnecting, setZernioConnecting] = useState<string | null>(null);
   const [zernioDisconnecting, setZernioDisconnecting] = useState<string | null>(null);
-  const [fbHeadlessPages, setFbHeadlessPages] = useState<FacebookHeadlessPage[]>([]);
-  const [fbHeadlessParams, setFbHeadlessParams] = useState<{
-    tempToken: string;
-    connectToken: string;
-    userProfile: Record<string, unknown>;
-  } | null>(null);
+  const [composioFbPages, setComposioFbPages] = useState<ComposioFacebookPage[]>([]);
+  const [showComposioFbPagePicker, setShowComposioFbPagePicker] = useState(false);
   const [fbLoadingPages, setFbLoadingPages] = useState(false);
   const [fbCompletingPageId, setFbCompletingPageId] = useState<string | null>(null);
+  const [composioSocial, setComposioSocial] = useState<ComposioSocialSettings | null>(null);
 
   const refreshZernio = useCallback(async () => {
     await refreshZernioCtx();
   }, [refreshZernioCtx]);
 
   async function zernioConnect(platformId: string) {
+    if (COMPOSIO_SOCIAL_IDS.has(platformId)) return;
     setZernioConnecting(platformId);
     try {
       const redirectUrl = `${window.location.origin}/dashboard/integrations?connected=${encodeURIComponent(platformId)}`;
-      const isHeadlessFacebook = platformId === "facebook";
-      const { authUrl } = await zernioCtxConnect(platformId, redirectUrl, isHeadlessFacebook);
+      const { authUrl } = await zernioCtxConnect(platformId, redirectUrl, false);
       if (authUrl) {
-        if (isHeadlessFacebook) {
-          // Headless flow must remain in same tab to receive callback params here.
-          window.location.href = authUrl;
-          return;
-        }
         const popup = window.open(authUrl, "zernio-connect", "width=980,height=760,noopener,noreferrer");
         if (!popup) {
           // Popup blocked: continue in same tab so OAuth can still complete.
@@ -601,28 +584,76 @@ function IntegrationsPageInner() {
     }
   }
 
-  async function completeFacebookHeadlessConnect(page: FacebookHeadlessPage) {
-    if (!fbHeadlessParams) return;
+  const refreshComposioSocial = useCallback(async () => {
+    try {
+      const settings = await composioSocialApi.settings();
+      setComposioSocial(settings);
+    } catch {
+      setComposioSocial(null);
+    }
+  }, []);
+
+  const loadComposioFacebookPages = useCallback(async (autoSelectSingle = true) => {
+    setFbLoadingPages(true);
+    try {
+      const res = await composioSocialApi.facebookPages();
+      const pages = res.pages || [];
+      setComposioFbPages(pages);
+      if (pages.length === 0) {
+        setShowComposioFbPagePicker(false);
+        setBanner({ type: "error", msg: "No Facebook Pages found for this account." });
+        return pages;
+      }
+      if (pages.length === 1 && autoSelectSingle) {
+        await composioSocialApi.selectFacebookPage(pages[0].id);
+        await refreshComposioSocial();
+        setShowComposioFbPagePicker(false);
+        setBanner({ type: "success", msg: `${pages[0].name || "Facebook Page"} selected for publishing.` });
+        return pages;
+      }
+      setShowComposioFbPagePicker(true);
+      setBanner({ type: "success", msg: "Select a Facebook Page below to finish connecting." });
+      return pages;
+    } catch (e) {
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Could not load Facebook pages." });
+      return [];
+    } finally {
+      setFbLoadingPages(false);
+    }
+  }, [refreshComposioSocial]);
+
+  async function completeComposioFacebookPageSelect(page: ComposioFacebookPage) {
     setFbCompletingPageId(page.id);
     try {
-      await zernioApi.facebookHeadlessComplete({
-        temp_token: fbHeadlessParams.tempToken,
-        connect_token: fbHeadlessParams.connectToken,
-        page_id: page.id,
-        user_profile: fbHeadlessParams.userProfile,
-        redirect_url: `${window.location.origin}/dashboard/integrations?connected=facebook`,
-      });
-      setBanner({ type: "success", msg: `${page.name || "Facebook page"} connected successfully.` });
-      setFbHeadlessPages([]);
-      setFbHeadlessParams(null);
-      await refreshZernio();
-      window.history.replaceState({}, "", window.location.pathname);
+      await composioSocialApi.selectFacebookPage(page.id);
+      setBanner({ type: "success", msg: `${page.name || "Facebook Page"} selected for publishing.` });
+      setShowComposioFbPagePicker(false);
+      setComposioFbPages([]);
+      await refreshComposioSocial();
     } catch (e) {
-      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to complete Facebook connection." });
+      setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to save Facebook Page." });
     } finally {
       setFbCompletingPageId(null);
     }
   }
+
+  async function composioConnectSocial(toolkit: string) {
+    const connected = await composioConnect(toolkit);
+    if (!connected) return;
+    await refreshComposioSocial();
+    if (toolkit === "facebook") {
+      const settings = await composioSocialApi.settings().catch(() => null);
+      if (settings?.facebook.connected && !settings.facebook.page_id) {
+        await loadComposioFacebookPages(true);
+      }
+    }
+  }
+
+  async function openFacebookPagePicker() {
+    setShowComposioFbPagePicker(true);
+    await loadComposioFacebookPages(false);
+  }
+
   const [nangoStatus, setNangoStatus] = useState<Record<NangoKey, boolean | null>>({
     slack: null, email: null, calendar: null, shopify: null,
     microsoft: null, stripe: null, klaviyo: null, mailchimp: null, brevo: null,
@@ -648,6 +679,9 @@ function IntegrationsPageInner() {
     // Analytics
     googleanalytics: null,
     googlesearchconsole: null,
+    facebook: null,
+    instagram: null,
+    youtube: null,
   });
   const [composioBusy, setComposioBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<{ type: "success" | "error"; msg: string } | null>(null);
@@ -799,6 +833,9 @@ function IntegrationsPageInner() {
       googleads: false,
       googleanalytics: false,
       googlesearchconsole: false,
+      facebook: false,
+      instagram: false,
+      youtube: false,
     };
     if (!token) { setComposioStatus(_allFalse); return; }
     try {
@@ -822,14 +859,47 @@ function IntegrationsPageInner() {
         googleads:          data.connected["googleads"]          ?? false,
         googleanalytics:     data.connected["googleanalytics"]     ?? false,
         googlesearchconsole: data.connected["googlesearchconsole"] ?? false,
+        facebook:            data.connected["facebook"]            ?? false,
+        instagram:           data.connected["instagram"]           ?? false,
+        youtube:             data.connected["youtube"]             ?? false,
       });
     } catch {
       setComposioStatus(_allFalse);
     }
   }, []);
 
-  async function composioConnect(toolkit: string, silent = false, extraBody: Record<string, string> = {}) {
+  async function fetchComposioToolkitConnected(toolkit: string): Promise<boolean> {
+    const token = getToken();
+    if (!token) return false;
+    try {
+      const res = await fetch(`/api/composio/connections/${toolkit}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return false;
+      const data = (await res.json()) as { connected?: boolean };
+      return !!data.connected;
+    } catch {
+      return false;
+    }
+  }
+
+  async function cleanupComposioPending(toolkit: string): Promise<void> {
+    const token = getToken();
+    if (!token) return;
+    try {
+      await fetch(`/api/composio/connections/${toolkit}/cleanup`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  async function composioConnect(toolkit: string, silent = false, extraBody: Record<string, string> = {}): Promise<boolean> {
     setComposioBusy(toolkit);
+    const label = toolkit.charAt(0).toUpperCase() + toolkit.slice(1);
+    const wasConnected = await fetchComposioToolkitConnected(toolkit);
     try {
       const token = getToken();
       const res = await fetch(`/api/composio/connect/${toolkit}`, {
@@ -849,32 +919,54 @@ function IntegrationsPageInner() {
             ? ((rawDetail as Record<string, unknown>).message as string) || JSON.stringify(rawDetail)
             : "Could not start connection. Please try again.";
         if (!silent) setBanner({ type: "error", msg: errMsg });
-        return;
+        return false;
       }
       const data = (await res.json()) as { redirect_url?: string };
       if (!data.redirect_url) {
         if (!silent) setBanner({ type: "error", msg: "No redirect URL returned from Composio." });
-        return;
+        return false;
       }
       const popup = window.open(data.redirect_url, "composio-connect", "width=980,height=760,noopener,noreferrer");
-      if (!popup) { window.location.href = data.redirect_url; return; }
+      if (!popup) { window.location.href = data.redirect_url; return false; }
 
       if (!silent) setBanner({ type: "success", msg: "Finish connecting in the popup, then return here." });
 
       await new Promise<void>((resolve) => {
-        const poll = window.setInterval(async () => {
-          void refreshComposio();
+        const poll = window.setInterval(() => {
           if (popup.closed) {
             window.clearInterval(poll);
-            await new Promise(r => setTimeout(r, 1200));
-            await refreshComposio();
             resolve();
           }
-        }, 3000);
+        }, 500);
       });
 
+      // Give Composio a moment to finalize the connection after redirect
+      await new Promise((r) => setTimeout(r, 1500));
+      await refreshComposio();
+
+      let nowConnected = await fetchComposioToolkitConnected(toolkit);
+      if (!nowConnected) {
+        await new Promise((r) => setTimeout(r, 2000));
+        await refreshComposio();
+        nowConnected = await fetchComposioToolkitConnected(toolkit);
+      }
+
+      if (nowConnected && !wasConnected) {
+        if (!silent) setBanner({ type: "success", msg: `${label} connected successfully.` });
+      } else if (!nowConnected && !wasConnected) {
+        await cleanupComposioPending(toolkit);
+        await refreshComposio();
+        if (!silent) {
+          setBanner({
+            type: "error",
+            msg: `${label} was not connected. Complete login in the popup, or try again.`,
+          });
+        }
+        return false;
+      }
+
       // Auto-link Calendar when Gmail connects (same Google account)
-      if (toolkit === "gmail") {
+      if (toolkit === "gmail" && nowConnected) {
         const freshStatus = await fetch("/api/composio/connections", {
           headers: { Authorization: `Bearer ${token ?? ""}` },
         }).then(r => r.json()).catch(() => ({ connected: {} })) as { connected: Record<string, boolean> };
@@ -884,8 +976,11 @@ function IntegrationsPageInner() {
           await composioConnect("googlecalendar", false);
         }
       }
+
+      return nowConnected;
     } catch (e) {
       if (!silent) setBanner({ type: "error", msg: e instanceof Error ? e.message : "Failed to connect." });
+      return false;
     } finally {
       setComposioBusy(null);
     }
@@ -995,6 +1090,13 @@ function IntegrationsPageInner() {
         return;
       }
       void refreshComposio();
+      if (toolkit === "facebook" || toolkit === "instagram" || toolkit === "youtube") {
+        void refreshComposioSocial();
+        if (toolkit === "facebook") {
+          setShowComposioFbPagePicker(false);
+          setComposioFbPages([]);
+        }
+      }
     } catch (e) {
       setBanner({ type: "error", msg: e instanceof Error ? e.message : `Failed to disconnect ${label}.` });
     } finally {
@@ -1002,46 +1104,9 @@ function IntegrationsPageInner() {
     }
   }
 
-  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); refreshSuppliers(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio, refreshSuppliers]);
+  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); void refreshComposioSocial(); refreshSuppliers(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio, refreshComposioSocial, refreshSuppliers]);
 
   useEffect(() => {
-    const platform = searchParams.get("platform");
-    const step = searchParams.get("step");
-    const tempToken = searchParams.get("tempToken");
-    const connectToken = searchParams.get("connect_token");
-    const userProfileRaw = searchParams.get("userProfile");
-
-    if (platform === "facebook" && step === "select_page" && tempToken && connectToken && userProfileRaw) {
-      const parseUserProfile = () => {
-        try {
-          return JSON.parse(userProfileRaw) as Record<string, unknown>;
-        } catch {
-          return JSON.parse(decodeURIComponent(userProfileRaw)) as Record<string, unknown>;
-        }
-      };
-      const userProfile = parseUserProfile();
-      setFbHeadlessParams({ tempToken, connectToken, userProfile });
-      setFbLoadingPages(true);
-      zernioApi
-        .facebookHeadlessPages({ temp_token: tempToken, connect_token: connectToken })
-        .then((res) => {
-          const pages = (res.pages || [])
-            .map((p) => toFacebookHeadlessPage(p))
-            .filter((p): p is FacebookHeadlessPage => p !== null);
-          setFbHeadlessPages(pages);
-          if (!pages.length) {
-            setBanner({ type: "error", msg: "No Facebook pages were returned for this account." });
-          } else {
-            setBanner({ type: "success", msg: "Select a Facebook Page below to finish connecting." });
-          }
-        })
-        .catch((e) => {
-          setBanner({ type: "error", msg: e instanceof Error ? e.message : "Could not load Facebook pages." });
-        })
-        .finally(() => setFbLoadingPages(false));
-      return;
-    }
-
     const connected = searchParams.get("connected");
     const error = searchParams.get("error");
     if (connected) {
@@ -1051,9 +1116,30 @@ function IntegrationsPageInner() {
         window.close();
         return;
       }
-      setBanner({ type: "success", msg: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!` });
-      refreshTg(); void refreshNango(); void refreshZernio(); void refreshComposio();
-      window.history.replaceState({}, "", window.location.pathname);
+
+      void (async () => {
+        await refreshComposio();
+        const label = connected.charAt(0).toUpperCase() + connected.slice(1);
+        const ok = await fetchComposioToolkitConnected(connected);
+        if (ok) {
+          setBanner({ type: "success", msg: `${label} connected successfully.` });
+          refreshTg();
+          void refreshNango();
+          void refreshZernio();
+          void refreshComposioSocial();
+          if (connected === "facebook") {
+            void loadComposioFacebookPages(true);
+          }
+        } else {
+          await cleanupComposioPending(connected);
+          await refreshComposio();
+          setBanner({
+            type: "error",
+            msg: `${label} was not connected. Complete login in the popup, or try again.`,
+          });
+        }
+        window.history.replaceState({}, "", window.location.pathname);
+      })();
     } else if (error) {
       const msgs: Record<string, string> = {
         oauth_denied: "You cancelled the login. Please try again.",
@@ -1064,7 +1150,7 @@ function IntegrationsPageInner() {
       setBanner({ type: "error", msg: msgs[error] || "Connection failed. Please try again." });
       window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [searchParams, refreshTg, refreshNango, refreshZernio]);
+  }, [searchParams, refreshTg, refreshNango, refreshZernio, refreshComposio, refreshComposioSocial, loadComposioFacebookPages]);
 
   async function nangoConnect(key: NangoKey) {
     await openNangoConnect([NANGO_IDS[key]], { onAfterConnect: refreshNango });
@@ -1115,23 +1201,23 @@ function IntegrationsPageInner() {
         </div>
       )}
 
-      {fbHeadlessParams && (
+      {showComposioFbPagePicker && (
         <section className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3">
           <div className="mb-2">
-            <h3 className="text-xs font-semibold text-blue-900">Finish Facebook Connection</h3>
-            <p className="text-[11px] text-blue-800">Choose which Facebook Page to connect to your CRM.</p>
+            <h3 className="text-xs font-semibold text-blue-900">Select Facebook Page</h3>
+            <p className="text-[11px] text-blue-800">Choose which Facebook Page to use for publishing posts.</p>
           </div>
           {fbLoadingPages ? (
             <div className="flex items-center gap-1.5 text-[11px] text-blue-800">
               <Loader2 size={12} className="animate-spin" /> Loading your pages...
             </div>
-          ) : fbHeadlessPages.length ? (
+          ) : composioFbPages.length ? (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {fbHeadlessPages.map((page) => (
+              {composioFbPages.map((page) => (
                 <button
                   key={page.id}
                   type="button"
-                  onClick={() => void completeFacebookHeadlessConnect(page)}
+                  onClick={() => void completeComposioFacebookPageSelect(page)}
                   disabled={fbCompletingPageId === page.id}
                   className="flex items-center justify-between rounded-lg border border-blue-200 bg-white px-3 py-2 text-left text-xs hover:bg-blue-100 disabled:opacity-60"
                 >
@@ -1139,7 +1225,7 @@ function IntegrationsPageInner() {
                     <p className="font-semibold text-slate-900">{page.name || "Untitled Page"}</p>
                     <p className="text-[10px] text-slate-500">{page.username ? `@${page.username}` : page.category || "Facebook Page"}</p>
                   </div>
-                  {fbCompletingPageId === page.id ? <Loader2 size={12} className="animate-spin text-blue-700" /> : <span className="text-blue-700 font-semibold">Connect</span>}
+                  {fbCompletingPageId === page.id ? <Loader2 size={12} className="animate-spin text-blue-700" /> : <span className="text-blue-700 font-semibold">Select</span>}
                 </button>
               ))}
             </div>
@@ -1179,6 +1265,51 @@ function IntegrationsPageInner() {
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {SOCIAL_PLATFORMS.map((p) => {
+            if (COMPOSIO_SOCIAL_IDS.has(p.id)) {
+              const connected = composioStatus[p.id] === true;
+              const fbPageName = p.id === "facebook" ? composioSocial?.facebook.page_name : null;
+              const igLinked = p.id === "instagram" ? composioSocial?.instagram.user_id : null;
+              const needsPage = p.id === "facebook" && connected && !composioSocial?.facebook.page_id;
+              const subtitle = connected
+                ? needsPage
+                  ? "Select a Page to publish"
+                  : p.id === "facebook" && fbPageName
+                    ? fbPageName
+                    : p.id === "instagram" && igLinked
+                      ? "Business account linked"
+                      : "Connected via Composio"
+                : "Connect via Composio";
+              return (
+                <SmallTile
+                  key={p.id}
+                  title={p.label}
+                  subtitle={subtitle}
+                  borderClass={connected ? `${p.border} ${p.bg}` : "border-slate-200"}
+                  icon={<div className="h-5 w-5">{p.logo}</div>}
+                >
+                  <div className="space-y-1.5">
+                    <ComposioTileControls
+                      connected={connected}
+                      busy={composioBusy === p.id}
+                      connectLabel={`Connect ${p.label}`}
+                      connectClass="bg-brand-dark hover:bg-brand"
+                      onConnect={() => void composioConnectSocial(p.id)}
+                      onDisconnect={() => void composioDisconnect(p.id, p.label)}
+                    />
+                    {p.id === "facebook" && connected && (
+                      <button
+                        type="button"
+                        onClick={() => void openFacebookPagePicker()}
+                        className="flex w-full items-center justify-center rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        {composioSocial?.facebook.page_id ? "Change Page" : "Select Page"}
+                      </button>
+                    )}
+                  </div>
+                </SmallTile>
+              );
+            }
+
             const account = zernioAccounts.find((a) => a.platform.toLowerCase() === p.id);
             const isConnected = !!account;
             return (
@@ -1220,7 +1351,7 @@ function IntegrationsPageInner() {
           })}
         </div>
         <p className="mt-2 text-[10px] text-slate-400">
-          Powered by third-party social connection infrastructure.
+          Facebook, Instagram, and YouTube use Composio (same secure OAuth as Gmail). X, LinkedIn, and TikTok still use Zernio.
         </p>
       </section>
 

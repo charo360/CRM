@@ -5,7 +5,30 @@ import { useRouter } from "next/navigation";
 import { authApi } from "@/lib/api";
 import { setToken, setUser } from "@/lib/auth";
 import { ZiloLogo } from "@/components/ZiloLogo";
-import { Zap, Loader2, Phone, Copy, CheckCircle2, RefreshCw, Mail, Lock, Building2, User } from "lucide-react";
+import {
+  Zap,
+  Loader2,
+  Phone,
+  Copy,
+  CheckCircle2,
+  RefreshCw,
+  Mail,
+  Lock,
+  Building2,
+  User,
+  MessageSquare,
+  BarChart2,
+  Sparkles,
+} from "lucide-react";
+
+const LOGIN_HERO_IMAGE =
+  "https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&w=1600&q=80";
+
+const LOGIN_FEATURES = [
+  { icon: MessageSquare, text: "Auto-replies across WhatsApp, email, and social" },
+  { icon: BarChart2, text: "Orders, invoices, and payments in one workspace" },
+  { icon: Sparkles, text: "AI-assisted marketing, ads, and follow-ups" },
+] as const;
 
 type Step = "phone" | "pairing" | "waiting";
 type AuthMode = "email" | "whatsapp";
@@ -158,46 +181,110 @@ export default function LoginPage() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  const inputClass =
+    "w-full py-2.5 text-sm border border-slate-200 rounded-lg outline-none focus:border-[#009B3A] transition-colors";
+  const inputWithIconClass = `${inputClass} pl-9 pr-3`;
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center">
-          <div className="flex items-center gap-1">
-            <ZiloLogo size={48} className="shrink-0" priority />
-            <h1 className="text-2xl font-bold leading-none text-slate-900">Zilo</h1>
+    <div className="min-h-screen flex">
+      <aside className="relative hidden lg:flex lg:w-[44%] xl:w-1/2 flex-col justify-between p-10 xl:p-14 text-white overflow-hidden">
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: `url('${LOGIN_HERO_IMAGE}')` }}
+        />
+        <div className="absolute inset-0 bg-slate-950/78" />
+
+        <div className="relative z-10">
+          <div className="flex items-center gap-2">
+            <ZiloLogo size={40} className="shrink-0" priority />
+            <span className="text-xl font-semibold tracking-tight">Zilo</span>
           </div>
-          <p className="mt-2 text-sm text-slate-500">Web workspace · Sell on every channel · AI</p>
         </div>
 
-        <div className="flex rounded-xl border border-slate-200 bg-slate-100 p-1 mb-4">
-          <button
-            type="button"
-            onClick={() => {
-              setMode("email");
-              setError("");
-            }}
-            className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${
-              mode === "email" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-800"
-            }`}
-          >
-            Email
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode("whatsapp");
-              setError("");
-              setStep("phone");
-            }}
-            className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${
-              mode === "whatsapp" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-800"
-            }`}
-          >
-            WhatsApp
-          </button>
+        <div className="relative z-10 max-w-md space-y-8">
+          <div>
+            {/* <p className="text-xs font-medium uppercase tracking-widest text-white/60 mb-3">Web workspace</p> */}
+            <h1 className="text-3xl xl:text-4xl font-semibold leading-tight tracking-tight">
+              Sell on every{" "}
+              <span className="text-brand">channel</span>. Run everything from one{" "}
+              <span className="text-brand">place</span>.
+            </h1>
+            <p className="mt-4 text-sm leading-relaxed text-white/75">
+              Sign in to manage conversations, orders, marketing, and AI tools — without jumping between apps.
+            </p>
+          </div>
+
+          <ul className="space-y-4">
+            {LOGIN_FEATURES.map(({ icon: Icon, text }) => (
+              <li key={text} className="flex items-start gap-3 text-sm text-white/85">
+                <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/20 bg-white/10">
+                  <Icon size={16} className="text-[#4CD137]" />
+                </span>
+                <span className="leading-snug pt-1">{text}</span>
+              </li>
+            ))}
+          </ul>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+        <p className="relative z-10 text-xs text-white/40">
+          {/* Photo{" "} */}
+          <a
+            href="https://unsplash.com/photos/5fNmWej4tAA"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-white/60"
+          >
+            {/* Unsplash */}
+          </a>
+        </p>
+      </aside>
+
+      <main className="flex flex-1 flex-col min-h-screen bg-white">
+        <div className="flex flex-1 items-center justify-center px-6 py-10 sm:px-10">
+          <div className="w-full max-w-sm">
+            <div className="mb-8 flex flex-col items-center lg:items-start">
+              <div className="flex items-center gap-2">
+                <ZiloLogo size={40} className="shrink-0" priority />
+                <h1 className="text-2xl font-semibold leading-none text-slate-900">Zilo</h1>
+              </div>
+              <p className="mt-2 text-sm text-slate-500 text-center lg:text-left">
+                Web workspace · Sell on every channel · AI
+              </p>
+            </div>
+
+            <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-1 mb-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("email");
+                  setError("");
+                }}
+                className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+                  mode === "email"
+                    ? "bg-white text-slate-900 border border-slate-200"
+                    : "text-slate-600 hover:text-slate-800 border border-transparent"
+                }`}
+              >
+                Email
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("whatsapp");
+                  setError("");
+                  setStep("phone");
+                }}
+                className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+                  mode === "whatsapp"
+                    ? "bg-white text-slate-900 border border-slate-200"
+                    : "text-slate-600 hover:text-slate-800 border border-transparent"
+                }`}
+              >
+                WhatsApp
+              </button>
+            </div>
+
+            <div className="space-y-4">
           {mode === "email" && (
             <>
               <div className="flex gap-2 mb-4 text-xs">
@@ -246,7 +333,7 @@ export default function LoginPage() {
                           setError("");
                         }}
                         required
-                        className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                        className={inputWithIconClass}
                       />
                     </div>
                   </div>
@@ -263,7 +350,7 @@ export default function LoginPage() {
                           setError("");
                         }}
                         required
-                        className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                        className={inputWithIconClass}
                       />
                     </div>
                   </div>
@@ -271,7 +358,7 @@ export default function LoginPage() {
                   <button
                     type="submit"
                     disabled={loading}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-medium text-white transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
                   >
                     {loading ? <Loader2 size={15} className="animate-spin" /> : <Mail size={15} />}
                     Sign in
@@ -296,7 +383,7 @@ export default function LoginPage() {
                         setError("");
                       }}
                       required
-                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                      className={`${inputClass} px-3`}
                     />
                   </div>
                   <div>
@@ -311,7 +398,7 @@ export default function LoginPage() {
                       }}
                       required
                       minLength={8}
-                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                      className={`${inputClass} px-3`}
                     />
                   </div>
                   <div>
@@ -323,7 +410,7 @@ export default function LoginPage() {
                       value={businessName}
                       onChange={(e) => setBusinessName(e.target.value)}
                       required
-                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                      className={`${inputClass} px-3`}
                       placeholder="Your company or brand"
                     />
                   </div>
@@ -335,14 +422,14 @@ export default function LoginPage() {
                       type="text"
                       value={ownerName}
                       onChange={(e) => setOwnerName(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0"
+                      className={`${inputClass} px-3`}
                     />
                   </div>
                   {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
                   <button
                     type="submit"
                     disabled={loading}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-medium text-white transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
                   >
                     {loading ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
                     Create account
@@ -371,7 +458,7 @@ export default function LoginPage() {
                     }}
                     placeholder="+1 555 000 0000"
                     required
-                    className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-[#4CD137] focus:ring-offset-0 placeholder:text-slate-400"
+                    className={`${inputWithIconClass} placeholder:text-slate-400`}
                   />
                 </div>
                 <p className="text-xs text-slate-400 mt-1">Include country code, e.g. +1</p>
@@ -380,7 +467,7 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={loading}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-medium text-white transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
               >
                 {loading ? <Loader2 size={15} className="animate-spin" /> : <Phone size={15} />}
                 Continue
@@ -431,7 +518,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   onClick={handleLinked}
-                  className="flex-1 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2 text-sm font-medium text-white shadow-sm transition hover:bg-[#4CD137] hover:text-[#0a2614]"
+                  className="flex-1 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2 text-sm font-medium text-white transition hover:bg-[#4CD137] hover:text-[#0a2614]"
                 >
                   I&apos;ve entered the code
                 </button>
@@ -467,13 +554,15 @@ export default function LoginPage() {
           )}
         </div>
 
-        <p className="text-center text-xs text-slate-400 mt-6">
-          Kitchen Display?{" "}
-          <a href="/kds" className="font-medium text-[#009B3A] hover:underline">
-            Open KDS
-          </a>
-        </p>
-      </div>
+            <p className="text-center lg:text-left text-xs text-slate-400 mt-8">
+              Kitchen Display?{" "}
+              <a href="/kds" className="font-medium text-[#009B3A] hover:underline">
+                Open KDS
+              </a>
+            </p>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

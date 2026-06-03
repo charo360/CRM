@@ -14776,6 +14776,105 @@ async def composio_disconnect(toolkit: str, user=Depends(get_current_user)):
     result = await disconnect(user_id, toolkit)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
+    if toolkit.lower() == "facebook":
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {
+                "$unset": {
+                    "composio_social.facebook_page_id": "",
+                    "composio_social.facebook_page_name": "",
+                }
+            },
+        )
+    if toolkit.lower() == "instagram":
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$unset": {"composio_social.instagram_user_id": ""}},
+        )
+    return result
+
+
+@api_router.get("/composio/social/settings")
+async def composio_social_settings(user=Depends(get_current_user)):
+    """Return Composio social connection details (Facebook page, Instagram account)."""
+    from composio_service import get_connection_status, TOOLKIT_FACEBOOK, TOOLKIT_INSTAGRAM, TOOLKIT_YOUTUBE
+    from social_composio_publish import get_social_settings, resolve_instagram_user_id
+
+    user_id = str(user.get("business_id") or user["_id"])
+    settings = await get_social_settings(db, user_id)
+    fb = await get_connection_status(user_id, TOOLKIT_FACEBOOK)
+    ig = await get_connection_status(user_id, TOOLKIT_INSTAGRAM)
+    yt = await get_connection_status(user_id, TOOLKIT_YOUTUBE)
+    ig_user_id = await resolve_instagram_user_id(db, user_id, settings)
+    return {
+        "facebook": {
+            "connected": bool(fb.get("connected")),
+            "page_id": settings.get("facebook_page_id"),
+            "page_name": settings.get("facebook_page_name"),
+        },
+        "instagram": {
+            "connected": bool(ig.get("connected")),
+            "user_id": ig_user_id,
+        },
+        "youtube": {
+            "connected": bool(yt.get("connected")),
+        },
+    }
+
+
+@api_router.get("/composio/social/facebook/pages")
+async def composio_facebook_pages(user=Depends(get_current_user)):
+    """List Facebook Pages the user manages (via Composio)."""
+    from social_composio_publish import list_facebook_pages
+
+    user_id = str(user.get("business_id") or user["_id"])
+    result = await list_facebook_pages(user_id)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@api_router.post("/composio/social/facebook/page")
+async def composio_facebook_select_page(body: dict, user=Depends(get_current_user)):
+    """Save the Facebook Page used for publishing."""
+    from social_composio_publish import list_facebook_pages, save_facebook_page
+
+    page_id = str(body.get("page_id") or "").strip()
+    if not page_id:
+        raise HTTPException(status_code=400, detail="page_id is required")
+
+    user_id = str(user.get("business_id") or user["_id"])
+    pages_res = await list_facebook_pages(user_id)
+    if pages_res.get("error"):
+        raise HTTPException(status_code=400, detail=pages_res["error"])
+
+    selected = next((p for p in (pages_res.get("pages") or []) if p.get("id") == page_id), None)
+    if not selected:
+        raise HTTPException(status_code=400, detail="Page not found in your managed pages.")
+
+    await save_facebook_page(
+        db,
+        user["_id"],
+        page_id=page_id,
+        page_name=selected.get("name") or "",
+        instagram_user_id=selected.get("instagram_user_id"),
+    )
+    return {
+        "ok": True,
+        "page_id": page_id,
+        "page_name": selected.get("name") or page_id,
+        "instagram_user_id": selected.get("instagram_user_id"),
+    }
+
+
+@api_router.post("/composio/connections/{toolkit}/cleanup")
+async def composio_cleanup_pending(toolkit: str, user=Depends(get_current_user)):
+    """Remove stale in-progress OAuth sessions when the user cancels or closes the popup."""
+    from composio_service import cleanup_pending_connection
+    user_id = str(user.get("business_id") or user["_id"])
+    result = await cleanup_pending_connection(user_id, toolkit)
+    if result.get("error"):
+        raise HTTPException(status_code=502, detail=result["error"])
     return result
 
 
