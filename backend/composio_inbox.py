@@ -7,6 +7,8 @@ from composio_service import execute_action, get_connection_status
 
 logger = logging.getLogger(__name__)
 
+RECIPIENT_CACHE: Dict[str, str] = {}
+
 def _normalize_time(t: str) -> str:
     # Convert Meta time (e.g. 2026-05-07T12:49:51+0000) to ISO string
     if not t:
@@ -88,6 +90,9 @@ async def list_conversations(user_id: str, platform: Optional[str] = None) -> Li
                     participant_name = to_data[0].get("username") or to_data[0].get("name") or "User"
                     participant_id = to_data[0].get("id") or ""
                     
+            if conv_id and participant_id:
+                RECIPIENT_CACHE[conv_id] = participant_id
+                
             return {
                 "id": conv_id,
                 "platform": "instagram",
@@ -261,6 +266,31 @@ async def get_conversation_messages(user_id: str, conversation_id: str, connecti
         )
         if res.get("success") and res.get("data"):
             raw_list = res["data"].get("data") or []
+            
+            # Resolve recipient_id to populate the cache
+            recipient_id = ""
+            for msg in raw_list:
+                from_obj = msg.get("from_") or msg.get("from") or {}
+                from_username = from_obj.get("username") or ""
+                from_id = from_obj.get("id") or ""
+                
+                if from_username and from_username.lower() != page_username.lower():
+                    recipient_id = from_id
+                    break
+                else:
+                    to_obj = msg.get("to") or {}
+                    to_data = to_obj.get("data") if isinstance(to_obj, dict) else to_obj
+                    if isinstance(to_data, list):
+                        for r in to_data:
+                            r_username = r.get("username") or ""
+                            if r_username and r_username.lower() != page_username.lower():
+                                recipient_id = r.get("id") or ""
+                                break
+                    if recipient_id:
+                        break
+            if recipient_id:
+                RECIPIENT_CACHE[conversation_id] = recipient_id
+                
             for msg in raw_list:
                 from_obj = msg.get("from_") or msg.get("from") or {}
                 from_username = from_obj.get("username") or from_obj.get("name") or ""
@@ -334,68 +364,73 @@ async def send_message(user_id: str, conversation_id: str, connection_id: str, m
             
     if platform == "instagram":
         # Resolve participant ID to send the DM
-        recipient_id = ""
-        page_username = ""
+        recipient_id = RECIPIENT_CACHE.get(conversation_id, "")
         
-        # 1. Fetch user info to get page username
-        user_info = await execute_action(user_id, "INSTAGRAM_GET_USER_INFO", {})
-        if user_info.get("success") and user_info.get("data"):
-            page_username = user_info["data"].get("username") or ""
-            
-        # 2. Try to resolve recipient from recent messages where username is populated
-        if page_username:
-            try:
-                msgs_res = await execute_action(
-                    user_id,
-                    "INSTAGRAM_LIST_ALL_MESSAGES",
-                    {"conversation_id": conversation_id, "limit": 5}
-                )
-                if msgs_res.get("success") and msgs_res.get("data"):
-                    msgs_list = msgs_res["data"].get("data") or []
-                    for msg in msgs_list:
-                        from_obj = msg.get("from_") or msg.get("from") or {}
-                        from_username = from_obj.get("username") or ""
-                        from_id = from_obj.get("id") or ""
-                        
-                        if from_username and from_username.lower() != page_username.lower():
-                            recipient_id = from_id
-                            break
-                        else:
-                            # If sender is page, recipient is the recipient username that isn't page
-                            to_obj = msg.get("to") or {}
-                            to_data = to_obj.get("data") if isinstance(to_obj, dict) else to_obj
-                            if isinstance(to_data, list):
-                                for r in to_data:
-                                    r_username = r.get("username") or ""
-                                    if r_username and r_username.lower() != page_username.lower():
-                                        recipient_id = r.get("id") or ""
-                                        break
-                            if recipient_id:
-                                break
-            except Exception as e:
-                logger.warning(f"[composio-inbox] Failed to resolve recipient from messages: {e}")
-                
-        # 3. Fallback to conversation details/participants if messages method didn't work
         if not recipient_id:
-            conv_details = await execute_action(
-                user_id,
-                "INSTAGRAM_GET_CONVERSATION",
-                {"conversation_id": conversation_id}
-            )
-            if conv_details.get("success") and conv_details.get("data"):
-                participants = conv_details["data"].get("participants") or []
-                page_id = user_info.get("data", {}).get("id") or ""
+            page_username = ""
+            
+            # 1. Fetch user info to get page username
+            user_info = await execute_action(user_id, "INSTAGRAM_GET_USER_INFO", {})
+            if user_info.get("success") and user_info.get("data"):
+                page_username = user_info["data"].get("username") or ""
                 
-                for p in participants:
-                    p_id = p.get("id")
-                    if p_id and p_id != page_id:
-                        recipient_id = p_id
-                        break
-                
-                # If still not found, just use the first participant that isn't empty
-                if not recipient_id and participants:
-                    recipient_id = participants[-1].get("id") or ""
+            # 2. Try to resolve recipient from recent messages where username is populated
+            if page_username:
+                try:
+                    msgs_res = await execute_action(
+                        user_id,
+                        "INSTAGRAM_LIST_ALL_MESSAGES",
+                        {"conversation_id": conversation_id, "limit": 5}
+                    )
+                    if msgs_res.get("success") and msgs_res.get("data"):
+                        msgs_list = msgs_res["data"].get("data") or []
+                        for msg in msgs_list:
+                            from_obj = msg.get("from_") or msg.get("from") or {}
+                            from_username = from_obj.get("username") or ""
+                            from_id = from_obj.get("id") or ""
+                            
+                            if from_username and from_username.lower() != page_username.lower():
+                                recipient_id = from_id
+                                break
+                            else:
+                                # If sender is page, recipient is the recipient username that isn't page
+                                to_obj = msg.get("to") or {}
+                                to_data = to_obj.get("data") if isinstance(to_obj, dict) else to_obj
+                                if isinstance(to_data, list):
+                                    for r in to_data:
+                                        r_username = r.get("username") or ""
+                                        if r_username and r_username.lower() != page_username.lower():
+                                            recipient_id = r.get("id") or ""
+                                            break
+                                if recipient_id:
+                                    break
+                except Exception as e:
+                    logger.warning(f"[composio-inbox] Failed to resolve recipient from messages: {e}")
                     
+            # 3. Fallback to conversation details/participants if messages method didn't work
+            if not recipient_id:
+                conv_details = await execute_action(
+                    user_id,
+                    "INSTAGRAM_GET_CONVERSATION",
+                    {"conversation_id": conversation_id}
+                )
+                if conv_details.get("success") and conv_details.get("data"):
+                    participants = conv_details["data"].get("participants") or []
+                    page_id = user_info.get("data", {}).get("id") or ""
+                    
+                    for p in participants:
+                        p_id = p.get("id")
+                        if p_id and p_id != page_id:
+                            recipient_id = p_id
+                            break
+                    
+                    # If still not found, just use the first participant that isn't empty
+                    if not recipient_id and participants:
+                        recipient_id = participants[-1].get("id") or ""
+                        
+            if recipient_id:
+                RECIPIENT_CACHE[conversation_id] = recipient_id
+                
         if not recipient_id:
             return {"error": "Could not resolve recipient ID for conversation"}
             
