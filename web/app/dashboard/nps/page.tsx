@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { feedbackApi } from "@/lib/api";
-import { MessageCircle, Plus, Trash2, RefreshCw, ThumbsUp, Minus, ThumbsDown, Star } from "lucide-react";
+import { MessageCircle, Plus, Trash2, RefreshCw, ThumbsUp, Minus, ThumbsDown, Star, Copy, Check, ExternalLink, PencilLine } from "lucide-react";
+import { toast } from "sonner";
 
-type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string };
+type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string; form_id?: string; slug?: string };
 type NPSData = { nps_score: number; total_responses: number; promoters: number; passives: number; detractors: number; promoter_pct: number; detractor_pct: number; recent_comments: { name: string; score: number; comment: string }[] };
 type Response = { id: string; customer_name: string; nps_score?: number; nps_category?: string; comment: string; created_at: string };
 
@@ -31,6 +32,15 @@ export default function NPSPage() {
   const [showResponseModal, setShowResponseModal] = useState(false);
   const [responseForm, setResponseForm] = useState({ survey_id: "", customer_name: "", customer_phone: "", nps_score: 8, comment: "" });
   const [saving, setSaving] = useState(false);
+  const [copiedSurveyId, setCopiedSurveyId] = useState<string>("");
+
+  const copySurveyLink = (slug: string, id: string) => {
+    const url = `${window.location.origin}/f/${slug}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedSurveyId(id);
+      setTimeout(() => setCopiedSurveyId(""), 2000);
+    });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,8 +60,21 @@ export default function NPSPage() {
 
   async function createSurvey() {
     setSaving(true);
-    try { await feedbackApi.createSurvey(surveyForm); setShowSurveyModal(false); await load(); }
-    finally { setSaving(false); }
+    try {
+      const res = await feedbackApi.createSurvey(surveyForm) as any;
+      setShowSurveyModal(false);
+      await load();
+      setTab("surveys");
+      if (res && res.slug) {
+        toast.success("NPS Survey created! Copy link to share.");
+      } else {
+        toast.success("NPS Survey created successfully!");
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to create survey");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function deleteSurvey(id: string) {
@@ -194,20 +217,63 @@ export default function NPSPage() {
             <p>No surveys yet. Create your first survey!</p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {surveys.map(s => (
-              <div key={s.id} className="bg-white rounded-xl border p-4 flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium text-slate-800">{s.title}</p>
-                    <span className={`px-2 py-0.5 rounded-full text-xs ${s.active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                      {s.active ? "Active" : "Inactive"}
-                    </span>
+              <div key={s.id} className="bg-white rounded-xl border p-5 flex flex-col gap-3 hover:border-slate-300 transition-colors">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-semibold text-slate-800 text-sm truncate">{s.title}</p>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${s.active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>
+                        {s.active ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                    {s.description && (
+                      <p className="text-xs text-slate-500 mt-1 line-clamp-2">{s.description}</p>
+                    )}
                   </div>
-                  <p className="text-sm text-slate-500 mt-0.5">{s.description || "No description"}</p>
-                  <p className="text-xs text-slate-400 mt-1">{s.response_count} responses</p>
+                  <p className="text-xs text-slate-400 font-medium whitespace-nowrap">{s.response_count} response{s.response_count !== 1 ? "s" : ""}</p>
                 </div>
-                <button onClick={() => deleteSurvey(s.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={16} /></button>
+                
+                {s.slug && (
+                  <div className="flex items-center gap-1.5 bg-slate-50 rounded-lg px-3 py-1.5 text-xs text-slate-500 font-mono truncate">
+                    <span className="flex-1 truncate">/f/{s.slug}</span>
+                    <button
+                      onClick={() => copySurveyLink(s.slug!, s.id)}
+                      className="shrink-0 text-slate-400 hover:text-slate-700 transition-colors"
+                      title="Copy public link"
+                    >
+                      {copiedSurveyId === s.id ? <Check size={13} className="text-green-600 animate-in fade-in" /> : <Copy size={13} />}
+                    </button>
+                    <a
+                      href={`/f/${s.slug}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 text-slate-400 hover:text-slate-700 transition-colors"
+                      title="Open public form"
+                    >
+                      <ExternalLink size={12} />
+                    </a>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                  {s.form_id && (
+                    <a
+                      href={`/dashboard/forms/${s.form_id}`}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 font-medium"
+                    >
+                      <PencilLine size={11} /> Open Builder
+                    </a>
+                  )}
+                  <button
+                    onClick={() => deleteSurvey(s.id)}
+                    className="ml-auto p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                    title="Delete survey"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

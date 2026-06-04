@@ -19536,7 +19536,13 @@ async def create_form_from_description(ctx: ToolContext, args: Dict[str, Any]):
         "slug": slug,
         "share_url": share_url,
         "preview_url": preview_url,
-        "fields_summary": [f"{f['label']} ({f['type']})" for f in fields]
+        "fields_summary": [f"{f['label']} ({f['type']})" for f in fields],
+        "form": {
+            "title": doc["title"],
+            "description": doc["description"],
+            "fields": doc["fields"],
+            "branding": doc["branding"]
+        }
     }
 
 

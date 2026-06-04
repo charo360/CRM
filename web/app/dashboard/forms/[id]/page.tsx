@@ -655,7 +655,7 @@ function FormBuilderPageInner() {
                             </label>
                           ))}
                           {(field.options || []).length > 3 && (
-                            <p className="text-[10px] text-slate-400">+{field.options.length - 3} more options</p>
+                            <p className="text-[10px] text-slate-400">+{(field.options || []).length - 3} more options</p>
                           )}
                         </div>
                       </div>

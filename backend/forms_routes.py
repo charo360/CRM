@@ -92,29 +92,29 @@ def make_forms_router(db, user_dep):
             "created_at": datetime.utcnow(),
         }
 
+        name = (
+            body.data.get("name")
+            or body.data.get("full_name")
+            or body.data.get("Name")
+            or body.data.get("Full Name")
+            or ""
+        )
+        phone = (
+            body.data.get("phone")
+            or body.data.get("Phone")
+            or body.data.get("Phone Number")
+            or body.data.get("mobile")
+            or ""
+        )
+        email = (
+            body.data.get("email")
+            or body.data.get("Email")
+            or body.data.get("Email Address")
+            or ""
+        )
+
         # Auto-create contact from submission data
         if settings.get("create_contact", True):
-            name = (
-                body.data.get("name")
-                or body.data.get("full_name")
-                or body.data.get("Name")
-                or body.data.get("Full Name")
-                or ""
-            )
-            phone = (
-                body.data.get("phone")
-                or body.data.get("Phone")
-                or body.data.get("Phone Number")
-                or body.data.get("mobile")
-                or ""
-            )
-            email = (
-                body.data.get("email")
-                or body.data.get("Email")
-                or body.data.get("Email Address")
-                or ""
-            )
-
             if name or phone or email:
                 existing = None
                 if phone:
@@ -142,6 +142,69 @@ def make_forms_router(db, user_dep):
 
         await db.form_submissions.insert_one(submission)
         await db.forms.update_one({"_id": form_id}, {"$inc": {"response_count": 1}})
+
+        # Mirror to NPS / Feedback Dashboard if title or settings indicate feedback
+        is_nps = settings.get("is_nps", False) or "nps" in form.get("title", "").lower() or "feedback" in form.get("title", "").lower()
+        if is_nps:
+            try:
+                # Find or create a matching feedback survey document
+                survey = await db.feedback_surveys.find_one({"form_id": form_id})
+                if not survey:
+                    survey_id = str(uuid.uuid4())
+                    await db.feedback_surveys.insert_one({
+                        "_id": survey_id,
+                        "user_id": uid,
+                        "title": form.get("title", "Feedback Survey"),
+                        "description": form.get("description", "") or "Linked from Forms",
+                        "active": True,
+                        "form_id": form_id,
+                        "response_count": 0,
+                        "created_at": datetime.utcnow(),
+                        "updated_at": datetime.utcnow()
+                    })
+                else:
+                    survey_id = survey["_id"]
+
+                # Extract score from responses
+                score = None
+                for k, v in body.data.items():
+                    kl = k.lower()
+                    if any(w in kl for w in ("score", "rating", "recommend", "satisfaction", "experience")):
+                        digits = re.findall(r"\d+", str(v))
+                        if digits:
+                            score = int(digits[0])
+                            break
+
+                # Extract comment from responses
+                comment = ""
+                for k, v in body.data.items():
+                    kl = k.lower()
+                    if any(w in kl for w in ("comment", "feedback", "message", "reason", "say", "opinion")):
+                        comment = str(v)
+                        break
+
+                def _nps_cat(s: int) -> str:
+                    if s >= 9: return "promoter"
+                    if s >= 7: return "passive"
+                    return "detractor"
+
+                await db.feedback_responses.insert_one({
+                    "_id": str(uuid.uuid4()),
+                    "user_id": uid,
+                    "survey_id": survey_id,
+                    "customer_name": name,
+                    "customer_phone": phone,
+                    "nps_score": score,
+                    "nps_category": _nps_cat(score) if score is not None else None,
+                    "comment": comment,
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                })
+                await db.feedback_surveys.update_one(
+                    {"_id": survey_id}, {"$inc": {"response_count": 1}}
+                )
+            except Exception as e:
+                logger.error("[submit_form] Failed to mirror NPS feedback response: %s", str(e))
 
         return {
             "status": "ok",

@@ -200,7 +200,7 @@ export default function MeetingOverlay() {
         {isUpcoming && (
           <>
             <p className="text-xs text-gray-500">Starts in <span className="font-semibold text-brand-dark">{countdown}</span></p>
-            {meeting.attendees.length > 0 && (
+            {meeting && meeting.attendees && meeting.attendees.length > 0 && (
               <p className="text-xs text-gray-400 truncate">
                 With: {meeting.attendees.slice(0, 3).join(", ")}
                 {meeting.attendees.length > 3 && ` +${meeting.attendees.length - 3}`}
@@ -271,7 +271,7 @@ export default function MeetingOverlay() {
                         const res = await smartNotesApi.upcoming();
                         const matched = res.meetings.find(m => m.meet_url && val.includes(String(m.meet_url)));
                         if (matched && matched.attendees) {
-                          const list = matched.attendees.map((email: string) => email.split("@")[0]);
+                          const list = (matched.attendees as string[]).map((email: string) => email.split("@")[0]);
                           setCustomAttendees(prev => [...new Set([...prev, ...list])]);
                           (e.target as HTMLInputElement).value = "";
                         } else {

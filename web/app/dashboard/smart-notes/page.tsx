@@ -422,7 +422,7 @@ export default function SmartNotesPage() {
                         const res = await smartNotesApi.upcoming();
                         const matched = res.meetings.find(m => m.meet_url && val.includes(String(m.meet_url)));
                         if (matched && matched.attendees) {
-                          const list = matched.attendees.map((email: string) => email.split("@")[0]);
+                          const list = (matched.attendees as string[]).map((email: string) => email.split("@")[0]);
                           setCustomAttendees(prev => [...new Set([...prev, ...list])]);
                           (e.target as HTMLInputElement).value = "";
                         } else {

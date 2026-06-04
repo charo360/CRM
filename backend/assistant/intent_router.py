@@ -609,6 +609,11 @@ def _is_continuation_message(msg_lower: str) -> bool:
     """True for short, ambiguous follow-ups that are clearly continuing the same flow."""
     if _looks_like_agent_switch_request(msg_lower):
         return False
+    # Matches letter options like "A", "B", "A.", "B.", "A)", "B)"
+    if msg_lower.strip() in {"a", "b", "c", "d", "e"}:
+        return True
+    if re.match(r'^[a-e][\.\)\s]', msg_lower):
+        return True
     words = msg_lower.split()
     if len(words) > 6:
         return False
@@ -898,6 +903,14 @@ async def route_to_agent(
 
     _AGENT_ALIASES_LOCAL = {"design": "creative"}
     prev_agent_resolved = _AGENT_ALIASES_LOCAL.get(prev_agent or "", prev_agent or "")
+
+    # ── 0d. Sticky active agent for generic continuation replies ─────────────
+    # If the message is a short continuation/option reply (e.g. "yes", "option A", "go ahead"),
+    # do NOT switch agents — keep the active agent who prompted the user.
+    if prev_agent_resolved and prev_agent_resolved in agent_registry:
+        if _is_continuation_message(msg_lower):
+            logger.info("[IntentRouter] sticky → %s (generic continuation reply)", prev_agent_resolved)
+            return prev_agent_resolved
 
     # ── 0a. Sticky creative — only for active stateful design flows ───────────
     # Creative is heavily stateful (template / platform / staged image / render).
