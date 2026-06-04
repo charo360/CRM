@@ -34,7 +34,7 @@ import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
 import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
 import { Plug, Mail, Calendar, CheckCircle, CheckCircle2, Loader2, AlertCircle, X, ExternalLink } from "lucide-react";
 
-// ── Glyphs ────────────────────────────────────────────────────────────────────
+// ── Glyph ────────────────────────────────────────────────────────────────────
 
 
 
