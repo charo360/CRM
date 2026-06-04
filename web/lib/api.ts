@@ -35,9 +35,11 @@ function formatErrorBody(res: Response, rawText: string): string {
         ? d
             .map((x: { msg?: string }) => (typeof x === "object" && x && "msg" in x ? x.msg : String(x)))
             .join("; ")
-        : typeof d === "object" && d !== null
-          ? JSON.stringify(d)
-          : rawText || res.statusText || "Request failed";
+        : typeof d === "object" && d !== null && "message" in d && typeof (d as { message?: unknown }).message === "string"
+          ? (d as { message: string }).message
+          : typeof d === "object" && d !== null
+            ? JSON.stringify(d)
+            : rawText || res.statusText || "Request failed";
   return msg ? `${res.status}: ${msg}` : `${res.status}: Request failed`;
 }
 
@@ -892,6 +894,62 @@ export const collaborationApi = {
     }>("/business/collaboration/inbound-routing/preview", body),
 };
 
+
+
+export type Entitlements = {
+  owner_id: string;
+  effective_plan: string;
+  subscription_plan?: string | null;
+  subscription_active: boolean;
+  paid_active: boolean;
+  trial_active: boolean;
+  trial_available: boolean;
+  trial_ends_at?: string | null;
+  dashboard_access: boolean;
+  subscription_current_period_end?: string | null;
+  subscription_cancel_at_period_end?: boolean;
+  trial_credits?: number;
+  usage: {
+    outbound_messages_month: number;
+    outbound_messages_cap: number;
+    outbound_messages_remaining: number;
+    trial_credits?: number;
+  };
+  features: Record<string, boolean>;
+};
+
+export type SubscriptionPlan = {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  amount_display: string;
+  interval: string;
+  features: string[];
+};
+
+export const subscriptionApi = {
+  publicPlans: (currency = "USD") =>
+    api.get<SubscriptionPlan[]>(`/subscription/plans/public?currency=${encodeURIComponent(currency)}`),
+  plans: () => api.get<SubscriptionPlan[]>("/subscription/plans"),
+  entitlements: () => api.get<Entitlements>("/subscription/entitlements"),
+  status: () => api.get<Entitlements & { extra_credits?: number; subscription_date?: string }>("/subscription/status"),
+  startTrial: () => api.post<Entitlements & { status: string; trial_days: number }>("/subscription/start-trial", {}),
+  checkout: (plan_id: string) =>
+    api.post<{ url: string; session_id: string }>("/subscription/checkout", { plan_id }),
+  portal: () => api.post<{ url: string }>("/subscription/portal", {}),
+  invoices: () =>
+    api.get<{ invoices: Array<{
+      id: string;
+      number?: string;
+      status?: string;
+      amount_due?: number;
+      currency?: string;
+      hosted_invoice_url?: string;
+      invoice_pdf?: string;
+    }> }>("/subscription/invoices"),
+};
+
 export const authApi = {
   whatsappStart: (phoneNumber: string) =>
     api.post<{ session_token?: string; pairing_code?: string; access_token?: string; token?: string; user?: Record<string, unknown> }>(
@@ -1023,17 +1081,350 @@ export const telegramApi = {
 export interface PaystackConnection {
   connected: boolean;
   business_name?: string;
+  default_currency?: string;
+  payout_type?: "bank" | "mobile_money";
+  subaccount_code?: string;
+  subaccount_name?: string;
+  settlement_bank?: string;
+  account_number?: string;
+  auth_mode?: "platform" | "merchant" | null;
+  platform_managed?: boolean;
+  platform_available?: boolean;
 }
 
-export const paystackApi = {
-  connection: () => api.get<PaystackConnection>("/paystack/connection"),
-  connect: (secret_key: string) =>
-    api.post<{ status: string; connected: boolean; business_name: string }>(
-      "/paystack/connect",
-      { secret_key }
+export interface PaystackSetup {
+  platform_available: boolean;
+  currencies: string[];
+  default_currency: string;
+  payout_types?: Array<"bank" | "mobile_money">;
+  mobile_money_currencies?: string[];
+}
+
+export interface PaystackPayoutOption {
+  code: string;
+  name: string;
+}
+
+export interface PaystackUsageSummary {
+  payments: {
+    count: number;
+    by_currency: Record<string, { count: number; volume_major: number }>;
+  };
+}
+
+export type MerchantPaymentProvider = "paystack" | "stripe" | "flutterwave" | "payhero";
+
+export interface MerchantPaymentConnectionInfo {
+  connected: boolean;
+  label?: string;
+  currency?: string;
+  subaccount_code?: string;
+  subaccount_id?: string;
+  checkout_ready?: boolean;
+  channel_id?: number;
+}
+
+export interface MerchantPaymentTransaction {
+  id: string;
+  provider: MerchantPaymentProvider;
+  reference: string;
+  amount_major?: number;
+  currency: string;
+  status: string;
+  order_id?: string;
+  customer_email?: string;
+  channel?: string;
+  created_at?: string;
+  refundable?: boolean;
+  refund_mode?: "manual";
+}
+
+export interface MerchantPaymentsOverview {
+  connected_providers: MerchantPaymentProvider[];
+  connections: Partial<Record<MerchantPaymentProvider, MerchantPaymentConnectionInfo>>;
+  preferred_provider: MerchantPaymentProvider | null;
+  transactions: MerchantPaymentTransaction[];
+}
+
+export const merchantPaymentsApi = {
+  overview: (limit = 50) =>
+    api.get<MerchantPaymentsOverview>(`/merchant-payments/overview?limit=${limit}`),
+  setPreferredProvider: (provider: MerchantPaymentProvider | null) =>
+    api.put<{ preferred_provider: MerchantPaymentProvider | null }>(
+      "/merchant-payments/preferred-provider",
+      { provider }
     ),
+  refund: (params: { provider: MerchantPaymentProvider; ledger_id: string }) =>
+    api.post<{
+      status: string;
+      provider: string;
+      provider_refund_id?: string;
+      manual_followup?: string;
+    }>("/merchant-payments/refund", params),
+};
+
+export const paystackApi = {
+  setup: async () => {
+    const res = await fetch("/api/paystack/setup");
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as PaystackSetup;
+  },
+  payoutOptions: async (params: { currency: string; payout_type: "bank" | "mobile_money" }) => {
+    const qs = `currency=${encodeURIComponent(params.currency)}&payout_type=${encodeURIComponent(params.payout_type)}`;
+    const res = await fetch(`/api/paystack/payout-options?${qs}`);
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as {
+      currency: string;
+      payout_type: "bank" | "mobile_money";
+      options: PaystackPayoutOption[];
+      supported?: boolean;
+      hint?: string;
+    };
+  },
+  connection: () => api.get<PaystackConnection>("/paystack/connection"),
+  connect: (payload: {
+    secret_key?: string;
+    currency?: string;
+    payout_type?: "bank" | "mobile_money";
+    settlement_bank?: string;
+    account_number?: string;
+    business_name?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      business_name: string;
+      default_currency?: string;
+      payout_type?: "bank" | "mobile_money";
+      subaccount_code?: string;
+    }>("/paystack/connect", payload),
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/paystack/connect"),
+  usageSummary: () => api.get<PaystackUsageSummary>("/paystack/usage/summary"),
+  usageLedger: (limit = 50) =>
+    api.get<{ entries: Record<string, unknown>[] }>(
+      `/paystack/usage/ledger?limit=${limit}`
+    ),
+  initializeTransaction: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    callback_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      authorization_url: string;
+      reference: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/paystack/transaction/initialize", params),
+  verifyTransaction: (reference: string) =>
+    api.get<{ status: string; data: Record<string, unknown> }>(
+      `/paystack/transaction/verify/${encodeURIComponent(reference)}`
+    ),
+};
+
+export interface FlutterwaveConnection {
+  connected: boolean;
+  business_name?: string;
+  default_currency?: string;
+  subaccount_id?: string;
+  subaccount_name?: string;
+  settlement_bank?: string;
+  account_number?: string;
+  business_email?: string;
+  country?: string;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+}
+
+export interface FlutterwaveSetup {
+  platform_available: boolean;
+  currencies: string[];
+  default_currency: string;
+  merchant_split_percent?: number;
+}
+
+export interface FlutterwavePayoutOption {
+  code: string;
+  name: string;
+}
+
+export const flutterwaveApi = {
+  setup: async () => {
+    const res = await fetch("/api/flutterwave/setup");
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as FlutterwaveSetup;
+  },
+  payoutOptions: async (params: { currency: string }) => {
+    const qs = `currency=${encodeURIComponent(params.currency)}`;
+    const res = await fetch(`/api/flutterwave/payout-options?${qs}`);
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as {
+      currency: string;
+      country: string;
+      options: FlutterwavePayoutOption[];
+    };
+  },
+  connection: () => api.get<FlutterwaveConnection>("/flutterwave/connection"),
+  connect: (payload: {
+    currency?: string;
+    country?: string;
+    account_bank?: string;
+    account_number?: string;
+    business_name?: string;
+    business_email?: string;
+    business_contact?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      business_name: string;
+      default_currency?: string;
+      subaccount_id?: string;
+    }>("/flutterwave/connect", payload),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/flutterwave/connect"),
+  initializeTransaction: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    callback_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      payment_link: string;
+      authorization_url: string;
+      reference: string;
+      tx_ref: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/flutterwave/transaction/initialize", params),
+};
+
+export type StripeConnectStatus =
+  | "not_connected"
+  | "onboarding"
+  | "verification_pending"
+  | "ready";
+
+export interface StripeConnection {
+  connected: boolean;
+  checkout_ready?: boolean;
+  status?: StripeConnectStatus;
+  business_name?: string;
+  default_currency?: string;
+  country?: string;
+  connect_email?: string;
+  account_id?: string;
+  charges_enabled?: boolean;
+  payouts_enabled?: boolean;
+  details_submitted?: boolean;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+}
+
+export interface StripeSetup {
+  platform_available: boolean;
+  currencies: string[];
+  countries: string[];
+  default_currency: string;
+  default_country?: string;
+  connect_note?: string;
+  merchant_transfer_percent?: number;
+  platform_fee_percent?: number;
+}
+
+export const stripeConnectApi = {
+  setup: async () => {
+    const parse = (raw: string, res: Response): StripeSetup => {
+      if (!res.ok) {
+        throw new Error(formatErrorBody(res, raw));
+      }
+      return JSON.parse(raw) as StripeSetup;
+    };
+    let res = await fetch("/api/stripe/setup", { cache: "no-store" });
+    let raw = await res.text();
+    if (res.ok) return parse(raw, res);
+    try {
+      res = await fetch(`${API_BASE}/stripe/setup`, { cache: "no-store" });
+      raw = await res.text();
+      if (res.ok) return parse(raw, res);
+    } catch {
+      /* use primary error below */
+    }
+    throw new Error(formatErrorBody(res, raw));
+  },
+  connection: () => api.get<StripeConnection>("/stripe/connection"),
+  connect: (payload: {
+    email: string;
+    business_name: string;
+    currency?: string;
+    country?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      checkout_ready: boolean;
+      onboarding_url: string;
+      account_id: string;
+      business_name: string;
+      default_currency?: string;
+    }>("/stripe/connect", payload),
+  accountLink: () =>
+    api.post<{ onboarding_url: string }>("/stripe/connect/account-link", {}),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/stripe/connect"),
+  initializeCheckout: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    success_url?: string;
+    cancel_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      authorization_url: string;
+      checkout_url: string;
+      session_id: string;
+      reference: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/stripe/checkout/initialize", params),
+  verifyCheckout: (sessionId: string) =>
+    api.get<{ status: string; data: Record<string, unknown> }>(
+      `/stripe/checkout/verify/${encodeURIComponent(sessionId)}`
+    ),
 };
 
 export interface PayheroConnection {
@@ -1051,13 +1442,64 @@ export interface PayheroChannel {
   short_code?: string;
 }
 
+export interface PayheroFeeQuote {
+  gross_kes: number;
+  payhero_fee_kes: number;
+  merchant_receives_kes: number;
+  tier_min_kes: number;
+  tier_max_kes: number;
+  rate_card_version: string;
+}
+
+export interface PayheroUsageSummary {
+  rate_card_version: string;
+  currency: string;
+  mpesa_payments: {
+    count: number;
+    gross_collected_kes: number;
+    estimated_payhero_fees_kes: number;
+  };
+  sms: { messages: number; fees_kes: number };
+  whatsapp: { messages: number; fees_kes: number };
+  total_estimated_fees_kes: number;
+}
+
 export const payheroApi = {
+  rates: () =>
+    api.get<{
+      version: string;
+      currency: string;
+      mpesa_tiers: { min_kes: number; max_kes: number; fee_kes: number }[];
+      sms_per_message_kes: number;
+      whatsapp_per_message_kes: number;
+    }>("/payhero/rates"),
+  feeQuote: (amount: number) =>
+    api.get<PayheroFeeQuote>(`/payhero/fees/quote?amount=${encodeURIComponent(String(amount))}`),
+  usageSummary: () => api.get<PayheroUsageSummary>("/payhero/usage/summary"),
+  usageLedger: (limit = 50) =>
+    api.get<{ entries: Record<string, unknown>[] }>(`/payhero/usage/ledger?limit=${limit}`),
   connection: () => api.get<PayheroConnection>("/payhero/connection"),
-  connect: (username: string, password: string) =>
-    api.post<{ status: string; connected: boolean; username: string }>(
-      "/payhero/connect",
-      { username, password }
-    ),
+  connect: async (payload: {
+    api_token?: string;
+    username?: string;
+    password?: string;
+    label?: string;
+  }) => {
+    const token = getToken();
+    const res = await fetch("/api/payhero/connect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return JSON.parse(rawText) as { status: string; connected: boolean; username: string };
+  },
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/payhero/connect"),
   channels: () =>
@@ -1069,11 +1511,19 @@ export const payheroApi = {
       "/payhero/channel",
       { channel_id }
     ),
-  stkPush: (phone: string, amount: number, external_reference?: string, customer_name?: string) =>
-    api.post<{ status: string; payhero_response: unknown }>(
-      "/payhero/stk-push",
-      { phone, amount, external_reference, customer_name }
-    ),
+  stkPush: (params: {
+    phone: string;
+    amount: number;
+    external_reference?: string;
+    customer_name?: string;
+    order_id?: string;
+  }) =>
+    api.post<{
+      status: string;
+      intent_id?: string;
+      fee_quote?: { payhero_fee_kes: number; merchant_receives_kes: number };
+      payhero_response: unknown;
+    }>("/payhero/stk-push", params),
 };
 
 // ── Supplier connections (CJ + AliExpress per-user credentials) ──────────────
@@ -1830,10 +2280,26 @@ export const whatsappApi = {
     api.post<{ pairing_code?: string; status: string; message?: string }>("/whatsapp/connect", { phone_number: phoneNumber }),
   disconnect: () => api.post<{ status: string }>("/whatsapp/disconnect", {}),
   sync: () => api.post<{ status: string }>("/whatsapp/sync", {}),
-  /** Start a QR-code based connection. Returns base64 QR image. */
-  qrStart: () => api.post<{ status: string; qr_base64: string }>("/whatsapp/qr-start", {}),
+  /** Start a QR-code based connection. Uses long-timeout App Route (not /proxy rewrite). */
+  qrStart: async () => {
+    const token = getToken();
+    const res = await fetch("/api/whatsapp/qr-start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: "{}",
+    });
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return (rawText ? JSON.parse(rawText) : {}) as { status: string; qr_base64: string };
+  },
   /** Fetch a refreshed QR code for the pending instance. */
-  qrFetch: () => api.get<{ qr_base64: string }>("/whatsapp/qr"),
+  qrFetch: () =>
+    api.get<{ qr_base64: string; connection_state?: string }>("/whatsapp/qr"),
 };
 
 export const onboardingApi = {

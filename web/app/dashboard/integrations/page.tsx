@@ -2,18 +2,39 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useEffect, useState, useCallback, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { NANGO_INTEGRATION_IDS } from "@/lib/nango-config";
 import { openNangoConnect } from "@/lib/nango-connect";
-import { API_BASE, telegramApi, type TelegramConnection, paystackApi, type PaystackConnection, payheroApi, type PayheroConnection, type PayheroChannel, supplierApi, type SupplierConnections, composioSocialApi, type ComposioFacebookPage, type ComposioSocialSettings } from "@/lib/api";
+import {
+  API_BASE,
+  telegramApi,
+  type TelegramConnection,
+  paystackApi,
+  type PaystackConnection,
+  flutterwaveApi,
+  type FlutterwaveConnection,
+  stripeConnectApi,
+  type StripeConnection,
+  type StripeConnectStatus as StripeLifecycleStatus,
+  payheroApi,
+  type PayheroConnection,
+  type PayheroChannel,
+  supplierApi,
+  type SupplierConnections,
+  composioSocialApi,
+  type ComposioFacebookPage,
+  type ComposioSocialSettings,
+} from "@/lib/api";
+import { PayHeroUsagePanel } from "@/components/billing/PayHeroUsagePanel";
 import { getToken } from "@/lib/auth";
+import { confirmDialog } from "@/lib/confirmDialog";
 import { WaGlyph, WhatsAppIntegrationControls } from "@/components/whatsapp/WhatsAppIntegrationTile";
 import { SOCIAL_PLATFORMS } from "@/components/ZernioSocialPanel";
 import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
 import { Plug, Mail, Calendar, CheckCircle, CheckCircle2, Loader2, AlertCircle, X, ExternalLink } from "lucide-react";
 
-// ── Glyphs ────────────────────────────────────────────────────────────────────
+// ── Glyph ────────────────────────────────────────────────────────────────────
 
 
 
@@ -62,6 +83,147 @@ function PayHeroGlyph({ className }: { className?: string }) {
     <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
       <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm1 14.5V16h-2v.5a.5.5 0 0 1-1 0V16H9a.5.5 0 0 1 0-1h1v-2H9a.5.5 0 0 1 0-1h1V9.5a.5.5 0 0 1 1 0V12h1.5c1.378 0 2.5 1.122 2.5 2.5S13.878 17 12.5 17H13v-.5a.5.5 0 0 1 0 0zm-.5-1H11v-2h1.5a1.5 1.5 0 0 1 0 3z" />
     </svg>
+  );
+}
+
+function FlutterwaveGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M4 6.5h16v2.2H4V6.5zm0 4.4h10.8v2.2H4v-2.2zm0 4.4h7.2v2.2H4v-2.2zM18.2 15.3l3.8 2.5-3.8 2.5v-5z" />
+    </svg>
+  );
+}
+
+const FLW_CURRENCY_COUNTRY: Record<string, string> = {
+  NGN: "NG",
+  KES: "KE",
+  GHS: "GH",
+  ZAR: "ZA",
+  USD: "US",
+  EUR: "FR",
+  GBP: "GB",
+  XAF: "CM",
+  XOF: "SN",
+  TZS: "TZ",
+  UGX: "UG",
+  ZMW: "ZM",
+};
+
+/** Default Connect country per currency (must be in backend STRIPE_CONNECT_COUNTRIES). */
+const STRIPE_CURRENCY_COUNTRY: Record<string, string> = {
+  USD: "US",
+  EUR: "IE",
+  GBP: "GB",
+  CAD: "CA",
+  AUD: "AU",
+  NZD: "NZ",
+  CHF: "CH",
+  SEK: "SE",
+  NOK: "NO",
+  DKK: "DK",
+  PLN: "PL",
+  CZK: "CZ",
+  HUF: "HU",
+  RON: "RO",
+  BGN: "BG",
+  MXN: "MX",
+  BRL: "BR",
+  SGD: "SG",
+  HKD: "HK",
+  JPY: "JP",
+  INR: "IN",
+  MYR: "MY",
+  THB: "TH",
+  ZAR: "ZA",
+};
+
+const regionDisplay =
+  typeof Intl !== "undefined" ? new Intl.DisplayNames(["en"], { type: "region" }) : null;
+
+function countryLabel(code: string | undefined): string {
+  if (!code) return "";
+  try {
+    return regionDisplay?.of(code.toUpperCase()) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+function payoutBankLabel(code: string | undefined): string {
+  const c = String(code ?? "").trim();
+  if (!c || /^\d+$/.test(c)) return "Bank transfer";
+  return c;
+}
+
+function displayEmail(email: string | undefined | null, maxLocal = 12): string {
+  const e = String(email ?? "").trim();
+  if (!e) return "—";
+  const at = e.indexOf("@");
+  if (at <= 0) {
+    return e.length > 22 ? `${e.slice(0, 19)}…` : e;
+  }
+  const local = e.slice(0, at);
+  const domain = e.slice(at);
+  if (local.length <= maxLocal) return e;
+  return `${local.slice(0, maxLocal)}…${domain}`;
+}
+
+function IntegrationEmailValue({ email }: { email?: string | null }) {
+  const full = String(email ?? "").trim();
+  if (!full) return <>—</>;
+  const short = displayEmail(full);
+  return (
+    <span className="inline-block max-w-[9.5rem] truncate align-bottom" title={full}>
+      {short}
+    </span>
+  );
+}
+
+function maskAccountEnding(value: string | undefined | null, visible = 4): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length >= visible) return `•••• ${digits.slice(-visible)}`;
+  return raw.length > visible ? `•••• ${raw.slice(-visible)}` : raw;
+}
+
+function IntegrationStatusPill({
+  label,
+  tone = "success",
+}: {
+  label: string;
+  tone?: "success" | "warning" | "info";
+}) {
+  const styles =
+    tone === "success"
+      ? "border-emerald-200/80 bg-emerald-50 text-emerald-800"
+      : tone === "warning"
+        ? "border-amber-200/80 bg-amber-50 text-amber-800"
+        : "border-sky-200/80 bg-sky-50 text-sky-800";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-wide ${styles}`}
+    >
+      <CheckCircle size={11} className="shrink-0" />
+      {label}
+    </span>
+  );
+}
+
+function IntegrationDetailCard({ children }: { children: ReactNode }) {
+  return (
+    <div className="space-y-1.5 rounded-lg border border-slate-200/90 bg-white px-3 py-2.5 text-[11px] shadow-sm">
+      {children}
+    </div>
+  );
+}
+
+function IntegrationDetailRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <span className="shrink-0 text-slate-500">{label}</span>
+      <span className="text-right font-medium text-slate-800">{value}</span>
+    </div>
   );
 }
 
@@ -288,63 +450,979 @@ function TelegramStatus({ connection, onChanged }: { connection?: TelegramConnec
   );
 }
 
-// ── Paystack (API key) ────────────────────────────────────────────────────────
-
 function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnection; onChanged: () => void }) {
-  const [key, setKey] = useState("");
+  const [setup, setSetup] = useState<{
+    platform_available: boolean;
+    currencies: string[];
+    default_currency: string;
+    payout_types?: Array<"bank" | "mobile_money">;
+    mobile_money_currencies?: string[];
+  } | null>(null);
+  const [setupLoading, setSetupLoading] = useState(false);
+  const [currency, setCurrency] = useState("NGN");
+  const [payoutType, setPayoutType] = useState<"bank" | "mobile_money">("bank");
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [payoutOptions, setPayoutOptions] = useState<Array<{ code: string; name: string }>>([]);
+  const [selectedSettlement, setSelectedSettlement] = useState("");
+  const [accountNumber, setAccountNumber] = useState("");
+  const [subaccountName, setSubaccountName] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  useEffect(() => {
+    setSetupLoading(true);
+    paystackApi
+      .setup()
+      .then((s) => {
+        setSetup(s);
+        if (s?.default_currency) setCurrency(s.default_currency);
+        setPayoutType("bank");
+      })
+      .catch(() => setSetup(null))
+      .finally(() => setSetupLoading(false));
+  }, []);
+
+  const mobileMoneyCurrencies = useMemo(
+    () =>
+      setup?.mobile_money_currencies?.length
+        ? setup.mobile_money_currencies
+        : ["KES", "GHS", "XOF"],
+    [setup?.mobile_money_currencies],
+  );
+  const mobileMoneySupported = mobileMoneyCurrencies.includes(currency);
+
+  useEffect(() => {
+    if (payoutType === "mobile_money" && !mobileMoneySupported) {
+      setPayoutType("bank");
+    }
+  }, [currency, payoutType, mobileMoneySupported]);
+
+  useEffect(() => {
+    if (!setup?.platform_available) return;
+    if (payoutType === "mobile_money" && !mobileMoneySupported) {
+      setPayoutOptions([]);
+      setSelectedSettlement("");
+      setErr(
+        `Mobile money subaccounts are not available for ${currency} on Paystack. Use Bank, or switch currency to ${mobileMoneyCurrencies.join(", ")}.`,
+      );
+      return;
+    }
+    setOptionsLoading(true);
+    setErr(null);
+    paystackApi
+      .payoutOptions({ currency, payout_type: payoutType })
+      .then((res) => {
+        if (res.supported === false && res.hint) {
+          setPayoutOptions([]);
+          setSelectedSettlement("");
+          setErr(res.hint);
+          return;
+        }
+        const opts = res.options ?? [];
+        setPayoutOptions(opts);
+        if (opts.length) {
+          setSelectedSettlement((prev) => (opts.some((o) => o.code === prev) ? prev : opts[0].code));
+        } else {
+          setSelectedSettlement("");
+          setErr(
+            `Paystack returned no ${payoutType === "mobile_money" ? "mobile money" : "bank"} options for ${currency}. Try another currency or check PAYSTACK_PLATFORM_SECRET_KEY.`,
+          );
+        }
+      })
+      .catch((e) => {
+        setPayoutOptions([]);
+        setSelectedSettlement("");
+        setErr(e instanceof Error ? e.message : "Could not load Paystack payout options");
+      })
+      .finally(() => setOptionsLoading(false));
+  }, [setup?.platform_available, currency, payoutType, mobileMoneySupported, mobileMoneyCurrencies]);
+
   async function handleConnect() {
-    const k = key.trim();
-    if (!k) return;
-    setBusy(true); setErr(null);
-    try { await paystackApi.connect(k); setKey(""); onChanged(); }
-    catch (e) { setErr(e instanceof Error ? e.message : "Could not connect"); }
-    finally { setBusy(false); }
+    if (payoutType === "mobile_money" && !mobileMoneySupported) {
+      setErr(
+        `Mobile money is not available for ${currency}. Switch to Bank or use ${mobileMoneyCurrencies.join(", ")}.`,
+      );
+      return;
+    }
+    if (!selectedSettlement || !payoutOptions.length) {
+      setErr("Choose a payout provider from the Paystack list before connecting.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await paystackApi.connect({
+        currency,
+        payout_type: payoutType,
+        settlement_bank: selectedSettlement,
+        account_number: accountNumber.trim(),
+        business_name: subaccountName.trim(),
+      });
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not connect");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleDisconnect() {
-    if (!confirm("Disconnect Paystack?")) return;
-    setBusy(true); setErr(null);
-    try { await paystackApi.disconnect(); onChanged(); }
-    catch (e) { setErr(e instanceof Error ? e.message : "Could not disconnect"); }
-    finally { setBusy(false); }
+    const ok = await confirmDialog({
+      title: "Disconnect Paystack?",
+      text: "Payments across Africa (NGN, KES, GHS and more) will no longer run through your Paystack account in this CRM. Checkout links and payment webhooks will stop until you connect again.",
+      confirmText: "Yes, disconnect",
+      cancelText: "Keep connected",
+    });
+    if (!ok) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await paystackApi.disconnect();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not disconnect");
+    } finally {
+      setBusy(false);
+    }
   }
 
+  const platformAvailable = Boolean(setup?.platform_available || connection?.platform_available);
+  const canSubmitPlatform =
+    Boolean(selectedSettlement) &&
+    Boolean(accountNumber.trim()) &&
+    Boolean(subaccountName.trim()) &&
+    payoutOptions.length > 0 &&
+    !optionsLoading &&
+    (payoutType !== "mobile_money" || mobileMoneySupported);
+
   if (connection?.connected) {
+    const payoutLabel =
+      connection.payout_type === "mobile_money" ? "M-Pesa" : payoutBankLabel(connection.settlement_bank);
     return (
-      <div className="space-y-1.5">
-        <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
-          <CheckCircle size={12} />
-          {connection.business_name ? connection.business_name : "Connected"}
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <IntegrationStatusPill label="Connected" />
+          <p className="text-[12px] font-semibold text-slate-900">
+            {connection.business_name || connection.subaccount_name || "Paystack"}
+          </p>
         </div>
-        <button type="button" onClick={handleDisconnect} disabled={busy}
-          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
+        <IntegrationDetailCard>
+          <IntegrationDetailRow label="Payout" value={payoutLabel} />
+          <IntegrationDetailRow
+            label={connection.payout_type === "mobile_money" ? "Phone" : "Account"}
+            value={maskAccountEnding(connection.account_number)}
+          />
+          {connection.default_currency ? (
+            <IntegrationDetailRow label="Currency" value={connection.default_currency} />
+          ) : null}
+        </IntegrationDetailCard>
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          disabled={busy}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+        >
           {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
         </button>
-        {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
+        {err && (
+          <p className="flex items-center gap-1 text-[10px] text-red-600">
+            <AlertCircle size={10} /> {err}
+          </p>
+        )}
       </div>
     );
   }
 
   return (
     <div className="space-y-1.5">
-      <p className="text-[10px] leading-snug text-slate-500">
-        Secret Key from your{" "}
-        <a href="https://dashboard.paystack.com/#/settings/developer" target="_blank" rel="noreferrer"
-          className="font-medium text-[#00C3F7] hover:underline">
-          Paystack Dashboard
-        </a>
-      </p>
-      <input type="password" value={key} onChange={(e) => setKey(e.target.value)}
-        placeholder="sk_live_…" autoComplete="off"
-        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#00C3F7]" />
-      <button type="button" onClick={handleConnect} disabled={busy || !key.trim()}
-        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#00C3F7] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#00a8d6] disabled:opacity-50">
+      {platformAvailable ? (
+        <>
+          <p className="text-[10px] leading-snug text-slate-500">
+            Create your Paystack subaccount for payouts in Zilo.
+          </p>
+          <label className="text-[9px] font-medium text-slate-500">Currency</label>
+          <select
+            value={currency}
+            onChange={(e) => {
+              const next = e.target.value;
+              setCurrency(next);
+              if (!mobileMoneyCurrencies.includes(next)) {
+                setPayoutType("bank");
+              }
+            }}
+            disabled={setupLoading || !setup?.currencies?.length}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#00C3F7] disabled:opacity-60"
+          >
+            {(setup?.currencies?.length ? setup.currencies : ["NGN", "KES", "GHS", "ZAR", "USD"]).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <label className="text-[9px] font-medium text-slate-500">Payout type</label>
+          <select
+            value={payoutType === "mobile_money" && !mobileMoneySupported ? "bank" : payoutType}
+            onChange={(e) => setPayoutType(e.target.value as "bank" | "mobile_money")}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#00C3F7]"
+          >
+            <option value="bank">Bank</option>
+            {mobileMoneySupported ? (
+              <option value="mobile_money">Mobile Money</option>
+            ) : null}
+          </select>
+          {!mobileMoneySupported && (
+            <p className="text-[9px] leading-snug text-slate-400">
+              Mobile money on Paystack is only for {mobileMoneyCurrencies.join(", ")}.
+            </p>
+          )}
+          <label className="text-[9px] font-medium text-slate-500">
+            {payoutType === "mobile_money" ? "Mobile money provider" : "Bank name"}
+          </label>
+          {optionsLoading ? (
+            <p className="flex items-center gap-1 text-[10px] text-slate-400">
+              <Loader2 size={10} className="animate-spin" /> Loading Paystack options…
+            </p>
+          ) : payoutOptions.length === 0 ? (
+            <p className="text-[10px] text-amber-700">
+              {err || "No payout options found for this currency/type."}
+            </p>
+          ) : (
+            <select
+              value={selectedSettlement}
+              onChange={(e) => setSelectedSettlement(e.target.value)}
+              className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#00C3F7]"
+            >
+              {payoutOptions.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <label className="text-[9px] font-medium text-slate-500">Account number</label>
+          <input
+            value={accountNumber}
+            onChange={(e) => setAccountNumber(e.target.value)}
+            placeholder="Account number"
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#00C3F7]"
+          />
+          <label className="text-[9px] font-medium text-slate-500">Subaccount name</label>
+          <input
+            value={subaccountName}
+            onChange={(e) => setSubaccountName(e.target.value)}
+            placeholder="eg. Nairobi Branch"
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#00C3F7]"
+          />
+        </>
+      ) : (
+        <p className="text-[10px] leading-snug text-slate-500">
+          Paystack is not enabled on this server yet. Ask your administrator to set{" "}
+          <span className="font-mono text-[9px]">PAYSTACK_PLATFORM_SECRET_KEY</span>.
+        </p>
+      )}
+      {platformAvailable ? (
+      <button
+        type="button"
+        onClick={handleConnect}
+        disabled={busy || !canSubmitPlatform}
+        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#00C3F7] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#00a8d6] disabled:opacity-50"
+      >
         {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
       </button>
-      {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
+      ) : null}
+      {err && (
+        <p className="flex items-center gap-1 text-[10px] text-red-600">
+          <AlertCircle size={10} /> {err}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Flutterwave (platform subaccount) ─────────────────────────────────────────
+
+function FlutterwaveStatus({ connection, onChanged }: { connection?: FlutterwaveConnection; onChanged: () => void }) {
+  const [setup, setSetup] = useState<{
+    platform_available: boolean;
+    currencies: string[];
+    default_currency: string;
+    merchant_split_percent?: number;
+  } | null>(null);
+  const [setupLoading, setSetupLoading] = useState(false);
+  const [currency, setCurrency] = useState("NGN");
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [payoutOptions, setPayoutOptions] = useState<Array<{ code: string; name: string }>>([]);
+  const [selectedBank, setSelectedBank] = useState("");
+  const [accountNumber, setAccountNumber] = useState("");
+  const [businessName, setBusinessName] = useState("");
+  const [businessEmail, setBusinessEmail] = useState("");
+  const [businessPhone, setBusinessPhone] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const country = FLW_CURRENCY_COUNTRY[currency] || "";
+
+  useEffect(() => {
+    setSetupLoading(true);
+    flutterwaveApi
+      .setup()
+      .then((s) => {
+        setSetup(s);
+        if (s?.default_currency) setCurrency(s.default_currency);
+      })
+      .catch(() => setSetup(null))
+      .finally(() => setSetupLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!setup?.platform_available || !country) return;
+    setOptionsLoading(true);
+    setErr(null);
+    flutterwaveApi
+      .payoutOptions({ currency })
+      .then((res) => {
+        const opts = res.options ?? [];
+        setPayoutOptions(opts);
+        if (opts.length) {
+          setSelectedBank((prev) => (opts.some((o) => o.code === prev) ? prev : opts[0].code));
+        } else {
+          setSelectedBank("");
+          setErr(`No banks returned for ${currency}.`);
+        }
+      })
+      .catch((e) => {
+        setPayoutOptions([]);
+        setSelectedBank("");
+        setErr(e instanceof Error ? e.message : "Could not load banks");
+      })
+      .finally(() => setOptionsLoading(false));
+  }, [setup?.platform_available, currency, country]);
+
+  async function handleConnect() {
+    if (!selectedBank || !payoutOptions.length) {
+      setErr("Choose a bank before connecting.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await flutterwaveApi.connect({
+        currency,
+        country,
+        account_bank: selectedBank,
+        account_number: accountNumber.trim(),
+        business_name: businessName.trim(),
+        business_email: businessEmail.trim(),
+        business_contact: businessPhone.trim(),
+      });
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not connect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    const ok = await confirmDialog({
+      title: "Disconnect Flutterwave?",
+      text: "Card and bank checkout links for this workspace will stop until you connect again.",
+      confirmText: "Yes, disconnect",
+      cancelText: "Keep connected",
+    });
+    if (!ok) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await flutterwaveApi.disconnect();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not disconnect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const platformAvailable = Boolean(setup?.platform_available || connection?.platform_available);
+  const setupUnreachable = !setupLoading && setup === null && !connection?.platform_available;
+  const keysMissingOnServer = !setupLoading && setup && !setup.platform_available && !connection?.platform_available;
+  const canSubmit =
+    Boolean(selectedBank) &&
+    Boolean(accountNumber.trim()) &&
+    Boolean(businessName.trim()) &&
+    Boolean(businessEmail.trim()) &&
+    Boolean(businessPhone.trim()) &&
+    payoutOptions.length > 0 &&
+    !optionsLoading;
+
+  if (connection?.connected) {
+    return (
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <IntegrationStatusPill label="Connected" />
+          <p className="text-[12px] font-semibold text-slate-900">{connection.business_name || "Flutterwave"}</p>
+        </div>
+        <IntegrationDetailCard>
+          <IntegrationDetailRow label="Payout" value={payoutBankLabel(connection.settlement_bank)} />
+          <IntegrationDetailRow label="Account" value={maskAccountEnding(connection.account_number)} />
+          {connection.default_currency ? (
+            <IntegrationDetailRow label="Currency" value={connection.default_currency} />
+          ) : null}
+          {connection.business_email ? (
+            <IntegrationDetailRow label="Contact" value={<IntegrationEmailValue email={connection.business_email} />} />
+          ) : null}
+        </IntegrationDetailCard>
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          disabled={busy}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+        </button>
+        {err && (
+          <p className="flex items-center gap-1 text-[10px] text-red-600">
+            <AlertCircle size={10} /> {err}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {platformAvailable ? (
+        <>
+          <p className="text-[10px] leading-snug text-slate-500">
+            Create a Flutterwave subaccount for payouts. Platform fee is configured on the server (
+            {setup?.merchant_split_percent ?? 90}% to you by default).
+          </p>
+          <label className="text-[9px] font-medium text-slate-500">Currency</label>
+          <select
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value)}
+            disabled={setupLoading || !setup?.currencies?.length}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#F5A623] disabled:opacity-60"
+          >
+            {(setup?.currencies?.length ? setup.currencies : ["NGN", "KES", "GHS"]).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          {!country && (
+            <p className="text-[10px] text-amber-700">No country mapping for {currency}.</p>
+          )}
+          <label className="text-[9px] font-medium text-slate-500">Bank</label>
+          {optionsLoading ? (
+            <p className="flex items-center gap-1 text-[10px] text-slate-400">
+              <Loader2 size={10} className="animate-spin" /> Loading banks…
+            </p>
+          ) : (
+            <select
+              value={selectedBank}
+              onChange={(e) => setSelectedBank(e.target.value)}
+              className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#F5A623]"
+            >
+              {payoutOptions.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <label className="text-[9px] font-medium text-slate-500">Account number</label>
+          <input
+            value={accountNumber}
+            onChange={(e) => setAccountNumber(e.target.value)}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#F5A623]"
+          />
+          <label className="text-[9px] font-medium text-slate-500">Business name</label>
+          <input
+            value={businessName}
+            onChange={(e) => setBusinessName(e.target.value)}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#F5A623]"
+          />
+          <label className="text-[9px] font-medium text-slate-500">Business email</label>
+          <input
+            type="email"
+            value={businessEmail}
+            onChange={(e) => setBusinessEmail(e.target.value)}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#F5A623]"
+          />
+          <label className="text-[9px] font-medium text-slate-500">Business phone</label>
+          <input
+            value={businessPhone}
+            onChange={(e) => setBusinessPhone(e.target.value)}
+            placeholder="+234…"
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#F5A623]"
+          />
+        </>
+      ) : setupLoading ? (
+        <p className="flex items-center gap-1 text-[10px] text-slate-400">
+          <Loader2 size={10} className="animate-spin" /> Checking Flutterwave on server…
+        </p>
+      ) : setupUnreachable ? (
+        <p className="text-[10px] leading-snug text-amber-800">
+          Could not reach the API for Flutterwave setup. Start the backend on port 8000 and restart it after editing{" "}
+          <span className="font-mono text-[9px]">backend/.env</span> (Next uses{" "}
+          <span className="font-mono text-[9px]">BACKEND_INTERNAL_URL</span>).
+        </p>
+      ) : keysMissingOnServer ? (
+        <p className="text-[10px] leading-snug text-slate-500">
+          Flutterwave is not enabled on this server. Set{" "}
+          <span className="font-mono text-[9px]">FLUTTERWAVE_PLATFORM_SECRET_KEY</span> in{" "}
+          <span className="font-mono text-[9px]">backend/.env</span> and restart the API.{" "}
+          <span className="font-mono text-[9px]">FLUTTERWAVE_SECRET_HASH</span> is for webhooks only.
+        </p>
+      ) : (
+        <p className="text-[10px] leading-snug text-slate-500">
+          Flutterwave setup could not be loaded. Refresh the page or check the backend logs.
+        </p>
+      )}
+      {platformAvailable ? (
+        <button
+          type="button"
+          onClick={handleConnect}
+          disabled={busy || !canSubmit}
+          className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#F5A623] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#e09510] disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
+        </button>
+      ) : null}
+      {err && (
+        <p className="flex items-center gap-1 text-[10px] text-red-600">
+          <AlertCircle size={10} /> {err}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Stripe Connect (platform destination charges) ───────────────────────────
+
+const STRIPE_PLATFORM_PROFILE_URL =
+  "https://dashboard.stripe.com/settings/connect/platform-profile";
+
+function stripeConnectErrHint(message: string | null): {
+  platformProfile: boolean;
+  actionUrl: string;
+  display: string;
+} | null {
+  if (!message) return null;
+  const lower = message.toLowerCase();
+  const platformProfile =
+    lower.includes("platform profile") ||
+    lower.includes("platform-profile") ||
+    lower.includes("managing losses") ||
+    lower.includes("stripe_platform_profile");
+  const countryUnsupported =
+    lower.includes("card_payments") ||
+    lower.includes("stripe_connect_country") ||
+    lower.includes("not supported for stripe");
+  if (!platformProfile && !countryUnsupported) return null;
+  if (countryUnsupported) {
+    return {
+      platformProfile: false,
+      actionUrl: "https://stripe.com/global",
+      display: message.replace(/^\d{3}:\s*/, ""),
+    };
+  }
+  return {
+    platformProfile: true,
+    actionUrl: STRIPE_PLATFORM_PROFILE_URL,
+    display: message.replace(/^\d{3}:\s*/, ""),
+  };
+}
+
+function stripeIsLinked(connection?: StripeConnection): boolean {
+  return Boolean(
+    connection?.connected ||
+      connection?.checkout_ready ||
+      connection?.charges_enabled ||
+      (connection?.account_id && connection.account_id.startsWith("acct_")),
+  );
+}
+
+function stripeStatusLabel(status: StripeLifecycleStatus | undefined, connection?: StripeConnection): string {
+  const s =
+    status ??
+    (connection?.checkout_ready || connection?.charges_enabled
+      ? "ready"
+      : connection?.connected
+        ? connection.details_submitted && !connection.charges_enabled
+          ? "verification_pending"
+          : "onboarding"
+        : "not_connected");
+  switch (s) {
+    case "ready":
+      return "Connected — checkout enabled";
+    case "verification_pending":
+      return "Verification in progress";
+    case "onboarding":
+      return "Onboarding in progress";
+    default:
+      return "Not connected";
+  }
+}
+
+function StripeConnectStatus({
+  connection,
+  connectionHydrated = false,
+  onChanged,
+}: {
+  connection?: StripeConnection;
+  connectionHydrated?: boolean;
+  onChanged: () => void;
+}) {
+  const [setup, setSetup] = useState<{
+    platform_available: boolean;
+    currencies: string[];
+    countries: string[];
+    default_currency: string;
+    default_country?: string;
+    connect_note?: string;
+    merchant_transfer_percent?: number;
+    platform_fee_percent?: number;
+  } | null>(null);
+  const [setupLoading, setSetupLoading] = useState(false);
+  const [currency, setCurrency] = useState("USD");
+  const [country, setCountry] = useState("US");
+  const [businessEmail, setBusinessEmail] = useState("");
+  const [businessName, setBusinessName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const stripeErrHint = stripeConnectErrHint(err);
+
+  async function handleRefreshStatus() {
+    setSyncing(true);
+    setErr(null);
+    try {
+      onChanged();
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function StripeConnectErrorBanner() {
+    if (!err) return null;
+    if (stripeErrHint && !stripeErrHint.platformProfile) {
+      return (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
+          <p className="font-medium">Country not supported for Stripe card checkout</p>
+          <p className="mt-0.5 leading-snug">{stripeErrHint.display}</p>
+          <p className="mt-0.5 leading-snug">
+            Use a supported country in the dropdown, or connect <strong>Paystack</strong> / <strong>PayHero</strong> for
+            Kenya and similar markets.
+          </p>
+          <a
+            href={stripeErrHint.actionUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-1 inline-flex items-center gap-0.5 font-semibold text-[#635BFF] underline"
+          >
+            Stripe global availability <ExternalLink size={9} />
+          </a>
+        </div>
+      );
+    }
+    if (stripeErrHint?.platformProfile) {
+      return (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
+          <p className="font-medium">Platform Stripe setup required</p>
+          <p className="mt-0.5 leading-snug">
+            Merchant onboarding is blocked until the CRM operator completes Connect platform profile on the
+            Stripe account that owns <span className="font-mono text-[9px]">STRIPE_PLATFORM_SECRET_KEY</span>{" "}
+            (loss liability for connected accounts). This is not fixed by changing business name or country here.
+          </p>
+          <a
+            href={stripeErrHint.actionUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-1 inline-flex items-center gap-0.5 font-semibold text-[#635BFF] underline"
+          >
+            Open Stripe Connect platform profile <ExternalLink size={9} />
+          </a>
+        </div>
+      );
+    }
+    return (
+      <p className="flex items-center gap-1 text-[10px] text-red-600">
+        <AlertCircle size={10} /> {err}
+      </p>
+    );
+  }
+
+  useEffect(() => {
+    setSetupLoading(true);
+    stripeConnectApi
+      .setup()
+      .then((s) => {
+        setSetup(s);
+        if (s?.default_currency) setCurrency(s.default_currency);
+        if (s?.default_country && s.countries?.includes(s.default_country)) {
+          setCountry(s.default_country);
+        }
+      })
+      .catch(() => setSetup(null))
+      .finally(() => setSetupLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const allowed = setup?.countries ?? [];
+    const mapped = STRIPE_CURRENCY_COUNTRY[currency];
+    if (mapped && allowed.includes(mapped)) {
+      setCountry(mapped);
+    } else if (allowed.length && !allowed.includes(country)) {
+      setCountry(allowed[0]);
+    }
+  }, [currency, setup?.countries]);
+
+  async function openOnboarding(getUrl: () => Promise<string>) {
+    const url = await getUrl();
+    if (!url) throw new Error("No onboarding URL returned");
+    const popup = window.open(url, "stripe-connect", "width=980,height=760,noopener,noreferrer");
+    if (!popup) {
+      window.location.href = url;
+      return;
+    }
+    const poll = window.setInterval(() => {
+      void onChanged();
+      if (popup.closed) {
+        window.clearInterval(poll);
+        setTimeout(() => void onChanged(), 1500);
+      }
+    }, 3000);
+  }
+
+  async function handleConnect() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await stripeConnectApi.connect({
+        email: businessEmail.trim(),
+        business_name: businessName.trim(),
+        currency,
+        country,
+      });
+      onChanged();
+      if (res.onboarding_url) {
+        await openOnboarding(async () => res.onboarding_url);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not connect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleContinueOnboarding() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await openOnboarding(async () => {
+        const res = await stripeConnectApi.accountLink();
+        return res.onboarding_url;
+      });
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not open Stripe onboarding");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    const ok = await confirmDialog({
+      title: "Disconnect Stripe Connect?",
+      text: "Stripe checkout for orders will stop until you connect again. Your Stripe account is not deleted.",
+      confirmText: "Yes, disconnect",
+      cancelText: "Keep connected",
+    });
+    if (!ok) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await stripeConnectApi.disconnect();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not disconnect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const linked = stripeIsLinked(connection);
+  const platformAvailable = Boolean(setup?.platform_available || connection?.platform_available || linked);
+  const setupUnreachable =
+    connectionHydrated &&
+    !linked &&
+    !setupLoading &&
+    setup === null &&
+    !connection?.platform_available;
+  const keysMissingOnServer =
+    !linked && !setupLoading && setup && !setup.platform_available && !connection?.platform_available;
+  const canSubmit =
+    Boolean(businessEmail.trim()) &&
+    Boolean(businessName.trim()) &&
+    Boolean(country) &&
+    Boolean(currency);
+
+  if (linked && connection) {
+    const lifecycle: StripeLifecycleStatus =
+      connection.status ??
+      (connection.checkout_ready || connection.charges_enabled
+        ? "ready"
+        : connection.details_submitted && !connection.charges_enabled
+          ? "verification_pending"
+          : "onboarding");
+    const ready = lifecycle === "ready";
+    const pendingVerify = lifecycle === "verification_pending";
+    const statusTone = ready ? "success" : pendingVerify ? "info" : "warning";
+    const statusPill = ready ? "Active" : pendingVerify ? "Under review" : "Setup";
+    const settlement =
+      connection.default_currency || connection.country
+        ? [
+            connection.default_currency,
+            connection.country ? countryLabel(connection.country) : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : null;
+    return (
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <IntegrationStatusPill label={statusPill} tone={statusTone} />
+          <p className="text-[12px] font-semibold text-slate-900">
+            {connection.business_name || "Stripe"}
+          </p>
+        </div>
+        <p className="text-[10px] leading-snug text-slate-600">
+          {ready
+            ? "Accepts card payments on orders."
+            : pendingVerify
+              ? "Stripe is reviewing your account."
+              : "Complete onboarding to accept payments."}
+          {settlement ? <span className="text-slate-500"> · {settlement}</span> : null}
+        </p>
+        {connection.connect_email ? (
+          <p className="text-[10px] text-slate-500">
+            <IntegrationEmailValue email={connection.connect_email} />
+          </p>
+        ) : null}
+        {!ready && (
+          <button
+            type="button"
+            onClick={() => void handleContinueOnboarding()}
+            disabled={busy}
+            className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#635BFF] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#4f46e5] disabled:opacity-50"
+          >
+            {busy ? <Loader2 size={11} className="animate-spin" /> : <ExternalLink size={11} />}
+            {pendingVerify ? "Open Stripe" : "Continue setup"}
+          </button>
+        )}
+        {!ready ? (
+          <button
+            type="button"
+            onClick={() => void handleRefreshStatus()}
+            disabled={syncing}
+            className="flex w-full items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {syncing ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Refresh status
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          disabled={busy}
+          className="flex w-full items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-red-700 disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
+        </button>
+        <StripeConnectErrorBanner />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {platformAvailable ? (
+        <>
+          <p className="text-[10px] leading-snug text-slate-500">
+            Express Connect — Stripe handles KYC, tax, and bank verification. Destination charges; merchant ~
+            {setup?.merchant_transfer_percent ?? 90}% (platform fee ~{setup?.platform_fee_percent ?? 10}%).
+            {setup?.connect_note ? (
+              <span className="mt-0.5 block text-amber-800/90">{setup.connect_note}</span>
+            ) : null}
+          </p>
+          <label className="text-[9px] font-medium text-slate-500">Currency</label>
+          <select
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value)}
+            disabled={setupLoading || !setup?.currencies?.length}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#635BFF] disabled:opacity-60"
+          >
+            {(setup?.currencies?.length ? setup.currencies : ["USD", "EUR", "GBP"]).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <label className="text-[9px] font-medium text-slate-500">Country</label>
+          <select
+            value={country}
+            onChange={(e) => setCountry(e.target.value)}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#635BFF]"
+          >
+            {(setup?.countries?.length ? setup.countries : ["US", "GB", "IE"]).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <label className="text-[9px] font-medium text-slate-500">Business email</label>
+          <input
+            type="email"
+            value={businessEmail}
+            onChange={(e) => setBusinessEmail(e.target.value)}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#635BFF]"
+          />
+          <label className="text-[9px] font-medium text-slate-500">Business name</label>
+          <input
+            value={businessName}
+            onChange={(e) => setBusinessName(e.target.value)}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#635BFF]"
+          />
+        </>
+      ) : !connectionHydrated || setupLoading ? (
+        <p className="flex items-center gap-1 text-[10px] text-slate-400">
+          <Loader2 size={10} className="animate-spin" /> Loading…
+        </p>
+      ) : setupUnreachable ? (
+        <p className="text-[10px] leading-snug text-slate-500">
+          Stripe setup is temporarily unavailable. Ensure the API server is running, then click Connect Stripe.
+        </p>
+      ) : keysMissingOnServer ? (
+        <p className="text-[10px] leading-snug text-slate-500">
+          Stripe Connect is not enabled. Set{" "}
+          <span className="font-mono text-[9px]">STRIPE_PLATFORM_SECRET_KEY</span> and webhook secrets in{" "}
+          <span className="font-mono text-[9px]">backend/.env</span>.
+        </p>
+      ) : (
+        <p className="text-[10px] leading-snug text-slate-500">Stripe setup could not be loaded.</p>
+      )}
+      {platformAvailable ? (
+        <button
+          type="button"
+          onClick={() => void handleConnect()}
+          disabled={busy || !canSubmit}
+          className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#635BFF] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#4f46e5] disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect Stripe
+        </button>
+      ) : null}
+      <StripeConnectErrorBanner />
     </div>
   );
 }
@@ -352,8 +1430,7 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
 // ── PayHero (Basic Auth + Channel selector) ───────────────────────────────────
 
 function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnection; onChanged: () => void }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [apiToken, setApiToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -377,15 +1454,28 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
   }, [connection?.connected]);
 
   async function handleConnect() {
-    if (!username.trim() || !password.trim()) return;
-    setBusy(true); setErr(null);
-    try { await payheroApi.connect(username.trim(), password.trim()); setUsername(""); setPassword(""); onChanged(); }
-    catch (e) { setErr(e instanceof Error ? e.message : "Could not connect"); }
-    finally { setBusy(false); }
+    if (!apiToken.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await payheroApi.connect({ api_token: apiToken.trim() });
+      setApiToken("");
+      await onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not connect");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleDisconnect() {
-    if (!confirm("Disconnect PayHero?")) return;
+    const ok = await confirmDialog({
+      title: "Disconnect PayHero?",
+      text: "M-Pesa STK push and automatic payment confirmation will stop for this workspace. Your API credentials and selected payment channel will be removed from the CRM.",
+      confirmText: "Yes, disconnect",
+      cancelText: "Keep connected",
+    });
+    if (!ok) return;
     setBusy(true); setErr(null);
     try { await payheroApi.disconnect(); onChanged(); }
     catch (e) { setErr(e instanceof Error ? e.message : "Could not disconnect"); }
@@ -411,14 +1501,14 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
 
     return (
       <div className="space-y-2">
-        <div className="flex items-center gap-1.5 text-green-700 text-[11px] font-medium">
-          <CheckCircle size={12} />
-          {connection.username || "Connected"}
+        <div className="space-y-1">
+          <IntegrationStatusPill label="Connected" />
+          <p className="text-[12px] font-semibold text-slate-900">{connection.username || "PayHero"}</p>
         </div>
 
         {/* Channel selector */}
         <div className="space-y-1">
-          <p className="text-[10px] text-slate-500">Select your M-Pesa channel (paybill / till):</p>
+          <p className="text-[10px] font-medium text-slate-600">M-Pesa channel</p>
           {loadingChannels ? (
             <p className="flex items-center gap-1 text-[10px] text-slate-400"><Loader2 size={10} className="animate-spin" /> Loading channels…</p>
           ) : channels.length === 0 ? (
@@ -431,9 +1521,10 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
                 className="flex-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
               >
                 <option value="">— Pick a channel —</option>
-                {channels.map(ch => (
+                {channels.map((ch) => (
                   <option key={ch.id} value={String(ch.id)}>
-                    {ch.name}{ch.paybill ? ` (${ch.paybill})` : ch.short_code ? ` (${ch.short_code})` : ""}
+                    {ch.name}
+                    {ch.paybill ? ` · Paybill ${ch.paybill}` : ch.short_code ? ` · Till ${ch.short_code}` : ""}
                   </option>
                 ))}
               </select>
@@ -455,6 +1546,8 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
           )}
         </div>
 
+        <PayHeroUsagePanel connected />
+
         <button type="button" onClick={handleDisconnect} disabled={busy}
           className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">
           {busy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />} Disconnect
@@ -467,21 +1560,27 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
   return (
     <div className="space-y-1.5">
       <p className="text-[10px] leading-snug text-slate-500">
-        API credentials from your{" "}
+        In{" "}
         <a href="https://app.payhero.co.ke/" target="_blank" rel="noreferrer"
           className="font-medium text-[#1DB954] hover:underline">
           PayHero Dashboard
         </a>
-        {" "}→ API Keys
+        {" "}→ <strong>API Keys</strong> → Create key → copy the <strong>Basic Authorization token</strong> (not your login password).
       </p>
-      <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
-        placeholder="API Username" autoComplete="off"
-        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]" />
-      <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-        placeholder="API Password" autoComplete="off"
-        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]" />
-      <button type="button" onClick={handleConnect} disabled={busy || !username.trim() || !password.trim()}
-        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#1DB954] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50">
+      <input
+        type="password"
+        value={apiToken}
+        onChange={(e) => setApiToken(e.target.value)}
+        placeholder="Paste Basic Auth token"
+        autoComplete="off"
+        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#1DB954]"
+      />
+      <button
+        type="button"
+        onClick={() => void handleConnect()}
+        disabled={busy || !apiToken.trim()}
+        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#1DB954] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50"
+      >
         {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
       </button>
       {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
@@ -522,6 +1621,9 @@ interface ZernioAccount { id: string; platform: string; name?: string; username?
 function IntegrationsPageInner() {
   const [tgConn, setTgConn] = useState<TelegramConnection>({ connected: false });
   const [psConn, setPsConn] = useState<PaystackConnection>({ connected: false });
+  const [fwConn, setFwConn] = useState<FlutterwaveConnection>({ connected: false });
+  const [stConn, setStConn] = useState<StripeConnection>({ connected: false });
+  const [stConnHydrated, setStConnHydrated] = useState(false);
   const [phConn, setPhConn] = useState<PayheroConnection>({ connected: false });
   const { accounts: rawZernioAccounts, apiConnected: zernioApiOk, refresh: refreshZernioCtx, connect: zernioCtxConnect, disconnect: zernioCtxDisconnect } = useZernioAccounts();
   const zernioAccounts = rawZernioAccounts as ZernioAccount[];
@@ -790,8 +1892,30 @@ function IntegrationsPageInner() {
     paystackApi.connection().then(setPsConn).catch(() => {});
   }, []);
 
-  const refreshPh = useCallback(() => {
-    payheroApi.connection().then(setPhConn).catch(() => {});
+  const refreshFw = useCallback(() => {
+    flutterwaveApi.connection().then(setFwConn).catch(() => {});
+  }, []);
+
+  const refreshSt = useCallback(() => {
+    return stripeConnectApi
+      .connection()
+      .then((c) => {
+        setStConn(c);
+        setStConnHydrated(true);
+      })
+      .catch(() => {
+        setStConn({ connected: false, status: "not_connected" });
+        setStConnHydrated(true);
+      });
+  }, []);
+
+  const refreshPh = useCallback(async () => {
+    try {
+      const c = await payheroApi.connection();
+      setPhConn(c);
+    } catch {
+      setPhConn({ connected: false });
+    }
   }, []);
 
   const refreshNango = useCallback(async () => {
@@ -1104,7 +2228,77 @@ function IntegrationsPageInner() {
     }
   }
 
-  useEffect(() => { refreshTg(); refreshPs(); refreshPh(); void refreshNango(); void refreshZernio(); void refreshComposio(); void refreshComposioSocial(); refreshSuppliers(); }, [refreshTg, refreshPs, refreshPh, refreshNango, refreshZernio, refreshComposio, refreshComposioSocial, refreshSuppliers]);
+  const router = useRouter();
+
+  useEffect(() => {
+    refreshTg();
+    refreshPs();
+    refreshFw();
+    refreshSt();
+    refreshPh();
+    void refreshNango();
+    void refreshZernio();
+    void refreshComposio();
+    void refreshComposioSocial();
+    refreshSuppliers();
+  }, [
+    refreshTg,
+    refreshPs,
+    refreshFw,
+    refreshSt,
+    refreshPh,
+    refreshNango,
+    refreshZernio,
+    refreshComposio,
+    refreshComposioSocial,
+    refreshSuppliers,
+  ]);
+
+  useEffect(() => {
+    const stripeParam = searchParams.get("stripe");
+    if (stripeParam !== "return" && stripeParam !== "refresh") return;
+
+    void (async () => {
+      let linked: StripeConnection | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 1200));
+        try {
+          linked = await stripeConnectApi.connection();
+          setStConn(linked);
+          if (linked.connected) break;
+        } catch {
+          linked = null;
+        }
+      }
+
+      if (stripeParam === "return") {
+        if (linked?.connected) {
+          setBanner({
+            type: "success",
+            msg: linked.checkout_ready
+              ? "Stripe Connect is ready — you can take card payments on orders."
+              : "Returned from Stripe. Finish any remaining steps in Stripe, then click Refresh status.",
+          });
+        } else {
+          setBanner({
+            type: "error",
+            msg:
+              "Returned from Stripe, but this workspace is not linked. Keep the backend running, then click Connect Stripe here (same business email). Onboarding only counts when started from this Integrations page.",
+          });
+        }
+      } else {
+        setBanner({
+          type: "error",
+          msg: "Stripe onboarding link expired. Click Continue Stripe setup to open a fresh link.",
+        });
+      }
+    })();
+
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("stripe");
+    const q = next.toString();
+    router.replace(q ? `/dashboard/integrations?${q}` : "/dashboard/integrations", { scroll: false });
+  }, [searchParams, router]);
 
   useEffect(() => {
     const connected = searchParams.get("connected");
@@ -1360,17 +2554,21 @@ function IntegrationsPageInner() {
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Payments</h2>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           <SmallTile
-            title="Stripe" subtitle="International payments &amp; subscriptions"
+            title="Stripe"
+            subtitle={
+              stripeIsLinked(stConn)
+                ? stConn.checkout_ready || stConn.charges_enabled
+                  ? "Card checkout enabled"
+                  : "Connected — finish setup in Stripe"
+                : "International cards & payouts"
+            }
             borderClass="border-[#635BFF]/20 bg-[#635BFF]/5"
             icon={<StripeGlyph className="h-5 w-5 text-[#635BFF]" />}
           >
-            <ComposioTileControls
-              connected={composioStatus.stripe}
-              busy={composioBusy === "stripe"}
-              connectLabel="Connect Stripe"
-              connectClass="bg-[#635BFF] hover:bg-[#4f46e5]"
-              onConnect={() => void composioConnect("stripe")}
-              onDisconnect={() => void composioDisconnect("stripe", "Stripe")}
+            <StripeConnectStatus
+              connection={stConn}
+              connectionHydrated={stConnHydrated}
+              onChanged={refreshSt}
             />
           </SmallTile>
 
@@ -1380,6 +2578,14 @@ function IntegrationsPageInner() {
             icon={<PaystackGlyph className="h-5 w-5 text-[#00C3F7]" />}
           >
             <PaystackStatus connection={psConn} onChanged={refreshPs} />
+          </SmallTile>
+
+          <SmallTile
+            title="Flutterwave" subtitle="Card &amp; bank — Africa multi-currency splits"
+            borderClass="border-[#F5A623]/25 bg-[#F5A623]/8"
+            icon={<FlutterwaveGlyph className="h-5 w-5 text-[#E09510]" />}
+          >
+            <FlutterwaveStatus connection={fwConn} onChanged={refreshFw} />
           </SmallTile>
 
           <SmallTile

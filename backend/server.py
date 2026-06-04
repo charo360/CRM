@@ -431,6 +431,27 @@ async def find_user_by_jwt_id(uid) -> Optional[dict]:
     return None
 
 
+async def _user_filter_by_id(uid: str) -> dict:
+    """Mongo filter for users._id (UUID string or legacy ObjectId hex)."""
+    if isinstance(uid, str) and _jwt_user_id_hex.match(uid):
+        try:
+            return {"_id": _ObjectId(uid)}
+        except Exception:
+            pass
+    return {"_id": uid}
+
+
+def _safe_evolution_json(resp) -> dict:
+    """Parse Evolution API JSON body without raising on empty or invalid payloads."""
+    if getattr(resp, "status_code", None) != 200:
+        return {}
+    try:
+        data = resp.json()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 # Google Play / App Store IAP Config
 GOOGLE_PLAY_PACKAGE_NAME = os.environ.get('GOOGLE_PLAY_PACKAGE_NAME', '')
 
@@ -467,7 +488,16 @@ app.add_middleware(
 async def global_exception_handler(request: Request, exc: Exception):
     """Return a JSON 500 with a readable message instead of an empty crash response.
     Catches MongoDB timeouts, KeyErrors, and any other unhandled exceptions."""
+    from fastapi import HTTPException as _HTTPException
     from fastapi.responses import JSONResponse
+
+    if isinstance(exc, _HTTPException):
+        origin = request.headers.get("origin", "*")
+        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        response.headers["Access-Control-Allow-Origin"] = origin or "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
     err_type = type(exc).__name__
     err_msg = str(exc)
     logging.error(f"Unhandled exception on {request.method} {request.url.path}: {err_type}: {err_msg}", exc_info=True)
@@ -1373,6 +1403,9 @@ class BroadcastResponse(BaseModel):
 @api_router.post("/broadcasts", response_model=BroadcastResponse)
 async def create_broadcast(broadcast: BroadcastCreate, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
     """Create and send a broadcast message"""
+    from entitlements import assert_feature, build_entitlements
+    ent = await build_entitlements(db, user)
+    assert_feature(ent, "followups_broadcasts", "Follow-ups and broadcasts require an active plan or trial.")
     business_id = user.get("business_id", user["_id"])
     # Rate-limit: max 5 new broadcasts per minute per tenant
     from rate_limiter import check_rate_limit
@@ -2130,6 +2163,9 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
             "setup_complete": False,
         }
         await db.users.insert_one(user_doc)
+        from entitlements import provision_signup_trial
+
+        await provision_signup_trial(db, user_id)
         user = user_doc
     else:
         user_id = user["_id"]
@@ -2165,14 +2201,20 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
         # If new user was just created and pairing failed, clean up
         if is_new_user:
             await db.users.delete_one({"_id": user_id})
-        raise HTTPException(status_code=500, detail=result.get("message", "Failed to start WhatsApp pairing"))
+        raise HTTPException(
+            status_code=503,
+            detail="Could not start WhatsApp pairing. Check your number and try again.",
+        )
 
     # Guard: if pairing code is empty, instance is stuck — abort rather than create a dangling session
     if not result.get("pairing_code"):
         logging.error(f"create_instance returned empty pairing code for user {user_id} — aborting auth")
         if is_new_user:
             await db.users.delete_one({"_id": user_id})
-        raise HTTPException(status_code=500, detail="Could not generate a pairing code. Please wait a moment and try again.")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not generate a pairing code. Please wait a moment and try again.",
+        )
 
     # Create a session token to track this auth attempt
     import secrets
@@ -2276,7 +2318,10 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
     result = await whatsapp_service.refresh_pairing_code(user_id, phone)
 
     if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result.get("message", "Failed to refresh pairing code"))
+        raise HTTPException(
+            status_code=503,
+            detail="Could not refresh the pairing code. Please start again from the login screen.",
+        )
 
     # Extend session expiry
     await db.wa_auth_sessions.update_one(
@@ -2331,6 +2376,10 @@ async def register_web(req: WebRegisterRequest):
     }
     await db.users.insert_one(user_doc)
 
+    from entitlements import provision_signup_trial
+
+    await provision_signup_trial(db, user_id)
+
     team_member = {
         "_id": str(uuid.uuid4()),
         "user_id": user_id,
@@ -2352,7 +2401,7 @@ async def register_web(req: WebRegisterRequest):
         "status": "success",
         "token": token,
         "access_token": token,
-        "is_new_user": False,
+        "is_new_user": True,
         "user": {
             "id": user_id,
             "email": email,
@@ -7248,8 +7297,30 @@ PLAN_PRODUCT_LIMITS = {
 }
 
 def get_plan_limits(user: dict) -> dict:
-    plan = user.get("subscription_plan", "free")
-    return PLAN_PRODUCT_LIMITS.get(plan, PLAN_PRODUCT_LIMITS["free"])
+    from entitlements import (
+        paid_subscription_active,
+        product_catalog_limit,
+        normalize_plan_id,
+        trial_window,
+    )
+    trial_active, _, _ = trial_window(user)
+    paid = paid_subscription_active(user)
+    plan = normalize_plan_id(user.get("subscription_plan"))
+    if trial_active:
+        effective = "trial"
+    elif paid:
+        effective = plan
+    else:
+        effective = "free"
+    prod_cap = product_catalog_limit(effective, paid, trial_active)
+    img_caps = {
+        "free": 25,
+        "trial": 100,
+        "starter": 100,
+        "standard": 250,
+        "pro": None,
+    }
+    return {"products": prod_cap, "images": img_caps.get(effective, 25)}
 
 async def count_total_images(db, business_id: str) -> int:
     pipeline = [
@@ -7263,8 +7334,10 @@ async def count_total_images(db, business_id: str) -> int:
 @api_router.post("/products", response_model=ProductResponse)
 async def create_product(product: ProductCreate, user = Depends(get_current_user)):
     """Create a new product"""
+    from entitlements import load_billing_record
     business_id = user.get("business_id", user["_id"])
-    limits = get_plan_limits(user)
+    billing_user = await load_billing_record(db, user)
+    limits = get_plan_limits(billing_user)
     # Check product limit
     count = await db.products.count_documents({"user_id": business_id})
     if limits["products"] is not None and count >= limits["products"]:
@@ -7614,17 +7687,17 @@ PLAN_FEATURES = {
     "starter": {
         "name": "Starter",
         "interval": "monthly",
-        "features": ["2,500 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"]
+        "features": ["5,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"]
     },
     "standard": {
         "name": "Growth",
         "interval": "monthly",
-        "features": ["5,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Priority support"]
+        "features": ["10,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Priority support"]
     },
     "pro": {
         "name": "Pro",
         "interval": "monthly",
-        "features": ["10,000 messages/month", "Unlimited customers", "Advanced analytics", "Custom templates", "Dedicated support"]
+        "features": ["25,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Advanced analytics", "Custom templates", "Dedicated support"]
     }
 }
 
@@ -7668,7 +7741,7 @@ REGIONAL_PRICING = {
     "JPY": (800, 1700, 2900),       # Japan
     "KRW": (7200, 15500, 26000),    # South Korea
     # Americas
-    "USD": (10, 18, 28),            # USA/Canada (Tier 1)
+    "USD": (49, 79, 200),            # USA/Canada (Tier 1)
     "BRL": (30, 65, 108),           # Brazil
     "MXN": (100, 215, 360),         # Mexico
     "COP": (22000, 47000, 78000),   # Colombia
@@ -7694,9 +7767,9 @@ def get_regional_plans(currency: str) -> list:
         amount = prices[i]
         # Format display amount with commas
         if amount >= 1000:
-            display = f"{amount:,.0f}/month"
+            display = f"{currency} {amount:,.0f}/month"
         else:
-            display = f"{amount}/month"
+            display = f"{currency} {amount}/month"
         plans.append({
             "id": plan_id,
             "name": plan["name"],
@@ -7707,6 +7780,9 @@ def get_regional_plans(currency: str) -> list:
             "features": plan["features"]
         })
     return plans
+
+from subscription_billing import register_subscription_billing_routes
+register_subscription_billing_routes(api_router, db, get_current_user, get_regional_plans)
 
 @api_router.get("/subscription/plans")
 async def get_subscription_plans(user = Depends(get_current_user)):
@@ -7853,12 +7929,15 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
 
 @api_router.get("/subscription/status")
 async def get_subscription_status(user = Depends(get_current_user)):
-    """Get current user subscription status"""
+    """Get current user subscription status (includes entitlements)."""
+    from entitlements import build_entitlements
+    ent = await build_entitlements(db, user)
     return {
         "subscription_plan": user.get("subscription_plan"),
         "subscription_active": user.get("subscription_active", False),
         "subscription_date": user.get("subscription_date"),
         "extra_credits": user.get("extra_credits", 0),
+        **ent,
     }
 
 # Credit top-up bundles: bundle_id -> {credits, price_usd}
@@ -8102,17 +8181,35 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     Start WhatsApp pairing: creates Evolution API instance and returns pairing code.
     User enters the code in WhatsApp > Linked Devices > Link with phone number.
     """
+    from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    cfg_err = evolution_config_error()
+    if cfg_err:
+        raise HTTPException(status_code=503, detail=cfg_err)
+
     body = await request.json()
     phone_number = body.get("phone_number", "").strip()
     if not phone_number:
         raise HTTPException(status_code=400, detail="Phone number is required")
-    
+
+    owner_id = whatsapp_owner_id(user)
     whatsapp_service = get_whatsapp_service(db)
-    result = await whatsapp_service.create_instance(user["_id"], phone_number)
-    
+    try:
+        result = await whatsapp_service.create_instance(owner_id, phone_number)
+    except Exception as e:
+        logging.exception("[whatsapp/connect] unexpected error")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not start WhatsApp pairing. Please try again in a moment.",
+        ) from e
+
     if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result.get("message"))
-    
+        logging.warning(f"[whatsapp/connect] Evolution error: {result.get('message', '')[:300]}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not start WhatsApp pairing. Check your number and try again, or use QR link on Integrations.",
+        )
+
     return result
 
 @api_router.post("/whatsapp/qr-start")
@@ -8122,10 +8219,25 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
     Creates an Evolution API instance with qrcode=True and returns the QR image as base64.
     QR is taken directly from the create response so it is fresh (no expiry delay).
     """
-    import httpx as _httpx, uuid as _uuid, os as _os
+    import httpx as _httpx, os as _os
+    from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    cfg_err = evolution_config_error()
+    if cfg_err:
+        raise HTTPException(status_code=503, detail=cfg_err)
+
     wa_service = get_whatsapp_service(db)
-    user_id = user.get("business_id", user["_id"])
-    instance_name = wa_service._instance_name(user_id)
+    user_id = whatsapp_owner_id(user)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Could not resolve account for WhatsApp linking.")
+
+    extra_names: list[str] = []
+    stored_name = (user.get("whatsapp") or {}).get("instance_name")
+    if stored_name:
+        extra_names.append(stored_name)
+    login_id = user.get("_id") or user.get("id")
+    if login_id and str(login_id) != str(user_id):
+        extra_names.append(wa_service._instance_name(str(login_id)))
 
     base_url = wa_service.base_url
     headers = wa_service._headers()
@@ -8141,80 +8253,60 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
         }
     }
 
-    async with _httpx.AsyncClient(timeout=60) as client:
-        # Use the same proven delete method as the pairing code flow
-        await wa_service._delete_all_user_instances(client, user_id)
-        # Extra explicit delete by name in case list missed it
-        try:
-            await client.delete(f"{base_url}/instance/logout/{instance_name}", headers=headers)
-        except Exception:
-            pass
-        try:
-            await client.delete(f"{base_url}/instance/delete/{instance_name}", headers=headers)
-        except Exception:
-            pass
-        await asyncio.sleep(1)  # Give Evolution DB time to commit the deletion
-
-        # Create instance WITHOUT qrcode:true — avoids Evolution's integrationSession bug.
-        # QR is fetched separately via GET /instance/connect (no number param).
-        create_payload = {
-            "instanceName": instance_name,
-            "token": str(_uuid.uuid4()),
-            "qrcode": False,
-            "integration": "WHATSAPP-BAILEYS",
-            "reject_call": False,
-            "groupsIgnore": True,
-        }
-
-        create_resp = await client.post(
-            f"{base_url}/instance/create",
-            json=create_payload,
-            headers=headers,
-        )
-        logging.info(f"[QR] create status={create_resp.status_code} body={create_resp.text[:300]}")
-
-        if create_resp.status_code not in (200, 201):
-            err = create_resp.text.lower()
-            if "already" in err or "in use" in err or "exists" in err or "forbidden" in err:
-                logging.info(f"[QR] Still in use after delete — waiting 5s and retrying…")
-                await asyncio.sleep(5)
-                create_resp = await client.post(
-                    f"{base_url}/instance/create",
-                    json={**create_payload, "token": str(_uuid.uuid4())},
-                    headers=headers,
+    try:
+        async with _httpx.AsyncClient(timeout=90) as client:
+            try:
+                instance_name = await wa_service.recreate_instance_for_qr(
+                    client, user_id, extra_instance_names=extra_names
                 )
-                logging.info(f"[QR] retry create status={create_resp.status_code} body={create_resp.text[:300]}")
-            if create_resp.status_code not in (200, 201):
-                raise HTTPException(500, f"Failed to create QR instance: {create_resp.text[:200]}")
+            except RuntimeError as create_err:
+                logging.warning(f"[QR] instance create failed: {create_err}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Could not prepare WhatsApp for QR scan. Please wait a moment and try again.",
+                ) from create_err
 
-        # Set webhook
-        await client.post(f"{base_url}/webhook/set/{instance_name}", json=webhook_cfg, headers=headers)
+            await client.post(f"{base_url}/webhook/set/{instance_name}", json=webhook_cfg, headers=headers)
 
-        # Save instance in DB (status=qr_pending)
-        await db.users.update_one(
-            {"_id": user_id},
-            {"$set": {
-                "whatsapp.instance_name": instance_name,
-                "whatsapp.status": "qr_pending",
-                "whatsapp.created_at": datetime.utcnow(),
-            }},
-        )
-
-        # Wait for Baileys WebSocket to initialise, then fetch QR via /instance/connect
-        # (called WITHOUT a number param → returns QR code instead of pairing code)
-        # Retry up to 5 times with 2s gaps instead of a blind 5s sleep
-        qr_base64 = ""
-        for attempt in range(5):
-            await asyncio.sleep(2)
-            conn_resp = await client.get(
-                f"{base_url}/instance/connect/{instance_name}", headers=headers
+            user_filter = await _user_filter_by_id(user_id)
+            await db.users.update_one(
+                user_filter,
+                {"$set": {
+                    "whatsapp.instance_name": instance_name,
+                    "whatsapp.status": "qr_pending",
+                    "whatsapp.created_at": datetime.utcnow(),
+                }},
             )
-            logging.info(f"[QR] connect attempt {attempt+1} status={conn_resp.status_code} body={conn_resp.text[:400]}")
-            qr_base64 = _extract_qr(conn_resp.json() if conn_resp.status_code == 200 else {})
-            if qr_base64:
-                break
 
-    return {"status": "qr_ready", "qr_base64": qr_base64}
+            qr_base64 = ""
+            for attempt in range(2):
+                if attempt:
+                    await asyncio.sleep(1.5)
+                conn_resp = await client.get(
+                    f"{base_url}/instance/connect/{instance_name}", headers=headers
+                )
+                logging.info(f"[QR] connect attempt {attempt+1} status={conn_resp.status_code} body={conn_resp.text[:400]}")
+                conn_data = _safe_evolution_json(conn_resp)
+                qr_base64 = _extract_qr(conn_data)
+                if qr_base64:
+                    break
+
+        if not qr_base64:
+            return {
+                "status": "qr_pending",
+                "qr_base64": "",
+                "message": "QR is still loading. Wait a few seconds — it will refresh automatically.",
+            }
+
+        return {"status": "qr_ready", "qr_base64": qr_base64}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("[QR] whatsapp_qr_start failed")
+        raise HTTPException(
+            status_code=503,
+            detail="WhatsApp linking is temporarily unavailable. Please try again shortly.",
+        ) from e
 
 
 def _extract_qr(data: dict) -> str:
@@ -8225,11 +8317,12 @@ def _extract_qr(data: dict) -> str:
     """
     import base64 as _b64, io as _io
 
-    if not data:
+    if not data or not isinstance(data, dict):
         return ""
 
     # Gather candidate values from different response shapes
-    qrcode_block = data.get("qrcode") or {}
+    qrcode_raw = data.get("qrcode")
+    qrcode_block = qrcode_raw if isinstance(qrcode_raw, dict) else {}
     raw_b64 = (
         data.get("base64")
         or qrcode_block.get("base64")
@@ -8238,6 +8331,8 @@ def _extract_qr(data: dict) -> str:
     raw_code = (
         data.get("code")
         or qrcode_block.get("code")
+        or data.get("pairingCode")
+        or qrcode_block.get("pairingCode")
         or ""
     )
 
@@ -8257,8 +8352,8 @@ def _extract_qr(data: dict) -> str:
     if raw_b64 and _is_real_png(raw_b64):
         return raw_b64
 
-    # Otherwise generate a PNG from the raw code text
-    code_text = raw_code
+    # Otherwise generate a PNG from the pairing ref (preferred over mislabeled base64 blobs)
+    code_text = (raw_code.strip() if isinstance(raw_code, str) else "") or ""
     if not code_text and raw_b64:
         # raw_b64 might actually be the session string mislabeled
         if raw_b64.startswith("data:"):
@@ -8288,35 +8383,62 @@ def _extract_qr(data: dict) -> str:
 async def whatsapp_qr_fetch(user = Depends(get_current_user)):
     """Fetch a refreshed QR code for an existing pending instance."""
     import httpx as _httpx
+    from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    cfg_err = evolution_config_error()
+    if cfg_err:
+        raise HTTPException(status_code=503, detail=cfg_err)
+
     wa_service = get_whatsapp_service(db)
-    user_id = user.get("business_id", user["_id"])
+    user_id = whatsapp_owner_id(user)
     instance_name = wa_service._instance_name(user_id)
 
-    async with _httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{wa_service.base_url}/instance/connect/{instance_name}",
-            headers=wa_service._headers(),
-        )
-        logging.info(f"[QR refresh] status={resp.status_code} body={resp.text[:300]}")
-        data = resp.json() if resp.status_code == 200 else {}
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            live = await wa_service.get_instance_status(user_id)
+            live_state = (live.get("status") or "").lower()
+            if live.get("connected"):
+                return {"qr_base64": "", "connection_state": "open"}
+            # After scan, Evolution is "connecting" — do not call /connect again or pairing resets.
+            if live_state == "connecting":
+                return {"qr_base64": "", "connection_state": "connecting"}
 
-    return {"qr_base64": _extract_qr(data)}
+            resp = await client.get(
+                f"{wa_service.base_url}/instance/connect/{instance_name}",
+                headers=wa_service._headers(),
+            )
+            logging.info(f"[QR refresh] status={resp.status_code} body={resp.text[:300]}")
+            data = _safe_evolution_json(resp)
+
+        return {"qr_base64": _extract_qr(data), "connection_state": live_state or "close"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("[QR] whatsapp_qr_fetch failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not refresh the QR code. Try closing and opening Connect again.",
+        ) from e
 
 
 @api_router.get("/whatsapp/status")
 async def whatsapp_status(user = Depends(get_current_user)):
     """Get WhatsApp connection status and message usage"""
+    from whatsapp_service import whatsapp_owner_id
+
+    owner_id = whatsapp_owner_id(user)
     whatsapp_service = get_whatsapp_service(db)
-    status = await whatsapp_service.get_instance_status(user["_id"])
-    limits = await whatsapp_service.check_message_limit(user["_id"])
+    status = await whatsapp_service.get_instance_status(owner_id)
+    limits = await whatsapp_service.check_message_limit(owner_id)
     
     return {
         "connected": status.get("connected", False),
         "status": status.get("status", "not_connected"),
         "number": status.get("number"),
-        "messages_sent": limits.get("sent", 0),
-        "messages_limit": limits.get("limit", 50),
-        "messages_remaining": limits.get("remaining", 50),
+        # Monthly outbound quota (billing / trial) — aligned with entitlement usage
+        "messages_sent": limits.get("monthly_sent", 0),
+        "messages_limit": limits.get("monthly_limit", 0),
+        "messages_remaining": limits.get("monthly_remaining", 0),
         "daily_sent": limits.get("daily_sent", 0),
         "daily_limit": limits.get("daily_limit", 500),
         "plan": limits.get("plan", "free"),
@@ -8561,8 +8683,10 @@ async def backfill_contact_names(user = Depends(get_current_user)):
 @api_router.post("/whatsapp/disconnect")
 async def whatsapp_disconnect(user = Depends(get_current_user)):
     """Disconnect and remove WhatsApp instance"""
+    from whatsapp_service import whatsapp_owner_id
+
     whatsapp_service = get_whatsapp_service(db)
-    result = await whatsapp_service.disconnect_instance(user["_id"])
+    result = await whatsapp_service.disconnect_instance(whatsapp_owner_id(user))
     return result
 
 # ============ MARK MESSAGES AS READ ============
@@ -11653,6 +11777,10 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
     update_data = {}
     
     if settings.auto_reply_enabled is not None:
+        if settings.auto_reply_enabled:
+            from entitlements import assert_feature, build_entitlements
+            ent = await build_entitlements(db, user)
+            assert_feature(ent, "ai_replies", "AI replies require an active plan or trial.")
         update_data['settings.auto_reply_enabled'] = settings.auto_reply_enabled
 
     if settings.auto_reply_audience is not None:
@@ -14245,6 +14373,16 @@ async def startup_tasks():
         await db.orders.create_index("user_id")
         await db.orders.create_index("customer_id")
 
+        from payhero_billing import ensure_payhero_indexes
+        from paystack_routes import setup_paystack
+        from flutterwave_routes import setup_flutterwave
+        from stripe_routes import setup_stripe
+
+        await ensure_payhero_indexes(db)
+        await setup_paystack(db)
+        await setup_flutterwave(db)
+        await setup_stripe(db)
+
         # Expenses
         await db.expenses.create_index([("user_id", 1), ("created_at", -1)])
 
@@ -14870,8 +15008,6 @@ async def send_booking_reminder(booking_id: str, user=Depends(get_current_user))
 
 
 # ── API: Connect a Facebook Page / Instagram account ──────────────────────────
-# NOTE: these must be registered on api_router BEFORE app.include_router(api_router)
-
 @api_router.post("/meta/connect")
 async def connect_meta_page(request: Request, user=Depends(get_current_user)):
     data = await request.json()
@@ -16228,262 +16364,30 @@ async def telegram_user_disconnect(user=Depends(get_current_user)):
     return {"status": "disconnected", "connected": False}
 
 
-# ── Paystack (Africa payments) ───────────────────────────────────────────────
+# ── Paystack (Africa card/bank/mobile money) ───────────────────────────────────
+from paystack_routes import register_paystack_routes
 
-@api_router.get("/paystack/connection")
-async def paystack_get_connection(user=Depends(get_current_user)):
-    user_id = user.get("business_id", user["_id"])
-    doc = await db.users.find_one({"_id": user_id}, {"paystack_secret_key": 1})
-    connected = bool(doc and doc.get("paystack_secret_key"))
-    biz = (doc or {}).get("business_name", "")
-    return {"connected": connected, "business_name": biz if connected else None}
-
-@api_router.post("/paystack/connect")
-async def paystack_connect(body: dict, user=Depends(get_current_user)):
-    secret_key = (body.get("secret_key") or "").strip()
-    if not secret_key or not secret_key.startswith("sk_"):
-        raise HTTPException(400, "Invalid Paystack secret key (must start with sk_)")
-    user_id = user.get("business_id", user["_id"])
-    # Validate key with Paystack API
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                "https://api.paystack.co/business",
-                headers={"Authorization": f"Bearer {secret_key}"}
-            )
-            if r.status_code != 200:
-                raise HTTPException(400, "Paystack rejected this key — check it is a live or test secret key")
-            biz_name = r.json().get("data", {}).get("name", "")
-    except HTTPException:
-        raise
-    except Exception:
-        biz_name = ""
-    await db.users.update_one({"_id": user_id}, {"$set": {"paystack_secret_key": secret_key}})
-    return {"status": "connected", "connected": True, "business_name": biz_name}
-
-@api_router.delete("/paystack/connect")
-async def paystack_disconnect(user=Depends(get_current_user)):
-    user_id = user.get("business_id", user["_id"])
-    await db.users.update_one({"_id": user_id}, {"$unset": {"paystack_secret_key": ""}})
-    return {"status": "disconnected", "connected": False}
+register_paystack_routes(api_router, db, get_current_user)
 
 
 # ── PayHero (M-Pesa / Kenya mobile money) ────────────────────────────────────
+from payhero_routes import register_payhero_routes
 
-@api_router.get("/payhero/connection")
-async def payhero_get_connection(user=Depends(get_current_user)):
-    user_id = user.get("business_id", user["_id"])
-    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_channel_id": 1})
-    connected = bool(doc and doc.get("payhero_username"))
-    return {
-        "connected": connected,
-        "username": doc.get("payhero_username") if connected else None,
-        "channel_id": doc.get("payhero_channel_id") if connected else None,
-    }
-
-@api_router.post("/payhero/connect")
-async def payhero_connect(body: dict, user=Depends(get_current_user)):
-    username = (body.get("username") or "").strip()
-    password = (body.get("password") or "").strip()
-    if not username or not password:
-        raise HTTPException(400, "Username and password are required")
-    user_id = user.get("business_id", user["_id"])
-    import base64 as _b64
-    encoded = _b64.b64encode(f"{username}:{password}".encode()).decode()
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                "https://backend.payhero.co.ke/api/v2/channels",
-                headers={"Authorization": f"Basic {encoded}"}
-            )
-            if r.status_code == 401:
-                raise HTTPException(400, "PayHero rejected these credentials — check your username and password")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
-    await db.users.update_one(
-        {"_id": user_id},
-        {"$set": {"payhero_username": username, "payhero_password": password}}
-    )
-    return {"status": "connected", "connected": True, "username": username}
-
-@api_router.delete("/payhero/connect")
-async def payhero_disconnect(user=Depends(get_current_user)):
-    user_id = user.get("business_id", user["_id"])
-    await db.users.update_one({"_id": user_id}, {"$unset": {"payhero_username": "", "payhero_password": "", "payhero_channel_id": ""}})
-    return {"status": "disconnected", "connected": False}
+register_payhero_routes(api_router, db, get_current_user)
 
 
-@api_router.get("/payhero/channels")
-async def payhero_list_channels(user=Depends(get_current_user)):
-    """List PayHero channels (paybill / till numbers) for the connected account."""
-    user_id = user.get("business_id", user["_id"])
-    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_password": 1, "payhero_channel_id": 1})
-    if not doc or not doc.get("payhero_username"):
-        raise HTTPException(400, "PayHero not connected")
-    from payhero_service import list_channels as _ph_list_channels
-    try:
-        channels = await _ph_list_channels(doc["payhero_username"], doc["payhero_password"])
-    except Exception as e:
-        raise HTTPException(502, f"PayHero API error: {e}")
-    return {"channels": channels, "selected_channel_id": doc.get("payhero_channel_id")}
+# ── Flutterwave (Africa card/bank + subaccount splits) ───────────────────────
+from flutterwave_routes import register_flutterwave_routes
 
+register_flutterwave_routes(api_router, db, get_current_user)
 
-@api_router.post("/payhero/channel")
-async def payhero_set_channel(body: dict, user=Depends(get_current_user)):
-    """Save which channel (paybill/till) to use for STK push and webhook matching."""
-    channel_id = body.get("channel_id")
-    if not channel_id:
-        raise HTTPException(400, "channel_id required")
-    user_id = user.get("business_id", user["_id"])
-    await db.users.update_one({"_id": user_id}, {"$set": {"payhero_channel_id": channel_id}})
-    return {"status": "ok", "channel_id": channel_id}
+from stripe_routes import register_stripe_routes
 
+register_stripe_routes(api_router, db, get_current_user)
 
-@api_router.post("/payhero/stk-push")
-async def payhero_stk_push(body: dict, user=Depends(get_current_user)):
-    """Send an M-Pesa STK push (payment prompt) to a customer's phone."""
-    phone = (body.get("phone") or "").strip()
-    amount = body.get("amount")
-    external_reference = (body.get("external_reference") or body.get("order_number") or "").strip()
-    customer_name = (body.get("customer_name") or "").strip()
+from merchant_payments_routes import register_merchant_payments_routes
 
-    if not phone or not amount:
-        raise HTTPException(400, "phone and amount are required")
-
-    user_id = user.get("business_id", user["_id"])
-    doc = await db.users.find_one({"_id": user_id}, {"payhero_username": 1, "payhero_password": 1, "payhero_channel_id": 1})
-    if not doc or not doc.get("payhero_username"):
-        raise HTTPException(400, "PayHero not connected")
-    if not doc.get("payhero_channel_id"):
-        raise HTTPException(400, "No PayHero channel selected — go to Integrations and pick a channel")
-
-    backend_url = os.environ.get("BACKEND_URL", "").rstrip("/")
-    callback_url = f"{backend_url}/api/webhooks/payhero"
-
-    from payhero_service import stk_push as _ph_stk_push
-    try:
-        result = await _ph_stk_push(
-            username=doc["payhero_username"],
-            password=doc["payhero_password"],
-            channel_id=int(doc["payhero_channel_id"]),
-            phone=phone,
-            amount=float(amount),
-            external_reference=external_reference,
-            callback_url=callback_url,
-            customer_name=customer_name,
-        )
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(502, f"PayHero rejected the request: {e.response.text[:200]}")
-    except Exception as e:
-        raise HTTPException(502, f"PayHero error: {e}")
-
-    return {"status": "sent", "payhero_response": result}
-
-
-@api_router.post("/webhooks/payhero")
-async def payhero_webhook(request: Request, background_tasks: BackgroundTasks):
-    """
-    Receive payment notifications from PayHero.
-    Configure in PayHero dashboard: Callback URL = https://your-domain/api/webhooks/payhero
-    """
-    try:
-        payload = await request.json()
-    except Exception:
-        return {"status": "ok"}  # always 200 to PayHero
-
-    from payhero_service import parse_webhook as _ph_parse, process_payment as _ph_process
-
-    parsed = _ph_parse(payload)
-    logging.info(f"[PayHero webhook] status={parsed['status']} phone={parsed['phone']} amount={parsed['amount']} ref={parsed['external_ref']}")
-
-    if not parsed["success"]:
-        return {"status": "ok", "note": "non-success event acknowledged"}
-
-    background_tasks.add_task(_payhero_process_and_notify, payload, parsed)
-    return {"status": "ok"}
-
-
-async def _payhero_process_and_notify(payload: dict, parsed: dict):
-    """Background: match payment → update order → send receipt + notifications."""
-    from payhero_service import process_payment as _ph_process
-    try:
-        ctx = await _ph_process(db, parsed)
-    except Exception as e:
-        logging.error(f"[PayHero] process_payment error: {e}")
-        return
-
-    if not ctx.get("handled"):
-        logging.warning(f"[PayHero] Payment not handled: {ctx.get('reason')}")
-        return
-
-    user_id = ctx["user_id"]
-    user = ctx["user"]
-    customer = ctx.get("customer")
-    customer_name = ctx["customer_name"]
-    phone = ctx["phone"]
-    amount = ctx["amount"]
-    order_number = ctx.get("order_number")
-    provider_ref = ctx.get("provider_ref", "")
-
-    # Build receipt text
-    receipt_lines = [f"✅ *Payment Received — KES {int(amount):,}*"]
-    if order_number:
-        receipt_lines.append(f"Order: *{order_number}*")
-    if provider_ref:
-        receipt_lines.append(f"M-Pesa Ref: *{provider_ref}*")
-    receipt_lines.append("Thank you! We'll process your order shortly. 🙏")
-    receipt_text = "\n".join(receipt_lines)
-
-    # Send WhatsApp receipt to customer
-    try:
-        from whatsapp_service import get_whatsapp_service
-        ws = get_whatsapp_service(db)
-        await ws.send_message(
-            user_id=str(user_id),
-            to_number=phone,
-            message=receipt_text,
-            customer_name=customer_name,
-            send_context="payment_receipt",
-        )
-        logging.info(f"[PayHero] Receipt sent to {phone}")
-    except Exception as e:
-        logging.error(f"[PayHero] WhatsApp receipt failed: {e}")
-
-    # Push notification to business owner
-    push_token = user.get("push_token")
-    if push_token:
-        try:
-            from notification_service import get_notification_service
-            ns = get_notification_service()
-            title = f"💰 KES {int(amount):,} received"
-            body = f"{customer_name}" + (f" — {order_number}" if order_number else "") + (f" (Ref: {provider_ref})" if provider_ref else "")
-            await ns.send_notification(push_token=push_token, title=title, body=body, data={"type": "payment_received"})
-        except Exception as e:
-            logging.error(f"[PayHero] Push notification failed: {e}")
-
-    # Fire workflow trigger
-    try:
-        from workflows.engine import fire_trigger
-        from workflows.models import WorkflowEvent
-        from whatsapp_service import get_whatsapp_service
-        ws = get_whatsapp_service(db)
-        event = WorkflowEvent(
-            trigger_type="payhero_payment_received",
-            user_id=user_id,
-            customer_id=ctx.get("customer_id"),
-            from_number=phone,
-            data={
-                "amount": amount,
-                "order_number": order_number,
-                "provider_ref": provider_ref,
-                "customer_name": customer_name,
-            },
-        )
-        await fire_trigger(db, event, ws)
-    except Exception as e:
-        logging.error(f"[PayHero] Workflow trigger failed: {e}")
+register_merchant_payments_routes(api_router, db, get_current_user)
 
 
 # ── AI Assistant routes ──

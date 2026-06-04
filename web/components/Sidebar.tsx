@@ -61,6 +61,7 @@ import {
   NotebookPen,
   Landmark,
   Handshake,
+  Wallet,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -86,6 +87,8 @@ function coreNavItems() {
     { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
+    { href: "/dashboard/billing", label: "Billing", icon: CreditCard },
+    { href: "/dashboard/manage-payment", label: "Manage payment", icon: Wallet },
     { href: "/dashboard/settings", label: "Settings", icon: Settings },
   ] as const;
 }

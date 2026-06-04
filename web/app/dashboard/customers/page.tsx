@@ -6,6 +6,8 @@ import { formatCurrency, timeAgo } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 import { Search, UserPlus, MessageSquare, Loader2, X, Users, Crown, TrendingUp, Eye, Trash2 } from "lucide-react";
 import { useBusiness } from "@/contexts/BusinessContext";
+import { confirmDialog } from "@/lib/confirmDialog";
+import { toast } from "sonner";
 
 const INPUT_CLASS =
   "w-full text-sm border border-slate-200 rounded-lg outline-none transition-colors focus:border-brand";
@@ -68,10 +70,22 @@ export default function CustomersPage() {
     } finally { setSaving(false); }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm("Delete this customer?")) return;
-    await customersApi.delete(id);
-    await load();
+  async function handleDelete(id: string, name?: string) {
+    const ok = await confirmDialog({
+      title: "Delete customer?",
+      text: name
+        ? `${name} will be removed permanently. This cannot be undone.`
+        : "This customer will be removed permanently. This cannot be undone.",
+      confirmText: "Yes, delete",
+    });
+    if (!ok) return;
+    try {
+      await customersApi.delete(id);
+      toast.success("Customer deleted");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not delete customer");
+    }
   }
 
   async function handleStageChange(customerId: string, stage: string) {
