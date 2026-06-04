@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
@@ -62,6 +63,8 @@ import {
   Landmark,
   Handshake,
   Wallet,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -115,6 +118,138 @@ const BUSINESS_NAV_BASE = [
 
 const DISPLAY_NAV = [{ href: "/dashboard/kds", label: "KDS Display", icon: Monitor }] as const;
 
+
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "zilo-sidebar-collapsed";
+
+function CollapsedHoverLabel({
+  label,
+  target,
+  show,
+}: {
+  label: string;
+  target: HTMLElement | null;
+  show: boolean;
+}) {
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  useEffect(() => {
+    if (!show || !target) return;
+    const update = () => {
+      const r = target.getBoundingClientRect();
+      setPos({ top: r.top + r.height / 2, left: r.right + 10 });
+    };
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [show, target, label]);
+
+  if (!show || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      role="tooltip"
+      className="fixed z-[200] -translate-y-1/2 pointer-events-none whitespace-nowrap rounded-md border border-white/15 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
+      style={{ top: pos.top, left: pos.left }}
+    >
+      {label}
+    </div>,
+    document.body
+  );
+}
+
+type SidebarNavLinkProps = {
+  href: string;
+  label: string;
+  icon: React.ElementType;
+  active: boolean;
+  collapsed: boolean;
+  badge?: number;
+  compact?: boolean;
+};
+
+function SidebarNavLink({ href, label, icon: Icon, active, collapsed, badge = 0, compact }: SidebarNavLinkProps) {
+  const [hoverTarget, setHoverTarget] = useState<HTMLElement | null>(null);
+  const iconSize = compact ? 13 : 15;
+
+  return (
+    <>
+      <Link
+        href={href}
+        onMouseEnter={(e) => collapsed && setHoverTarget(e.currentTarget)}
+        onMouseLeave={() => setHoverTarget(null)}
+        onFocus={(e) => collapsed && setHoverTarget(e.currentTarget)}
+        onBlur={() => setHoverTarget(null)}
+        className={cn(
+          "relative flex items-center rounded-lg font-medium transition-colors",
+          compact ? "gap-2.5 px-3 py-1.5 text-xs" : "gap-2.5 px-3 py-2 text-sm",
+          collapsed && "justify-center px-2",
+          active
+            ? compact
+              ? "bg-brand/20 text-brand-light"
+              : "bg-brand text-brand-ink shadow-sm shadow-brand/20"
+            : compact
+              ? "text-slate-500 hover:bg-white/5 hover:text-slate-300"
+              : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
+        )}
+      >
+        <Icon size={iconSize} className="shrink-0" />
+        {!collapsed && <span className="flex-1">{label}</span>}
+        {badge > 0 && (
+          <span
+            className={cn(
+              "rounded-full bg-amber-400 font-bold text-brand-ink",
+              collapsed
+                ? "absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center px-1 text-[9px]"
+                : "px-1.5 py-0.5 text-[10px]"
+            )}
+          >
+            {badge}
+          </span>
+        )}
+      </Link>
+      <CollapsedHoverLabel label={label} target={hoverTarget} show={collapsed && hoverTarget !== null} />
+    </>
+  );
+}
+
+
+function SidebarIconButton({
+  label,
+  collapsed,
+  onClick,
+  children,
+  className,
+}: {
+  label: string;
+  collapsed: boolean;
+  onClick?: () => void;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const [hoverTarget, setHoverTarget] = useState<HTMLElement | null>(null);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onClick}
+        onMouseEnter={(e) => collapsed && setHoverTarget(e.currentTarget)}
+        onMouseLeave={() => setHoverTarget(null)}
+        onFocus={(e) => collapsed && setHoverTarget(e.currentTarget)}
+        onBlur={() => setHoverTarget(null)}
+        className={className}
+      >
+        {children}
+      </button>
+      <CollapsedHoverLabel label={label} target={hoverTarget} show={collapsed && hoverTarget !== null} />
+    </>
+  );
+}
+
 type SidebarProps = {
   mobileOpen?: boolean;
   onMobileClose?: () => void;
@@ -123,7 +258,29 @@ type SidebarProps = {
 export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const [collapsed, setCollapsed] = useState(false);
   const [ziloStagedCount, setZiloStagedCount] = useState(0);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
+      if (stored === "1") setCollapsed(true);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  function toggleCollapsed() {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
   const { showBookingsNav, bookingsNavLabel, bookingsNavHref, ui, sidebarFeatures } = useBusiness();
   const workspaceNav = coreNavItems();
 
@@ -235,30 +392,50 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
     return pathname.startsWith(href);
   }
 
-  const asideClassName =
-    "flex flex-col w-56 min-h-screen bg-[#071a10] text-slate-100 shrink-0 border-r border-brand-dark/25";
+  const desktopCollapsed = collapsed && !mobileOpen;
+
+  const asideClassName = cn(
+    "flex flex-col min-h-screen bg-[#071a10] text-slate-100 shrink-0 border-r border-brand-dark/25 transition-[width] duration-200 ease-out",
+    desktopCollapsed ? "w-[4.25rem]" : "w-56"
+  );
 
   const navContent = (
     <>
       {/* Logo - Sticky Header */}
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-1 px-5 py-4 border-b border-white/10 bg-[#071a10]">
-        <div className="flex items-center gap-1 min-w-0">
+      <div
+        className={cn(
+          "sticky top-0 z-10 flex items-center border-b border-white/10 bg-[#071a10] py-4",
+          desktopCollapsed ? "justify-between gap-1 px-2" : "justify-between gap-1 px-4"
+        )}
+      >
+        <div className={cn("flex min-w-0 items-center", "gap-1.5")}>
           <ZiloLogo size={28} className="shrink-0" />
-          <span className="font-semibold text-sm tracking-tight">Zilo</span>
+          {!desktopCollapsed && <span className="text-sm font-semibold tracking-tight">Zilo</span>}
         </div>
-        {onMobileClose && (
+        <div className="flex items-center gap-0.5">
           <button
             type="button"
-            onClick={onMobileClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-slate-100 lg:hidden"
-            aria-label="Close menu"
+            onClick={toggleCollapsed}
+            className="hidden rounded-lg p-1.5 text-slate-400 transition hover:bg-white/10 hover:text-slate-100 lg:inline-flex"
+            aria-label={desktopCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={desktopCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            <X size={18} />
+            {desktopCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
           </button>
-        )}
+          {onMobileClose && (
+            <button
+              type="button"
+              onClick={onMobileClose}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-slate-100 lg:hidden"
+              aria-label="Close menu"
+            >
+              <X size={18} />
+            </button>
+          )}
+        </div>
       </div>
 
-      {ziloStagedCount > 0 && (
+      {ziloStagedCount > 0 && !desktopCollapsed && (
         <div className="mx-3 mt-3 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2.5">
           <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/70">Zilo</p>
           <p className="mt-1 text-xs leading-snug text-slate-200">
@@ -269,36 +446,29 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       )}
 
       {/* Nav groups - Scrollable */}
-      <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+      <nav className={cn("flex-1 space-y-4 overflow-y-auto py-3", desktopCollapsed ? "px-1.5" : "px-3")}>
         {NAV_GROUPS.map((group) => (
           <div key={group.label}>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-brand-light/35 px-3 mb-1">
-              {group.label}
-            </p>
+            {!desktopCollapsed && (
+              <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-brand-light/35">
+                {group.label}
+              </p>
+            )}
             <div className="space-y-0.5">
               {group.items.map((item: { href: string; label: string; icon: React.ElementType; exact?: boolean }) => {
                 const { href, label, icon: Icon } = item;
                 const exact = "exact" in item ? item.exact : undefined;
                 const badge = group.label === "Zilo" && href === "/dashboard" ? ziloStagedCount : 0;
                 return (
-                <Link
-                  key={href}
-                  href={href}
-                  className={cn(
-                    "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-                    linkActive(href, exact)
-                      ? "bg-brand text-brand-ink shadow-sm shadow-brand/20"
-                      : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
-                  )}
-                >
-                  <Icon size={15} />
-                  <span className="flex-1">{label}</span>
-                  {badge > 0 && (
-                    <span className="rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-brand-ink">
-                      {badge}
-                    </span>
-                  )}
-                </Link>
+                  <SidebarNavLink
+                    key={href}
+                    href={href}
+                    label={label}
+                    icon={Icon}
+                    active={linkActive(href, exact)}
+                    collapsed={desktopCollapsed}
+                    badge={badge}
+                  />
                 );
               })}
             </div>
@@ -307,45 +477,58 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       </nav>
 
       {/* Footer - Sticky */}
-      <div className="sticky bottom-0 z-10 bg-[#071a10] border-t border-white/10 pt-3 pb-4 px-3 space-y-2">
-        {/* ⌘K hint */}
-        <button
-          type="button"
-          onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true }))}
-          className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-left text-xs text-slate-400 transition hover:bg-white/10 hover:text-slate-200"
+      <div
+        className={cn(
+          "sticky bottom-0 z-10 space-y-2 border-t border-white/10 bg-[#071a10] pb-4 pt-3",
+          desktopCollapsed ? "px-2" : "px-3"
+        )}
+      >
+        <SidebarIconButton
+          label="Ask Zilo anything…"
+          collapsed={desktopCollapsed}
+          onClick={() =>
+            window.dispatchEvent(
+              new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true })
+            )
+          }
+          className={cn(
+            "flex w-full items-center rounded-lg border border-white/10 bg-white/5 text-left text-xs text-slate-400 transition hover:bg-white/10 hover:text-slate-200",
+            desktopCollapsed ? "justify-center px-2 py-2.5" : "gap-2 px-3 py-2"
+          )}
         >
           <Search size={12} className="shrink-0" />
-          <span className="flex-1">Ask Zilo anything…</span>
-          <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">⌘K</kbd>
-        </button>
+          {!desktopCollapsed && <span className="flex-1">Ask Zilo anything…</span>}
+          {!desktopCollapsed && (
+            <kbd className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">⌘K</kbd>
+          )}
+        </SidebarIconButton>
 
-        {/* Utility links — Action Log & Team, rarely used */}
-        <div className="border-t border-white/10 pt-2 space-y-0.5">
+        <div className="space-y-0.5 border-t border-white/10 pt-2">
           {ZILO_UTILITY_NAV.map(({ href, label, icon: Icon }) => (
-            <Link
+            <SidebarNavLink
               key={href}
               href={href}
-              className={cn(
-                "flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
-                linkActive(href)
-                  ? "bg-brand/20 text-brand-light"
-                  : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
-              )}
-            >
-              <Icon size={13} />
-              {label}
-            </Link>
+              label={label}
+              icon={Icon}
+              active={linkActive(href)}
+              collapsed={desktopCollapsed}
+              compact
+            />
           ))}
         </div>
 
-        {/* Logout */}
-        <button
+        <SidebarIconButton
+          label="Log out"
+          collapsed={desktopCollapsed}
           onClick={handleLogout}
-          className="flex items-center gap-2.5 px-3 py-2 w-full rounded-lg text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-slate-100 transition-colors"
+          className={cn(
+            "flex w-full items-center rounded-lg text-sm font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100",
+            desktopCollapsed ? "justify-center px-2 py-2" : "gap-2.5 px-3 py-2"
+          )}
         >
-          <LogOut size={15} />
-          Log out
-        </button>
+          <LogOut size={15} className="shrink-0" />
+          {!desktopCollapsed && "Log out"}
+        </SidebarIconButton>
       </div>
     </>
   );
