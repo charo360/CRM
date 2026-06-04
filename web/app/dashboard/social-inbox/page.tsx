@@ -1345,8 +1345,11 @@ export default function SocialInboxPage() {
         );
       }
       setSendResult("ok");
-      // 2. Silent reload to sync actual server-side IDs and timestamps in the background
-      await openConversation(selected, true);
+      setSending(false); // Stop loading immediately since the message is successfully delivered!
+      // 2. Silent reload to sync actual server-side IDs and timestamps in the background (non-blocking)
+      openConversation(selected, true).catch((err) => {
+        console.warn("Background conversation refresh failed:", err);
+      });
     } catch (e) {
       // Revert optimistic update on failure
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
