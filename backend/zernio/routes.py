@@ -486,6 +486,15 @@ def make_zernio_router(db, user_dep):
         except HTTPException:
             raise
         except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                import composio_inbox
+                logger.info(f"[composio-inbox] Zernio inbox returned 403, falling back to Composio for user {user['_id']}")
+                try:
+                    convs = await composio_inbox.list_conversations(user["_id"], platform)
+                    return {"conversations": convs, "data": convs, "messages": []}
+                except Exception as exc:
+                    logger.error(f"[composio-inbox] Composio inbox fallback failed: {exc}", exc_info=True)
+                    return {"conversations": [], "data": [], "messages": []}
             if e.response.status_code == 404:
                 return {"conversations": [], "data": [], "messages": []}
             raise HTTPException(e.response.status_code, e.response.text)
@@ -501,18 +510,31 @@ def make_zernio_router(db, user_dep):
         await _need(user, platform, "read")
         try:
             # New API requires accountId for conversation-scoped reads.
-            if account_id:
+            if account_id and not str(account_id).startswith("ca_"):
                 data = await _get(
                     f"/inbox/conversations/{conversation_id}/messages",
                     {"accountId": account_id, "limit": 100, "sortOrder": "asc"},
                 )
             else:
+                # If account_id starts with ca_ (Composio), force fallback immediately
+                if account_id and str(account_id).startswith("ca_"):
+                    raise httpx.HTTPStatusError("Composio Connection", request=None, response=httpx.Response(403))
                 # Backward compatibility fallback (older clients without account id).
                 data = await _get(f"/inbox/conversations/{conversation_id}", {})
             return data
         except HTTPException:
             raise
         except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                import composio_inbox
+                logger.info(f"[composio-inbox] Zernio conversation returned 403, falling back to Composio for user {user['_id']}")
+                try:
+                    conn_id = account_id or ""
+                    msgs = await composio_inbox.get_conversation_messages(user["_id"], conversation_id, conn_id)
+                    return {"messages": msgs, "data": msgs}
+                except Exception as exc:
+                    logger.error(f"[composio-inbox] Composio get_conversation fallback failed: {exc}", exc_info=True)
+                    return {"messages": [], "data": []}
             if e.response.status_code == 404:
                 return {"messages": [], "data": []}
             raise HTTPException(e.response.status_code, e.response.text)
@@ -521,6 +543,21 @@ def make_zernio_router(db, user_dep):
     async def send_message(payload: SendMessageBody, user=user_dep):
         """Reply to a conversation."""
         await _need(user, payload.platform, "reply")
+        
+        # Check if account_id is a Composio connection ID
+        if payload.account_id and str(payload.account_id).startswith("ca_"):
+            import composio_inbox
+            logger.info(f"[composio-inbox] Sending message via Composio for user {user['_id']}")
+            res = await composio_inbox.send_message(
+                user["_id"],
+                payload.conversation_id,
+                payload.account_id,
+                payload.message
+            )
+            if res.get("success"):
+                return {"status": "sent", "data": res.get("data")}
+            raise HTTPException(400, detail=res.get("error") or "Failed to send message via Composio")
+            
         try:
             def _with_meta_fields(base: Dict[str, Any]) -> Dict[str, Any]:
                 out = dict(base)
@@ -576,15 +613,53 @@ def make_zernio_router(db, user_dep):
             )
             account_id = str((match or {}).get("accountId") or "")
             if account_id:
+                if account_id.startswith("ca_"):
+                    # Composio connection resolved, use it
+                    import composio_inbox
+                    res = await composio_inbox.send_message(
+                        user["_id"],
+                        payload.conversation_id,
+                        account_id,
+                        payload.message
+                    )
+                    if res.get("success"):
+                        return {"status": "sent", "data": res.get("data")}
+                    raise HTTPException(400, detail=res.get("error") or "Failed to send message via Composio")
                 return await _send_with_fallbacks(payload.conversation_id, account_id)
             raise HTTPException(400, "Missing account_id for inbox send")
         except httpx.HTTPStatusError as e:
-            body = e.response.text[:500]
+            body = e.response.text[:500] if e.response else "No response details"
             logger.warning(
-                f"[zernio] inbox send HTTP {e.response.status_code} for conv={payload.conversation_id}: {body}"
+                f"[zernio] inbox send HTTP {e.response.status_code if e.response else 'N/A'} for conv={payload.conversation_id}: {body}"
             )
+            
+            # Fallback to Composio if Zernio failed with 403
+            if e.response and e.response.status_code == 403:
+                import composio_inbox
+                conn_id = payload.account_id or ""
+                if not conn_id.startswith("ca_"):
+                    try:
+                        convs = await composio_inbox.list_conversations(user["_id"])
+                        for c in convs:
+                            if c["id"] == payload.conversation_id:
+                                conn_id = c["accountId"]
+                                break
+                    except Exception:
+                        pass
+                if conn_id.startswith("ca_"):
+                    logger.info(f"[composio-inbox] Zernio send returned 403, falling back to Composio send for user {user['_id']}")
+                    res = await composio_inbox.send_message(
+                        user["_id"],
+                        payload.conversation_id,
+                        conn_id,
+                        payload.message
+                    )
+                    if res.get("success"):
+                        return {"status": "sent", "data": res.get("data")}
+                    raise HTTPException(400, detail=res.get("error") or "Failed to send message via Composio")
+                    
             msg = _extract_error_message(body)
-            raise HTTPException(e.response.status_code, f"Zernio {e.response.status_code}: {msg}")
+            raise HTTPException(e.response.status_code if e.response else 500, f"Zernio {e.response.status_code if e.response else 500}: {msg}")
 
     @router.post("/inbox/new")
     async def new_conversation(payload: CreateConversationBody, user=user_dep):
