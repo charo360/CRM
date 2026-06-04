@@ -1160,10 +1160,12 @@ export default function SocialInboxPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  async function openConversation(conv: Conversation) {
+  async function openConversation(conv: Conversation, silent = false) {
     setSelected(conv);
-    setLoadingMsgs(true);
-    setMessages([]);
+    if (!silent) {
+      setLoadingMsgs(true);
+      setMessages([]);
+    }
     try {
       if (conv.source === "email" && conv.threadId) {
         const res = await fetch("/api/email", {
@@ -1194,7 +1196,9 @@ export default function SocialInboxPage() {
         const normalized = pickList<Message>(data, ["messages"]).map((m) => normalizeMessage(m, conv));
         setMessages(rebalanceDirections(normalized, conv));
       }
-    } finally { setLoadingMsgs(false); }
+    } finally {
+      if (!silent) setLoadingMsgs(false);
+    }
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   }
 
@@ -1203,6 +1207,24 @@ export default function SocialInboxPage() {
     setSending(true);
     setSendResult(null);
     setSendError(null);
+    
+    const replyText = reply.trim();
+    
+    // 1. Optimistic UI update: instantly append sent message to the chat list
+    const tempId = "temp-" + Date.now();
+    const tempMsg: Message = {
+      id: tempId,
+      content: replyText,
+      direction: "out",
+      created_at: new Date().toISOString(),
+      sender: "Me",
+    };
+    setMessages((prev) => [...prev, tempMsg]);
+    setReply(""); // Clear text input box instantly
+    
+    // Auto-scroll to show the newly added message
+    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+
     try {
       if (selected.source === "email") {
         const to = extractEmailAddress(selected.participant_name || selected.participant || "");
@@ -1216,27 +1238,30 @@ export default function SocialInboxPage() {
             provider: selected.emailProvider || selected.platform,
             to,
             subject,
-            replyBody: reply.trim(),
+            replyBody: replyText,
           }),
         });
         if (!res.ok) throw new Error(await res.text());
       } else {
         await zernioApi.send(
           selected.id,
-          reply.trim(),
+          replyText,
           selected.accountId || selected.account_id,
           selected.platform,
           facebookReplyWindowClosed ? "MESSAGE_TAG" : undefined,
           facebookReplyWindowClosed ? fbTag : undefined
         );
       }
-      setReply("");
       setSendResult("ok");
-      await openConversation(selected);
+      // 2. Silent reload to sync actual server-side IDs and timestamps in the background
+      await openConversation(selected, true);
     } catch (e) {
+      // Revert optimistic update on failure
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setReply(replyText); // Restore input so user doesn't lose text
+      
       setSendResult("err");
       const raw = e instanceof Error ? e.message : "Could not send message";
-      // Common case: Facebook 24-hour messaging window limits replies on old threads.
       if (raw.toLowerCase().includes("24") || raw.toLowerCase().includes("window")) {
         setSendError(`${raw}. This thread may be outside Facebook's reply window.`);
       } else {
