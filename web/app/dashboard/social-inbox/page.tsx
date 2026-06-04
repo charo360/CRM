@@ -1160,6 +1160,84 @@ export default function SocialInboxPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Background polling for new messages in the active conversation
+  useEffect(() => {
+    if (!selected) return;
+
+    const interval = setInterval(() => {
+      // Only poll if we are not currently loading messages or sending a message
+      if (!loadingMsgs && !sending) {
+        openConversation(selected, true).catch((err) => {
+          console.warn("Polling messages failed:", err);
+        });
+      }
+    }, 8000); // Poll active conversation messages every 8 seconds
+
+    return () => clearInterval(interval);
+  }, [selected, loadingMsgs, sending]);
+
+  // Background polling for new conversations in the inbox list
+  useEffect(() => {
+    if (!connected) return;
+
+    const interval = setInterval(async () => {
+      if (loading || sending) return;
+      try {
+        let socialConversations: Conversation[] = [];
+        const status = await zernioApi.status().catch(() => ({}));
+        const socialConnected = (status as { connected?: boolean }).connected === true;
+        
+        if (socialConnected) {
+          const inbox = await zernioApi.inbox(platformFilter || undefined);
+          socialConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
+        }
+
+        let emailConversations: Conversation[] = [];
+        const emailRes = await fetch("/api/email?limit=50", { headers: authHeaders() }).catch(() => null);
+        if (emailRes && emailRes.ok) {
+          const emailPayload = await emailRes.json() as { threads?: Array<Record<string, unknown>> };
+          const emailThreads = Array.isArray(emailPayload?.threads) ? emailPayload.threads : [];
+          emailConversations = emailThreads.map((t) => {
+            const provider = String(t.provider || "gmail").toLowerCase() as "gmail" | "microsoft";
+            const threadId = String(t.id || "");
+            const from = String(t.from || "").trim();
+            return normalizeConversation({
+              id: `email:${provider}:${threadId}`,
+              threadId,
+              source: "email",
+              emailProvider: provider,
+              platform: provider,
+              participant_name: from || "(unknown sender)",
+              participant: from || "(unknown sender)",
+              last_message: String(t.snippet || ""),
+              last_message_at: String(t.date || ""),
+              unread: Number(t.unread ? 1 : 0),
+              accountId: "",
+              account_id: "",
+              subject: String(t.subject || "(no subject)"),
+            } as Conversation);
+          });
+        }
+
+        const merged = [...socialConversations, ...emailConversations].sort((a, b) =>
+          new Date(b.last_message_at || 0).getTime() - new Date(a.last_message_at || 0).getTime()
+        );
+        
+        setConversations((prev) => {
+          const hasChanged = prev.length !== merged.length || prev.some((c, idx) => {
+            const m = merged[idx];
+            return !m || c.id !== m.id || c.last_message_at !== m.last_message_at || c.unread !== m.unread;
+          });
+          return hasChanged ? merged : prev;
+        });
+      } catch (err) {
+        console.warn("Background inbox polling failed:", err);
+      }
+    }, 15000); // Poll conversation list every 15 seconds
+
+    return () => clearInterval(interval);
+  }, [connected, loading, sending, platformFilter, accountFilter]);
+
   async function openConversation(conv: Conversation, silent = false) {
     setSelected(conv);
     if (!silent) {
@@ -1190,16 +1268,30 @@ export default function SocialInboxPage() {
             created_at: m.date || m.created_at || new Date().toISOString(),
           } as Message;
         });
-        setMessages(normalized);
+        
+        setMessages((prev) => {
+          const hasNew = prev.length !== normalized.length || prev.some((m, i) => !normalized[i] || m.id !== normalized[i].id);
+          if (hasNew || !silent) {
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+          }
+          return normalized;
+        });
       } else {
         const data = await zernioApi.conversation(conv.id, conv.accountId || conv.account_id);
         const normalized = pickList<Message>(data, ["messages"]).map((m) => normalizeMessage(m, conv));
-        setMessages(rebalanceDirections(normalized, conv));
+        const rebalanced = rebalanceDirections(normalized, conv);
+        
+        setMessages((prev) => {
+          const hasNew = prev.length !== rebalanced.length || prev.some((m, i) => !rebalanced[i] || m.id !== rebalanced[i].id);
+          if (hasNew || !silent) {
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+          }
+          return rebalanced;
+        });
       }
     } finally {
       if (!silent) setLoadingMsgs(false);
     }
-    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   }
 
   async function sendReply() {
