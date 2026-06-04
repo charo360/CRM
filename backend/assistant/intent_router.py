@@ -556,6 +556,17 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "zilo cost", "about zilo", "free plan", "growth plan", "zilo feature list",
         "billing on zilo", "subscription plans", "billing info zilo", "tell me about zilo",
     ],
+    "forms": [
+        "create a form", "make a form", "build a form", "new form",
+        "create form", "make form", "build form", "generate a form",
+        "booking form", "feedback form", "contact form", "survey form",
+        "registration form", "application form", "order form", "intake form",
+        "inquiry form", "appointment form", "lead form", "sign up form",
+        "collect information", "collect details", "gather information",
+        "send a form", "share a form", "form to collect",
+        "my forms", "list forms", "show my forms",
+        "edit form", "update form", "delete form",
+    ],
 
     # ── Spreadsheet / Workspace integrations ──────────────────────────────────
     "google_sheets": [
@@ -598,6 +609,11 @@ def _is_continuation_message(msg_lower: str) -> bool:
     """True for short, ambiguous follow-ups that are clearly continuing the same flow."""
     if _looks_like_agent_switch_request(msg_lower):
         return False
+    # Matches letter options like "A", "B", "A.", "B.", "A)", "B)"
+    if msg_lower.strip() in {"a", "b", "c", "d", "e"}:
+        return True
+    if re.match(r'^[a-e][\.\)\s]', msg_lower):
+        return True
     words = msg_lower.split()
     if len(words) > 6:
         return False
@@ -794,6 +810,7 @@ async def _llm_route_choice(
             "- follow_ups: follow-up reminders, overdue contacts, reconnect scheduling\n"
             "- bookings: appointments, reservations, scheduling services, availability\n"
             "- automations: workflow triggers, auto-reply rules, sequences, automation setup\n"
+            "- forms: creating, managing, sharing, or previewing lead-capture/booking/feedback/survey forms conversationally\n"
             "- zilo_support: questions about Zilo (features, CRM capabilities, help guides, subscription plans, and billing/upgrade prices)\n"
             "- general: account status questions, cross-domain fallback\n\n"
             "DISAMBIGUATION RULES (apply in order):\n"
@@ -811,7 +828,8 @@ async def _llm_route_choice(
             "12. 'schedule post' / 'content calendar' / 'when to post' → social_scheduler (not creative)\n"
             "13. 'social DM' / 'social inbox' / 'reply to social message' → social_inbox (not messages — messages=WhatsApp)\n"
             "14. 'send to all customers' / 'bulk message' / 'mass message' → broadcasts (not messages)\n"
-            "15. 'how many social accounts' / 'connected integrations' → general\n\n"
+            "15. 'how many social accounts' / 'connected integrations' → general\n"
+            "16. 'form' / 'create a form' / 'survey' / 'feedback form' → forms\n\n"
             f"Available agents:\n{agent_menu}\n\n"
             f"Recent context:\n{recent}\n\n"
             f"User message: \"{message}\"\n\n"
@@ -885,6 +903,14 @@ async def route_to_agent(
 
     _AGENT_ALIASES_LOCAL = {"design": "creative"}
     prev_agent_resolved = _AGENT_ALIASES_LOCAL.get(prev_agent or "", prev_agent or "")
+
+    # ── 0d. Sticky active agent for generic continuation replies ─────────────
+    # If the message is a short continuation/option reply (e.g. "yes", "option A", "go ahead"),
+    # do NOT switch agents — keep the active agent who prompted the user.
+    if prev_agent_resolved and prev_agent_resolved in agent_registry:
+        if _is_continuation_message(msg_lower):
+            logger.info("[IntentRouter] sticky → %s (generic continuation reply)", prev_agent_resolved)
+            return prev_agent_resolved
 
     # ── 0a. Sticky creative — only for active stateful design flows ───────────
     # Creative is heavily stateful (template / platform / staged image / render).

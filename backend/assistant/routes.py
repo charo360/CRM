@@ -1111,8 +1111,8 @@ def _mk_router(db, get_current_user):
 
     @router.post("/export")
     async def export_document(req: Request, user=Depends(get_current_user)):
-        """Convert markdown content to PDF or DOCX and stream the file back."""
-        from .document_generator import cleanup_file, generate_docx, generate_pdf
+        """Convert content to PDF / DOCX, or build a SaaS financial model (XLSX), and stream it back."""
+        from .document_generator import cleanup_file, generate_docx, generate_pdf, generate_xlsx
 
         body = await req.json()
         content: str = (body.get("content") or "").strip()
@@ -1120,10 +1120,11 @@ def _mk_router(db, get_current_user):
         raw_name: str = (body.get("filename") or "zilo-export").strip()
         business_name: str = (body.get("business_name") or "").strip()
 
-        if not content:
+        # XLSX is a financial model driven by assumptions, not markdown content.
+        if fmt != "xlsx" and not content:
             raise HTTPException(400, "content is required")
-        if fmt not in ("pdf", "docx"):
-            raise HTTPException(400, "format must be 'pdf' or 'docx'")
+        if fmt not in ("pdf", "docx", "xlsx"):
+            raise HTTPException(400, "format must be 'pdf', 'docx', or 'xlsx'")
 
         # If no business name supplied, try to look it up from the user record
         if not business_name:
@@ -1151,6 +1152,25 @@ def _mk_router(db, get_current_user):
             if fmt == "pdf":
                 filepath = generate_pdf(content, filename, business_name=business_name, style=doc_style)
                 media = "application/pdf"
+            elif fmt == "xlsx":
+                from .tools import _parse_markdown_tables_to_sheets
+                from .document_generator import generate_multi_sheet_xlsx
+                sheets = _parse_markdown_tables_to_sheets(content) if content else []
+                if sheets:
+                    filepath = generate_multi_sheet_xlsx(
+                        title=raw_name,
+                        sheets=sheets,
+                        business_name=business_name,
+                        style=doc_style,
+                        filename=filename,
+                    )
+                else:
+                    assumptions = body.get("assumptions") if isinstance(body.get("assumptions"), dict) else None
+                    months = body.get("months") or 36
+                    filepath = generate_xlsx(
+                        assumptions, filename, business_name=business_name, style=doc_style, months=months,
+                    )
+                media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             else:
                 filepath = generate_docx(content, filename, business_name=business_name, style=doc_style)
                 media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -1175,10 +1195,12 @@ def _mk_router(db, get_current_user):
             raise HTTPException(404, "Document not found or expired")
         filename = _os.path.basename(filepath)
         ext = filename.rsplit(".", 1)[-1].lower()
-        media = (
-            "application/pdf" if ext == "pdf"
-            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+        if ext == "pdf":
+            media = "application/pdf"
+        elif ext == "xlsx":
+            media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         return FileResponse(path=filepath, media_type=media, filename=filename)
 
     @router.get("/audit")

@@ -58,6 +58,8 @@ export function useMeetingRecorder() {
   const [speakerTags,    setSpeakerTags]    = useState<Record<string, string>>({});
   const [error,          setError]          = useState("");
   const [savedNote,      setSavedNote]      = useState<Record<string, unknown> | null>(null);
+  const [activeMeeting,   setActiveMeeting]   = useState<MeetingInfo | null>(null);
+  const [customAttendees, setCustomAttendees] = useState<string[]>([]);
 
   // Media / WS refs
   const wsRef           = useRef<WebSocket | null>(null);
@@ -117,13 +119,14 @@ export function useMeetingRecorder() {
       const savedTranscript = utterances?.length
         ? utterances.map(u => `${u.speaker}: ${u.text}`).join("\n")
         : transcript;
+      const aiCleanedTranscript = (notes as Record<string, unknown>).cleaned_transcript as string;
       const saved = await smartNotesApi.save({
         title,
         meeting_start:         m?.start,
         meeting_end:           m?.end,
         meeting_url:           m?.meet_url,
         attendees:             m?.attendees,
-        transcript:            savedTranscript,
+        transcript:            aiCleanedTranscript || savedTranscript,
         summary:               (notes as Record<string, unknown>).summary as string ?? "",
         action_items:          (notes as Record<string, unknown>).action_items as string[] ?? [],
         raw_calendar_event_id: m?.id,
@@ -241,7 +244,14 @@ export function useMeetingRecorder() {
   // ── Start recording ────────────────────────────────────────────────────────
 
   const startRecording = useCallback(async (meeting?: MeetingInfo & { recordMicOnly?: boolean; speakerMode?: boolean }) => {
-    if (meeting) meetingRef.current = meeting;
+    if (meeting) {
+      meetingRef.current = meeting;
+      setActiveMeeting(meeting);
+    } else {
+      meetingRef.current = null;
+      setActiveMeeting(null);
+    }
+    setCustomAttendees([]);
     setError(""); setLiveTranscript(""); setInterimText(""); setSegments([]); setSavedNote(null); setStatusMsg("");
     segmentsRef.current = []; transcriptRef.current = ""; interimAccRef.current = "";
 
@@ -356,12 +366,16 @@ export function useMeetingRecorder() {
     setSegments([]); setSpeakerTags({}); setError(""); setSavedNote(null);
     segmentsRef.current = []; transcriptRef.current = ""; interimAccRef.current = "";
     meetingRef.current = null;
+    setActiveMeeting(null);
+    setCustomAttendees([]);
   }, [cleanupMedia]);
 
   return {
     recordState, elapsed, liveTranscript, interimText, statusMsg, segments,
     speakerTags, setSpeakerTags,
     error, savedNote,
+    activeMeeting, setActiveMeeting,
+    customAttendees, setCustomAttendees,
     startRecording, stopRecording,
     generateWithSpeakers, generateWithPlainTranscript,
     reset,

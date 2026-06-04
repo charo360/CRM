@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
+  api,
   assistantApi,
   teamApi,
   customersApi,
@@ -46,6 +47,9 @@ import {
   Trash2,
   Plus,
   Menu,
+  Check,
+  Copy,
+  ExternalLink,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { TemplateGallery } from "@/components/TemplateGallery";
@@ -2514,7 +2518,7 @@ function MessageBubble({
   ) => void;
   onUserResend?: (text: string) => void;
 }) {
-  const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
+  const [exporting, setExporting] = useState<"pdf" | "docx" | "xlsx" | null>(null);
   const [showWaPicker, setShowWaPicker] = useState(false);
   const [showEmailPreview, setShowEmailPreview] = useState(false);
   const [editingUserPrompt, setEditingUserPrompt] = useState(false);
@@ -2548,7 +2552,7 @@ function MessageBubble({
     return extractInlineOptionList(msg.content ?? "");
   }, [msg.role, msg.content, inlineForm, documentChecklist, allMessages, messageIndex]);
 
-  async function handleExport(format: "pdf" | "docx") {
+  async function handleExport(format: "pdf" | "docx" | "xlsx") {
     if (!msg.content || exporting) return;
     setExporting(format);
     try {
@@ -2823,6 +2827,7 @@ function MessageBubble({
               onSavePlan={onSaveDocumentPlan}
             />
             <DocumentPreview steps={msg.steps} />
+            <FormCreatedPreview steps={msg.steps} />
             <TemplateGalleryPreview steps={msg.steps} onSelect={(id, name) => onSuggestionSend?.(`Use template "${name}" — ID: ${id}`)} />
             {msg.suggestions &&
               msg.suggestions.length > 0 &&
@@ -2882,6 +2887,17 @@ function MessageBubble({
                   {exporting === "docx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
                   Word
                 </button>
+                {msg.content && msg.content.includes("|") && (
+                  <button
+                    type="button"
+                    onClick={() => void handleExport("xlsx")}
+                    disabled={!!exporting}
+                    className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2 py-0.5 text-[10.5px] font-medium text-green-700 hover:bg-green-100 hover:border-green-400 disabled:opacity-50"
+                  >
+                    {exporting === "xlsx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
+                    Excel
+                  </button>
+                )}
                 <span className="text-[10px] text-slate-300">|</span>
                 <button
                   type="button"
@@ -3640,6 +3656,374 @@ function DocumentDraftPlan({
   );
 }
 
+function FormCreatedPreview({ steps }: { steps?: AssistantStep[] }) {
+  const [copied, setCopied] = useState(false);
+  const [showWaPicker, setShowWaPicker] = useState(false);
+
+  // Interactive Form States
+  const [formValues, setFormValues] = useState<Record<string, any>>({});
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [successMsg, setSuccessMsg] = useState("");
+
+  const formStep = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find(
+        (s) =>
+          s.tool === "create_form_from_description" &&
+          s.result &&
+          (s.result as Record<string, unknown>).status === "created",
+      ),
+    [steps],
+  );
+
+  if (!formStep) return null;
+
+  const result = formStep.result as {
+    form_id: string;
+    slug: string;
+    title: string;
+    share_url: string;
+    preview_url: string;
+    form?: {
+      title: string;
+      description?: string;
+      fields: Array<{
+        id: string;
+        type: "text" | "email" | "phone" | "textarea" | "dropdown" | "checkbox" | "checklist";
+        label: string;
+        placeholder?: string;
+        required?: boolean;
+        options?: string[];
+      }>;
+      branding?: {
+        logo_url?: string;
+        header_bg?: string;
+        header_text?: string;
+        button_bg?: string;
+        button_text?: string;
+        page_bg?: string;
+      };
+    };
+  };
+  const args = formStep.arguments as {
+    title: string;
+    description?: string;
+    fields?: Array<{
+      id: string;
+      type: "text" | "email" | "phone" | "textarea" | "dropdown" | "checkbox" | "checklist";
+      label: string;
+      placeholder?: string;
+      required?: boolean;
+      options?: string[];
+    }>;
+    branding?: {
+      logo_url?: string;
+      header_bg?: string;
+      header_text?: string;
+      button_bg?: string;
+      button_text?: string;
+      page_bg?: string;
+    };
+  };
+
+  const formId = result.form_id;
+  const slug = result.slug;
+  const title = result.form?.title || args.title || result.title;
+  const description = result.form?.description ?? args.description;
+  const fields = result.form?.fields || args.fields || [];
+  const branding = result.form?.branding || args.branding || {};
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const editUrl = `${origin}/dashboard/forms/${formId}`;
+  const publicUrl = `${origin}/f/${slug}`;
+
+  const defaultLogoUrl = branding.logo_url ? resolveMediaUrl(branding.logo_url) || branding.logo_url : "";
+  const primaryBg = branding.header_bg || "var(--brand, #0f172a)";
+  const primaryText = branding.header_text || "#ffffff";
+  const btnBg = branding.button_bg || "var(--brand, #0f172a)";
+  const btnText = branding.button_text || "#ffffff";
+  const pageBg = branding.page_bg || "#f8fafc";
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(publicUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const errs: Record<string, string> = {};
+    fields.forEach((f) => {
+      const val = formValues[f.label];
+      if (f.required && (!val || (typeof val === "string" && !val.trim()))) {
+        errs[f.label] = `${f.label} is required`;
+      }
+      if (f.type === "email" && val && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
+        errs[f.label] = "Please enter a valid email address";
+      }
+    });
+
+    if (Object.keys(errs).length > 0) {
+      setFormErrors(errs);
+      return;
+    }
+
+    setSubmitting(true);
+    setFormErrors({});
+
+    try {
+      const res = await api.post<{ status: string; message?: string }>(
+        `/forms/public/${slug}/submit`,
+        { data: formValues }
+      );
+      setSuccessMsg(res.message || "Thank you! We'll be in touch soon.");
+      setSubmitSuccess(true);
+      toast.success("Form submitted successfully!");
+    } catch (err: any) {
+      setFormErrors({ _form: err?.message || "Submission failed. Please try again." });
+      toast.error(err?.message || "Failed to submit form.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm max-w-lg">
+      {/* Header bar */}
+      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
+          <BookTemplate size={13} className="text-brand shrink-0" />
+          Form Created — {title}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <a
+            href={editUrl}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+          >
+            <PencilLine size={10} />
+            Open Builder
+          </a>
+          <a
+            href={publicUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+          >
+            <ExternalLink size={10} />
+            View Public Form
+          </a>
+        </div>
+      </div>
+
+      {/* Styled Interactive Live Form Mockup */}
+      <div className="p-4" style={{ background: pageBg }}>
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden animate-fade-in">
+          {/* Header area */}
+          <div className="px-6 py-5" style={{ background: primaryBg, color: primaryText }}>
+            {defaultLogoUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={defaultLogoUrl}
+                alt="Logo"
+                className="h-8 w-auto object-contain mb-3"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            )}
+            <h4 className="text-base font-bold">{title}</h4>
+            {description && (
+              <p className="text-xs mt-1 opacity-80 leading-relaxed">{description}</p>
+            )}
+          </div>
+
+          {submitSuccess ? (
+            <div className="px-6 py-8 text-center bg-white">
+              <div
+                className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3"
+                style={{ background: btnBg + "20" }}
+              >
+                <CheckCircle2 size={24} style={{ color: btnBg }} />
+              </div>
+              <h4 className="text-sm font-bold text-slate-800 mb-1">Submitted!</h4>
+              <p className="text-slate-500 text-xs leading-relaxed">{successMsg}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setFormValues({});
+                  setFormErrors({});
+                  setSubmitSuccess(false);
+                }}
+                className="mt-4 text-xs font-semibold hover:underline"
+                style={{ color: btnBg }}
+              >
+                Fill out another response
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4 bg-white">
+              {formErrors._form && (
+                <div className="flex items-center gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                  <AlertTriangle size={13} className="shrink-0" /> {formErrors._form}
+                </div>
+              )}
+              {fields.map((f, index) => (
+                <div key={f.id || `field-${index}`} className="space-y-1.5">
+                  <label className="block text-xs font-medium text-slate-700">
+                    {f.label}
+                    {f.required && <span className="text-rose-500 ml-0.5">*</span>}
+                  </label>
+
+                  {f.type === "textarea" ? (
+                    <textarea
+                      placeholder={f.placeholder || "Enter details..."}
+                      rows={3}
+                      value={formValues[f.label] ?? ""}
+                      onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.value }))}
+                      className={`w-full rounded-xl border px-3.5 py-2.5 text-xs text-slate-700 outline-none resize-none transition-colors ${
+                        formErrors[f.label]
+                          ? "border-rose-300 bg-rose-50/10 focus:ring-2 focus:ring-rose-200"
+                          : "border-slate-200 bg-white hover:border-slate-300 focus:ring-2 focus:ring-slate-100"
+                      }`}
+                    />
+                  ) : f.type === "dropdown" ? (
+                    <select
+                      value={formValues[f.label] ?? ""}
+                      onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.value }))}
+                      className={`w-full rounded-xl border px-3.5 py-2.5 text-xs text-slate-700 outline-none appearance-none transition-colors ${
+                        formErrors[f.label]
+                          ? "border-rose-300 bg-rose-50/10 focus:ring-2 focus:ring-rose-200"
+                          : "border-slate-200 bg-white hover:border-slate-300 focus:ring-2 focus:ring-slate-100"
+                      }`}
+                    >
+                      <option value="">{f.placeholder || "Select option..."}</option>
+                      {(f.options || []).map((opt, oidx) => (
+                        <option key={oidx} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  ) : f.type === "checkbox" ? (
+                    <label className="flex items-center gap-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formValues[f.label] === "yes"}
+                        onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.checked ? "yes" : "no" }))}
+                        className="h-5 w-5 rounded border-slate-300 text-brand focus:ring-brand/35 cursor-pointer"
+                        style={{ accentColor: btnBg }}
+                      />
+                      <span className="text-xs text-slate-600">{f.placeholder || "Yes"}</span>
+                    </label>
+                  ) : f.type === "checklist" ? (
+                    <div className="space-y-2 border border-slate-100 bg-slate-50/30 rounded-xl p-4">
+                      {(f.options || []).map((opt, oidx) => {
+                        const currentVal = formValues[f.label] || "";
+                        const selectedList = currentVal ? currentVal.split(", ") : [];
+                        const isChecked = selectedList.includes(opt);
+                        const toggleCheck = (checked: boolean) => {
+                          let newList;
+                          if (checked) {
+                            newList = [...selectedList, opt];
+                          } else {
+                            newList = selectedList.filter((item: string) => item !== opt);
+                          }
+                          setFormValues(v => ({ ...v, [f.label]: newList.join(", ") }));
+                        };
+                        return (
+                          <label key={oidx} className="flex items-center gap-3 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => toggleCheck(e.target.checked)}
+                              className="h-5 w-5 rounded border-slate-300 text-brand focus:ring-brand/35 cursor-pointer"
+                              style={{ accentColor: btnBg }}
+                            />
+                            <span className="text-xs text-slate-600">{opt}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <input
+                      type={f.type === "email" ? "email" : f.type === "phone" ? "tel" : "text"}
+                      placeholder={f.placeholder}
+                      value={formValues[f.label] ?? ""}
+                      onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.value }))}
+                      className={`w-full rounded-xl border px-3.5 py-2.5 text-xs text-slate-700 outline-none transition-colors ${
+                        formErrors[f.label]
+                          ? "border-rose-300 bg-rose-50/10 focus:ring-2 focus:ring-rose-200"
+                          : "border-slate-200 bg-white hover:border-slate-300 focus:ring-2 focus:ring-slate-100"
+                      }`}
+                    />
+                  )}
+                  {formErrors[f.label] && (
+                    <p className="text-[10px] text-rose-500">{formErrors[f.label]}</p>
+                  )}
+                </div>
+              ))}
+
+              {/* Submit button */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full rounded-xl py-3 text-xs font-semibold shadow-sm transition disabled:opacity-90 flex items-center justify-center gap-2 text-white"
+                  style={{ background: btnBg, color: btnText }}
+                >
+                  {submitting ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <Send size={13} />
+                  )}
+                  {submitting ? "Submitting..." : "Submit"}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+
+      {/* Card Actions Footer */}
+      <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px]">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100 hover:border-slate-300"
+        >
+          {copied ? (
+            <>
+              <Check size={11} className="text-emerald-600" />
+              Copied!
+            </>
+          ) : (
+            <>
+              <Copy size={11} />
+              Copy Link
+            </>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowWaPicker(true)}
+          className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2.5 py-1 font-semibold text-green-700 hover:bg-green-100 hover:border-green-300"
+        >
+          <MessageCircle size={11} />
+          Send via WhatsApp
+        </button>
+
+        {showWaPicker && (
+          <WhatsAppPickerModal
+            content={`Please fill out this form: ${publicUrl}`}
+            onClose={() => setShowWaPicker(false)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
   const [collapsed, setCollapsed] = React.useState(false);
   const [wordLoading, setWordLoading] = React.useState(false);
@@ -3666,6 +4050,7 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
   const filename = (result.filename as string | undefined) ?? "document";
   const s3Url = (result.download_url ?? result.pdf_url) as string | undefined;
   const contentMd = result.content_md as string | undefined;
+  const isXlsx = result.format === "xlsx" || filename.toLowerCase().endsWith(".xlsx");
 
   /** Download as Word — reuses the existing assistantApi.exportDocument helper */
   const handleDownloadWord = async () => {
@@ -3698,13 +4083,17 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
                   window.open(s3Url, "_blank", "noopener,noreferrer")
                 )
               }
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10.5px] font-medium ${
+                isXlsx
+                  ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100 hover:border-green-400"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              }`}
             >
               <Download size={10} />
-              PDF
+              {isXlsx ? "Excel" : "PDF"}
             </button>
           )}
-          {contentMd && (
+          {contentMd && !isXlsx && (
             <button
               type="button"
               onClick={() => void handleDownloadWord()}

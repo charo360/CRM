@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Loader2, CheckCircle, AlertCircle, Send } from "lucide-react";
+import { resolveMediaUrl } from "@/lib/utils";
 
 interface PublicField {
   id: string;
-  type: "text" | "email" | "phone" | "textarea" | "dropdown" | "checkbox";
+  type: "text" | "email" | "phone" | "textarea" | "dropdown" | "checkbox" | "checklist";
   label: string;
   placeholder: string;
   required: boolean;
@@ -134,7 +135,7 @@ export default function PublicFormPage() {
         {br.logo_url && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={br.logo_url}
+            src={resolveMediaUrl(br.logo_url) || br.logo_url}
             alt="Logo"
             className="h-10 w-auto object-contain mx-auto mb-5"
             onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
@@ -161,7 +162,7 @@ export default function PublicFormPage() {
             {br.logo_url && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={br.logo_url}
+                src={resolveMediaUrl(br.logo_url) || br.logo_url}
                 alt="Logo"
                 className="h-10 w-auto object-contain mb-4"
                 onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
@@ -204,6 +205,38 @@ export default function PublicFormPage() {
                         : "border-slate-200 bg-white hover:border-slate-300 focus:ring-2 focus:ring-slate-200"
                     }`}
                   />
+                ) : field.type === "checklist" ? (
+                  <div className="space-y-2 border border-slate-100 bg-slate-50/30 rounded-xl p-4">
+                    {(field.options || []).map(opt => {
+                      const currentVal = values[field.label] || "";
+                      const selectedList = currentVal ? currentVal.split(", ") : [];
+                      const isChecked = selectedList.includes(opt);
+                      const toggleCheck = (checked: boolean) => {
+                        let newList;
+                        if (checked) {
+                          newList = [...selectedList, opt];
+                        } else {
+                          newList = selectedList.filter(item => item !== opt);
+                        }
+                        setValues(v => ({ ...v, [field.label]: newList.join(", ") }));
+                      };
+                      return (
+                        <label key={opt} className="flex items-center gap-3 cursor-pointer py-1">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={e => toggleCheck(e.target.checked)}
+                            className="w-5 h-5 rounded cursor-pointer"
+                            style={{ accentColor: br.button_bg }}
+                          />
+                          <span className="text-sm text-slate-600">{opt}</span>
+                        </label>
+                      );
+                    })}
+                    {(field.options || []).length === 0 && (
+                      <span className="text-xs text-slate-400 italic">No options configured</span>
+                    )}
+                  </div>
                 ) : field.type === "dropdown" ? (
                   <select
                     value={values[field.label] ?? ""}

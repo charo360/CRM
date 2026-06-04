@@ -29,7 +29,7 @@ function id() {
 
 // ─── Social scheduler ─────────────────────────────────────────────────────────
 
-export type SocialChannel = "facebook" | "instagram" | "linkedin" | "x" | "tiktok";
+export type SocialChannel = "facebook" | "instagram" | "youtube" | "linkedin" | "x" | "tiktok";
 
 export type ScheduledPostStatus = "draft" | "scheduled" | "published" | "failed";
 

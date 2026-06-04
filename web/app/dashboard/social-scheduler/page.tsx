@@ -63,6 +63,7 @@ import {
 const CHANNELS: { id: SocialChannel; label: string }[] = [
   { id: "facebook", label: "Facebook" },
   { id: "instagram", label: "Instagram" },
+  { id: "youtube", label: "YouTube" },
   { id: "linkedin", label: "LinkedIn" },
   { id: "x", label: "X" },
   { id: "tiktok", label: "TikTok" },
@@ -93,6 +94,7 @@ const CHAR_LIMITS: Record<SocialChannel, number> = {
   x: 280,
   facebook: 63206,
   instagram: 2200,
+  youtube: 5000,
   linkedin: 3000,
   tiktok: 2200,
 };
@@ -100,6 +102,7 @@ const CHAR_LIMITS: Record<SocialChannel, number> = {
 const BEST_TIMES: Record<SocialChannel, string> = {
   facebook: "Wed–Thu 1–3 PM",
   instagram: "Tue–Fri 11 AM, 2 PM",
+  youtube: "Thu–Sat 12–3 PM",
   linkedin: "Tue–Thu 8–10 AM",
   x: "Mon–Fri 9 AM, 12 PM",
   tiktok: "Tue–Fri 7–9 PM",
@@ -111,6 +114,7 @@ type Period = (typeof PERIOD_OPTIONS)[number];
 const CHANNEL_COLOURS: Record<string, string> = {
   facebook: "bg-blue-100 text-blue-700",
   instagram: "bg-pink-100 text-pink-700",
+  youtube: "bg-red-100 text-red-700",
   linkedin: "bg-sky-100 text-sky-700",
   x: "bg-slate-100 text-slate-700",
   tiktok: "bg-purple-100 text-purple-700",
@@ -353,6 +357,7 @@ function AnalyticsPostDetailDrawer({
                     </code>
                   </div>
                 )} */}
+
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">Metrics sync</span>
                   {syncedAt ? (
@@ -2120,8 +2125,8 @@ export default function SocialSchedulerPage() {
                         </select>
                         {(modal.status ?? "draft") === "published" && (
                           <p className="mt-1.5 text-[11px] text-slate-500">
-                            Sends immediately to connected social accounts via
-                            Zernio.
+                            Sends immediately to connected Facebook, Instagram, and
+                            YouTube accounts via Composio.
                           </p>
                         )}
                         {(modal.status ?? "draft") === "scheduled" && (

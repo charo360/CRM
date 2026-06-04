@@ -685,6 +685,15 @@ export const designTemplatesApi = {
     }
     return res.json() as Promise<Record<string, unknown>>;
   },
+  list: (params?: { platform?: string; content_type?: string; source?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.platform) query.set("platform", params.platform);
+    if (params?.content_type) query.set("content_type", params.content_type);
+    if (params?.source) query.set("source", params.source);
+    return api.get<any[]>(`/design-templates?${query.toString()}`);
+  },
+  cleanBackground: (file_url: string) =>
+    api.post<{ status: string; file_url: string }>("/design-templates/clean-background", { file_url }),
 };
 
 export const teamApi = {
@@ -1917,7 +1926,7 @@ export const assistantApi = {
     api.get<AssistantAuditEntry[]>(`/assistant/audit?limit=${limit}`),
   exportDocument: async (
     content: string,
-    format: "pdf" | "docx",
+    format: "pdf" | "docx" | "xlsx",
     filename?: string
   ): Promise<void> => {
     const token = getToken();
@@ -2170,6 +2179,8 @@ export interface ScheduledPost {
   image_url?: string;
   publish_error?: string;
   zernio_post_id?: string;
+  external_post_id?: string;
+  publish_provider?: string;
   engagement_synced_at?: string;
   engagement?: {
     likes: number;
@@ -2201,8 +2212,34 @@ export interface SocialAnalytics {
 export type SocialPostPublishResult = {
   success: boolean;
   zernio_post_id?: string | null;
+  external_post_id?: string | null;
+  publish_provider?: string | null;
   error?: string | null;
   crm_status?: string;
+};
+
+export interface ComposioFacebookPage {
+  id: string;
+  name: string;
+  username?: string;
+  category?: string;
+  instagram_user_id?: string | null;
+}
+
+export interface ComposioSocialSettings {
+  facebook: { connected: boolean; page_id?: string | null; page_name?: string | null };
+  instagram: { connected: boolean; user_id?: string | null };
+  youtube: { connected: boolean };
+}
+
+export const composioSocialApi = {
+  settings: () => api.get<ComposioSocialSettings>("/composio/social/settings"),
+  facebookPages: () => api.get<{ pages: ComposioFacebookPage[] }>("/composio/social/facebook/pages"),
+  selectFacebookPage: (page_id: string) =>
+    api.post<{ ok: boolean; page_id: string; page_name: string; instagram_user_id?: string | null }>(
+      "/composio/social/facebook/page",
+      { page_id },
+    ),
 };
 
 export const socialSchedulerApi = {

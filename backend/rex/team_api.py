@@ -57,7 +57,7 @@ CHAT_GROUP_DEFS: tuple[tuple[str, str, frozenset[str]], ...] = (
         frozenset({
             "sales", "customers", "orders", "follow_ups", "bookings", "broadcasts",
             "messages", "contacts", "suppliers", "payments", "invoices", "quotes",
-            "finance", "follow_ups",
+            "finance", "follow_ups", "forms",
         }),
     ),
     (

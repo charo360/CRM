@@ -248,7 +248,7 @@ def make_smart_notes_router(db, auth_dep):
             if has_speakers else ""
         )
 
-        prompt = f"""You are a professional meeting note-taker. Produce structured notes from this meeting.
+        prompt = f"""You are a professional meeting note-taker. Produce structured notes and a cleaned, speaker-stabilized transcript from this meeting.
 
 Meeting: {title}
 Time: {start} – {end}
@@ -257,13 +257,17 @@ Attendees: {attendees}{speaker_note}
 TRANSCRIPT:
 {transcript}
 
+In real-time speaker diarization, speaker IDs (like Speaker 0, Speaker 1, Speaker 2, etc.) often drift, causing the same person to be assigned multiple speaker IDs across different speech segments.
+Analyze the context of the dialogue to resolve and stabilize these speaker drift anomalies. Consolidate them so that each physical speaker has a single, consistent name throughout the cleaned transcript, replacing generic IDs (like Speaker 2) with proper attendee names or roles when clear from the conversation.
+
 Return a JSON object with exactly these fields:
 {{
   "summary": "2-4 sentence executive summary",
   "key_points": ["bullet 1", "bullet 2", ...],
   "action_items": ["action (owner, deadline if mentioned)", ...],
   "decisions": ["decision 1", ...],
-  "next_steps": "brief paragraph on what happens next"
+  "next_steps": "brief paragraph on what happens next",
+  "cleaned_transcript": "The full meeting transcript, cleaned up and formatted line-by-line with consistent, consolidated and stabilized speaker names/roles (e.g. merging Speaker 0, Speaker 1, Speaker 2 where they are clearly the same physical person based on context)."
 }}
 
 Respond ONLY with valid JSON. No markdown fences."""

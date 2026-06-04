@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import {
   FileInput, Plus, Copy, Check, Trash2, Edit2, ExternalLink,
-  Loader2, AlertCircle, BarChart2, ToggleLeft, ToggleRight, Users,
+  Loader2, AlertCircle, BarChart2, ToggleLeft, ToggleRight, Users, Search, X,
 } from "lucide-react";
 
 interface Form {
@@ -28,6 +28,7 @@ export default function FormsPage() {
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   useEffect(() => { load(); }, []);
 
@@ -82,6 +83,13 @@ export default function FormsPage() {
     });
   }
 
+  const filtered = query.trim()
+    ? forms.filter(f =>
+        f.title.toLowerCase().includes(query.toLowerCase()) ||
+        f.description?.toLowerCase().includes(query.toLowerCase())
+      )
+    : forms;
+
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
@@ -92,11 +100,44 @@ export default function FormsPage() {
         </div>
         <button
           onClick={() => { setShowModal(true); setNewTitle(""); }}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-colors"
+          style={{ background: "var(--brand)", color: "var(--brand-ink)" }}
+          onMouseEnter={e => { e.currentTarget.style.background = "var(--brand-dark)"; e.currentTarget.style.color = "#fff"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "var(--brand)"; e.currentTarget.style.color = "var(--brand-ink)"; }}
         >
           <Plus size={15} /> New Form
         </button>
       </div>
+
+      {/* Search bar — only shown once forms exist */}
+      {!loading && forms.length > 0 && (
+        <div className="relative">
+          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search forms by name or description…"
+            className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-slate-200 placeholder:text-slate-400"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Result count hint */}
+      {query && (
+        <p className="text-xs text-slate-400 -mt-3">
+          {filtered.length === 0
+            ? `No forms match "${query}"`
+            : `${filtered.length} form${filtered.length !== 1 ? "s" : ""} found`}
+        </p>
+      )}
 
       {error && (
         <div className="flex items-center gap-2 text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3">
@@ -131,7 +172,10 @@ export default function FormsPage() {
               <button
                 onClick={createForm}
                 disabled={creating || !newTitle.trim()}
-                className="flex items-center gap-2 px-5 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 disabled:opacity-50"
+                className="flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-lg disabled:opacity-50 transition-colors"
+                style={{ background: "var(--brand)", color: "var(--brand-ink)" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "var(--brand-dark)"; e.currentTarget.style.color = "#fff"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "var(--brand)"; e.currentTarget.style.color = "var(--brand-ink)"; }}
               >
                 {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                 Create & Edit
@@ -141,7 +185,7 @@ export default function FormsPage() {
         </div>
       )}
 
-      {/* Forms list */}
+      {/* Forms grid */}
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2, 3].map(i => (
@@ -155,14 +199,26 @@ export default function FormsPage() {
           <p className="text-sm text-slate-400 mt-1 mb-5">Create your first form and share the link anywhere</p>
           <button
             onClick={() => setShowModal(true)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700"
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg transition-colors"
+            style={{ background: "var(--brand)", color: "var(--brand-ink)" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "var(--brand-dark)"; e.currentTarget.style.color = "#fff"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "var(--brand)"; e.currentTarget.style.color = "var(--brand-ink)"; }}
           >
             <Plus size={14} /> Create Form
           </button>
         </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-slate-200 p-12 text-center">
+          <Search size={32} className="mx-auto text-slate-200 mb-3" />
+          <p className="font-semibold text-slate-600">No results for &quot;{query}&quot;</p>
+          <p className="text-sm text-slate-400 mt-1">Try a different search term</p>
+          <button onClick={() => setQuery("")} className="mt-4 text-xs text-slate-500 hover:underline">
+            Clear search
+          </button>
+        </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {forms.map(form => (
+          {filtered.map(form => (
             <div key={form._id} className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col gap-3 hover:border-slate-300 transition-colors">
               {/* Title row */}
               <div className="flex items-start justify-between gap-2">

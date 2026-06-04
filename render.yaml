@@ -4,7 +4,9 @@ services:
     runtime: docker
     dockerfilePath: ./backend/Dockerfile.render
     dockerContext: ./backend
-    plan: free
+    # standard = 2GB RAM. Required because document/deck generation launches
+    # headless Chromium (Playwright) in-process; 512MB (free/starter) OOM-crashes.
+    plan: standard
     healthCheckPath: /health
     envVars:
       - key: PORT

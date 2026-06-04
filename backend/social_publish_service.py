@@ -1,8 +1,8 @@
 """
-Push CRM scheduled posts to Zernio using the correct API contract.
+Push CRM scheduled posts to social platforms.
 
-Zernio creates drafts when none of scheduledFor, publishNow, or queuedFromProfile
-are provided. Immediate posts require publishNow=true.
+Facebook and Instagram use Composio (same OAuth flow as Gmail/Google Calendar).
+LinkedIn, X, and TikTok still use Zernio when configured.
 """
 from __future__ import annotations
 
@@ -412,25 +412,109 @@ async def push_post_to_zernio(db, post: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-def should_push_to_zernio(post: Dict[str, Any], *, force: bool = False) -> bool:
+def should_push_post(post: Dict[str, Any], *, force: bool = False) -> bool:
     status = (post.get("status") or "draft").strip().lower()
     if status not in ("scheduled", "published"):
         return False
-    if post.get("zernio_post_id") and not force:
+    external_id = post.get("external_post_id") or post.get("zernio_post_id")
+    if external_id and not force:
         return False
     return True
+
+
+def should_push_to_zernio(post: Dict[str, Any], *, force: bool = False) -> bool:
+    return should_push_post(post, force=force)
+
+
+async def push_post(db, post: Dict[str, Any]) -> Dict[str, Any]:
+    """Route publish to Composio (Facebook/Instagram) and/or Zernio (other platforms)."""
+    from social_composio_publish import (
+        COMPOSIO_CHANNELS,
+        post_uses_composio,
+        post_uses_zernio,
+        push_post_to_composio,
+    )
+
+    channels = [c.strip().lower() for c in (post.get("channels") or []) if c.strip()]
+    composio_channels = [c for c in channels if c in COMPOSIO_CHANNELS]
+    zernio_channels = [c for c in channels if c not in COMPOSIO_CHANNELS]
+
+    composio_result: Optional[Dict[str, Any]] = None
+    zernio_result: Optional[Dict[str, Any]] = None
+
+    if composio_channels:
+        composio_result = await push_post_to_composio(
+            db, {**post, "channels": composio_channels}
+        )
+    if zernio_channels:
+        zernio_result = await push_post_to_zernio(
+            db, {**post, "channels": zernio_channels}
+        )
+
+    if composio_result and zernio_result:
+        ids = [
+            x
+            for x in (
+                composio_result.get("external_post_id"),
+                zernio_result.get("zernio_post_id"),
+            )
+            if x
+        ]
+        ok = composio_result.get("success") and zernio_result.get("success")
+        errors = [
+            e
+            for e in (composio_result.get("error"), zernio_result.get("error"))
+            if e
+        ]
+        crm_status = "published"
+        if composio_result.get("crm_status") == "scheduled" or zernio_result.get("crm_status") == "scheduled":
+            crm_status = "scheduled"
+        return {
+            "success": ok,
+            "external_post_id": "|".join(ids) if ids else None,
+            "zernio_post_id": "|".join(ids) if ids else None,
+            "error": "; ".join(errors) if errors else None,
+            "crm_status": "failed" if not ok else crm_status,
+            "publish_provider": "mixed",
+        }
+
+    if composio_result:
+        return composio_result
+    if zernio_result:
+        return {**zernio_result, "publish_provider": "zernio", "external_post_id": zernio_result.get("zernio_post_id")}
+    if post_uses_composio(post):
+        return await push_post_to_composio(db, post)
+    if post_uses_zernio(post):
+        res = await push_post_to_zernio(db, post)
+        return {**res, "publish_provider": "zernio", "external_post_id": res.get("zernio_post_id")}
+    return {
+        "success": False,
+        "external_post_id": None,
+        "zernio_post_id": None,
+        "error": "No supported channels selected.",
+        "crm_status": "failed",
+        "publish_provider": None,
+    }
 
 
 async def apply_publish_result(db, post_id: str, result: Dict[str, Any]) -> None:
     update: Dict[str, Any] = {"updated_at": datetime.utcnow()}
     if result.get("success"):
         update["status"] = result.get("crm_status") or "published"
-        if result.get("zernio_post_id"):
-            update["zernio_post_id"] = result["zernio_post_id"]
+        ext_id = result.get("external_post_id") or result.get("zernio_post_id")
+        if ext_id:
+            update["external_post_id"] = ext_id
+            update["zernio_post_id"] = ext_id
             update["engagement_synced_at"] = None
+        if result.get("publish_provider"):
+            update["publish_provider"] = result["publish_provider"]
         update["publish_error"] = None
     else:
         update["status"] = "failed"
         if result.get("error"):
             update["publish_error"] = result["error"]
+        ext_id = result.get("external_post_id") or result.get("zernio_post_id")
+        if ext_id:
+            update["external_post_id"] = ext_id
+            update["zernio_post_id"] = ext_id
     await db.scheduled_posts.update_one({"_id": post_id}, {"$set": update})

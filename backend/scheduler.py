@@ -247,6 +247,210 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
             await _release_lock(redis_client, lock_key)
 
 
+async def _sweep_depth(db, user: dict) -> str:
+    """
+    Determine sweep depth by plan tier.
+
+    free/trial  → light  : record event + journal only. No AI agent calls.
+    starter     → standard: Scout + pipeline + inbox drafts.
+    growth/pro  → full   : standard + WhatsApp/Telegram briefing delivery.
+    """
+    from plan_enforcement import get_active_plan_limits
+    user_id = str(user.get("_id", ""))
+    try:
+        limits = await get_active_plan_limits(db, user_id)
+        plan = limits.get("plan_name", "Free Trial").lower()
+    except Exception:
+        plan = "free trial"
+
+    if any(k in plan for k in ("pro", "premium", "growth", "operator")):
+        return "full"
+    if any(k in plan for k in ("starter", "standard")):
+        return "standard"
+    return "light"
+
+
+async def _sweep_one_user(
+    db,
+    store,
+    doc: dict,
+    summary: dict,
+) -> None:
+    """Sweep a single user. Called concurrently inside zilo_nightly_sweep."""
+    from rex.integrations.platform_sweep import run_platform_sweep
+    from rex.ranks.events import TrustEvent
+
+    uid = doc.get("user_id")
+    bid = doc.get("business_id") or uid
+    if not uid:
+        return
+
+    try:
+        user_doc = await db.users.find_one({"_id": uid}) or {"_id": uid}
+        depth = await _sweep_depth(db, user_doc)
+
+        orch = await store.load(uid)
+        if orch is None:
+            summary["skipped"] += 1
+            return
+
+        if depth == "light":
+            event = TrustEvent.background_work()
+            orch.event_store.append(event)
+            await store.save(uid, business_id=bid, orch=orch)
+            summary["completed"] += 1
+            logger.info("[zilo-sweep] light uid=%s", uid)
+            return
+
+        # Standard + Full: full platform sweep
+        report = await run_platform_sweep(db, user_doc, orch, force=True)
+        await store.save(uid, business_id=bid, orch=orch)
+        summary["completed"] += 1
+        logger.info(
+            "[zilo-sweep] %s uid=%s staged=%s emails=%s leads=%s",
+            depth, uid,
+            report.get("staged", 0),
+            (report.get("email") or {}).get("fetched", 0),
+            report.get("opps_imported", 0),
+        )
+
+        # Full tier: deliver WhatsApp morning briefing
+        if depth == "full":
+            try:
+                phone = user_doc.get("phone_number")
+                wa_cfg = user_doc.get("whatsapp", {})
+                if phone and wa_cfg.get("instance_name"):
+                    from rex.api_serializers import serialize_home
+                    from whatsapp_service import get_whatsapp_service
+                    home = serialize_home(orch)
+                    briefing_text = _format_briefing_whatsapp(home)
+                    if briefing_text:
+                        ws = get_whatsapp_service(db)
+                        await ws.send_message(
+                            user_id=uid,
+                            to_number=phone,
+                            message=briefing_text,
+                            send_context="zilo_morning_briefing",
+                        )
+                        logger.info("[zilo-sweep] briefing sent uid=%s", uid)
+            except Exception as e:
+                logger.warning("[zilo-sweep] briefing delivery failed uid=%s: %s", uid, e)
+
+    except Exception as e:
+        logger.error("[zilo-sweep] failed uid=%s: %s", uid, e)
+        summary["failed"] += 1
+        summary["errors"].append({"uid": uid, "error": str(e)})
+
+
+async def zilo_nightly_sweep(db: AsyncIOMotorDatabase):
+    """
+    6am UTC nightly sweep — runs for every active Zilo user regardless of
+    whether they opened the app. This is the core of the product promise:
+    "Zilo works while you sleep."
+
+    Users are processed in concurrent batches of 10 with a 1-second pause
+    between batches to stay within API rate limits at any user count.
+
+    Depth is gated by subscription tier:
+      light    (free/trial)  — record BACKGROUND_WORK event only, no AI calls
+      standard (starter)     — Scout + pipeline + inbox scan + stage actions
+      full     (growth/pro)  — standard + deliver morning briefing via WhatsApp
+    """
+    import time
+    from redis_client import get_redis
+    redis_client = await get_redis()
+    lock_key = "scheduler:lock:zilo_nightly_sweep"
+
+    if redis_client:
+        if not await _acquire_lock(redis_client, lock_key, ttl_seconds=3600):
+            logger.info("[zilo-sweep] already running on another instance, skipping")
+            return
+
+    run_id = await _log_scheduler_run(db, "zilo_nightly_sweep", "running")
+    started_at = time.monotonic()
+
+    summary: dict = {
+        "total_users": 0,
+        "completed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+        "duration_seconds": 0,
+    }
+
+    try:
+        from rex.persistence.session import ZiloSessionStore
+        store = ZiloSessionStore(db)
+
+        session_docs = await db[store._col.name].find(
+            {}, {"user_id": 1, "business_id": 1}
+        ).to_list(5000)
+
+        # Filter out docs with no user_id up front
+        valid_docs = [d for d in session_docs if d.get("user_id")]
+        summary["total_users"] = len(valid_docs)
+        logger.info("[zilo-sweep] starting — %d users, batch_size=10", len(valid_docs))
+
+        # Process in batches of 10 concurrently
+        batch_size = 10
+        for i in range(0, len(valid_docs), batch_size):
+            batch = valid_docs[i : i + batch_size]
+            await asyncio.gather(*[
+                _sweep_one_user(db, store, doc, summary)
+                for doc in batch
+            ])
+            if i + batch_size < len(valid_docs):
+                await asyncio.sleep(1)  # rate-limit pause between batches
+
+        summary["duration_seconds"] = round(time.monotonic() - started_at, 1)
+
+        logger.info(
+            "[zilo-sweep] complete — total=%d completed=%d skipped=%d failed=%d duration=%.1fs",
+            summary["total_users"], summary["completed"],
+            summary["skipped"], summary["failed"],
+            summary["duration_seconds"],
+        )
+        await _update_scheduler_run(db, run_id, "completed", summary)
+
+        # Write a sweep_log document for the founder-facing sweep history
+        await db.zilo_sweep_log.insert_one({
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "run_id": run_id,
+            **summary,
+            "logged_at": datetime.utcnow(),
+        })
+
+    except Exception as e:
+        summary["duration_seconds"] = round(time.monotonic() - started_at, 1)
+        logger.error("[zilo-sweep] fatal error: %s", e)
+        await _update_scheduler_run(db, run_id, "failed", {"error": str(e), **summary})
+    finally:
+        if redis_client:
+            await _release_lock(redis_client, lock_key)
+
+
+def _format_briefing_whatsapp(home: dict) -> str:
+    """
+    Format the morning briefing as a terse WhatsApp message in Zilo's voice.
+    Returns empty string if there is nothing to report.
+    """
+    actions = home.get("actions") or []
+    staged = [a for a in actions if a.get("state") == "staged"]
+    if not staged:
+        return ""
+
+    day = home.get("relationship_day", "?")
+    lines = [f"Day {day}. Morning briefing.\n"]
+    for i, a in enumerate(staged[:3], 1):
+        summary = a.get("summary") or a.get("body") or ""
+        if summary:
+            lines.append(f"{i}. {summary[:120]}")
+    if len(staged) > 3:
+        lines.append(f"\n+{len(staged) - 3} more staged. Open the app to review.")
+    lines.append("\n— Zilo")
+    return "\n".join(lines)
+
+
 async def retry_dlq_job(db: AsyncIOMotorDatabase):
     """Pick up and retry unresolved DLQ jobs."""
     try:
@@ -361,6 +565,18 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         args=[db],
         id="renew_outlook_subscriptions",
         name="Renew Outlook Subscriptions (every 6 hours)",
+        replace_existing=True
+    )
+
+    # Zilo nightly sweep — 6am UTC daily
+    # Runs platform sweep for every active user whether or not they opened the app.
+    # Depth gated by plan: light (free) / standard (starter) / full (growth/pro).
+    scheduler.add_job(
+        zilo_nightly_sweep,
+        CronTrigger(hour=6, minute=0),
+        args=[db],
+        id="zilo_nightly_sweep",
+        name="Zilo Nightly Sweep (6 AM UTC)",
         replace_existing=True
     )
     

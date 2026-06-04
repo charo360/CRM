@@ -5,7 +5,7 @@ REX.md §4 architecture insight: state is a function of events, not vice-versa.
 Every event in this module is immutable, hashable, and self-contained. The
 RankEngine in engine.py is the pure replay over a sequence of these.
 
-THIRTEEN EVENT TYPES, grouped by purpose:
+FOURTEEN EVENT TYPES, grouped by purpose:
 
   Rank-changing — user→Rex (the only user-Rex axis):
     USER_PROMOTED_REX
@@ -100,6 +100,11 @@ class EventType(str, Enum):
     # Phase 8: Two-Sided Loyalty Team events
     FOUNDER_INVITED_TEAM_MEMBER = "founder_invited_team_member"
     FOUNDER_REVOKED_TEAM_MEMBER = "founder_revoked_team_member"
+
+    # Background work — daily activity summary (not rank-changing)
+    # Fires once per sweep with counts of what Zilo did in the background.
+    # Feeds the journal so quiet days still show real work, not just synthetic anchors.
+    BACKGROUND_WORK = "background_work"
 
 
 # Convenience sets used by the engine + tests.
@@ -311,4 +316,36 @@ class TrustEvent:
             actor_name=name,
             category="team",
             reason=f"id:{principal_id}",
+        )
+
+    # Background Work --------------------------------------------------------
+
+    @classmethod
+    def background_work(
+        cls,
+        *,
+        drafts_staged: int = 0,
+        emails_swept: int = 0,
+        leads_found: int = 0,
+        actions_sent: int = 0,
+        category: str = "operations",
+    ) -> "TrustEvent":
+        """Daily background activity summary. Not rank-changing.
+        Fires once per platform sweep to give the journal honest daily content."""
+        parts = []
+        if drafts_staged:
+            parts.append(f"drafts_staged:{drafts_staged}")
+        if emails_swept:
+            parts.append(f"emails_swept:{emails_swept}")
+        if leads_found:
+            parts.append(f"leads_found:{leads_found}")
+        if actions_sent:
+            parts.append(f"actions_sent:{actions_sent}")
+        return cls(
+            id=new_event_id(),
+            timestamp=_utc_now(),
+            type=EventType.BACKGROUND_WORK,
+            actor_name="Zilo",
+            category=category,
+            reason=";".join(parts) if parts else "sweep_complete",
         )

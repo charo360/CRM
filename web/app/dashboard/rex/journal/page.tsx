@@ -96,7 +96,7 @@ export default function ZiloJournalPage() {
       </div>
 
       {/* The counter — spec format */}
-      <div className="mt-10 border-b border-slate-200 pb-6">
+      <div className="mt-10 border-b border-slate-200 pb-6 flex items-center justify-between">
         <p className="font-mono text-sm text-slate-600">
           <span className="text-amber-600 font-semibold">Day {dayCount}</span>
           {loading ? null : (
