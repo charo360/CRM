@@ -8,7 +8,7 @@ import { subscriptionApi } from "@/lib/api";
 import { useSubscription } from "@/hooks/useSubscription";
 
 export function EntitlementBanner() {
-  const { entitlements, trialActive, paidActive, refresh } = useSubscription();
+  const { entitlements, loading, trialActive, paidActive, refresh } = useSubscription();
   const [busy, setBusy] = useState(false);
 
   const startTrial = useCallback(async () => {
@@ -24,10 +24,10 @@ export function EntitlementBanner() {
     }
   }, [refresh]);
   const trialAvailable = entitlements?.trial_available ?? false;
-  if (paidActive || trialActive) return null;
+  if (loading || paidActive || trialActive) return null;
 
   return (
-    <div className="border-b border-brand/20 bg-brand/5 px-4 py-3 sm:px-6">
+    <div className="shrink-0 border-b border-brand/20 bg-brand/10 px-4 py-3 sm:px-6">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-sm">
         <p className="text-slate-700">
           {trialAvailable
