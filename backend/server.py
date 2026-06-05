@@ -1877,6 +1877,7 @@ class UserSettingsUpdate(BaseModel):
     daily_pulse_time: Optional[str] = None  # e.g. '20:00'
     ai_model: Optional[str] = None  # standard, premium, claude-4.7, grok, etc.
     auto_reply_audience: Optional[str] = None  # 'everyone', 'customers_only', 'new_contacts_only'
+    social_dm_autoreply_enabled: Optional[bool] = None  # AI auto-reply for Instagram DMs (Composio inbox)
     ga4_measurement_id: Optional[str] = None  # Google Analytics 4 Measurement ID (G-XXXXXXXXXX)
     behavior_discounts_enabled: Optional[bool] = None  # Enable/disable behavior-triggered discount campaigns
 
@@ -11756,6 +11757,7 @@ async def get_user_settings(user = Depends(get_current_user)):
     return {
         "auto_reply_enabled": settings.get('auto_reply_enabled', False),
         "auto_reply_audience": settings.get('auto_reply_audience', 'everyone'),
+        "social_dm_autoreply_enabled": settings.get('social_dm_autoreply_enabled', False),
         "notification_enabled": settings.get('notification_enabled', True),
         "notification_time": settings.get('notification_time', '08:00'),
         "daily_alert_count": settings.get('daily_alert_count', 5),
@@ -11788,7 +11790,10 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
         if _aud not in ("everyone", "customers_only", "new_contacts_only"):
             raise HTTPException(status_code=400, detail="Invalid auto_reply_audience")
         update_data['settings.auto_reply_audience'] = _aud
-    
+
+    if settings.social_dm_autoreply_enabled is not None:
+        update_data['settings.social_dm_autoreply_enabled'] = settings.social_dm_autoreply_enabled
+
     if settings.notification_enabled is not None:
         update_data['settings.notification_enabled'] = settings.notification_enabled
     
@@ -15506,27 +15511,34 @@ async def composio_facebook_select_page(body: dict, user=Depends(get_current_use
     if not page_id:
         raise HTTPException(status_code=400, detail="page_id is required")
 
-    user_id = str(user.get("business_id") or user["_id"])
-    pages_res = await list_facebook_pages(user_id)
-    if pages_res.get("error"):
-        raise HTTPException(status_code=400, detail=pages_res["error"])
+    page_name = str(body.get("page_name") or "").strip()
+    instagram_user_id = body.get("instagram_user_id")
 
-    selected = next((p for p in (pages_res.get("pages") or []) if p.get("id") == page_id), None)
-    if not selected:
-        raise HTTPException(status_code=400, detail="Page not found in your managed pages.")
+    if not page_name:
+        # Fallback to list pages if not provided by client
+        user_id = str(user.get("business_id") or user["_id"])
+        pages_res = await list_facebook_pages(user_id)
+        if pages_res.get("error"):
+            raise HTTPException(status_code=400, detail=pages_res["error"])
+
+        selected = next((p for p in (pages_res.get("pages") or []) if p.get("id") == page_id), None)
+        if not selected:
+            raise HTTPException(status_code=400, detail="Page not found in your managed pages.")
+        page_name = selected.get("name") or ""
+        instagram_user_id = selected.get("instagram_user_id")
 
     await save_facebook_page(
         db,
         user["_id"],
         page_id=page_id,
-        page_name=selected.get("name") or "",
-        instagram_user_id=selected.get("instagram_user_id"),
+        page_name=page_name,
+        instagram_user_id=instagram_user_id,
     )
     return {
         "ok": True,
         "page_id": page_id,
-        "page_name": selected.get("name") or page_id,
-        "instagram_user_id": selected.get("instagram_user_id"),
+        "page_name": page_name,
+        "instagram_user_id": instagram_user_id,
     }
 
 
@@ -19012,6 +19024,39 @@ async def delete_webhook_subscription(subscription_id: str, user = Depends(get_c
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Webhook subscription not found")
     return {"status": "success", "message": "Subscription removed"}
+
+
+# ── Facebook Data Deletion Callback (public, no auth) ────────────────────────
+class _DataDeletionRequest(BaseModel):
+    facebook_user_id: str = ""
+    confirmation_code: str = ""
+
+@api_router.post("/users/data-deletion")
+async def facebook_data_deletion(body: _DataDeletionRequest):
+    """
+    Queued by the Next.js /api/data-deletion route after Meta posts a signed_request.
+    Removes the user's meta_connections, messages, and flags the account for full deletion.
+    """
+    fb_uid = (body.facebook_user_id or "").strip()
+    code   = (body.confirmation_code or "").strip()
+
+    if fb_uid and fb_uid != "unknown":
+        # Remove meta connection rows for this FB user
+        await db.meta_connections.delete_many({"facebook_user_id": fb_uid})
+        # Find the CRM user by stored facebook_user_id if we track it
+        user = await db.users.find_one({"facebook_user_id": fb_uid})
+        if user:
+            uid = user["_id"]
+            await db.meta_connections.delete_many({"user_id": uid})
+            await db.messages.delete_many({"user_id": uid, "channel": {"$in": ["messenger", "instagram"]}})
+            # Flag for full deletion (manual review or background job)
+            await db.users.update_one(
+                {"_id": uid},
+                {"$set": {"deletion_requested": True, "deletion_code": code, "deletion_requested_at": datetime.utcnow()}},
+            )
+            logging.info(f"[DataDeletion] Queued full deletion for user {uid} (fb:{fb_uid}) code:{code}")
+
+    return {"status": "queued", "confirmation_code": code}
 
 
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)

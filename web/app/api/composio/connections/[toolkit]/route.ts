@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildServerCrmApiUrl } from "@/lib/server-crm-api";
+import { buildInternalCrmApiUrl } from "@/lib/server-crm-api";
 
 /**
  * GET /api/composio/connections/[toolkit]
@@ -17,7 +17,7 @@ export async function GET(
   }
   const { toolkit } = await params;
   try {
-    const url = buildServerCrmApiUrl(req, `/composio/connections/${toolkit}`);
+    const url = buildInternalCrmApiUrl(`/composio/connections/${toolkit}`);
     const res = await fetch(url, { headers: { Authorization: auth } });
     const data = await res.json().catch(() => ({ connected: false }));
     return NextResponse.json(data, { status: res.status });
@@ -41,7 +41,7 @@ export async function DELETE(
   }
   const { toolkit } = await params;
   try {
-    const url = buildServerCrmApiUrl(req, `/composio/connections/${toolkit}`);
+    const url = buildInternalCrmApiUrl(`/composio/connections/${toolkit}`);
     const res = await fetch(url, {
       method: "DELETE",
       headers: { Authorization: auth },

@@ -338,12 +338,12 @@ ACTION_SLACK_SEND_MESSAGE = "SLACK_SEND_MESSAGE"
 
 
 # Facebook / Instagram (Meta Graph via Composio)
-ACTION_FB_LIST_PAGES      = "FACEBOOK_LIST_MANAGED_PAGES"
+ACTION_FB_LIST_PAGES      = "FACEBOOK_GET_USER_PAGES"
 ACTION_FB_CREATE_POST     = "FACEBOOK_CREATE_POST"
 ACTION_FB_CREATE_PHOTO    = "FACEBOOK_CREATE_PHOTO_POST"
 ACTION_FB_CREATE_VIDEO    = "FACEBOOK_CREATE_VIDEO_POST"
-ACTION_IG_CREATE_MEDIA    = "INSTAGRAM_POST_IG_USER_MEDIA"
-ACTION_IG_PUBLISH_MEDIA   = "INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH"
+ACTION_IG_CREATE_MEDIA    = "INSTAGRAM_CREATE_MEDIA_CONTAINER"
+ACTION_IG_PUBLISH_MEDIA   = "INSTAGRAM_CREATE_POST"
 ACTION_IG_USER_INFO       = "INSTAGRAM_GET_USER_INFO"
 
 # YouTube
@@ -1113,7 +1113,7 @@ _CONNECTED_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "SUCCESS", "ENABLED"}
 # OAuth in progress — must NOT show as connected in the UI
 _PENDING_STATUSES = {"INITIATED", "INITIALIZING", "PENDING", "IN_PROGRESS"}
 _ACCOUNTS_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
-CACHE_TTL = 30.0  # cache connection status for 30 seconds
+CACHE_TTL = 5.0  # short TTL so post-OAuth status checks see fresh data quickly
 
 
 def _normalize_app(s: str) -> str:
@@ -1199,8 +1199,12 @@ def _accounts_for_toolkit(
     return matched
 
 
-async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
-    """Return {"connected": bool, "connection_id": str|None} for one toolkit."""
+async def get_connection_status(user_id: str, toolkit: str, force_refresh: bool = False) -> Dict[str, Any]:
+    """Return {"connected": bool, "connection_id": str|None} for one toolkit.
+
+    Pass force_refresh=True to bypass the short account-list cache and always
+    fetch live data from Composio (used right after an OAuth popup closes).
+    """
 
     # Shopify uses direct credentials stored in DB — bypass Composio entirely
     if toolkit.lower() == "shopify":
@@ -1209,6 +1213,11 @@ async def get_connection_status(user_id: str, toolkit: str) -> Dict[str, Any]:
 
     if not _get_key():
         return {"connected": False, "error": "COMPOSIO_API_KEY not configured"}
+
+    # Always bust cache for single-toolkit checks so post-OAuth polling
+    # immediately sees the newly ACTIVE account instead of stale data.
+    if force_refresh:
+        _ACCOUNTS_CACHE.pop(user_id, None)
 
     try:
         items = await _v3_list_user_accounts(user_id)

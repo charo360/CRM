@@ -163,14 +163,31 @@ async def resolve_instagram_user_id(
 
     fb_page_id = (settings.get("facebook_page_id") or "").strip()
     pages_res = await list_facebook_pages(user_id)
-    if pages_res.get("error"):
-        return None
-    for page in pages_res.get("pages") or []:
-        if fb_page_id and page.get("id") != fb_page_id:
-            continue
-        ig = (page.get("instagram_user_id") or "").strip()
-        if ig:
-            return ig
+    if not pages_res.get("error"):
+        for page in pages_res.get("pages") or []:
+            if fb_page_id and page.get("id") != fb_page_id:
+                continue
+            ig = (page.get("instagram_user_id") or "").strip()
+            if ig:
+                return ig
+
+    # Direct fallback using INSTAGRAM_GET_USER_INFO if Facebook page listing fails
+    try:
+        ig_status = await get_connection_status(user_id, TOOLKIT_INSTAGRAM)
+        if ig_status.get("connected"):
+            user_info = await execute_action(user_id, "INSTAGRAM_GET_USER_INFO", {})
+            if user_info.get("success") and user_info.get("data"):
+                ig_id = (user_info["data"].get("id") or "").strip()
+                if ig_id:
+                    user_doc = await _resolve_user_doc(db, user_id)
+                    if user_doc:
+                        await db.users.update_one(
+                            {"_id": user_doc["_id"]},
+                            {"$set": {"composio_social.instagram_user_id": ig_id}}
+                        )
+                    return ig_id
+    except Exception as e:
+        logger.warning(f"[social-publish] Failed to resolve Instagram ID directly: {e}")
     return None
 
 

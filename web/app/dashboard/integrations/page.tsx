@@ -1727,7 +1727,7 @@ function IntegrationsPageInner() {
   async function completeComposioFacebookPageSelect(page: ComposioFacebookPage) {
     setFbCompletingPageId(page.id);
     try {
-      await composioSocialApi.selectFacebookPage(page.id);
+      await composioSocialApi.selectFacebookPage(page.id, page.name, page.instagram_user_id);
       setBanner({ type: "success", msg: `${page.name || "Facebook Page"} selected for publishing.` });
       setShowComposioFbPagePicker(false);
       setComposioFbPages([]);
@@ -2020,6 +2020,16 @@ function IntegrationsPageInner() {
     }
   }
 
+  async function waitForComposioConnection(toolkit: string, attempts = 8): Promise<boolean> {
+    for (let i = 0; i < attempts; i += 1) {
+      const connected = await fetchComposioToolkitConnected(toolkit);
+      if (connected) return true;
+      await new Promise((r) => setTimeout(r, Math.min(1500 + i * 750, 5000)));
+      await refreshComposio();
+    }
+    return fetchComposioToolkitConnected(toolkit);
+  }
+
   async function composioConnect(toolkit: string, silent = false, extraBody: Record<string, string> = {}): Promise<boolean> {
     setComposioBusy(toolkit);
     const label = toolkit.charAt(0).toUpperCase() + toolkit.slice(1);
@@ -2064,21 +2074,15 @@ function IntegrationsPageInner() {
         }, 500);
       });
 
-      // Give Composio a moment to finalize the connection after redirect
-      await new Promise((r) => setTimeout(r, 1500));
       await refreshComposio();
-
-      let nowConnected = await fetchComposioToolkitConnected(toolkit);
-      if (!nowConnected) {
-        await new Promise((r) => setTimeout(r, 2000));
-        await refreshComposio();
-        nowConnected = await fetchComposioToolkitConnected(toolkit);
-      }
+      const nowConnected = await waitForComposioConnection(toolkit);
 
       if (nowConnected && !wasConnected) {
         if (!silent) setBanner({ type: "success", msg: `${label} connected successfully.` });
       } else if (!nowConnected && !wasConnected) {
-        await cleanupComposioPending(toolkit);
+        if (!["facebook", "instagram", "youtube"].includes(toolkit)) {
+          await cleanupComposioPending(toolkit);
+        }
         await refreshComposio();
         if (!silent) {
           setBanner({
@@ -2088,6 +2092,8 @@ function IntegrationsPageInner() {
         }
         return false;
       }
+
+      await refreshComposio();
 
       // Auto-link Calendar when Gmail connects (same Google account)
       if (toolkit === "gmail" && nowConnected) {
@@ -2371,7 +2377,7 @@ function IntegrationsPageInner() {
   const FREE_BADGE: BadgeDef = { label: "Free", className: "bg-emerald-100 text-emerald-700" };
 
   return (
-    <div className="mx-auto w-full max--4xl min-w-0 space-y-6 p-4 sm:p-6">
+    <div className="mx-auto w-full max-w-4xl min-w-0 space-y-6 p-4 sm:p-6">
 
       {/* Header */}
       <div>
@@ -2397,13 +2403,16 @@ function IntegrationsPageInner() {
 
       {showComposioFbPagePicker && (
         <section className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3">
-          <div className="mb-2">
+          <div className="mb-2 space-y-1.5">
             <h3 className="text-xs font-semibold text-blue-900">Select Facebook Page</h3>
             <p className="text-[11px] text-blue-800">Choose which Facebook Page to use for publishing posts.</p>
+            <div className="rounded border border-blue-200/50 bg-blue-100/50 p-2 text-[10px] leading-relaxed text-blue-800">
+              💡 <strong>Missing a page?</strong> Make sure you have authorized that page and granted all permissions during the Facebook connection flow. If needed, disconnect and reconnect Facebook.
+            </div>
           </div>
           {fbLoadingPages ? (
             <div className="flex items-center gap-1.5 text-[11px] text-blue-800">
-              <Loader2 size={12} className="animate-spin" /> Loading your pages...
+              <Loader2 size={12} className="animate-spin text-blue-700" /> Loading your pages...
             </div>
           ) : composioFbPages.length ? (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -2413,13 +2422,17 @@ function IntegrationsPageInner() {
                   type="button"
                   onClick={() => void completeComposioFacebookPageSelect(page)}
                   disabled={fbCompletingPageId === page.id}
-                  className="flex items-center justify-between rounded-lg border border-blue-200 bg-white px-3 py-2 text-left text-xs hover:bg-blue-100 disabled:opacity-60"
+                  className="flex items-center justify-between rounded-lg border border-blue-200 bg-white px-3 py-2 text-left text-xs hover:bg-blue-100 hover:border-blue-300 disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-150 cursor-pointer"
                 >
-                  <div>
+                  <div className="pointer-events-none">
                     <p className="font-semibold text-slate-900">{page.name || "Untitled Page"}</p>
                     <p className="text-[10px] text-slate-500">{page.username ? `@${page.username}` : page.category || "Facebook Page"}</p>
                   </div>
-                  {fbCompletingPageId === page.id ? <Loader2 size={12} className="animate-spin text-blue-700" /> : <span className="text-blue-700 font-semibold">Select</span>}
+                  {fbCompletingPageId === page.id ? (
+                    <Loader2 size={12} className="animate-spin text-blue-700 shrink-0" />
+                  ) : (
+                    <span className="text-blue-700 font-semibold shrink-0 pointer-events-none">Select</span>
+                  )}
                 </button>
               ))}
             </div>

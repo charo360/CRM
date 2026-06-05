@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildServerCrmApiUrl } from "@/lib/server-crm-api";
+import { buildInternalCrmApiUrl } from "@/lib/server-crm-api";
 
 /**
  * GET /api/composio/connections
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {
-    const url = buildServerCrmApiUrl(req, "/composio/connections");
+    const url = buildInternalCrmApiUrl("/composio/connections");
     const res = await fetch(url, { headers: { Authorization: auth } });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
