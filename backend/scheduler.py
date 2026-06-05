@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from digest_service import get_digest_service
 from notification_service import get_notification_service
@@ -597,6 +598,21 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         )
         logger.info(f"Scheduled motivation for {day_name.upper()}")
     
+    # Social DM AI auto-reply poller — every 45s.
+    # IG DMs have no Composio push trigger, so we poll for new inbound messages and let the
+    # shared autoreply engine respond. max_instances=1 + coalesce prevents overlapping cycles.
+    from social_autoreply import run_social_autoreply_poll
+    scheduler.add_job(
+        run_social_autoreply_poll,
+        IntervalTrigger(seconds=45),
+        args=[db],
+        id="social_dm_autoreply",
+        name="Social DM AI Auto-Reply (every 45s)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Start the scheduler
     scheduler.start()
     logger.info("Scheduler started: Digests at 8 AM & 3 PM UTC, Motivation on Monday + 2 random days")

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildServerCrmApiUrl } from "@/lib/server-crm-api";
+import { buildInternalCrmApiUrl } from "@/lib/server-crm-api";
 
 /**
  * POST /api/composio/connections/[toolkit]/cleanup
@@ -15,7 +15,7 @@ export async function POST(
   }
   const { toolkit } = await params;
   try {
-    const url = buildServerCrmApiUrl(req, `/composio/connections/${toolkit}/cleanup`);
+    const url = buildInternalCrmApiUrl(`/composio/connections/${toolkit}/cleanup`);
     const res = await fetch(url, {
       method: "POST",
       headers: { Authorization: auth },

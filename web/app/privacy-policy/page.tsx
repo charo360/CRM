@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function PrivacyPolicyPage() {
   const lastUpdated = "May 2, 2026";
-  const contactEmail = "privacy@zilo.pro";
+  const contactEmail = "sam@zilo.pro";
   const appName = "Zilo";
   const website = "https://zilo.pro";
 
@@ -124,7 +124,41 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">4. How We Use Your Information</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">
+              4. Meta API Services (Facebook &amp; Instagram) — Data Usage and Deletion
+            </h2>
+            <p>
+              {appName} allows you to connect Facebook Pages and Instagram Business Accounts to manage posts, messaging, and automation. Our use of Meta API services complies with the Meta Developer Policies.
+            </p>
+            <p className="mt-3 font-semibold text-gray-850">Permissions We Request and How We Use Them:</p>
+            <ul className="list-disc pl-6 mt-2 space-y-1">
+              <li>
+                <strong>pages_show_list &amp; pages_read_engagement:</strong> To list your available Facebook Pages and monitor post engagement/analytics from within the {appName} workspace.
+              </li>
+              <li>
+                <strong>pages_manage_posts:</strong> To create, schedule, and publish posts to your connected Facebook Pages on your behalf.
+              </li>
+              <li>
+                <strong>instagram_basic &amp; instagram_content_publish:</strong> To access your Instagram Business profile info and publish scheduled posts to your feed on your behalf.
+              </li>
+              <li>
+                <strong>instagram_manage_messages:</strong> To read and send direct messages in order to provide automated responses and customer support features.
+              </li>
+            </ul>
+            <p className="mt-4">
+              We do <strong>not</strong> share Meta user data with third-party advertisers or use it for any purpose other than facilitating your CRM/social scheduling operations.
+            </p>
+            <p className="mt-2">
+              You may disconnect your Facebook and Instagram accounts at any time via the Integrations page in Zilo. To request complete removal of all cached social account data, please refer to our{" "}
+              <Link href="/delete-account" className="text-blue-600 underline font-medium">
+                Data Deletion Instructions
+              </Link>
+              .
+            </p>
+          </div>
+
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">5. How We Use Your Information</h2>
             <p>We use the information we collect to:</p>
             <ul className="list-disc pl-6 mt-2 space-y-1">
               <li>Provide, operate, and maintain the {appName} service</li>
@@ -138,7 +172,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">5. Data Sharing and Disclosure</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">6. Data Sharing and Disclosure</h2>
             <p>
               We do not sell your personal data. We may share data with:
             </p>
@@ -160,7 +194,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">6. Data Security</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">7. Data Security</h2>
             <p>
               We implement industry-standard security measures including encrypted data transmission
               (TLS/HTTPS), encrypted storage, access controls, and regular security assessments to
@@ -170,7 +204,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">7. Data Retention</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">8. Data Retention</h2>
             <p>
               We retain your data for as long as your account is active or as needed to provide the
               service. If you close your account, we will delete or anonymise your personal data
@@ -184,7 +218,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">8. Your Rights</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">9. Your Rights</h2>
             <p>You have the right to:</p>
             <ul className="list-disc pl-6 mt-2 space-y-1">
               <li>Access the personal data we hold about you</li>
@@ -204,7 +238,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">9. Cookies</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">10. Cookies</h2>
             <p>
               {appName} uses cookies and similar tracking technologies to maintain your session,
               remember your preferences, and analyse usage patterns. You can control cookies through
@@ -213,7 +247,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">10. Children&apos;s Privacy</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">11. Children&apos;s Privacy</h2>
             <p>
               {appName} is not directed to children under the age of 13. We do not knowingly collect
               personal data from children. If you believe a child has provided us with personal data,
@@ -222,7 +256,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">11. Changes to This Policy</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">12. Changes to This Policy</h2>
             <p>
               We may update this Privacy Policy from time to time. We will notify you of significant
               changes by posting the new policy on this page and updating the &quot;Last updated&quot;
@@ -231,7 +265,7 @@ export default function PrivacyPolicyPage() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-3">12. Contact Us</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-3">13. Contact Us</h2>
             <p>
               If you have any questions about this Privacy Policy or our data practices, please
               contact us:

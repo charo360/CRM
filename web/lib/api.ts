@@ -455,6 +455,8 @@ export interface BusinessSettings {
   faqs?: string;
   auto_reply_enabled?: boolean;
   auto_reply_audience?: string;
+  /** AI auto-reply for Instagram DMs (Composio social inbox). */
+  social_dm_autoreply_enabled?: boolean;
   ai_model?: string;
   notification_enabled?: boolean;
   notification_time?: string;
@@ -2235,10 +2237,10 @@ export interface ComposioSocialSettings {
 export const composioSocialApi = {
   settings: () => api.get<ComposioSocialSettings>("/composio/social/settings"),
   facebookPages: () => api.get<{ pages: ComposioFacebookPage[] }>("/composio/social/facebook/pages"),
-  selectFacebookPage: (page_id: string) =>
+  selectFacebookPage: (page_id: string, page_name?: string, instagram_user_id?: string | null) =>
     api.post<{ ok: boolean; page_id: string; page_name: string; instagram_user_id?: string | null }>(
       "/composio/social/facebook/page",
-      { page_id },
+      { page_id, page_name, instagram_user_id },
     ),
 };
 
