@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
-import { customersApi, zernioApi, type ZernioCommentAutoReplySettings } from "@/lib/api";
+import { customersApi, zernioApi, settingsApi, type ZernioCommentAutoReplySettings } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import {
   Inbox, RefreshCw, Send,
@@ -800,6 +800,8 @@ export default function SocialInboxPage() {
   const [engagementDebugByPost, setEngagementDebugByPost] = useState<Record<string, EngagementDebug>>({});
   const [commentAutoReply, setCommentAutoReply] = useState<ZernioCommentAutoReplySettings>(DEFAULT_COMMENT_AUTOREPLY);
   const [savingCommentAutoReply, setSavingCommentAutoReply] = useState(false);
+  const [dmAutoReply, setDmAutoReply] = useState(false);
+  const [savingDmAutoReply, setSavingDmAutoReply] = useState(false);
   const [newRuleKeyword, setNewRuleKeyword] = useState("");
   const [newRuleMessage, setNewRuleMessage] = useState("");
   const [newStepType, setNewStepType] = useState<"text" | "image" | "video" | "file">("text");
@@ -872,13 +874,15 @@ export default function SocialInboxPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [status, accs, customers, autoReplySettings, emailRes] = await Promise.all([
+      const [status, accs, customers, autoReplySettings, bizSettings, emailRes] = await Promise.all([
         zernioApi.status(),
         zernioApi.accounts().catch(() => ({})),
         customersApi.list().catch(() => [] as AiCustomer[]),
         zernioApi.getCommentAutoReplySettings().catch(() => DEFAULT_COMMENT_AUTOREPLY),
+        settingsApi.get().catch(() => null),
         fetch("/api/email?limit=50", { headers: authHeaders() }).catch(() => null),
       ]);
+      if (bizSettings) setDmAutoReply(Boolean(bizSettings.social_dm_autoreply_enabled));
       const socialConnected = (status as { connected?: boolean }).connected === true;
       const emailPayload = emailRes && emailRes.ok
         ? (await emailRes.json() as { connected?: boolean; threads?: Array<Record<string, unknown>> })
@@ -1437,6 +1441,18 @@ export default function SocialInboxPage() {
     }
   }
 
+  async function saveDmAutoReply(enabled: boolean) {
+    setDmAutoReply(enabled);
+    setSavingDmAutoReply(true);
+    try {
+      await settingsApi.update({ social_dm_autoreply_enabled: enabled });
+    } catch {
+      setDmAutoReply(!enabled); // revert on failure
+    } finally {
+      setSavingDmAutoReply(false);
+    }
+  }
+
   // Derive the platform list from connected accounts (not from conversations) so
   // a freshly-connected platform like TikTok/Twitter/YouTube/LinkedIn shows up
   // in the filter even before any DM has arrived from it. Fall back to the
@@ -1626,6 +1642,21 @@ export default function SocialInboxPage() {
                 <option value="unanswered">Unanswered first</option>
                 <option value="ai_autoreply">AI auto-reply customers</option>
               </select>
+            )}
+            {viewMode === "messages" && (
+              <label
+                className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+                title="When on, the AI automatically replies to new Instagram DMs even when this tab is closed."
+              >
+                <input
+                  type="checkbox"
+                  checked={dmAutoReply}
+                  disabled={savingDmAutoReply}
+                  onChange={(e) => void saveDmAutoReply(e.target.checked)}
+                />
+                AI auto-reply DMs
+                {savingDmAutoReply && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+              </label>
             )}
             {viewMode === "comments" && (
               <select
