@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Toaster } from "sonner";
 import { isAuthenticated } from "@/lib/auth";
-import { subscriptionApi } from "@/lib/api";
 import { BusinessProvider } from "@/contexts/BusinessContext";
 import { ZernioAccountsProvider } from "@/contexts/ZernioAccountsContext";
 import { MeetingRecorderProvider } from "@/contexts/MeetingRecorderContext";
@@ -14,6 +13,7 @@ import AssistantLauncher from "@/components/AssistantLauncher";
 import CommandBar from "@/components/CommandBar";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 import MeetingOverlay from "@/components/MeetingOverlay";
+import { EntitlementBanner } from "@/components/billing/EntitlementBanner";
 
 /**
  * Auth uses localStorage, which is absent on the server. Without a client-only gate,
@@ -43,23 +43,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }, 0);
     return () => window.clearTimeout(id);
   }, [mounted, router]);
-
-  useEffect(() => {
-    if (!mounted || !isAuthenticated()) return;
-    if (pathname?.startsWith("/dashboard/billing")) return;
-    let cancelled = false;
-    subscriptionApi
-      .entitlements()
-      .then((ent) => {
-        if (!cancelled && !ent.dashboard_access) {
-          router.replace("/dashboard/billing");
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [mounted, pathname, router]);
 
   if (mounted && !isAuthenticated()) {
     return null;
@@ -99,6 +82,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   }
                 />
               )}
+              {mounted && <EntitlementBanner />}
 
               <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50 text-slate-900">{children}</main>
             </div>

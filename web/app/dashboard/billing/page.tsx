@@ -19,7 +19,7 @@ const INCLUDED_ALL_PLANS = [
 
 function BillingPageContent() {
   const searchParams = useSearchParams();
-  const { entitlements, loading, refresh, dashboardAccess, paidActive, trialActive } = useSubscription();
+  const { entitlements, loading, refresh, paidActive, trialActive } = useSubscription();
   const trialAvailable = entitlements?.trial_available ?? false;
   const [checkoutPlans, setCheckoutPlans] = useState<SubscriptionPlan[]>([]);
   const [invoices, setInvoices] = useState<
@@ -107,21 +107,19 @@ function BillingPageContent() {
       <div>
         <h1 className="text-2xl font-bold text-brand-ink">Billing</h1>
         <p className="mt-1 text-slate-600">
-          {dashboardAccess
-            ? "Manage your plan, usage, and invoices."
-            : "Choose a plan or start your free trial to unlock the dashboard."}
+          Manage your plan, usage, and invoices. You can explore the app without a subscription.
         </p>
       </div>
 
-      {!dashboardAccess && !trialActive && (
+      {!paidActive && !trialActive && (
         <section className="rounded-2xl border border-brand/25 bg-brand/5 p-6">
           <h2 className="text-lg font-semibold text-brand-ink">
             {trialAvailable ? "Get access" : "Trial ended"}
           </h2>
           <p className="mt-2 text-sm text-slate-700">
             {trialAvailable
-              ? "Start your free trial or subscribe to use the CRM dashboard and messaging features."
-              : "Your free trial has ended. Choose a paid plan below to unlock the dashboard and messaging again."}
+              ? "Start your free trial or subscribe to unlock messaging, broadcasts, automations, and AI features."
+              : "Your free trial has ended. Choose a paid plan below to unlock sending, automation, and AI again."}
           </p>
           <ul className="mt-4 list-inside list-disc space-y-1 text-sm text-slate-800">
             {INCLUDED_ALL_PLANS.map((line) => (
@@ -142,7 +140,7 @@ function BillingPageContent() {
         </section>
       )}
 
-      {dashboardAccess && (
+      {(paidActive || trialActive) && (
         <section className="grid gap-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:grid-cols-2">
           <div>
             <p className="text-sm font-medium text-slate-500">Current plan</p>
