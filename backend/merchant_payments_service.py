@@ -16,7 +16,7 @@ from flutterwave_billing import (
     mark_ledger_refunded as flutterwave_mark_refunded,
 )
 from flutterwave_client import FlutterwaveApiError, FlutterwaveClient
-from payhero_auth import payhero_connected
+from payhero_credentials import payhero_connected
 from payhero_billing import (
     get_mpesa_ledger_entry,
     list_recent_ledger as payhero_ledger,
@@ -67,6 +67,7 @@ def connection_snapshot(user_doc: Optional[dict]) -> Dict[str, Any]:
             "connected": bool(payhero_connected(doc)),
             "label": doc.get("payhero_username") or "PayHero",
             "channel_id": doc.get("payhero_channel_id"),
+            "currency": "KES",
         },
     }
 

@@ -21,14 +21,24 @@ from payhero_rates import mpesa_fee_quote, public_rate_card
 from payhero_auth import (
     business_owner_id,
     credentials_from_connect_body,
-    payhero_connected,
     user_id_filter,
     verify_payhero_credentials,
 )
+from payhero_credentials import (
+    PAYHERO_AUTH_MERCHANT,
+    PAYHERO_AUTH_PLATFORM,
+    channel_connect_fields_from_body,
+    payhero_connected,
+    platform_account_id,
+    platform_authorization_header,
+    platform_configured,
+)
 from payhero_service import (
+    list_bank_paybills,
     list_channels_for_user,
     parse_webhook,
     process_payment,
+    register_payment_channel,
     stk_push_for_user,
 )
 
@@ -43,7 +53,40 @@ def register_payhero_routes(
     @api_router.get("/payhero/rates")
     async def payhero_rates_public():
         """Published PayHero Kenya fee tiers (no auth)."""
-        return public_rate_card()
+        card = dict(public_rate_card())
+        card["platform_available"] = platform_configured()
+        card["platform_account_configured"] = platform_account_id() is not None
+        return card
+
+    @api_router.get("/payhero/bank_paybills")
+    async def payhero_bank_paybills(user=Depends(get_current_user)):
+        """Banks PayHero supports for settlement (name + paybill)."""
+        del user
+        if not platform_configured():
+            raise HTTPException(
+                status_code=503,
+                detail="M-Pesa bank setup is not enabled on this server.",
+            )
+        auth = platform_authorization_header()
+        if not auth:
+            raise HTTPException(status_code=503, detail="PayHero platform credentials missing.")
+        try:
+            banks = await list_bank_paybills(auth)
+        except httpx.TimeoutException as e:
+            raise HTTPException(
+                status_code=504,
+                detail="PayHero bank list timed out. Try again.",
+            ) from e
+        except httpx.HTTPStatusError as e:
+            detail = (e.response.text or "")[:300]
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not load PayHero banks: {detail}",
+            ) from e
+        except Exception as e:
+            logger.exception("[PayHero] bank_paybills failed")
+            raise HTTPException(status_code=502, detail=str(e)) from e
+        return {"banks": banks}
 
     @api_router.get("/payhero/fees/quote")
     async def payhero_fee_quote(amount: float, user=Depends(get_current_user)):
@@ -71,24 +114,110 @@ def register_payhero_routes(
     async def payhero_get_connection(user=Depends(get_current_user)):
         doc = await db.users.find_one(
             user_id_filter(business_owner_id(user)),
-            {"payhero_username": 1, "payhero_api_token": 1, "payhero_channel_id": 1},
+            {
+                "payhero_username": 1,
+                "payhero_api_token": 1,
+                "payhero_channel_id": 1,
+                "payhero_auth_mode": 1,
+                "payhero_channel_type": 1,
+                "payhero_short_code": 1,
+                "payhero_account_number": 1,
+                "payhero_channel_description": 1,
+                "payhero_channel_active": 1,
+            },
         )
         connected = payhero_connected(doc)
+        mode = (doc or {}).get("payhero_auth_mode")
         return {
             "connected": connected,
-            "username": doc.get("payhero_username") if connected else None,
-            "channel_id": doc.get("payhero_channel_id") if connected else None,
+            "username": (doc or {}).get("payhero_username") if connected else None,
+            "channel_id": (doc or {}).get("payhero_channel_id") if connected else None,
+            "auth_mode": mode,
+            "platform_managed": mode == PAYHERO_AUTH_PLATFORM,
+            "channel_type": (doc or {}).get("payhero_channel_type") if connected else None,
+            "short_code": (doc or {}).get("payhero_short_code") if connected else None,
+            "account_number": (doc or {}).get("payhero_account_number") if connected else None,
+            "channel_description": (doc or {}).get("payhero_channel_description") if connected else None,
+            "channel_active": (doc or {}).get("payhero_channel_active") if connected else None,
+            "platform_available": platform_configured(),
+            "platform_account_configured": platform_account_id() is not None,
         }
 
     @api_router.post("/payhero/connect")
     async def payhero_connect(body: dict, user=Depends(get_current_user)):
+        body = body or {}
+        store_fields: dict
+        channel_id = None
+
+        is_channel_form = bool(
+            (body.get("channel_type") or body.get("type") or "").strip()
+            or (body.get("short_code") or body.get("paybill") or body.get("till"))
+        )
+
         try:
-            auth_header, store_fields = credentials_from_connect_body(body or {})
-            await verify_payhero_credentials(auth_header)
+            if is_channel_form:
+                if not platform_configured():
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "M-Pesa setup is not enabled on this server yet. "
+                            "Contact support — you only need your paybill, till, or bank details."
+                        ),
+                    )
+                account_id = platform_account_id()
+                if account_id is None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="PayHero platform account is not configured (PAYHERO_PLATFORM_ACCOUNT_ID).",
+                    )
+                ch = channel_connect_fields_from_body(body)
+                auth_header = platform_authorization_header()
+                if not auth_header:
+                    raise HTTPException(503, "PayHero platform credentials missing.")
+                created = await register_payment_channel(
+                    auth_header,
+                    account_id=account_id,
+                    channel_type=ch["channel_type"],
+                    short_code=ch["short_code"],
+                    account_number=ch["account_number"],
+                    description=ch["description"],
+                )
+                channel_id = created.get("id")
+                if channel_id is None:
+                    raise ValueError("PayHero did not return a channel id")
+                is_active = created.get("is_active", True)
+                store_fields = {
+                    "payhero_auth_mode": PAYHERO_AUTH_PLATFORM,
+                    "payhero_channel_id": channel_id,
+                    "payhero_channel_type": ch["channel_type"],
+                    "payhero_short_code": ch["short_code"],
+                    "payhero_account_number": ch["account_number"],
+                    "payhero_channel_description": ch["description"],
+                    "payhero_channel_active": bool(is_active),
+                    "payhero_username": ch["display_label"],
+                }
+            else:
+                auth_header, cred_fields = credentials_from_connect_body(body)
+                await verify_payhero_credentials(auth_header)
+                store_fields = {
+                    **cred_fields,
+                    "payhero_auth_mode": PAYHERO_AUTH_MERCHANT,
+                }
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except HTTPException:
             raise
+        except httpx.TimeoutException as e:
+            raise HTTPException(
+                status_code=504,
+                detail="PayHero API timed out. Check your network and try again.",
+            ) from e
+        except httpx.HTTPStatusError as e:
+            detail = (e.response.text or "")[:300]
+            raise HTTPException(
+                502,
+                f"PayHero could not register your M-Pesa destination: {detail}",
+            ) from e
         except Exception as e:
             logger.exception("[PayHero] connect failed")
             raise HTTPException(
@@ -98,9 +227,15 @@ def register_payhero_routes(
 
         try:
             owner_id = business_owner_id(user)
+            update: dict = {"$set": store_fields}
+            if is_channel_form:
+                update["$unset"] = {
+                    "payhero_api_token": "",
+                    "payhero_password": "",
+                }
             result = await db.users.update_one(
                 user_id_filter(owner_id),
-                {"$set": store_fields},
+                update,
             )
             if result.matched_count == 0:
                 raise HTTPException(
@@ -117,7 +252,13 @@ def register_payhero_routes(
             ) from e
 
         display = store_fields.get("payhero_username") or "Connected"
-        return {"status": "connected", "connected": True, "username": display}
+        return {
+            "status": "connected",
+            "connected": True,
+            "username": display,
+            "channel_id": channel_id,
+            "channel_active": store_fields.get("payhero_channel_active"),
+        }
 
     @api_router.delete("/payhero/connect")
     async def payhero_disconnect(user=Depends(get_current_user)):
@@ -129,6 +270,12 @@ def register_payhero_routes(
                     "payhero_password": "",
                     "payhero_api_token": "",
                     "payhero_channel_id": "",
+                    "payhero_auth_mode": "",
+                    "payhero_channel_type": "",
+                    "payhero_short_code": "",
+                    "payhero_account_number": "",
+                    "payhero_channel_description": "",
+                    "payhero_channel_active": "",
                 }
             },
         )
@@ -143,6 +290,10 @@ def register_payhero_routes(
                 "payhero_password": 1,
                 "payhero_api_token": 1,
                 "payhero_channel_id": 1,
+                "payhero_auth_mode": 1,
+                "payhero_channel_type": 1,
+                "payhero_short_code": 1,
+                "payhero_channel_description": 1,
             },
         )
         if not payhero_connected(doc):
@@ -193,6 +344,7 @@ def register_payhero_routes(
                 "payhero_password": 1,
                 "payhero_api_token": 1,
                 "payhero_channel_id": 1,
+                "payhero_auth_mode": 1,
             },
         )
         if not payhero_connected(doc):

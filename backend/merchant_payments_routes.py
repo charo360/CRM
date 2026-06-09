@@ -49,9 +49,10 @@ def register_merchant_payments_routes(
                 "flutterwave_business_name": 1,
                 "flutterwave_default_currency": 1,
                 "flutterwave_subaccount_id": 1,
-                "payhero_basic_auth": 1,
+                "payhero_api_token": 1,
                 "payhero_username": 1,
                 "payhero_channel_id": 1,
+                "payhero_auth_mode": 1,
                 "merchant_default_payment_provider": 1,
             },
         )
@@ -89,8 +90,10 @@ def register_merchant_payments_routes(
                 "stripe_details_submitted": 1,
                 "flutterwave_secret_key": 1,
                 "flutterwave_auth_mode": 1,
-                "payhero_basic_auth": 1,
+                "payhero_api_token": 1,
+                "payhero_username": 1,
                 "payhero_channel_id": 1,
+                "payhero_auth_mode": 1,
             },
         )
         if provider:
@@ -135,8 +138,10 @@ def register_merchant_payments_routes(
                 "stripe_details_submitted": 1,
                 "flutterwave_secret_key": 1,
                 "flutterwave_auth_mode": 1,
-                "payhero_basic_auth": 1,
+                "payhero_api_token": 1,
+                "payhero_username": 1,
                 "payhero_channel_id": 1,
+                "payhero_auth_mode": 1,
             },
         )
         try:

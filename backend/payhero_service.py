@@ -18,7 +18,12 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from payhero_auth import PAYHERO_BASE, authorization_from_user_doc
+from payhero_auth import PAYHERO_BASE
+from payhero_credentials import (
+    PAYHERO_AUTH_PLATFORM,
+    payhero_auth_mode,
+    resolve_authorization_header,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +46,105 @@ def _phones_match(a: str, b: str) -> bool:
 
 # ── API calls ─────────────────────────────────────────────────────────────────
 
+def merchant_channel_snapshot(user_doc: dict) -> List[Dict]:
+    """Single stored destination for platform-managed PayHero tenants."""
+    cid = user_doc.get("payhero_channel_id")
+    if not cid:
+        return []
+    label = (
+        user_doc.get("payhero_channel_description")
+        or user_doc.get("payhero_username")
+        or "M-Pesa"
+    )
+    return [
+        {
+            "id": int(cid) if str(cid).isdigit() else cid,
+            "name": label,
+            "description": user_doc.get("payhero_channel_description"),
+            "channel_type": user_doc.get("payhero_channel_type"),
+            "short_code": user_doc.get("payhero_short_code"),
+            "paybill": str(user_doc.get("payhero_short_code") or ""),
+        }
+    ]
+
+
+async def register_payment_channel(
+    auth_header: str,
+    *,
+    account_id: int,
+    channel_type: str,
+    short_code: str,
+    account_number: str,
+    description: str,
+) -> Dict:
+    payload = {
+        "channel_type": channel_type,
+        "account_id": account_id,
+        "short_code": str(short_code).strip(),
+        "account_number": account_number,
+        "description": description,
+    }
+    timeout = httpx.Timeout(25.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(
+            f"{PAYHERO_BASE}/payment_channels",
+            json=payload,
+            headers={
+                "Authorization": auth_header,
+                "Content-Type": "application/json",
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict):
+            return data
+        raise ValueError("Unexpected PayHero response when registering channel")
+
+
+async def list_bank_paybills(auth_header: str) -> List[Dict[str, Any]]:
+    """PayHero-registered banks (name + M-Pesa paybill) for bank destination setup."""
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.get(
+            f"{PAYHERO_BASE}/bank_paybills",
+            headers={
+                "Authorization": auth_header,
+                "Content-Type": "application/json",
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    raw = []
+    if isinstance(data, dict):
+        raw = data.get("bank_paybills") or data.get("banks") or []
+    elif isinstance(data, list):
+        raw = data
+
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = (item.get("name") or item.get("bank_name") or "").strip()
+        paybill = str(item.get("paybill") or item.get("short_code") or "").strip()
+        if not name or not paybill:
+            continue
+        out.append(
+            {
+                "id": item.get("id"),
+                "name": name,
+                "paybill": paybill,
+            }
+        )
+    out.sort(key=lambda x: (x.get("name") or "").lower())
+    return out
+
 async def list_channels_for_user(user_doc: dict) -> List[Dict]:
     """Return payment channels using stored PayHero credentials."""
-    auth = authorization_from_user_doc(user_doc)
+    if payhero_auth_mode(user_doc) == PAYHERO_AUTH_PLATFORM:
+        return merchant_channel_snapshot(user_doc)
+
+    auth = resolve_authorization_header(user_doc)
     if not auth:
         raise ValueError("PayHero not connected")
     async with httpx.AsyncClient(timeout=15) as client:
@@ -88,7 +189,7 @@ async def stk_push_for_user(
     callback_url: str,
     customer_name: str = "",
 ) -> Dict:
-    auth = authorization_from_user_doc(user_doc)
+    auth = resolve_authorization_header(user_doc)
     if not auth:
         raise ValueError("PayHero not connected")
     return await _stk_push_request(
