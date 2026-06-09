@@ -19,6 +19,7 @@ import {
   type StripeConnectStatus as StripeLifecycleStatus,
   payheroApi,
   type PayheroConnection,
+  type PayheroBankPaybill,
   type PayheroChannel,
   supplierApi,
   type SupplierConnections,
@@ -1427,33 +1428,102 @@ function StripeConnectStatus({
   );
 }
 
-// ── PayHero (Basic Auth + Channel selector) ───────────────────────────────────
+// ── PayHero (M-Pesa destination + direct Basic Auth) ─────────────────────────
 
 function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnection; onChanged: () => void }) {
+  const [channelType, setChannelType] = useState<"paybill" | "till" | "bank">("paybill");
+  const [shortCode, setShortCode] = useState("");
+  const [accountNumber, setAccountNumber] = useState("");
+  const [description, setDescription] = useState("");
+  const [banks, setBanks] = useState<PayheroBankPaybill[]>([]);
+  const [selectedBankKey, setSelectedBankKey] = useState("");
+  const [loadingBanks, setLoadingBanks] = useState(false);
   const [apiToken, setApiToken] = useState("");
+  const [platformAvailable, setPlatformAvailable] = useState(Boolean(connection?.platform_available));
+  const [platformAccountConfigured, setPlatformAccountConfigured] = useState(Boolean(connection?.platform_account_configured));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Channel selection state
   const [channels, setChannels] = useState<PayheroChannel[]>([]);
   const [loadingChannels, setLoadingChannels] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string>("");
   const [savingChannel, setSavingChannel] = useState(false);
 
-  // Load channels when connected
   useEffect(() => {
-    if (!connection?.connected) return;
+    payheroApi
+      .rates()
+      .then((card) => {
+        setPlatformAvailable(Boolean(card.platform_available));
+        setPlatformAccountConfigured(Boolean(card.platform_account_configured));
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setPlatformAvailable(Boolean(connection?.platform_available));
+    setPlatformAccountConfigured(Boolean(connection?.platform_account_configured));
+  }, [connection?.platform_available, connection?.platform_account_configured]);
+
+  useEffect(() => {
+    if (!(platformAvailable && platformAccountConfigured && channelType === "bank")) return;
+    setLoadingBanks(true);
+    setErr(null);
+    payheroApi
+      .bankPaybills()
+      .then((res) => {
+        const list = res.banks ?? [];
+        setBanks(list);
+        if (list.length && !selectedBankKey) {
+          const first = list[0];
+          setSelectedBankKey(String(first.id ?? first.paybill));
+        }
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : "Could not load PayHero banks"))
+      .finally(() => setLoadingBanks(false));
+  }, [channelType, platformAvailable, platformAccountConfigured, selectedBankKey]);
+
+  useEffect(() => {
+    if (!connection?.connected || connection.platform_managed) return;
     setLoadingChannels(true);
     payheroApi.channels()
-      .then(res => {
+      .then((res) => {
         setChannels(res.channels ?? []);
         if (res.selected_channel_id) setSelectedChannel(String(res.selected_channel_id));
       })
       .catch(() => {})
       .finally(() => setLoadingChannels(false));
-  }, [connection?.connected]);
+  }, [connection?.connected, connection?.platform_managed]);
 
-  async function handleConnect() {
+  const selectedBank = banks.find((b) => String(b.id ?? b.paybill) === selectedBankKey);
+  const platformReady = platformAvailable && platformAccountConfigured;
+
+  async function handleConnectDestination() {
+    const isBank = channelType === "bank";
+    const code = isBank ? selectedBank?.paybill?.trim() ?? "" : shortCode.trim();
+    const label = isBank ? selectedBank?.name?.trim() ?? "" : description.trim();
+    if (!code || !label) return;
+    if ((channelType === "paybill" || isBank) && !accountNumber.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await payheroApi.connect({
+        channel_type: channelType,
+        short_code: code,
+        account_number: accountNumber.trim() || undefined,
+        description: label,
+      });
+      setShortCode("");
+      setAccountNumber("");
+      setDescription("");
+      await onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not connect PayHero");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConnectToken() {
     if (!apiToken.trim()) return;
     setBusy(true);
     setErr(null);
@@ -1462,7 +1532,7 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
       setApiToken("");
       await onChanged();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not connect");
+      setErr(e instanceof Error ? e.message : "Could not connect PayHero");
     } finally {
       setBusy(false);
     }
@@ -1471,7 +1541,7 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
   async function handleDisconnect() {
     const ok = await confirmDialog({
       title: "Disconnect PayHero?",
-      text: "M-Pesa STK push and automatic payment confirmation will stop for this workspace. Your API credentials and selected payment channel will be removed from the CRM.",
+      text: "M-Pesa STK push and automatic payment confirmation will stop for this workspace. PayHero credentials and the selected destination will be removed from the CRM.",
       confirmText: "Yes, disconnect",
       cancelText: "Keep connected",
     });
@@ -1497,7 +1567,15 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
 
   if (connection?.connected) {
     const savedChannelId = connection.channel_id ? String(connection.channel_id) : null;
-    const isChannelSaved = savedChannelId && selectedChannel === savedChannelId;
+    const isChannelSaved = Boolean(savedChannelId && selectedChannel === savedChannelId);
+    const typeLabel =
+      connection.channel_type === "till"
+        ? "Till"
+        : connection.channel_type === "bank"
+          ? "Bank"
+          : connection.channel_type === "paybill"
+            ? "Paybill"
+            : "M-Pesa";
 
     return (
       <div className="space-y-2">
@@ -1506,45 +1584,63 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
           <p className="text-[12px] font-semibold text-slate-900">{connection.username || "PayHero"}</p>
         </div>
 
-        {/* Channel selector */}
-        <div className="space-y-1">
-          <p className="text-[10px] font-medium text-slate-600">M-Pesa channel</p>
-          {loadingChannels ? (
-            <p className="flex items-center gap-1 text-[10px] text-slate-400"><Loader2 size={10} className="animate-spin" /> Loading channels…</p>
-          ) : channels.length === 0 ? (
-            <p className="text-[10px] text-slate-400">No channels found in your PayHero account.</p>
-          ) : (
-            <div className="flex gap-1.5">
-              <select
-                value={selectedChannel}
-                onChange={e => setSelectedChannel(e.target.value)}
-                className="flex-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
-              >
-                <option value="">— Pick a channel —</option>
-                {channels.map((ch) => (
-                  <option key={ch.id} value={String(ch.id)}>
-                    {ch.name}
-                    {ch.paybill ? ` · Paybill ${ch.paybill}` : ch.short_code ? ` · Till ${ch.short_code}` : ""}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={handleSaveChannel}
-                disabled={savingChannel || !selectedChannel || isChannelSaved === true}
-                className="flex items-center gap-1 rounded-lg bg-[#1DB954] px-2 py-1 text-[10px] font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50"
-              >
-                {savingChannel ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
-                {isChannelSaved ? "Saved" : "Save"}
-              </button>
-            </div>
-          )}
-          {savedChannelId && (
-            <p className="text-[10px] text-green-700">
-              ✓ Payments to this channel auto-confirm orders &amp; send receipts
+        {connection.platform_managed && connection.short_code && (
+          <div className="rounded-md border border-slate-100 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-600">
+            <p>
+              <span className="font-medium text-slate-700">{typeLabel}</span>{" "}
+              {String(connection.short_code)}
+              {connection.account_number && connection.channel_type !== "till"
+                ? ` · Acc ${connection.account_number}`
+                : ""}
             </p>
-          )}
-        </div>
+            {connection.channel_description && <p className="mt-0.5">{connection.channel_description}</p>}
+            {connection.channel_active === false && (
+              <p className="mt-0.5 text-amber-600">PayHero has not marked this channel active yet.</p>
+            )}
+          </div>
+        )}
+
+        {!connection.platform_managed && (
+          <div className="space-y-1">
+            <p className="text-[10px] font-medium text-slate-600">M-Pesa channel</p>
+            {loadingChannels ? (
+              <p className="flex items-center gap-1 text-[10px] text-slate-400"><Loader2 size={10} className="animate-spin" /> Loading channels...</p>
+            ) : channels.length === 0 ? (
+              <p className="text-[10px] text-slate-400">No channels found in your PayHero account.</p>
+            ) : (
+              <div className="flex gap-1.5">
+                <select
+                  value={selectedChannel}
+                  onChange={(e) => setSelectedChannel(e.target.value)}
+                  className="flex-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
+                >
+                  <option value="">Pick a channel</option>
+                  {channels.map((ch) => (
+                    <option key={ch.id} value={String(ch.id)}>
+                      {ch.name}
+                      {ch.paybill ? ` · Paybill ${ch.paybill}` : ch.short_code ? ` · Till ${ch.short_code}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleSaveChannel}
+                  disabled={savingChannel || !selectedChannel || isChannelSaved}
+                  className="flex items-center gap-1 rounded-lg bg-[#1DB954] px-2 py-1 text-[10px] font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50"
+                >
+                  {savingChannel ? <Loader2 size={10} className="animate-spin" /> : <CheckCircle2 size={10} />}
+                  {isChannelSaved ? "Saved" : "Save"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {savedChannelId && (
+          <p className="text-[10px] text-green-700">
+            Payments to this channel auto-confirm orders and send receipts.
+          </p>
+        )}
 
         <PayHeroUsagePanel connected />
 
@@ -1557,32 +1653,128 @@ function PayHeroStatus({ connection, onChanged }: { connection?: PayheroConnecti
     );
   }
 
+  const needsAccount = channelType === "paybill" || channelType === "bank";
+  const canSubmitDestination =
+    platformReady &&
+    (channelType === "bank"
+      ? Boolean(selectedBank?.paybill && selectedBank?.name && accountNumber.trim())
+      : Boolean(shortCode.trim() && description.trim() && (!needsAccount || accountNumber.trim())));
+
   return (
-    <div className="space-y-1.5">
-      <p className="text-[10px] leading-snug text-slate-500">
-        In{" "}
-        <a href="https://app.payhero.co.ke/" target="_blank" rel="noreferrer"
-          className="font-medium text-[#1DB954] hover:underline">
-          PayHero Dashboard
-        </a>
-        {" "}→ <strong>API Keys</strong> → Create key → copy the <strong>Basic Authorization token</strong> (not your login password).
-      </p>
-      <input
-        type="password"
-        value={apiToken}
-        onChange={(e) => setApiToken(e.target.value)}
-        placeholder="Paste Basic Auth token"
-        autoComplete="off"
-        className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#1DB954]"
-      />
-      <button
-        type="button"
-        onClick={() => void handleConnect()}
-        disabled={busy || !apiToken.trim()}
-        className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#1DB954] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50"
-      >
-        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
-      </button>
+    <div className="space-y-2">
+      {platformReady ? (
+        <div className="space-y-1.5">
+          <p className="text-[10px] leading-snug text-slate-500">
+            Add the PayHero sub-account destination where customer M-Pesa STK payments should settle.
+          </p>
+          <select
+            value={channelType}
+            onChange={(e) => {
+              setChannelType(e.target.value as "paybill" | "till" | "bank");
+              setErr(null);
+            }}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
+          >
+            <option value="paybill">Paybill</option>
+            <option value="till">Till</option>
+            <option value="bank">Bank settlement</option>
+          </select>
+
+          {channelType === "bank" ? (
+            <>
+              <select
+                value={selectedBankKey}
+                onChange={(e) => setSelectedBankKey(e.target.value)}
+                disabled={loadingBanks}
+                className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954] disabled:opacity-60"
+              >
+                <option value="">{loadingBanks ? "Loading banks..." : "Select bank"}</option>
+                {banks.map((bank) => {
+                  const key = String(bank.id ?? bank.paybill);
+                  return (
+                    <option key={key} value={key}>
+                      {bank.name} · Paybill {bank.paybill}
+                    </option>
+                  );
+                })}
+              </select>
+              <input
+                value={accountNumber}
+                onChange={(e) => setAccountNumber(e.target.value)}
+                placeholder="Bank account number"
+                className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
+              />
+            </>
+          ) : (
+            <>
+              <input
+                value={shortCode}
+                onChange={(e) => setShortCode(e.target.value)}
+                placeholder={channelType === "paybill" ? "Paybill number" : "Till number"}
+                inputMode="numeric"
+                className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
+              />
+              {needsAccount && (
+                <input
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value)}
+                  placeholder="Paybill account number"
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
+                />
+              )}
+              <input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Business name"
+                className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#1DB954]"
+              />
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void handleConnectDestination()}
+            disabled={busy || !canSubmitDestination}
+            className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#1DB954] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#17a34a] disabled:opacity-50"
+          >
+            {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Add PayHero destination
+          </button>
+        </div>
+      ) : (
+        <p className="text-[10px] leading-snug text-slate-500">
+          Platform PayHero setup is not enabled on this server. You can still connect a merchant PayHero API token below.
+        </p>
+      )}
+
+      {!platformReady && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] leading-snug text-slate-500">
+            In{" "}
+            <a href="https://app.payhero.co.ke/" target="_blank" rel="noreferrer"
+              className="font-medium text-[#1DB954] hover:underline">
+              PayHero Dashboard
+            </a>
+            {" "}→ <strong>API Keys</strong> → Create key → copy the <strong>Basic Authorization token</strong> (not your login password).
+          </p>
+          <input
+            type="password"
+            value={apiToken}
+            onChange={(e) => setApiToken(e.target.value)}
+            placeholder="Paste Basic Authorization token"
+            autoComplete="off"
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#1DB954]"
+          />
+          <button
+            type="button"
+            onClick={() => void handleConnectToken()}
+            disabled={busy || !apiToken.trim()}
+            className="flex w-full items-center justify-center gap-1 rounded-lg border border-[#1DB954]/30 bg-white px-2.5 py-1.5 text-xs font-semibold text-[#159447] hover:bg-[#1DB954]/5 disabled:opacity-50"
+          >
+            {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect with token
+          </button>
+        </div>
+      )}
+
       {err && <p className="flex items-center gap-1 text-[10px] text-red-600"><AlertCircle size={10} /> {err}</p>}
     </div>
   );

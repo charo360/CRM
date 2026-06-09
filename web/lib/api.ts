@@ -1433,6 +1433,21 @@ export interface PayheroConnection {
   connected: boolean;
   username?: string;
   channel_id?: number | string | null;
+  auth_mode?: "platform" | "merchant" | null;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+  platform_account_configured?: boolean;
+  channel_type?: "paybill" | "till" | "bank" | string | null;
+  short_code?: number | string | null;
+  account_number?: string | null;
+  channel_description?: string | null;
+  channel_active?: boolean | null;
+}
+
+export interface PayheroBankPaybill {
+  id?: string | number;
+  name: string;
+  paybill: string;
 }
 
 export interface PayheroChannel {
@@ -1474,18 +1489,26 @@ export const payheroApi = {
       mpesa_tiers: { min_kes: number; max_kes: number; fee_kes: number }[];
       sms_per_message_kes: number;
       whatsapp_per_message_kes: number;
+      platform_available?: boolean;
+      platform_account_configured?: boolean;
     }>("/payhero/rates"),
   feeQuote: (amount: number) =>
     api.get<PayheroFeeQuote>(`/payhero/fees/quote?amount=${encodeURIComponent(String(amount))}`),
   usageSummary: () => api.get<PayheroUsageSummary>("/payhero/usage/summary"),
   usageLedger: (limit = 50) =>
     api.get<{ entries: Record<string, unknown>[] }>(`/payhero/usage/ledger?limit=${limit}`),
+  bankPaybills: () =>
+    api.get<{ banks: PayheroBankPaybill[] }>("/payhero/bank_paybills"),
   connection: () => api.get<PayheroConnection>("/payhero/connection"),
   connect: async (payload: {
     api_token?: string;
     username?: string;
     password?: string;
     label?: string;
+    channel_type?: "paybill" | "till" | "bank";
+    short_code?: string;
+    account_number?: string;
+    description?: string;
   }) => {
     const token = getToken();
     const res = await fetch("/api/payhero/connect", {
