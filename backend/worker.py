@@ -56,14 +56,20 @@ async def _get_db():
     tunnel_mode = os.environ.get("TUNNEL_MODE", "").lower() == "true"
     if tunnel_mode:
         from mongo_http_client import AsyncMongoHTTPClient
-        api_url = os.environ["MONGO_DATA_API_URL"]
-        api_key = os.environ["MONGO_DATA_API_KEY"]
+        api_url = os.environ.get("MONGO_DATA_API_URL")
+        api_key = os.environ.get("MONGO_DATA_API_KEY")
         cluster = os.environ.get("MONGO_CLUSTER_NAME", "Cluster0")
         db_name = os.environ.get("DB_NAME", "whatsapp_crm")
+        if not api_url or not api_key:
+            logging.critical("MONGO_DATA_API_URL or MONGO_DATA_API_KEY not set (TUNNEL_MODE=true)")
+            sys.exit(1)
         client = AsyncMongoHTTPClient(api_url, api_key, cluster, db_name)
         return client[db_name]
     else:
-        mongo_url = os.environ["MONGO_URL"]
+        mongo_url = os.environ.get("MONGO_URL")
+        if not mongo_url:
+            logging.critical("MONGO_URL not set in environment. Set MONGO_URL to your MongoDB connection string.")
+            sys.exit(1)
         client = AsyncIOMotorClient(mongo_url)
         return client[os.environ.get("DB_NAME", "whatsapp_crm")]
 

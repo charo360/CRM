@@ -1,0 +1,10 @@
+{
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-native": "^0.72.8"
+  },
+  "dependencies": {
+    "latest": "^0.2.0",
+    "version": "^0.1.2"
+  }
+}

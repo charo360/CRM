@@ -4,9 +4,24 @@ import { feedbackApi } from "@/lib/api";
 import { MessageCircle, Plus, Trash2, RefreshCw, ThumbsUp, Minus, ThumbsDown, Star, Copy, Check, ExternalLink, PencilLine } from "lucide-react";
 import { toast } from "sonner";
 
+type SurveyQuestion = { id: string; text: string; type: "nps" | "rating" | "text" | "choice"; options?: string[] };
+type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string; questions?: SurveyQuestion[] };
 type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string; form_id?: string; slug?: string };
 type NPSData = { nps_score: number; total_responses: number; promoters: number; passives: number; detractors: number; promoter_pct: number; detractor_pct: number; recent_comments: { name: string; score: number; comment: string }[] };
 type Response = { id: string; customer_name: string; nps_score?: number; nps_category?: string; comment: string; created_at: string };
+type SurveyForm = { title: string; description: string; active: boolean; questions: SurveyQuestion[] };
+type ResponseAnswer = { question_id: string; answer: string | number };
+type ResponseForm = { survey_id: string; customer_name: string; customer_phone: string; nps_score: number; comment: string; answers: ResponseAnswer[] };
+
+const emptySurveyForm = (): SurveyForm => ({ title: "", description: "", active: true, questions: [] });
+const emptyResponseForm = (surveyId = ""): ResponseForm => ({
+  survey_id: surveyId,
+  customer_name: "",
+  customer_phone: "",
+  nps_score: 8,
+  comment: "",
+  answers: [],
+});
 
 function NPSGauge({ score }: { score: number }) {
   const color = score >= 50 ? "text-green-600" : score >= 0 ? "text-amber-600" : "text-red-600";
@@ -28,9 +43,10 @@ export default function NPSPage() {
   const [tab, setTab] = useState<"dashboard" | "surveys" | "responses">("dashboard");
   const [selectedSurvey, setSelectedSurvey] = useState<string>("");
   const [showSurveyModal, setShowSurveyModal] = useState(false);
-  const [surveyForm, setSurveyForm] = useState({ title: "", description: "", active: true });
+  const [surveyForm, setSurveyForm] = useState<SurveyForm>(emptySurveyForm());
+  const [editingSurveyId, setEditingSurveyId] = useState<string | null>(null);
   const [showResponseModal, setShowResponseModal] = useState(false);
-  const [responseForm, setResponseForm] = useState({ survey_id: "", customer_name: "", customer_phone: "", nps_score: 8, comment: "" });
+  const [responseForm, setResponseForm] = useState<ResponseForm>(emptyResponseForm());
   const [saving, setSaving] = useState(false);
   const [copiedSurveyId, setCopiedSurveyId] = useState<string>("");
 
@@ -77,6 +93,13 @@ export default function NPSPage() {
     }
   }
 
+  async function updateSurvey() {
+    if (!editingSurveyId) return;
+    setSaving(true);
+    try { await feedbackApi.updateSurvey(editingSurveyId, surveyForm); setShowSurveyModal(false); setEditingSurveyId(null); await load(); }
+    finally { setSaving(false); }
+  }
+
   async function deleteSurvey(id: string) {
     if (!confirm("Delete this survey and all responses?")) return;
     await feedbackApi.deleteSurvey(id);
@@ -85,12 +108,84 @@ export default function NPSPage() {
 
   async function submitResponse() {
     setSaving(true);
-    try { await feedbackApi.submitResponse({ ...responseForm }); setShowResponseModal(false); await load(); }
-    finally { setSaving(false); }
+    try {
+      const res = await feedbackApi.submitResponse({ ...responseForm });
+      setShowResponseModal(false);
+      await load();
+      const responseId = typeof res.id === "string" ? res.id : typeof res._id === "string" ? res._id : "";
+      if (responseId) {
+        const base = (typeof window !== 'undefined' && (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)) || '';
+        const url = `${base.replace(/\/$/, '')}/feedback/response/${responseId}`;
+        try { await navigator.clipboard.writeText(url); alert('Response saved — link copied to clipboard:\n' + url); } catch { alert('Response saved — link: ' + url); }
+      } else {
+        alert('Response saved');
+      }
+    } finally { setSaving(false); }
   }
 
   const NPS_COLOR: Record<string, string> = { promoter: "text-green-600", passive: "text-amber-600", detractor: "text-red-600" };
   const NPS_ICON: Record<string, typeof ThumbsUp> = { promoter: ThumbsUp, passive: Minus, detractor: ThumbsDown };
+
+  const addQuestion = () => {
+    setSurveyForm((f) => ({
+      ...f,
+      questions: [
+        ...(f.questions || []),
+        { id: `q_${Date.now()}`, text: "", type: "text", options: [] },
+      ],
+    }));
+  };
+
+  const updateQuestion = (id: string, patch: Partial<SurveyQuestion>) => {
+    setSurveyForm((f) => ({
+      ...f,
+      questions: (f.questions || []).map((q: SurveyQuestion) => {
+        if (q.id !== id) return q;
+        const next = { ...q, ...patch };
+        if (patch.type && patch.type !== "choice") next.options = [];
+        if (patch.type === "choice" && (!next.options || next.options.length === 0)) next.options = ["Option 1", "Option 2"];
+        return next;
+      }),
+    }));
+  };
+
+  const removeQuestion = (id: string) => {
+    setSurveyForm((f) => ({
+      ...f,
+      questions: (f.questions || []).filter((q: SurveyQuestion) => q.id !== id),
+    }));
+  };
+
+  const addChoiceOption = (questionId: string) => {
+    setSurveyForm((f) => ({
+      ...f,
+      questions: (f.questions || []).map((q: SurveyQuestion) =>
+        q.id === questionId ? { ...q, options: [...(q.options || []), `Option ${(q.options || []).length + 1}`] } : q
+      ),
+    }));
+  };
+
+  const updateChoiceOption = (questionId: string, index: number, value: string) => {
+    setSurveyForm((f) => ({
+      ...f,
+      questions: (f.questions || []).map((q: SurveyQuestion) =>
+        q.id === questionId
+          ? { ...q, options: (q.options || []).map((opt, i) => (i === index ? value : opt)) }
+          : q
+      ),
+    }));
+  };
+
+  const removeChoiceOption = (questionId: string, index: number) => {
+    setSurveyForm((f) => ({
+      ...f,
+      questions: (f.questions || []).map((q: SurveyQuestion) =>
+        q.id === questionId
+          ? { ...q, options: (q.options || []).filter((_, i) => i !== index) }
+          : q
+      ),
+    }));
+  };
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -103,11 +198,11 @@ export default function NPSPage() {
           <p className="text-slate-500 text-sm mt-0.5">Measure customer satisfaction and collect feedback</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => { setShowResponseModal(true); setResponseForm({ survey_id: surveys[0]?.id || "", customer_name: "", customer_phone: "", nps_score: 8, comment: "" }); }}
+          <button onClick={() => { setShowResponseModal(true); setResponseForm(emptyResponseForm(surveys[0]?.id || "")); }}
             className="flex items-center gap-2 border border-slate-200 text-slate-700 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
             <Plus size={15} /> Log Response
           </button>
-          <button onClick={() => { setShowSurveyModal(true); setSurveyForm({ title: "", description: "", active: true }); }}
+          <button onClick={() => { setShowSurveyModal(true); setEditingSurveyId(null); setSurveyForm(emptySurveyForm()); }}
             className="flex items-center gap-2 bg-brand-dark text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-brand">
             <Plus size={15} /> New Survey
           </button>
@@ -274,6 +369,11 @@ export default function NPSPage() {
                     <Trash2 size={13} />
                   </button>
                 </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => { setShowSurveyModal(true); setSurveyForm({ title: s.title, description: s.description, active: !!s.active, questions: s.questions || [] }); setEditingSurveyId(s.id); }} className="text-slate-600 hover:text-slate-800">Edit</button>
+                  <button onClick={() => { const base = (typeof window !== 'undefined' && (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)) || ''; const url = `${base.replace(/\/$/, '')}/feedback/survey/${s.id}`; try { navigator.clipboard.writeText(url); alert('Survey link copied to clipboard:\n' + url); } catch { alert('Survey link: ' + url); } }} className="text-slate-600 hover:text-slate-800">Get link</button>
+                  <button onClick={() => deleteSurvey(s.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={16} /></button>
+                </div>
               </div>
             ))}
           </div>
@@ -323,9 +423,9 @@ export default function NPSPage() {
       {/* Survey modal */}
       {showSurveyModal && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowSurveyModal(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <div className="p-6 border-b border-slate-100"><h2 className="text-lg font-semibold">New Survey</h2></div>
-            <div className="p-6 space-y-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b border-slate-100"><h2 className="text-lg font-semibold">{editingSurveyId ? "Edit Survey" : "New Survey"}</h2></div>
+            <div className="p-6 space-y-4 max-h-[calc(90vh-9rem)] overflow-y-auto">
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Title *</label>
                 <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={surveyForm.title}
@@ -336,6 +436,67 @@ export default function NPSPage() {
                 <textarea className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" rows={2} value={surveyForm.description}
                   onChange={e => setSurveyForm(f => ({ ...f, description: e.target.value }))} />
               </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-medium text-slate-600">Questions</label>
+                  <button onClick={addQuestion} className="flex items-center gap-1 text-xs text-brand-dark font-medium">
+                    <Plus size={14} /> Add question
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {(surveyForm.questions || []).map((q: SurveyQuestion, index: number) => (
+                    <div key={q.id} className="border border-slate-200 rounded-lg p-3 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-slate-500">Question {index + 1}</span>
+                        <button onClick={() => removeQuestion(q.id)} className="text-slate-400 hover:text-red-500">
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                      <input
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                        value={q.text}
+                        onChange={e => updateQuestion(q.id, { text: e.target.value })}
+                        placeholder="Ask a question"
+                      />
+                      <select
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                        value={q.type}
+                        onChange={e => updateQuestion(q.id, { type: e.target.value as SurveyQuestion["type"] })}
+                      >
+                        <option value="text">Text answer</option>
+                        <option value="choice">Multiple choice</option>
+                        <option value="rating">Rating 1-5</option>
+                        <option value="nps">NPS 0-10</option>
+                      </select>
+                      {q.type === "choice" && (
+                        <div className="space-y-2">
+                          {(q.options || []).map((opt, optionIndex) => (
+                            <div key={`${q.id}-${optionIndex}`} className="flex gap-2">
+                              <input
+                                className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                                value={opt}
+                                onChange={e => updateChoiceOption(q.id, optionIndex, e.target.value)}
+                                placeholder={`Option ${optionIndex + 1}`}
+                              />
+                              <button onClick={() => removeChoiceOption(q.id, optionIndex)} className="px-2 text-slate-400 hover:text-red-500">
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          ))}
+                          <button onClick={() => addChoiceOption(q.id)} className="text-xs text-brand-dark font-medium">
+                            Add option
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {(surveyForm.questions || []).length === 0 && (
+                    <p className="text-xs text-slate-400 border border-dashed border-slate-200 rounded-lg p-3">
+                      Add questions for customers to answer from their shared link.
+                    </p>
+                  )}
+                </div>
+              </div>
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={surveyForm.active} onChange={e => setSurveyForm(f => ({ ...f, active: e.target.checked }))} className="rounded" />
                 Active
@@ -343,9 +504,9 @@ export default function NPSPage() {
             </div>
             <div className="p-6 border-t flex justify-end gap-3">
               <button onClick={() => setShowSurveyModal(false)} className="px-4 py-2 text-sm text-slate-600">Cancel</button>
-              <button onClick={createSurvey} disabled={saving || !surveyForm.title}
+              <button onClick={editingSurveyId ? updateSurvey : createSurvey} disabled={saving || !surveyForm.title}
                 className="px-4 py-2 bg-brand-dark text-white rounded-lg text-sm font-medium hover:bg-brand disabled:opacity-50">
-                {saving ? "Creating..." : "Create Survey"}
+                {saving ? "Saving..." : editingSurveyId ? "Save Survey" : "Create Survey"}
               </button>
             </div>
           </div>
@@ -396,6 +557,57 @@ export default function NPSPage() {
                 <textarea className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" rows={2} value={responseForm.comment}
                   onChange={e => setResponseForm(f => ({ ...f, comment: e.target.value }))} placeholder="What can we improve?" />
               </div>
+
+              {/* Dynamic survey questions */}
+              {responseForm.survey_id && (() => {
+                const cur = surveys.find(s => s.id === responseForm.survey_id);
+                if (!cur || !cur.questions || cur.questions.length === 0) return null;
+                return (
+                  <div>
+                    <h4 className="text-sm font-medium text-slate-700 mb-2">Survey questions</h4>
+                    <div className="space-y-3">
+                      {cur.questions.map((q) => {
+                        const existing = responseForm.answers.find((a) => a.question_id === q.id);
+                        const val = existing ? existing.answer : '';
+                        const setAnswer = (v: string | number) => setResponseForm((f) => {
+                          const answers = [...f.answers];
+                          const qi = answers.findIndex((a) => a.question_id === q.id);
+                          const entry = { question_id: q.id, answer: v };
+                          if (qi === -1) answers.push(entry); else answers[qi] = entry;
+                          return { ...f, answers };
+                        });
+                        return (
+                          <div key={q.id}>
+                            <label className="block text-xs text-slate-600 mb-1">{q.text || 'Question'}</label>
+                            {q.type === 'text' && (
+                              <input className="w-full border border-slate-200 rounded px-3 py-2 text-sm" value={val}
+                                onChange={e => setAnswer(e.target.value)} />
+                            )}
+                            {q.type === 'nps' && (
+                              <input type="range" min="0" max="10" value={val || responseForm.nps_score}
+                                onChange={e => setAnswer(+e.target.value)} className="w-full" />
+                            )}
+                            {q.type === 'rating' && (
+                              <select className="w-full border border-slate-200 rounded px-2 py-1 text-sm" value={val}
+                                onChange={e => setAnswer(e.target.value)}>
+                                <option value="">Select</option>
+                                {[1,2,3,4,5].map(n => <option key={n} value={n}>{n}</option>)}
+                              </select>
+                            )}
+                            {q.type === 'choice' && (
+                              <select className="w-full border border-slate-200 rounded px-2 py-1 text-sm" value={val}
+                                onChange={e => setAnswer(e.target.value)}>
+                                <option value="">Select</option>
+                                {(q.options||[]).map((opt: string, oi: number) => <option key={oi} value={opt}>{opt}</option>)}
+                              </select>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             <div className="p-6 border-t flex justify-end gap-3">
               <button onClick={() => setShowResponseModal(false)} className="px-4 py-2 text-sm text-slate-600">Cancel</button>

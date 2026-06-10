@@ -1,13 +1,21 @@
+
 import os
 import sys
 import secrets
 import string
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Load env before ANY other imports
+# Load env before ANY other imports (dotenv is optional in some runtime images)
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT_DIR / ".env", override=True)
+except ModuleNotFoundError:
+    # No python-dotenv installed (common in locked-down environments / containers)
+    # App will still run using existing environment variables.
+    pass
+# Ensure backend package modules can be imported as top-level modules
+sys.path.insert(0, str(ROOT_DIR))
 
 # .env.local overrides for local dev — but blank values must NOT wipe keys already set
 # from .env (or the host). A stray `OPENROUTER_KEY=` line has cleared working keys.
@@ -143,26 +151,26 @@ import json
 import re as _re
 # Evolution API replaces Twilio — config in whatsapp_service.py
 # from emergentintegrations.llm.chat import LlmChat, UserMessage
-from ai_service import get_drafter, AIMessageDrafter
-from daily_analyzer import DailyCustomerAnalyzer
-from notification_service import get_notification_service
-from image_handler import ImageUploadHandler, S3Handler
-from product_organizer import get_organizer
-from whatsapp_service import get_whatsapp_service
-from followup_analytics import get_analytics
-from smart_notifications import get_smart_notifications
-from supplier_analyzer import SupplierAnalyzer
-from contact_classifier import get_classifier
+from .ai_service import get_drafter, AIMessageDrafter
+from .daily_analyzer import DailyCustomerAnalyzer
+from .notification_service import get_notification_service
+from .image_handler import ImageUploadHandler, S3Handler
+from .product_organizer import get_organizer
+from .whatsapp_service import get_whatsapp_service
+from .followup_analytics import get_analytics
+from .smart_notifications import get_smart_notifications
+from .supplier_analyzer import SupplierAnalyzer
+from .contact_classifier import get_classifier
 from fastapi import UploadFile, File, Body, Form
 from fastapi.staticfiles import StaticFiles
-from daily_scheduler import start_daily_scheduler
-from mongo_http_client import AsyncMongoHTTPClient
+from .daily_scheduler import start_daily_scheduler
+from .mongo_http_client import AsyncMongoHTTPClient
 
 
 
 from bson import ObjectId as _ObjectId
 print("[DEBUG] Core imports done, loading CRM services...")
-from redis_client import (
+from .redis_client import (
     cache_get, cache_set, cache_delete, cache_delete_pattern,
     enqueue_job,
     key_tenant_settings, key_plan_limits, key_dashboard, key_products,
@@ -381,7 +389,10 @@ if os.environ.get('TUNNEL_MODE') == 'true':
     client = AsyncMongoHTTPClient(api_url, api_key, cluster, db_name)
     db = client[db_name]
 else:
-    mongo_url = os.environ['MONGO_URL']
+    mongo_url = os.environ.get('MONGO_URL')
+    if not mongo_url:
+        print("[CRITICAL] MONGO_URL not set in environment. Set MONGO_URL to your MongoDB connection string.")
+        sys.exit(1)
     client = AsyncIOMotorClient(
         mongo_url,
         maxPoolSize=50,
@@ -552,13 +563,31 @@ async def fix_team_members_index():
     except Exception:
         pass
     try:
-        # sparse=True so multiple null phone_numbers (email-only members) don't conflict
-        await db.team_members.create_index(
-            [("business_id", 1), ("phone_number", 1)], unique=True, sparse=True, name="business_id_phone_sparse"
-        )
-        logging.info("Ensured team_members index: business_id_phone_sparse")
+        await db.team_members.drop_index("business_id_1_phone_number_1")
     except Exception:
         pass
+    try:
+        await db.team_members.drop_index("business_id_phone_sparse")
+    except Exception:
+        pass
+    try:
+        await db.team_members.update_many(
+            {"$or": [{"phone_number": None}, {"phone_number": ""}]},
+            {"$unset": {"phone_number": ""}}
+        )
+    except Exception as e:
+        logging.warning(f"Could not unset empty team member phone numbers: {e}")
+    try:
+        # Only real phone strings participate in uniqueness; omitted phones are allowed.
+        await db.team_members.create_index(
+            [("business_id", 1), ("phone_number", 1)],
+            unique=True,
+            name="business_id_phone_unique",
+            partialFilterExpression={"phone_number": {"$type": "string"}},
+        )
+        logging.info("Ensured team_members index: business_id_phone_unique")
+    except Exception as e:
+        logging.warning(f"Could not ensure team_members phone index: {e}")
     # Migrate existing records: auto_created=True → is_customer=False (contacts pool)
     # Records without auto_created (manually added) → is_customer=True
     try:
@@ -3054,7 +3083,6 @@ async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str
         "user_id": linked_user_id,
         "name": invite.name.strip(),
         "email": email,
-        "phone_number": phone or None,
         "role": canonical_role,
         "permissions": invite.permissions or [],
         "business_id": business_id,
@@ -3064,6 +3092,8 @@ async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str
         "last_active": None,
         "_temp_password": temp_password,  # carried through to response only; not a real field
     }
+    if phone:
+        doc["phone_number"] = phone
     await db.team_members.insert_one({k: v for k, v in doc.items() if k != "_temp_password"})
     return doc
 
@@ -14417,7 +14447,12 @@ async def startup_tasks():
         # Team members
         await db.team_members.create_index([("business_id", 1), ("status", 1)])
         await db.team_members.create_index("phone_number")
-        await db.team_members.create_index([("business_id", 1), ("phone_number", 1)])
+        await db.team_members.create_index(
+            [("business_id", 1), ("phone_number", 1)],
+            unique=True,
+            name="business_id_phone_unique",
+            partialFilterExpression={"phone_number": {"$type": "string"}},
+        )
 
         # Conversation memory (AI context per customer per user)
         await db.conversation_memory.create_index([("customer_id", 1), ("user_id", 1)])

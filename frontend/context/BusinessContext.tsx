@@ -21,6 +21,7 @@ export type BusinessType =
   | 'hotel'
   | 'support'
   | 'creator'
+  | 'tech'
   | 'general'
   | '';
 

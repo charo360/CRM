@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { teamApi, TeamMember } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { Users, Plus, Trash2, Edit, Shield, User, Crown, Phone, Copy, Check, KeyRound } from "lucide-react";
+import { Users, Plus, Trash2, Edit, Shield, User, Crown, Phone, Copy, Check, KeyRound, Eye, Mail } from "lucide-react";
 
 const ROLES = [
   { value: "owner",    label: "Owner",    icon: Crown,  color: "text-brand-dark" },
@@ -30,6 +30,7 @@ export default function TeamPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [tempPasswordInfo, setTempPasswordInfo] = useState<{ name: string; email: string; password: string } | null>(null);
+  const [viewMember, setViewMember] = useState<TeamMember | null>(null);
   const [copied, setCopied] = useState(false);
   const [form, setForm] = useState({
     name: "",
@@ -243,6 +244,13 @@ export default function TeamPage() {
                         <td className="px-4 py-3">
                           <div className="flex gap-1">
                             <button
+                              onClick={() => setViewMember(member)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                              title="View details"
+                            >
+                              <Eye size={14} />
+                            </button>
+                            <button
                               onClick={() => handleEdit(member)}
                               className="p-1.5 rounded-lg text-slate-400 hover:bg-blue-100 hover:text-blue-600 transition-colors"
                               title="Edit"
@@ -272,6 +280,91 @@ export default function TeamPage() {
           )}
         </div>
       </div>
+
+      {/* View Member Details Dialog */}
+      {viewMember && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-brand/15 flex items-center justify-center">
+                  <span className="text-brand-dark font-semibold text-sm">
+                    {viewMember.name.charAt(0).toUpperCase()}
+                  </span>
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900">{viewMember.name}</h3>
+                  <p className="text-sm text-slate-500 capitalize">
+                    {viewMember.role} · {viewMember.status || "invited"}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setViewMember(null)} className="text-slate-400 hover:text-slate-600">
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-3 rounded-xl bg-slate-50 p-4">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="inline-flex items-center gap-2 text-slate-500">
+                  <Mail size={14} /> Email login
+                </span>
+                <span className="font-medium text-slate-800 text-right">{viewMember.email || "Not set"}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="inline-flex items-center gap-2 text-slate-500">
+                  <Phone size={14} /> Mobile login
+                </span>
+                <span className="font-medium text-slate-800 text-right">{viewMember.phone_number || "Not set"}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-slate-500">Joined</span>
+                <span className="font-medium text-slate-800">
+                  {viewMember.created_at ? formatDate(viewMember.created_at) : "—"}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Permissions</p>
+              <div className="flex flex-wrap gap-1.5">
+                {(viewMember.permissions || []).length ? (
+                  (viewMember.permissions || []).map((perm) => (
+                    <span key={perm} className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-full">
+                      {perm.replace(/_/g, " ")}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-sm text-slate-400">No custom permissions</span>
+                )}
+              </div>
+            </div>
+
+            <p className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+              Temporary passwords are shown only once when an email-login member is created. If it was lost,
+              create a new temporary password flow or change their password from a reset tool.
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  handleEdit(viewMember);
+                  setViewMember(null);
+                }}
+                className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Edit member
+              </button>
+              <button
+                onClick={() => setViewMember(null)}
+                className="flex-1 py-2.5 bg-brand-dark text-white font-semibold rounded-xl text-sm hover:bg-brand transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Temp Password Dialog */}
       {tempPasswordInfo && (
