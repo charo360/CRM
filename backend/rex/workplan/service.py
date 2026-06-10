@@ -131,20 +131,57 @@ Respond ONLY with valid JSON. No other text."""
         }
     return res
 
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO-8601 string into a tz-aware UTC datetime, or None."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _clamp_due_date(value: Optional[str], project_due: str) -> Optional[str]:
+    """Clamp a step's due date into [today, project_due].
+
+    Returns an ISO string. If the value is unparseable, defaults to the
+    project due date (or today if that is also missing).
+    """
+    now = datetime.now(timezone.utc)
+    due_end = _parse_iso(project_due)
+    # Floor can't exceed the deadline, so cap "today" at the due date too.
+    floor = now if (due_end is None or now <= due_end) else due_end
+
+    dt = _parse_iso(value)
+    if dt is None:
+        return (due_end or now).isoformat()
+    if dt < floor:
+        dt = floor
+    if due_end is not None and dt > due_end:
+        dt = due_end
+    return dt.isoformat()
+
+
 async def suggest_project_steps_with_llm(project_name: str, goal: str, due_date: str) -> List[dict]:
     """
     Suggests steps for a project based on name and goal.
     Returns: [{"name": "...", "owner": "founder" or "zilo", "due_date": "ISO string"}]
     """
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     prompt = f"""You are Zilo, an AI CRM Chief of Staff.
 The founder wants to create a new project:
 Project Name: "{project_name}"
 Goal: "{goal}"
+Today's date is {today_iso}.
 Project Due Date: "{due_date}"
 
 Suggest 4 to 6 steps to achieve this project. Keep steps actionable.
 Assign steps to either the founder ("founder") or Zilo ("zilo").
 Note that Zilo CANNOT perform physical tasks, personal relations, signature of legal documents, or financial approvals.
+Every step's due_date MUST fall on or after today ({today_iso}) and on or before the Project Due Date. Space the steps out in chronological order leading up to the due date.
 Return a JSON array of steps:
 [
   {{
@@ -166,6 +203,13 @@ Respond ONLY with valid JSON array."""
             {"name": "Schedule launch post", "owner": "zilo", "due_date": (now + timedelta(days=4)).isoformat()},
             {"name": "Monitor launch and replies", "owner": "founder", "due_date": due_date}
         ]
+
+    # Defensive clamp: never trust the model's dates. Force every step's
+    # due_date into [today, project due date] so steps can't land in the past
+    # or after the deadline regardless of what the LLM returns.
+    for step in res:
+        if isinstance(step, dict):
+            step["due_date"] = _clamp_due_date(step.get("due_date"), due_date)
     return res
 
 async def parse_notes_and_create_tasks(notes_text: str, current_tasks: List[dict]) -> dict:
