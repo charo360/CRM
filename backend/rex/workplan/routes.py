@@ -62,6 +62,20 @@ def _id_filter(doc_id: str, uid: str) -> Dict[str, Any]:
     return {"_id": {"$in": candidates}, "user_id": uid}
 
 
+# Words that signal a task was actually finished. parse-input only honors
+# LLM-detected completions when the pasted text contains one of these, so
+# re-pasting a task *description* (no completion language) can't mark it done.
+COMPLETION_HINTS = (
+    "done", "finished", "complete", "completed", "signed", "sent", "paid",
+    "shipped", "fixed", "closed", "resolved", "wrapped", "handled", "submitted",
+)
+
+
+def _has_completion_signal(text: str) -> bool:
+    low = (text or "").lower()
+    return any(h in low for h in COMPLETION_HINTS)
+
+
 def _norm_title(title: Optional[str]) -> str:
     """Normalize a title for duplicate detection: trim, lowercase, collapse
     internal whitespace. Two tasks with the same normalized title (and owner)
@@ -1072,12 +1086,21 @@ def init_workplan_routes(get_current_user, db: Any | None = None) -> APIRouter:
         result = await parse_notes_and_create_tasks(body.text, tasks_list)
         
         # Apply LLM updates
-        # 1. Complete existing tasks
+        # 1. Complete existing tasks — but only if the pasted text actually
+        # expresses completion. Without this guard, re-pasting a task's own
+        # description leads the LLM to "complete" the matching open task.
         completed_task_ids = result.get("completed_task_ids", [])
+        if not _has_completion_signal(body.text):
+            if completed_task_ids:
+                logger.info(
+                    "[workplan] ignoring %d LLM completion(s); no completion language in input",
+                    len(completed_task_ids),
+                )
+            completed_task_ids = []
         for tid in completed_task_ids:
             if _use_live_db(db):
                 await db.workplan_tasks.update_one(
-                    {"_id": tid, "user_id": uid},
+                    _id_filter(tid, uid),
                     {"$set": {"status": "done", "completed_at": datetime.now(timezone.utc).isoformat()}}
                 )
             else:

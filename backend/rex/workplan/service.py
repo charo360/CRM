@@ -231,7 +231,10 @@ We have the following current tasks in the Work Plan:
 
 Analyze the notes and extract:
 1. Commitments & deadlines -> create new tasks. (Identify if founder or Zilo should own it).
-2. Tasks that have been completed in the notes -> match them to the current tasks list and return their IDs to complete.
+2. Tasks the notes EXPLICITLY say are already finished -> match them to the current tasks list and return their IDs to complete.
+   ONLY mark a task complete when the notes clearly state it was done using past-tense completion language (e.g. "signed", "sent", "paid", "finished", "completed", "done", "shipped", "fixed it").
+   Do NOT mark a task complete just because the notes mention, describe, restate, or re-add it. A note that describes work still to be done is a NEW or existing task, never a completion.
+   If you are unsure whether something was actually finished, leave completed_task_ids empty.
 3. Relevant customer details or facts to log in the Notebook.
 
 Return a JSON object with:

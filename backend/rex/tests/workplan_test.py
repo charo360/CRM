@@ -265,6 +265,31 @@ class TestWorkPlanRoutes:
                    if "review q3 budget" in t["title"].lower()]
         assert len(matches) == 1
 
+    def test_parse_input_ignores_completion_without_signal(self, test_client, monkeypatch):
+        """Re-pasting a task description (no completion words) must NOT mark it done."""
+        r = test_client.post("/workplan/tasks", json={"title": "Fix duplicate call bug", "owner": "founder"})
+        tid = r.json()["id"]
+
+        async def fake_parse(notes_text, current_tasks):
+            return {"completed_task_ids": [tid], "new_tasks": [], "notebook_entries": []}
+
+        import rex.workplan.service as svc
+        monkeypatch.setattr(svc, "parse_notes_and_create_tasks", fake_parse)
+
+        # No completion language -> completion ignored, task stays open.
+        test_client.post("/workplan/parse-input", json={
+            "text": "Fix duplicate call bug. This may be a bug or inefficiency."
+        })
+        task = next(t for t in test_client.get("/workplan").json()["tasks"] if t["id"] == tid)
+        assert task["status"] != "done"
+
+        # Explicit completion language -> completion is applied.
+        test_client.post("/workplan/parse-input", json={
+            "text": "Fixed the duplicate call bug, it's done."
+        })
+        task2 = next(t for t in test_client.get("/workplan").json()["tasks"] if t["id"] == tid)
+        assert task2["status"] == "done"
+
     def test_sync_calendar_events_to_workplan(self):
         """Test that sync_calendar_events_to_workplan fetches calendar, resolves CRM context, offsets prep due, and inserts tasks."""
         from unittest.mock import AsyncMock, MagicMock, patch
