@@ -456,11 +456,13 @@ export default function WorkPlanPage() {
         toast.message(res.message || "Execution isn't available here.");
       } else {
         toast.success("Zilo is working on it…");
-        // Poll for staged drafts while the agent runs in the background.
-        for (let i = 0; i < 6; i++) {
-          await new Promise((r) => setTimeout(r, 1500));
+        // Poll until the agent reaches a terminal state (it can take 30–60s),
+        // not just a few seconds — otherwise the modal is left mid-run.
+        const TERMINAL = ["completed", "done", "failed", "unavailable"];
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
           const data = await refreshWork(task.id);
-          if (data && (data.status === "completed" || (data.drafts?.length ?? 0) > 0)) break;
+          if (data && (TERMINAL.includes(data.status) || (data.drafts?.length ?? 0) > 0)) break;
         }
         void loadData();
       }
@@ -1522,12 +1524,18 @@ export default function WorkPlanPage() {
                 {(workData.status === "running" || runningTask) && (
                   <div className="flex items-center gap-2 text-slate-500">
                     <Loader2 size={13} className="animate-spin" />
-                    Zilo is working{workData.progress ? ` — ${workData.progress.done}/${workData.progress.total}` : "…"}
+                    Zilo is working{workData.progress && workData.progress.total > 0 ? ` — ${workData.progress.done}/${workData.progress.total}` : "…"}
                   </div>
                 )}
 
                 {workData.drafts.length === 0 ? (
-                  <p className="text-slate-400 italic py-4 text-center">No drafts staged yet.</p>
+                  (workData.status === "completed" || workData.status === "done") ? (
+                    <p className="text-slate-500 py-4 text-center">
+                      Zilo finished but had nothing to send for this task. This usually means the task isn&apos;t outreach Zilo can act on (e.g. internal or technical work), or there were no matching contacts.
+                    </p>
+                  ) : (
+                    <p className="text-slate-400 italic py-4 text-center">No drafts staged yet.</p>
+                  )
                 ) : (
                   <div className="space-y-3 max-h-[50vh] overflow-y-auto">
                     {workData.drafts.map((d) => (
