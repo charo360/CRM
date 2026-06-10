@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Zilo Browser Operator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered web browser control and data extraction companion for Zilo CRM.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -17,21 +18,32 @@
   },
   "content_scripts": [
     {
+      "matches": [
+        "http://localhost:3000/*",
+        "http://localhost:3001/*",
+        "https://*.zilocrm.com/*",
+        "https://*.zilo.app/*"
+      ],
+      "js": ["dashboard.js"],
+      "run_at": "document_idle"
+    },
+    {
       "matches": ["<all_urls>"],
       "js": ["content.js"]
     }
   ],
   "action": {
     "default_popup": "popup.html",
+    "default_title": "Zilo Browser Operator",
     "default_icon": {
-      "16": "icon.png",
-      "48": "icon.png",
-      "128": "icon.png"
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
     }
   },
   "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   }
 }
