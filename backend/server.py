@@ -557,6 +557,8 @@ async def fix_team_members_index():
     # Start automation scheduler in background
     import asyncio
     asyncio.create_task(run_automation_scheduler())
+    # Scheduled Delegate tasks on a 5-minute cadence (separate from the hourly loop)
+    asyncio.create_task(run_delegate_scheduler())
     # Fix fallback names + backfill last_owner_reply on startup
     async def _startup_tasks():
         await asyncio.sleep(30)
@@ -595,6 +597,8 @@ async def run_automation_scheduler():
             await execute_broadcast_automations()
         except Exception as e:
             logging.error(f"Automation scheduler error: {e}")
+        # Scheduled Delegate tasks run on a tighter 5-minute cadence in
+        # run_delegate_scheduler() so they fire near their target time.
         # Run name backfill every 6 hours to fix Customer/Contact XXXX names
         if run_count % 6 == 0:
             try:
@@ -603,6 +607,26 @@ async def run_automation_scheduler():
                 logging.error(f"Name backfill scheduler error: {e}")
         run_count += 1
         await asyncio.sleep(3600)  # check every hour
+
+
+async def run_delegate_scheduler():
+    """Runs every 5 minutes — fires due scheduled Delegate tasks near their target time.
+
+    Kept separate from the hourly automation loop so scheduled times (e.g. "every
+    weekday at 7am") don't drift up to an hour. run_due_scheduled_delegations bumps
+    each delegation's next_run_at as it fires, so a 5-minute cadence never double-runs.
+    """
+    import asyncio
+    await asyncio.sleep(15)  # brief delay to let server finish starting
+    while True:
+        try:
+            from delegate.service import run_due_scheduled_delegations
+            count = await run_due_scheduled_delegations(db)
+            if count:
+                logging.info(f"[delegate] ran {count} scheduled delegation(s)")
+        except Exception as e:
+            logging.error(f"Delegate scheduler error: {e}")
+        await asyncio.sleep(300)  # every 5 minutes
 
 async def _backfill_all_users_names():
     """Fix fallback names (Customer XXXX / Contact XXXX / raw phone) for all users"""
