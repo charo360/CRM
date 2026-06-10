@@ -134,6 +134,14 @@ NEGATIVE_OPERATIONAL: frozenset[EventType] = frozenset({
     EventType.ACTION_FLAGGED_MISTAKE,
 })
 
+# Journal-only events: recorded for narrative/journal context (e.g. the daily
+# background-work summary). They never change rank state and must stay OUT of
+# OPERATIONAL_EVENTS so they don't pollute the trust-score window. The engine
+# treats them as no-ops on replay.
+JOURNAL_ONLY_EVENTS: frozenset[EventType] = frozenset({
+    EventType.BACKGROUND_WORK,
+})
+
 
 # ---------------------------------------------------------------------------
 # TrustEvent
