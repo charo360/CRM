@@ -1,0 +1,246 @@
+"""
+Zilo Work Plan AI parsing services.
+Provides LLM prompts to analyze meeting notes, update logs, and suggest steps.
+"""
+from __future__ import annotations
+import json
+import logging
+import os
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+async def _call_llm_json(prompt: str, system_prompt: str = "", *, expect_array: bool = False):
+    """Call DeepSeek (cheap) for JSON output, falling back to OpenAI.
+
+    Work Plan parsing is short, high-volume JSON extraction where Claude/GPT-4
+    cost isn't justified, so we prefer DeepSeek (deepseek-chat) — the same
+    OpenAI-compatible provider used elsewhere in the backend. Returns a dict
+    (or list when expect_array=True); empty container if no provider answers.
+    """
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+
+    # (api_key, base_url, model) — DeepSeek first, OpenAI as a fallback.
+    providers = []
+    if deepseek_key:
+        providers.append((deepseek_key, "https://api.deepseek.com", "deepseek-chat"))
+    if openai_key:
+        providers.append((openai_key, None, "gpt-4o-mini"))
+
+    for api_key, base_url, model in providers:
+        try:
+            import openai
+            client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url) if base_url \
+                else openai.AsyncOpenAI(api_key=api_key)
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            create_kwargs = dict(
+                model=model,
+                max_tokens=800,
+                temperature=0.2,
+                messages=messages,
+            )
+            # json_object mode guarantees parseable output but forbids a
+            # top-level array, so only request it when we expect an object.
+            if not expect_array:
+                create_kwargs["response_format"] = {"type": "json_object"}
+
+            resp = await client.chat.completions.create(**create_kwargs)
+            raw = resp.choices[0].message.content or ""
+            parsed = _clean_and_parse_json(raw)
+            if parsed:
+                return parsed
+        except Exception as e:
+            logger.warning("[workplan-ai] %s call failed: %s", model, e)
+
+    return [] if expect_array else {}
+
+def _clean_and_parse_json(raw: str):
+    text = raw.strip()
+    # Remove markdown code blocks if any
+    text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^```\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text, flags=re.IGNORECASE)
+    try:
+        return json.loads(text)
+    except Exception as e:
+        logger.error(f"[workplan-ai] JSON parse failed: {e}. Raw: {raw}")
+        return {}
+
+async def parse_quick_update_with_llm(task_title: str, update_text: str) -> dict:
+    """
+    Parses quick log updates (e.g. 'Called 3. Two interested. One said call back next week').
+    Returns updates for progress, completion status, subtasks, and follow-ups.
+    """
+    prompt = f"""You are Zilo, an AI CRM Chief of Staff.
+A founder has logged an update on the task "{task_title}".
+Update Log: "{update_text}"
+
+Analyze this update and return a JSON object with:
+{{
+  "complete": true/false (if the task is fully done),
+  "progress": "e.g. 3 of 7 done" (summary of progress, or null if not updated),
+  "subtask_indices_completed": [0, 1] (indices of subtasks completed by this update),
+  "new_tasks": [
+    {{
+      "title": "Task name",
+      "owner": "founder" or "zilo",
+      "due_date": "ISO-8601 string or null",
+      "context": "Short explanation"
+    }}
+  ] (new follow-up tasks to create from this update),
+  "notebook_fact": "a fact about the customer/lead to save in CRM memory (or null)"
+}}
+
+Respond ONLY with valid JSON. No other text."""
+
+    res = await _call_llm_json(prompt)
+    if not res:
+        # Fallback rules
+        is_complete = any(x in update_text.lower() for x in ["done", "complete", "finished", "signed"])
+        prog = None
+        new_t = []
+        fact = None
+        
+        # Simple regex matching
+        m = re.search(r"(\d+)\s+done|called\s+(\d+)", update_text.lower())
+        if m:
+            val = m.group(1) or m.group(2)
+            prog = f"{val} steps done"
+            
+        if "call back" in update_text.lower() or "follow up" in update_text.lower():
+            new_t.append({
+                "title": "Follow up call from update log",
+                "owner": "founder",
+                "due_date": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+                "context": f"Created from log: {update_text}"
+            })
+            
+        res = {
+            "complete": is_complete,
+            "progress": prog,
+            "subtask_indices_completed": [],
+            "new_tasks": new_t,
+            "notebook_fact": fact
+        }
+    return res
+
+async def suggest_project_steps_with_llm(project_name: str, goal: str, due_date: str) -> List[dict]:
+    """
+    Suggests steps for a project based on name and goal.
+    Returns: [{"name": "...", "owner": "founder" or "zilo", "due_date": "ISO string"}]
+    """
+    prompt = f"""You are Zilo, an AI CRM Chief of Staff.
+The founder wants to create a new project:
+Project Name: "{project_name}"
+Goal: "{goal}"
+Project Due Date: "{due_date}"
+
+Suggest 4 to 6 steps to achieve this project. Keep steps actionable.
+Assign steps to either the founder ("founder") or Zilo ("zilo").
+Note that Zilo CANNOT perform physical tasks, personal relations, signature of legal documents, or financial approvals.
+Return a JSON array of steps:
+[
+  {{
+    "name": "Step name",
+    "owner": "founder" or "zilo",
+    "due_date": "ISO-8601 string representing when this step is due"
+  }}
+]
+
+Respond ONLY with valid JSON array."""
+
+    res = await _call_llm_json(prompt, expect_array=True)
+    if not res or not isinstance(res, list):
+        # Fallback list of steps based on project name
+        now = datetime.now(timezone.utc)
+        return [
+            {"name": "Write copy and description", "owner": "founder", "due_date": (now + timedelta(days=2)).isoformat()},
+            {"name": "Design visual assets", "owner": "zilo", "due_date": (now + timedelta(days=3)).isoformat()},
+            {"name": "Schedule launch post", "owner": "zilo", "due_date": (now + timedelta(days=4)).isoformat()},
+            {"name": "Monitor launch and replies", "owner": "founder", "due_date": due_date}
+        ]
+    return res
+
+async def parse_notes_and_create_tasks(notes_text: str, current_tasks: List[dict]) -> dict:
+    """
+    Parses meeting notes or voice updates to extract commitments, deadlines, and decisions.
+    Checks if notes imply completing any of the current_tasks.
+    """
+    tasks_simplified = [{"id": t["id"], "title": t["title"]} for t in current_tasks]
+    
+    prompt = f"""You are Zilo, an AI CRM Chief of Staff.
+A founder uploaded meeting notes or a voice log:
+Notes:
+\"\"\"
+{notes_text}
+\"\"\"
+
+We have the following current tasks in the Work Plan:
+{json.dumps(tasks_simplified, indent=2)}
+
+Analyze the notes and extract:
+1. Commitments & deadlines -> create new tasks. (Identify if founder or Zilo should own it).
+2. Tasks that have been completed in the notes -> match them to the current tasks list and return their IDs to complete.
+3. Relevant customer details or facts to log in the Notebook.
+
+Return a JSON object with:
+{{
+  "completed_task_ids": ["task_id_1", "task_id_2"],
+  "new_tasks": [
+    {{
+      "title": "Task title",
+      "owner": "founder" or "zilo",
+      "due_date": "ISO-8601 string or null",
+      "source": "Meeting notes Jun 8",
+      "context": "Henderson is waiting on this etc."
+    }}
+  ],
+  "notebook_entries": [
+    {{
+      "subject": "Contact name or Pattern name",
+      "text": "The fact details to write"
+    }}
+  ]
+}}
+
+Respond ONLY with valid JSON."""
+
+    res = await _call_llm_json(prompt)
+    if not res:
+        # Fallback parsing
+        completed = []
+        new_t = []
+        notebook = []
+        
+        # Check simple NDA/contract sign in notes
+        if "signed the nda" in notes_text.lower() or "nda is signed" in notes_text.lower():
+            # Try to match NDA task in current_tasks
+            for t in current_tasks:
+                if "nda" in t["title"].lower():
+                    completed.append(t["id"])
+                    
+        # Check commitments like "Sam will send the deck by Friday"
+        if "deck by friday" in notes_text.lower():
+            now = datetime.now(timezone.utc)
+            friday = now + timedelta(days=(4 - now.weekday()) % 7)
+            new_t.append({
+                "title": "Send pitch deck to investor",
+                "owner": "founder",
+                "due_date": friday.isoformat(),
+                "source": "Parsed from notes",
+                "context": "Sam committed to send deck by Friday"
+            })
+            
+        res = {
+            "completed_task_ids": completed,
+            "new_tasks": new_t,
+            "notebook_entries": notebook
+        }
+    return res
