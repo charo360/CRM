@@ -15,11 +15,13 @@ export function WhatsAppQrModal({
   const [starting, setStarting] = useState(true);
   const [error, setError] = useState("");
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [pairingPhase, setPairingPhase] = useState<"scan" | "connecting">("scan");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const refreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const didInit = useRef(false);
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
+  const [retryKey, setRetryKey] = useState(0);
 
   function stopPolls() {
     if (pollRef.current) {
@@ -39,13 +41,16 @@ export function WhatsAppQrModal({
   }, [secondsLeft]);
 
   useEffect(() => {
-    if (didInit.current) return;
-    didInit.current = true;
+    didInit.current = false;
+    stopPolls();
 
     function startStatusPoll() {
       pollRef.current = setInterval(async () => {
         try {
           const s = await whatsappApi.status();
+          if (s.status === "connecting") {
+            setPairingPhase("connecting");
+          }
           if (s.connected) {
             stopPolls();
             onConnectedRef.current();
@@ -53,7 +58,7 @@ export function WhatsAppQrModal({
         } catch {
           /* ignore */
         }
-      }, 5000);
+      }, 2000);
     }
 
     function startQrRefresh() {
@@ -61,7 +66,14 @@ export function WhatsAppQrModal({
       refreshRef.current = setInterval(async () => {
         try {
           const data = await whatsappApi.qrFetch();
-          if (data.qr_base64) setQrBase64(data.qr_base64);
+          if (data.connection_state === "connecting") {
+            setPairingPhase("connecting");
+            return;
+          }
+          if (data.qr_base64) {
+            setPairingPhase("scan");
+            setQrBase64(data.qr_base64);
+          }
           setSecondsLeft(20);
         } catch {
           /* ignore */
@@ -74,14 +86,38 @@ export function WhatsAppQrModal({
       setError("");
       try {
         const data = await whatsappApi.qrStart();
-        if (data.qr_base64) {
-          setQrBase64(data.qr_base64);
-        } else {
-          setError("QR code not available. Please try again.");
+        let qr = data.qr_base64 || "";
+        if (!qr) {
+          for (let i = 0; i < 8; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            try {
+              const pending = await whatsappApi.qrFetch();
+              if (pending.qr_base64) {
+                qr = pending.qr_base64;
+                break;
+              }
+            } catch {
+              /* keep polling */
+            }
+          }
+        }
+        if (qr) {
+          setQrBase64(qr);
         }
         setStarting(false);
         startStatusPoll();
         startQrRefresh();
+        try {
+          const s = await whatsappApi.status();
+          if (s.connected) {
+            stopPolls();
+            onConnectedRef.current();
+          } else if (s.status === "connecting") {
+            setPairingPhase("connecting");
+          }
+        } catch {
+          /* ignore */
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to generate QR code");
         setStarting(false);
@@ -91,7 +127,14 @@ export function WhatsAppQrModal({
     void init();
     return () => stopPolls();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [retryKey]);
+
+  function retry() {
+    setQrBase64("");
+    setError("");
+    setPairingPhase("scan");
+    setRetryKey((k) => k + 1);
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -125,8 +168,25 @@ export function WhatsAppQrModal({
               <p className="text-[12px] text-slate-400">Generating QR code…</p>
             </div>
           ) : error ? (
-            <div className="flex h-56 w-56 flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-red-200 bg-red-50">
-              <p className="text-center text-[12px] text-red-500">{error}</p>
+            <div className="flex h-56 w-56 flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-red-200 bg-red-50 px-4">
+              <p className="text-center text-[12px] text-red-600">{error}</p>
+              <button
+                type="button"
+                onClick={retry}
+                className="rounded-lg bg-[#25D366] px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-[#20bd5a]"
+              >
+                Try again
+              </button>
+            </div>
+          ) : pairingPhase === "connecting" ? (
+            <div className="flex h-56 w-56 flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-green-200 bg-green-50 px-4">
+              <Loader2 size={28} className="animate-spin text-green-600" />
+              <p className="text-center text-[12px] font-medium text-green-800">
+                Linked on your phone — finishing setup…
+              </p>
+              <p className="text-center text-[11px] text-green-700">
+                Keep WhatsApp open. This screen will update when ready.
+              </p>
             </div>
           ) : qrBase64 ? (
             <div className="relative">

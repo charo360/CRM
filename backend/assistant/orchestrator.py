@@ -37,6 +37,22 @@ from .tools import REGISTRY, ToolContext, openai_tool_specs, openai_tool_specs_f
 
 logger = logging.getLogger(__name__)
 
+
+async def _load_sidebar_features(db, business_id: str) -> Dict[str, Any]:
+    try:
+        doc = await db.users.find_one({"_id": business_id}, {"settings.features": 1})
+        return ((doc or {}).get("settings") or {}).get("features") or {}
+    except Exception:
+        return {}
+
+
+def _nudge_tool_result(name: str, result: Any, features: Dict[str, Any]) -> Any:
+    try:
+        from .sidebar_features import enrich_tool_result_with_nudge
+        return enrich_tool_result_with_nudge(name, result, features)
+    except Exception:
+        return result
+
 AGENT_OWNERSHIP_CONTRACT = """You are one specialist inside a multi-agent CRM system.
 
 Respect ownership boundaries and hand off mentally:
@@ -140,6 +156,12 @@ def _is_trivial_message(msg: str, history: List[Dict[str, Any]] = None) -> bool:
 SYSTEM_PROMPT = """You are **Zilo Chat**, the in-app AI business intelligence operator for a CRM platform.
 You help the business owner manage customers, orders, follow-ups, broadcasts, integrations, and reference documents with deep analytical insight.
 You can answer **any question** — business, general knowledge, technical, financial, legal, creative, or personal. No topic is off-limits. If it's not in the CRM, search the web. If it's not on the web, reason from what you know.
+
+**⛔ PRESENTATIONS — NEVER do any of these:**
+- Mention credits, pricing, cost per slide, or top-ups for presentations. Presentations are FREE.
+- Ask "which route", "which path", or show options like "AI picks / Browse templates / Premium AI design".
+- Warn about cost or ask for confirmation before generating a presentation.
+- Presentations use AI design only. Call `plan_visual_presentation` then `create_visual_presentation`. No other path exists.
 
 When documents are attached (PDF, DOCX, TXT, CSV, image), the relevant text or image is placed in a system preamble or attached natively. You can read, summarize, extract data, cross-reference with CRM data, and answer questions. Always cite the filename when quoting or paraphrasing.
 
@@ -557,6 +579,19 @@ async def _compress_history(
 
 def _limit_tool_result_size(result: Any) -> Any:
     """Replace oversized tool JSON with a short preview (design payloads, etc.)."""
+    if isinstance(result, dict) and result.get("html_preview"):
+        slim = {k: v for k, v in result.items() if k != "html_preview"}
+        if result.get("preview_key"):
+            result = slim
+        else:
+            try:
+                from assistant.document_generator import store_html_preview
+                key = store_html_preview(str(result["html_preview"]))
+                slim["preview_key"] = key
+                slim["preview_url"] = f"/api/document-preview/{key}"
+                result = slim
+            except Exception:
+                result = dict(result)
     try:
         s = json.dumps(result, default=str)
     except (TypeError, ValueError):
@@ -586,6 +621,25 @@ async def _build_chips_safe(agent_id: str, user_message: str, reply: str) -> Lis
     except Exception as exc:
         logger.warning("[orchestrator] chips generation failed: %s", exc)
         return []
+
+
+def _estimate_prompt_tokens(messages: List[Dict[str, Any]]) -> int:
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        tokens = 0
+        for m in messages:
+            content = m.get("content") or ""
+            if isinstance(content, str):
+                tokens += len(enc.encode(content))
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        tokens += len(enc.encode(block.get("text") or ""))
+        return tokens
+    except Exception as exc:
+        logger.debug("[orchestrator] tiktoken estimation failed: %s", exc)
+        return 0
 
 
 async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str, Any]:
@@ -663,10 +717,19 @@ async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str
                 tool_calls = [
                     {
                         "name": s.get("tool", ""),
+                        "latency_ms": s.get("latency_ms"),
                         "error": s.get("result", {}).get("error") if isinstance(s.get("result"), dict) else None,
                     }
                     for s in steps
                 ]
+                # Run safety critic evaluation
+                from assistant.critic_service import run_critic_evaluation
+                critic_res = await run_critic_evaluation(
+                    agent_id=ag,
+                    task=user_message,
+                    reply_text=reply,
+                )
+
                 await _db.assistant_agent_events.insert_one({
                     "conversation_id": payload.get("_conversation_id"),
                     "agent_id": ag,
@@ -674,9 +737,30 @@ async def _finalize_turn(payload: Dict[str, Any], user_message: str) -> Dict[str
                     "tool_calls": tool_calls,
                     "turn_steps": len(steps),
                     "tokens_used": payload.get("_tokens_used", 0),
+                    "prompt_tokens_estimated": payload.get("_prompt_tokens_estimated", 0),
                     "model": payload.get("model", ""),
+                    "trace_id": payload.get("_trace_id", ""),
+                    "confidence_score": critic_res["confidence_score"],
+                    "hallucination_detected": critic_res["hallucination_detected"],
+                    "pii_detected": critic_res["pii_detected"],
+                    "critique": critic_res["critique"],
                     "ts": _time.time(),
                 })
+
+                # Monthly token accumulator for quota tracking
+                tokens = payload.get("_tokens_used", 0)
+                business_id = payload.get("_business_id", "")
+                if tokens > 0 and business_id:
+                    from datetime import datetime as _dt
+                    from redis_client import get_redis, _k
+                    _month_key = _k(f"quota:tokens:{business_id}:{_dt.utcnow().strftime('%Y-%m')}")
+                    try:
+                        _redis = await get_redis()
+                        if _redis:
+                            await _redis.incrby(_month_key, tokens)
+                            await _redis.expire(_month_key, 7776000)  # 90 days TTL
+                    except Exception as _re:
+                        logger.debug("[telemetry] token accumulator failed: %s", _re)
             except Exception as _te:
                 logger.debug("[telemetry] write failed (non-critical): %s", _te)
 
@@ -726,6 +810,7 @@ async def run_turn(
                 "_conversation_id": conversation_id,
                 "_routing_method": "trivial_fastpath",
                 "_tokens_used": 0,
+                "_trace_id": trace_id,
             },
             user_message,
         )
@@ -734,6 +819,7 @@ async def run_turn(
     # can scope their queries without an extra plumbing channel.
     user = {**user, "_active_conversation_id": conversation_id}
     ctx = ToolContext(db, user)
+    _sidebar_features = await _load_sidebar_features(db, ctx.business_id)
 
     ag_cfg = get_agent_config(agent_id)
     active_agent_id = ag_cfg["id"]
@@ -869,6 +955,7 @@ Before calling ANY tools or asking ANY questions, check conversation history and
 
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
+    _prompt_tokens_estimated = _estimate_prompt_tokens(messages)
 
     steps: List[Dict[str, Any]] = []
     messages_to_append: List[Dict[str, Any]] = [{"role": "user", "content": user_message}]
@@ -977,6 +1064,8 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                     "_conversation_id": conversation_id,
                     "_routing_method": "orchestrator",
                     "_tokens_used": _tokens_used,
+                    "_prompt_tokens_estimated": _prompt_tokens_estimated,
+                    "_trace_id": trace_id,
                 },
                 user_message,
             )
@@ -1028,6 +1117,8 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                         "_conversation_id": conversation_id,
                         "_routing_method": "orchestrator",
                         "_tokens_used": _tokens_used,
+                        "_prompt_tokens_estimated": _prompt_tokens_estimated,
+                        "_trace_id": trace_id,
                     },
                     user_message,
                 )
@@ -1038,9 +1129,15 @@ Before calling ANY tools or asking ANY questions, check conversation history and
 
         # Run all safe tool calls concurrently
         async def _exec_one(tc: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
+            import time as _t
             name = tc["name"]
             args = tc["arguments"]
+            _start = _t.perf_counter()
             result = await run_tool(name, ctx, args)
+            _latency_ms = round((_t.perf_counter() - _start) * 1000)
+            result = _nudge_tool_result(name, result, _sidebar_features)
+            if isinstance(result, dict):
+                result["_tool_latency_ms"] = _latency_ms
             return tc, result
 
         _tlog.info("[turn.tools] step=%d parallel=%d tools=%s", step_idx, len(_safe_tcs), [t["name"] for t in _safe_tcs])
@@ -1057,7 +1154,12 @@ Before calling ANY tools or asking ANY questions, check conversation history and
             args = tc["arguments"]
             spec = REGISTRY.get(name)
             capped = _limit_tool_result_size(result)
-            steps.append({"tool": name, "arguments": args, "result": capped})
+            steps.append({
+                "tool": name,
+                "arguments": args,
+                "result": capped,
+                "latency_ms": result.get("_tool_latency_ms") if isinstance(result, dict) else None
+            })
 
             # ── Handoff signal detection ──────────────────────────────────────
             if isinstance(capped, dict) and "__handoff__" in capped:
@@ -1079,20 +1181,40 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                     logger.exception("[assistant.tool_error] log emission failed (tool=%s)", name)
 
             if spec and spec.get("destructive"):
-                try:
-                    await ctx.db.assistant_audit_log.insert_one({
-                        "_id": str(uuid.uuid4()),
-                        "user_id": ctx.business_id,
-                        "actor_id": ctx.user_id,
+                from assistant.audit_service import write_audit_event
+                asyncio.create_task(write_audit_event(
+                    db=ctx.db,
+                    user_id=ctx.business_id,
+                    actor_id=ctx.user_id,
+                    event_type="agent_tool_call",
+                    payload={
+                        "severity": "destructive",
                         "tool": name,
                         "arguments": args,
                         "result": capped,
                         "success": not (isinstance(result, dict) and "error" in result),
                         "agent": active_agent_id,
-                        "created_at": datetime.utcnow(),
-                    })
-                except Exception as e:
-                    logger.warning("[assistant.audit] failed to write log: %s", e)
+                        "conversation_id": conversation_id,
+                    }
+                ))
+            else:
+                from assistant.audit_service import READ_AUDIT_TOOLS, write_audit_event
+                if name in READ_AUDIT_TOOLS:
+                    asyncio.create_task(write_audit_event(
+                        db=ctx.db,
+                        user_id=ctx.business_id,
+                        actor_id=ctx.user_id,
+                        event_type="agent_tool_read",
+                        payload={
+                            "severity": "info",
+                            "tool": name,
+                            "arguments": args,
+                            "result": capped,
+                            "success": not (isinstance(result, dict) and "error" in result),
+                            "agent": active_agent_id,
+                            "conversation_id": conversation_id,
+                        }
+                    ))
 
             llm_result = (
                 {k: v for k, v in capped.items() if k not in _LLM_STRIP_FIELDS}
@@ -1142,6 +1264,8 @@ Before calling ANY tools or asking ANY questions, check conversation history and
             "_conversation_id": conversation_id,
             "_routing_method": "orchestrator",
             "_tokens_used": _tokens_used,
+            "_prompt_tokens_estimated": _prompt_tokens_estimated,
+            "_trace_id": trace_id,
         },
         user_message,
     )
@@ -1167,6 +1291,9 @@ async def run_turn_stream(
         {"type": "done", ...full result payload...} — final summary (same shape as run_turn)
         {"type": "error", "message": str}           — on failure
     """
+    trace_id = str(uuid.uuid4())[:8]
+    _tlog = logging.LoggerAdapter(logger, {"trace_id": trace_id, "conv": conversation_id or "-"})
+
     # ── Trivial message fast-path ────────────────────────────────────────────
     # Emit done immediately — no tool calls, no spinner delay.
     import random as _random_s
@@ -1187,11 +1314,14 @@ async def run_turn_stream(
             "active_agent_label": "Zilo",
             "messages_to_append": _trivial_msgs_s,
             "conversation_id": conversation_id,
+            "trace_id": trace_id,
         }
         return
 
     user = {**user, "_active_conversation_id": conversation_id}
     ctx = ToolContext(db, user)
+    _business_id = ctx.business_id
+    _sidebar_features = await _load_sidebar_features(db, ctx.business_id)
 
     ag_cfg = get_agent_config(agent_id)
     active_agent_id = ag_cfg["id"]
@@ -1299,6 +1429,7 @@ Before calling ANY tools or asking ANY questions, check conversation history and
 
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
+    _prompt_tokens_estimated = _estimate_prompt_tokens(messages)
 
     steps: List[Dict[str, Any]] = []
     messages_to_append: List[Dict[str, Any]] = [{"role": "user", "content": user_message}]
@@ -1408,10 +1539,13 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                     "needs_confirmation": pending_confirmation,
                     "active_agent": active_agent_id,
                     "_db": db,
+                    "_business_id": _business_id,
                     "_conversation_id": conversation_id,
                     "_routing_method": "orchestrator",
                     "_tokens_used": _tokens_used,
+                    "_prompt_tokens_estimated": _prompt_tokens_estimated,
                     "reply_suggestions": _precomputed_sugs,
+                    "_trace_id": trace_id,
                 },
                 user_message,
             )
@@ -1443,8 +1577,8 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                 result = await _finalize_turn(
                     {"reply": preview_text, "steps": steps, "messages_to_append": messages_to_append,
                      "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id,
-                     "_db": db, "_conversation_id": conversation_id, "_routing_method": "orchestrator",
-                     "_tokens_used": _tokens_used},
+                     "_db": db, "_business_id": _business_id, "_conversation_id": conversation_id, "_routing_method": "orchestrator",
+                     "_tokens_used": _tokens_used, "_prompt_tokens_estimated": _prompt_tokens_estimated, "_trace_id": trace_id},
                     user_message,
                 )
                 yield {"type": "token", "text": preview_text}
@@ -1461,7 +1595,15 @@ Before calling ANY tools or asking ANY questions, check conversation history and
 
         # Run all safe tools concurrently
         async def _exec_stream_one(tc: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
-            return tc, await run_tool(tc["name"], ctx, tc["arguments"])
+            import time as _t
+            name = tc["name"]
+            _start = _t.perf_counter()
+            result = await run_tool(name, ctx, tc["arguments"])
+            _latency_ms = round((_t.perf_counter() - _start) * 1000)
+            result = _nudge_tool_result(name, result, _sidebar_features)
+            if isinstance(result, dict):
+                result["_tool_latency_ms"] = _latency_ms
+            return tc, result
 
         stream_results = await asyncio.gather(*[_exec_stream_one(tc) for tc in _safe_stream_tcs], return_exceptions=True)
 
@@ -1476,7 +1618,12 @@ Before calling ANY tools or asking ANY questions, check conversation history and
             args = tc["arguments"]
             spec = REGISTRY.get(name)
             capped = _limit_tool_result_size(result_data)
-            steps.append({"tool": name, "arguments": args, "result": capped})
+            steps.append({
+                "tool": name,
+                "arguments": args,
+                "result": capped,
+                "latency_ms": result_data.get("_tool_latency_ms") if isinstance(result_data, dict) else None
+            })
 
             # ── Handoff signal detection (stream) ─────────────────────────────
             if isinstance(capped, dict) and "__handoff__" in capped:
@@ -1491,15 +1638,40 @@ Before calling ANY tools or asking ANY questions, check conversation history and
                 logger.error("[run_turn_stream.tool_error] tool=%s error=%r", name, result_data.get("error"))
 
             if spec and spec.get("destructive"):
-                try:
-                    await ctx.db.assistant_audit_log.insert_one({
-                        "_id": str(uuid.uuid4()), "user_id": ctx.business_id, "actor_id": ctx.user_id,
-                        "tool": name, "arguments": args, "result": capped,
+                from assistant.audit_service import write_audit_event
+                asyncio.create_task(write_audit_event(
+                    db=ctx.db,
+                    user_id=ctx.business_id,
+                    actor_id=ctx.user_id,
+                    event_type="agent_tool_call",
+                    payload={
+                        "severity": "destructive",
+                        "tool": name,
+                        "arguments": args,
+                        "result": capped,
                         "success": not (isinstance(result_data, dict) and "error" in result_data),
-                        "agent": active_agent_id, "created_at": datetime.utcnow(),
-                    })
-                except Exception:
-                    pass
+                        "agent": active_agent_id,
+                        "conversation_id": conversation_id,
+                    }
+                ))
+            else:
+                from assistant.audit_service import READ_AUDIT_TOOLS, write_audit_event
+                if name in READ_AUDIT_TOOLS:
+                    asyncio.create_task(write_audit_event(
+                        db=ctx.db,
+                        user_id=ctx.business_id,
+                        actor_id=ctx.user_id,
+                        event_type="agent_tool_read",
+                        payload={
+                            "severity": "info",
+                            "tool": name,
+                            "arguments": args,
+                            "result": capped,
+                            "success": not (isinstance(result_data, dict) and "error" in result_data),
+                            "agent": active_agent_id,
+                            "conversation_id": conversation_id,
+                        }
+                    ))
 
             llm_result = (
                 {k: v for k, v in capped.items() if k not in _LLM_STRIP_FIELDS}
@@ -1532,8 +1704,8 @@ Before calling ANY tools or asking ANY questions, check conversation history and
     result = await _finalize_turn(
         {"reply": fallback, "steps": steps, "messages_to_append": messages_to_append,
          "model": model_used, "needs_confirmation": pending_confirmation, "active_agent": active_agent_id,
-         "_db": db, "_conversation_id": conversation_id, "_routing_method": "orchestrator",
-         "_tokens_used": _tokens_used},
+         "_db": db, "_business_id": _business_id, "_conversation_id": conversation_id, "_routing_method": "orchestrator",
+         "_tokens_used": _tokens_used, "_prompt_tokens_estimated": _prompt_tokens_estimated, "_trace_id": trace_id},
         user_message,
     )
     yield {"type": "token", "text": fallback}

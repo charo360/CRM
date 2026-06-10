@@ -974,24 +974,249 @@ async def _fetch_image_bytes(url: str) -> Optional[bytes]:
 
 
 _SLIDE_IMAGE_QUALITY_SUFFIX = (
-    " — ultra-high resolution, award-winning commercial photography, "
-    "shot on Hasselblad medium format, masterful composition using rule of thirds, "
-    "dramatic volumetric lighting, deep rich shadows, vibrant yet refined color grading, "
-    "razor-sharp focus, 16:9 widescreen aspect ratio, "
-    "absolutely NO text, NO watermarks, NO logos, NO UI elements, NO people unless explicitly required, "
-    "professional stock photo quality, editorial magazine cover standard."
+    " — ultra-clean professional background for a business presentation slide, widescreen 16:9. "
+    "Real-world cinematic photography: soft depth of field, natural light, calm and breathable. "
+    "Muted mid-tones so white text reads clearly on top. "
+    "NO geometric shapes, NO waves, NO abstract patterns, NO gradients, NO UI elements, "
+    "NO text, NO watermarks, NO logos, NO borders anywhere in the image."
+)
+
+_DESIGNED_SLIDE_QUALITY_SUFFIX = (
+    " — Render as ONE flat 16:9 presentation slide image. "
+    "Premium human-designed quality (Keynote / Apple / Google Slides Pro level). "
+    "Every word PERFECTLY SPELLED exactly as given — no extra text, no placeholder words. "
+    "ALL text fully inside safe margins (10% from sides, 12% from top, 15% from bottom) — zero clipping at edges. "
+    "If text won't fit, shrink font size; never cut off or truncate letters. "
+    "Flat slide only — no laptop frames, device mockups, browser chrome, or UI borders. "
+    "NO decorative AI junk: blobs, neon, gradient mesh, memphis shapes, glowing networks, fake icons, emoji, 3D renders."
 )
 
 _SLIDE_STYLE_MAP = {
-    "title":   "Wide establishing cinematic shot, epic sense of scale, hero composition, "
-               "golden-hour or blue-hour lighting, extreme depth of field.",
-    "content": "Clean abstract backdrop, high-contrast geometric or organic texture, "
-               "muted mid-tones so white text reads clearly, tasteful bokeh or blur.",
-    "data":    "Sleek dark-room ambience, glowing neon accent lines, tech-forward atmosphere, "
-               "shallow depth of field, professional product photography lighting.",
-    "closing": "Bold wide panoramic vista, sunrise or city skyline at dusk, "
-               "inspiring aspirational mood, warm amber and deep blue tones.",
+    "title":   "Sweeping cinematic landscape — mountain range, modern city skyline, or vast ocean at golden hour. "
+               "Epic scale, dramatic natural lighting, deep depth of field, open negative space. "
+               "NO dollar signs, NO currency symbols, NO icons, NO floating symbols, NO charts, NO UI elements, NO data visualizations.",
+    "content": "Clean architectural interior or calm natural scene — bright glass office, sunlit workspace, forest path. "
+               "Soft natural light, light muted tones, breathable — nothing busy or artificial.",
+    "data":    "Bright modern office or clean architectural interior — same light family as other slides. "
+               "Soft natural light, muted tones, minimal and professional. No dark backgrounds.",
+    "closing": "Wide open panoramic — sunrise over city, coastline at dusk, or aerial landscape. "
+               "Warm amber and soft blue natural tones, inspiring and aspirational.",
 }
+
+_PRESENTATION_MASTER_RULES = """
+PRESENTATION DESIGN LAWS — break any and the slide is rejected:
+
+HUMAN-DESIGNED FEEL (not AI template):
+• Looks like a senior designer built it in Keynote or Google Slides — bespoke, confident, restrained.
+• NO: glowing lines, network graphs, holograms, neon, particle effects, memphis blobs, gradient mesh,
+  fake 3D icons, emoji, watermarks, device mockups, UI chrome, stock-photo clichés with text overlay chaos.
+
+DECK CONSISTENCY (same look on every slide):
+• ONE background family for the entire deck — never mix white slides with black or dark slides.
+• ONE font family throughout (Inter or Helvetica Neue). Same title size rhythm, same bullet style.
+• Same brand accent color placement: thin accent bar under title OR left edge stripe — pick ONE and repeat.
+• Same text panel treatment on every slide (left 55% light panel with dark type).
+
+SAFE ZONE — text must NEVER clip or cut off:
+• Keep ALL text inside safe margins: 10% from left, 10% from right, 12% from top, 15% from bottom.
+• If content is long, reduce font size — never truncate, never crop letters at edges.
+• Maximum 3 bullet lines. Wrap long lines — every character fully visible.
+
+TYPOGRAPHY:
+• Max 2 weights (bold title + regular body). WCAG AA contrast minimum.
+• Render every provided word EXACTLY — perfect spelling, no hallucinated extra text.
+
+COMPOSITION (professional presentation rhythm):
+• Title slide: large title top-left, subtitle below, logo optional bottom-left small.
+• Content slides: bold headline top, 2-3 bullets below, left-aligned in text panel.
+• Data slides: 1-3 large stat numbers in brand accent color, labels beneath — same light background as other slides.
+• Closing: CTA headline + contact lines, mirrors title slide styling.
+• 40%+ negative space. Photography only as subtle support — never competes with text.
+
+COLOUR (60-30-10):
+• 60% light neutral canvas. 30% brand accent for highlights. 10% dark charcoal for type.
+"""
+
+
+def _normalize_brand_hex(brand_color: str) -> str:
+    c = (brand_color or "").strip()
+    if c and not c.startswith("#"):
+        c = f"#{c}"
+    if len(c) == 7 and all(ch in "0123456789abcdefABCDEF#" for ch in c):
+        return c
+    return "#4CD137"
+
+
+def _build_deck_visual_system(brand_color: str, business_name: str, slide_count: int) -> Dict[str, str]:
+    accent = _normalize_brand_hex(brand_color)
+    bg_tone = (
+        "warm off-white canvas (#FAFAF8) with soft natural photography confined to the RIGHT 40% "
+        "at low contrast, OR a full-bleed photo at 12–18% opacity with a solid light text panel on the left 58%"
+    )
+    font = "Inter or Helvetica Neue"
+    deck_brief = (
+        f"UNIFIED DECK SYSTEM for '{business_name}' ({slide_count} slides total):\n"
+        f"- Background: {bg_tone}. NEVER use a dark or black background on any slide — keep the entire deck in the SAME light family.\n"
+        f"- Typography: {font} only, same hierarchy on every slide. Dark charcoal (#1A1A1A) titles, medium gray (#333333) bullets.\n"
+        f"- Accent: brand color {accent} — thin bar under headlines, stat numbers, bullet markers.\n"
+        f"- Text panel: left 55–58% of slide is a clean light area so text never overlaps busy imagery.\n"
+        f"- Accent element: repeating thin horizontal brand-color rule under slide titles on every slide."
+    )
+    return {
+        "accent_hex": accent,
+        "bg_tone": bg_tone,
+        "font_family": font,
+        "deck_brief": deck_brief,
+    }
+
+
+def _detect_visual_slide_role(sd: Dict[str, Any], slide_index: int, total: int) -> str:
+    layout = (sd.get("layout") or "").lower().strip()
+    title_lower = (sd.get("title") or "").lower()
+
+    if sd.get("is_title") or slide_index == 0 or layout == "title":
+        return "title"
+    if layout in ("closing", "ending"):
+        return "closing"
+    if slide_index == total - 1 and any(
+        kw in title_lower
+        for kw in ("thank", "next step", "contact", "cta", "call to action", "conclusion", "let's connect", "lets connect")
+    ):
+        return "closing"
+    if layout == "stat_callout" or any(
+        kw in title_lower
+        for kw in ("data", "metric", "result", "number", "stat", "revenue", "growth", "kpi", "tam", "sam", "traction")
+    ):
+        return "data"
+    return "content"
+
+
+def _layout_instructions(role: str, layout: str) -> str:
+    layout = (layout or "content").lower()
+    if role == "title":
+        return (
+            "SLIDE TYPE: COVER. Large bold title top-left, subtitle/tagline directly below (smaller weight). "
+            "Optional small logo bottom-left. Minimal text — maximum impact."
+        )
+    if role == "closing":
+        return (
+            "SLIDE TYPE: CLOSING/CTA. Bold closing headline, 1-2 short contact/action lines below. "
+            "Mirror the cover slide styling (same panel, same fonts, same accent bar). Open, confident, breathable."
+        )
+    if role == "data" or layout == "stat_callout":
+        return (
+            "SLIDE TYPE: DATA/METRICS. Same LIGHT background as all other slides — NOT dark. "
+            "Headline at top. Display 1-3 key numbers LARGE in brand accent color with short labels beneath. "
+            "Numbers must be fully readable and inside safe margins. Professional investor-deck stat layout."
+        )
+    if layout == "icon_grid":
+        return (
+            "SLIDE TYPE: ICON GRID. Title top. 3 items in a horizontal row — simple clean icons or numbers "
+            "with short labels beneath each. Same light panel."
+        )
+    if layout == "two_column":
+        return (
+            "SLIDE TYPE: TWO COLUMN. Title top. Split content below into left/right columns with equal spacing. "
+            "Clean dividers, no clutter."
+        )
+    if layout == "flow":
+        return (
+            "SLIDE TYPE: PROCESS FLOW. Title top. 3 steps left-to-right with arrows or numbers — minimal, clear progression."
+        )
+    if layout == "timeline":
+        return (
+            "SLIDE TYPE: TIMELINE. Title top. Horizontal timeline with 2-3 milestones, labels below each node."
+        )
+    if layout == "comparison_table":
+        return (
+            "SLIDE TYPE: COMPARISON. Title top. Simple 2-3 row comparison table — clean rows, high contrast, no heavy borders."
+        )
+    return (
+        "SLIDE TYPE: CONTENT. Bold headline at top of text panel. 2-3 bullet points below with generous line spacing. "
+        "Left-aligned. Professional keynote-style layout — one idea per slide."
+    )
+
+
+def _sanitize_background_hint(raw: str) -> str:
+    hint = (raw or "").strip()
+    if not hint:
+        return "subtle real-world photography (office, architecture, or nature) at low opacity on the right side only"
+    for dark_phrase in (
+        "black marble", "dark polished", "dark wood", "night city", "pitch black",
+        "dark background", "dark surface", "dark desk", "dark executive",
+    ):
+        hint = hint.replace(dark_phrase, "soft natural scene")
+    return hint
+
+
+def _build_ai_designed_slide_prompt(
+    *,
+    sd: Dict[str, Any],
+    slide_index: int,
+    slide_total: int,
+    deck_system: Dict[str, str],
+    business_name: str,
+    topic: str,
+    user_edited: bool = False,
+) -> str:
+    from assistant.presentation_plan import derive_slide_tagline, _synthesize_body
+
+    role = _detect_visual_slide_role(sd, slide_index, slide_total)
+    layout = (sd.get("layout") or "content").lower()
+    title = (sd.get("title") or "").strip()
+    body_lines = [str(b).strip() for b in (sd.get("body") or []) if str(b).strip()]
+    if len(body_lines) < 2 and role != "title":
+        body_lines = _synthesize_body(sd)
+    body_lines = body_lines[:3]
+    bullets_str = "\n".join(f"• {b}" for b in body_lines) if body_lines else ""
+    bg_hint = _sanitize_background_hint(sd.get("image_prompt") or sd.get("image_concept") or "")
+
+    exact_copy = (
+        "CRITICAL: Render ONLY the exact TITLE and BODY text provided below — every letter perfectly spelled. "
+        "Do NOT add, remove, or reword any text."
+    )
+    if user_edited:
+        exact_copy += " The user manually edited this copy — treat it as final and sacred."
+
+    parts = [
+        f"Design a complete widescreen 16:9 presentation slide (Slide {slide_index + 1} of {slide_total}) for '{business_name}'.",
+        deck_system["deck_brief"],
+        _PRESENTATION_MASTER_RULES.strip(),
+        _layout_instructions(role, layout),
+        exact_copy,
+        f"BACKGROUND (supporting only — must stay in the deck's light family): {bg_hint}",
+        f'TITLE TEXT (render exactly): "{title}"',
+    ]
+
+    if role == "title":
+        subtitle = derive_slide_tagline(
+            tagline=(sd.get("tagline") or "").strip(),
+            business_name=business_name,
+            title=title,
+            topic=topic,
+        )
+        if subtitle:
+            parts.append(f'SUBTITLE TEXT (render exactly): "{subtitle}"')
+        founder = (sd.get("founder") or "").strip()
+        if founder:
+            parts.append(f'Optional small line (render exactly if space): "{founder}"')
+    elif role == "closing":
+        if bullets_str:
+            parts.append(f"BODY TEXT (render exactly, each line separate):\n{bullets_str}")
+        cta = (sd.get("cta") or "").strip()
+        contact = (sd.get("contact") or "").strip()
+        if cta:
+            parts.append(f'CTA (render exactly): "{cta}"')
+        if contact:
+            parts.append(f'CONTACT (render exactly): "{contact}"')
+    elif bullets_str:
+        parts.append(f"BODY TEXT (render exactly, each bullet on its own line, max 3):\n{bullets_str}")
+
+    parts.append(
+        "FINAL CHECK: All text inside safe margins. Same fonts, colors, and background family as every other slide. "
+        "Looks human-designed at a top agency — not an AI template."
+    )
+    return "\n\n".join(parts)
 
 
 async def _gen_slide_image(
@@ -1000,11 +1225,15 @@ async def _gen_slide_image(
     logo_url: Optional[str] = None,
     quality: str = "pro",
     slide_role: str = "content",
+    ai_designed: bool = True,
 ) -> Optional[str]:
     """Generate one landscape Gemini image for a slide at award-winning quality."""
     try:
-        style_hint = _SLIDE_STYLE_MAP.get(slide_role, _SLIDE_STYLE_MAP["content"])
-        full_prompt = f"{style_hint} {slide_prompt}{_SLIDE_IMAGE_QUALITY_SUFFIX}"
+        if ai_designed:
+            full_prompt = f"{slide_prompt}{_DESIGNED_SLIDE_QUALITY_SUFFIX}"
+        else:
+            style_hint = _SLIDE_STYLE_MAP.get(slide_role, _SLIDE_STYLE_MAP["content"])
+            full_prompt = f"{style_hint} {slide_prompt}{_SLIDE_IMAGE_QUALITY_SUFFIX}"
         from nano_banana_service import generate_creative_image
         result = await generate_creative_image(
             prompt=full_prompt,
@@ -1012,6 +1241,7 @@ async def _gen_slide_image(
             quality=quality,
             brand_color=brand_color,
             logo_url=logo_url,
+            brand_color_mode="subtle" if ai_designed else "dominant",
         )
         return result.get("image_url") if result.get("success") else None
     except Exception as e:
@@ -1027,6 +1257,7 @@ def _add_visual_slide(
     body_lines: List[str],
     brand_color_hex: str = "",
     is_title_slide: bool = False,
+    ai_designed: bool = False,
 ) -> None:
     """Add one slide: full-bleed background image + text overlay."""
     import io as _io
@@ -1047,6 +1278,10 @@ def _add_visual_slide(
         except Exception:
             pass  # fall through to solid bg if image fails
 
+    if ai_designed and image_bytes:
+        # Gemini rendered the complete slide — no pptx elements needed
+        return
+
     # Semi-transparent dark overlay using a shape (pptx doesn't support true opacity
     # on fills, so we use a very dark near-black with alpha via theme trick — use
     # a solid rectangle at 55% lightness equivalent via dark colour)
@@ -1063,7 +1298,7 @@ def _add_visual_slide(
             srgb = solidFill.find('{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr')
             if srgb is not None:
                 alpha = _et.SubElement(srgb, '{http://schemas.openxmlformats.org/drawingml/2006/main}alpha')
-                alpha.set('val', '60000')  # 60 000 / 100 000 = 60% opaque → 40% transparent
+                alpha.set('val', '50000')  # 50% opaque → 50% transparent — lets background breathe
     except Exception:
         pass
 
@@ -1123,10 +1358,13 @@ async def create_visual_presentation_async(
     brand_color: str = "",
     logo_url: Optional[str] = None,
     quality: str = "fast",
+    ai_designed: bool = True,
+    user_edited: bool = False,
 ) -> Dict[str, Any]:
     """
     Build a PPTX where every slide has a **Gemini-generated full-bleed background image**
-    with the slide title and bullet points overlaid on a semi-transparent dark panel.
+    with the slide title and bullet points overlaid on a semi-transparent dark panel (or
+    fully AI-designed slide images if ai_designed=True).
 
     slides_plan — list of dicts, each with:
         title (str)        : slide headline
@@ -1138,29 +1376,43 @@ async def create_visual_presentation_async(
 
     # Step 1 — generate all slide images in parallel (concurrency capped at 4)
     sem = asyncio.Semaphore(4)
+    slide_total = len(slides_plan)
+    deck_system = _build_deck_visual_system(brand_color, business_name, slide_total)
 
-    async def _bounded_gen(sd: Dict[str, Any]) -> Optional[str]:
+    async def _bounded_gen(idx_sd: tuple) -> Optional[str]:
+        slide_index, sd = idx_sd
         async with sem:
-            raw = (sd.get("image_prompt") or "").strip()
+            role = _detect_visual_slide_role(sd, slide_index, slide_total)
+            raw = (sd.get("image_prompt") or sd.get("image_concept") or "").strip()
+            if ai_designed:
+                use_logo = logo_url if role in ("title", "closing") else None
+                prompt = _build_ai_designed_slide_prompt(
+                    sd=sd,
+                    slide_index=slide_index,
+                    slide_total=slide_total,
+                    deck_system=deck_system,
+                    business_name=business_name,
+                    topic=topic,
+                    user_edited=user_edited,
+                )
+                return await _gen_slide_image(
+                    prompt, brand_color=brand_color, logo_url=use_logo,
+                    quality=quality, slide_role=role, ai_designed=True,
+                )
             if not raw:
                 raw = (
-                    f"Abstract, atmospheric, textured background for a professional business "
-                    f"presentation slide titled '{sd.get('title', topic)}'. "
-                    f"Minimal, sophisticated, no clutter."
+                    f"Cinematic real-world background for a professional business presentation slide "
+                    f"titled '{sd.get('title', topic)}'. "
+                    f"Natural photography — architecture, landscape, or calm environment. "
+                    f"No geometric shapes, no waves, no abstract patterns, minimal and sophisticated."
                 )
-            # Determine slide role for style hint
-            if sd.get("is_title"):
-                role = "title"
-            elif any(kw in (sd.get("title") or "").lower() for kw in ("thank", "next step", "contact", "cta", "call to action", "conclusion")):
-                role = "closing"
-            elif any(kw in (sd.get("title") or "").lower() for kw in ("data", "metric", "result", "number", "stat", "revenue", "growth", "kpi")):
-                role = "data"
-            else:
-                role = "content"
-            return await _gen_slide_image(raw, brand_color=brand_color, logo_url=None, quality=quality, slide_role=role)
+            return await _gen_slide_image(
+                raw, brand_color=brand_color, logo_url=None,
+                quality=quality, slide_role=role, ai_designed=False,
+            )
 
     image_urls: List[Optional[str]] = await asyncio.gather(
-        *[_bounded_gen(sd) for sd in slides_plan]
+        *[_bounded_gen((i, sd)) for i, sd in enumerate(slides_plan)]
     )
 
     # Step 2 — download image bytes for all slides in parallel
@@ -1185,6 +1437,7 @@ async def create_visual_presentation_async(
             body_lines=sd.get("body") or [],
             brand_color_hex=brand_color,
             is_title_slide=bool(is_title),
+            ai_designed=ai_designed,
         )
 
     # Step 4 — save locally then upload to S3
@@ -1193,6 +1446,7 @@ async def create_visual_presentation_async(
     prs.save(filepath)
 
     file_url = f"/api/media/presentations/{filename}"
+    s3_ok = False
     try:
         from pathlib import Path
         from image_handler import S3Handler
@@ -1205,13 +1459,15 @@ async def create_visual_presentation_async(
         )
         if s3_url:
             file_url = s3_url
+            s3_ok = True
     except Exception as e:
         _log.warning("[visual_pptx] S3 upload skipped: %s", e)
     finally:
-        try:
-            os.unlink(filepath)
-        except Exception:
-            pass
+        if s3_ok:
+            try:
+                os.unlink(filepath)
+            except Exception:
+                pass
 
     slide_count = len(slides_plan)
     generated_count = sum(1 for u in image_urls if u)
@@ -1222,6 +1478,7 @@ async def create_visual_presentation_async(
         "slide_count": slide_count,
         "images_generated": generated_count,
         "topic": topic,
+        "ai_designed": ai_designed,
         # Return slides + image URLs so the caller can pass them back for per-slide regeneration
         "slides": slides_plan,
         "image_urls": [u or "" for u in image_urls],
@@ -1236,6 +1493,9 @@ async def regenerate_single_slide_async(
     brand_color: str = "",
     quality: str = "pro",
     topic: str = "",
+    logo_url: Optional[str] = None,
+    ai_designed: bool = False,
+    user_edited: bool = False,
 ) -> Dict[str, Any]:
     """
     Regenerate ONE slide's background image based on new instructions,
@@ -1249,6 +1509,8 @@ async def regenerate_single_slide_async(
         return {"error": f"slide_index {slide_index} is out of range (deck has {len(slides_plan)} slides)."}
 
     sd = slides_plan[slide_index]
+    slide_total = len(slides_plan)
+    deck_system = _build_deck_visual_system(brand_color, topic or "My Business", slide_total)
 
     # Build a refined prompt: original image_prompt + user instruction
     original_prompt = (sd.get("image_prompt") or sd.get("image_concept") or "").strip()
@@ -1260,22 +1522,38 @@ async def regenerate_single_slide_async(
     else:
         refined_prompt = original_prompt or f"Abstract professional background for: {sd.get('title', 'slide')}"
 
-    # Determine slide role
-    if sd.get("is_title") or slide_index == 0:
-        role = "title"
-    elif any(kw in (sd.get("title") or "").lower() for kw in ("thank", "next step", "contact", "cta", "conclusion")):
-        role = "closing"
-    elif any(kw in (sd.get("title") or "").lower() for kw in ("data", "metric", "result", "stat", "revenue", "growth", "kpi")):
-        role = "data"
-    else:
-        role = "content"
+    role = _detect_visual_slide_role(sd, slide_index, slide_total)
+    sd_for_prompt = {**sd, "image_prompt": refined_prompt, "image_concept": refined_prompt}
 
-    new_url = await _gen_slide_image(refined_prompt, brand_color=brand_color, quality=quality, slide_role=role)
+    if ai_designed:
+        prompt = _build_ai_designed_slide_prompt(
+            sd=sd_for_prompt,
+            slide_index=slide_index,
+            slide_total=slide_total,
+            deck_system=deck_system,
+            business_name=topic or "My Business",
+            topic=topic,
+            user_edited=user_edited,
+        )
+        new_url = await _gen_slide_image(
+            prompt, brand_color=brand_color, logo_url=logo_url,
+            quality=quality, slide_role=role, ai_designed=True,
+        )
+    else:
+        new_url = await _gen_slide_image(
+            refined_prompt, brand_color=brand_color, logo_url=None,
+            quality=quality, slide_role=role, ai_designed=False,
+        )
+
     if not new_url:
         return {"error": "Image generation failed for this slide. Please try again."}
 
     # Build updated image_urls list with the new URL swapped in
-    updated_urls: List[Optional[str]] = [u if u else None for u in image_urls]
+    from image_handler import S3Handler
+    resolved_urls: List[str] = [
+        S3Handler.resolve_accessible_url(u) if u else "" for u in image_urls
+    ]
+    updated_urls: List[Optional[str]] = [u if u else None for u in resolved_urls]
     updated_urls[slide_index] = new_url
 
     # Download all image bytes in parallel
@@ -1302,6 +1580,7 @@ async def regenerate_single_slide_async(
             body_lines=sd_item.get("body") or [],
             brand_color_hex=brand_color,
             is_title_slide=bool(is_title),
+            ai_designed=ai_designed,
         )
 
     filename = f"visual-pptx-{uuid.uuid4().hex[:8]}.pptx"
@@ -1309,6 +1588,7 @@ async def regenerate_single_slide_async(
     prs.save(filepath)
 
     file_url = f"/api/media/presentations/{filename}"
+    s3_ok = False
     try:
         from pathlib import Path
         from image_handler import S3Handler
@@ -1321,13 +1601,15 @@ async def regenerate_single_slide_async(
         )
         if s3_url:
             file_url = s3_url
+            s3_ok = True
     except Exception as e:
         _log.warning("[visual_pptx] S3 re-upload skipped: %s", e)
     finally:
-        try:
-            os.unlink(filepath)
-        except Exception:
-            pass
+        if s3_ok:
+            try:
+                os.unlink(filepath)
+            except Exception:
+                pass
 
     return {
         "success": True,
@@ -1338,6 +1620,7 @@ async def regenerate_single_slide_async(
         "regenerated_slide_index": slide_index,
         "regenerated_slide_title": sd.get("title", f"Slide {slide_index + 1}"),
         "topic": topic,
+        "ai_designed": ai_designed,
         "slides": updated_slides,
         "image_urls": [u or "" for u in updated_urls],
     }
@@ -1397,3 +1680,498 @@ def _render_slide(
         _slide_ending(prs, theme, business_name, tagline, ds)
     else:
         _slide_content(prs, theme, sd.get("title", "Slide"), sd.get("content", []), ds)
+
+
+# ── Clean Deck Design System ────────────────────────────────────────────────────
+# Entirely rendered via python-pptx — no AI image generation.
+# Produces typographically consistent, human-quality slides.
+# Slide canvas: 13.33" × 7.5" (widescreen 16:9)
+# Content area on white slides: x≥0.5", title at y=0.32", content from y≈1.3"
+
+_BODY_CLR  = RGBColor(0x2D, 0x34, 0x36)  # charcoal body text
+_MUTED_CLR = RGBColor(0x63, 0x6E, 0x72)  # muted / secondary text
+_WHITE_CLR = RGBColor(0xFF, 0xFF, 0xFF)  # pure white
+_ROW_ALT   = RGBColor(0xF4, 0xF5, 0xF7)  # light grey for alternating table rows
+
+
+def _hex_to_rgb(hex_str: str, fallback: Optional[RGBColor] = None) -> RGBColor:
+    """Parse '#RRGGBB' or 'RRGGBB' into RGBColor."""
+    _fb = fallback if fallback is not None else RGBColor(0x1B, 0x43, 0x32)
+    try:
+        h = (hex_str or "").lstrip("#")
+        return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)) if len(h) == 6 else _fb
+    except Exception:
+        return _fb
+
+
+def _tint(color: RGBColor, blend: float = 0.75) -> RGBColor:
+    """Blend an RGBColor toward white. blend=0 → same color, blend=1 → pure white."""
+    h = str(color)
+    r = int(int(h[0:2], 16) + (255 - int(h[0:2], 16)) * blend)
+    g = int(int(h[2:4], 16) + (255 - int(h[2:4], 16)) * blend)
+    b = int(int(h[4:6], 16) + (255 - int(h[4:6], 16)) * blend)
+    return RGBColor(min(255, r), min(255, g), min(255, b))
+
+
+# ── Clean Deck: individual slide builders ──────────────────────────────────────
+
+def _cdeck_title(prs, primary: RGBColor, title: str, tagline: str,
+                 website: str = "", founder: str = "") -> None:
+    """Cover slide: primary color bg, white left-aligned title + tagline."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, primary)
+    _add_textbox(slide, Inches(0.7), Inches(1.9), Inches(11.6), Inches(2.0),
+                 title, font_size=52, color=_WHITE_CLR, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri Light")
+    if tagline:
+        _add_textbox(slide, Inches(0.7), Inches(4.1), Inches(9.5), Inches(0.8),
+                     tagline, font_size=22, color=_tint(primary, 0.72),
+                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    footer_parts = [x for x in [website, founder] if x and str(x).strip()]
+    if footer_parts:
+        _add_textbox(slide, Inches(0.7), Inches(6.7), Inches(11.6), Inches(0.45),
+                     "   ·   ".join(footer_parts), font_size=13,
+                     color=_tint(primary, 0.60),
+                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
+
+
+def _cdeck_content(prs, primary: RGBColor, title: str, bullets: List[str],
+                   subtitle: str = "") -> None:
+    """Generic content slide: white bg, title + dash-bulleted list."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, _WHITE_CLR)
+    _add_textbox(slide, Inches(0.5), Inches(0.32), Inches(12.33), Inches(0.78),
+                 title, font_size=36, color=primary, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    if subtitle:
+        _add_textbox(slide, Inches(0.5), Inches(1.12), Inches(12.33), Inches(0.45),
+                     subtitle, font_size=18, color=_MUTED_CLR,
+                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    content_y = Inches(1.68) if subtitle else Inches(1.32)
+    content_h = Inches(5.1) if subtitle else Inches(5.5)
+    _add_bullet_textbox(slide, Inches(0.5), content_y, Inches(12.33), content_h,
+                        (bullets or [])[:4], font_size=16, color=_BODY_CLR,
+                        bullet_char="—", spacing=Pt(16), font_name="Calibri")
+
+
+def _cdeck_stat_callout(prs, primary: RGBColor, title: str,
+                        stats: List[Dict[str, str]]) -> None:
+    """Stat callout: 1–3 large numbers centered on white bg."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, _WHITE_CLR)
+    _add_textbox(slide, Inches(0.5), Inches(0.32), Inches(12.33), Inches(0.78),
+                 title, font_size=36, color=primary, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    stats = (stats or [])[:3]
+    n = max(len(stats), 1)
+    col_w = Inches(12.33 / n)
+    for i, st in enumerate(stats):
+        x = Inches(0.5) + col_w * i
+        _add_textbox(slide, x, Inches(2.1), col_w, Inches(2.1),
+                     st.get("number", ""), font_size=70, color=primary, bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+        _add_textbox(slide, x, Inches(4.25), col_w, Inches(0.75),
+                     st.get("label", ""), font_size=16, color=_MUTED_CLR,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+        if st.get("sublabel"):
+            _add_textbox(slide, x, Inches(5.0), col_w, Inches(0.5),
+                         st["sublabel"], font_size=13, color=_MUTED_CLR,
+                         alignment=PP_ALIGN.CENTER, font_name="Calibri")
+        if i < n - 1:
+            _add_rect(slide, x + col_w - Inches(0.025), Inches(1.9), Inches(0.025),
+                      Inches(3.5), _ROW_ALT)
+
+
+def _cdeck_two_column(prs, primary: RGBColor, title: str,
+                      left_items: List[str], right_items) -> None:
+    """Two-column: bullets left | stats (dict list) or bullets (str list) right."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, _WHITE_CLR)
+    _add_textbox(slide, Inches(0.5), Inches(0.32), Inches(12.33), Inches(0.78),
+                 title, font_size=36, color=primary, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    content_y = Inches(1.32)
+    _add_bullet_textbox(slide, Inches(0.5), content_y, Inches(5.6), Inches(5.7),
+                        [str(x) for x in (left_items or [])][:4],
+                        font_size=16, color=_BODY_CLR,
+                        bullet_char="—", spacing=Pt(14), font_name="Calibri")
+    _add_rect(slide, Inches(6.35), content_y + Inches(0.1), Inches(0.025),
+              Inches(5.5), _ROW_ALT)
+    right_x = Inches(6.5)
+    right_w = Inches(6.33)
+    right = right_items or []
+    if right and isinstance(right[0], dict):
+        for j, item in enumerate(right[:3]):
+            iy = content_y + Inches(j * 1.95)
+            _add_textbox(slide, right_x, iy, right_w, Inches(1.5),
+                         item.get("number", ""), font_size=58, color=primary, bold=True,
+                         alignment=PP_ALIGN.LEFT, font_name="Calibri")
+            _add_textbox(slide, right_x, iy + Inches(1.15), right_w, Inches(0.55),
+                         item.get("label", ""), font_size=14, color=_MUTED_CLR,
+                         alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    else:
+        _add_bullet_textbox(slide, right_x, content_y, right_w, Inches(5.7),
+                            [str(x) for x in right][:4],
+                            font_size=16, color=_BODY_CLR,
+                            bullet_char="—", spacing=Pt(14), font_name="Calibri")
+
+
+def _cdeck_icon_grid(prs, primary: RGBColor, title: str,
+                     items: List[Dict[str, str]]) -> None:
+    """Icon grid: 2×2 (4 items) or 3×2 (6 items) — circle + bold label + description."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, _WHITE_CLR)
+    _add_textbox(slide, Inches(0.5), Inches(0.32), Inches(12.33), Inches(0.78),
+                 title, font_size=36, color=primary, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    items = (items or [])[:6]
+    n = len(items)
+    cols = 3 if n > 4 else 2
+    rows_needed = max((n + cols - 1) // cols, 1)
+    grid_y = Inches(1.3)
+    cell_w = Inches(12.33 / cols)
+    cell_h = Inches(5.9 / rows_needed)
+    for i, item in enumerate(items):
+        row, col = divmod(i, cols)
+        cx = Inches(0.5) + col * cell_w
+        cy = grid_y + row * cell_h
+        r_size = Inches(0.55)
+        circ = slide.shapes.add_shape(MSO_SHAPE.OVAL,
+                                      cx + (cell_w - r_size) / 2,
+                                      cy + Inches(0.2),
+                                      r_size, r_size)
+        circ.fill.solid()
+        circ.fill.fore_color.rgb = primary
+        circ.line.fill.background()
+        _add_textbox(slide, cx + Inches(0.1), cy + Inches(0.9), cell_w - Inches(0.2),
+                     Inches(0.55),
+                     item.get("label", ""), font_size=17, color=_BODY_CLR, bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+        _add_textbox(slide, cx + Inches(0.15), cy + Inches(1.5), cell_w - Inches(0.3),
+                     Inches(0.9),
+                     item.get("description", ""), font_size=13, color=_MUTED_CLR,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+
+
+def _cdeck_flow(prs, primary: RGBColor, title: str,
+                steps: List[Dict[str, str]]) -> None:
+    """Horizontal numbered flow: 3–5 steps, circles on connector line."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, _WHITE_CLR)
+    _add_textbox(slide, Inches(0.5), Inches(0.32), Inches(12.33), Inches(0.78),
+                 title, font_size=36, color=primary, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    steps = (steps or [])[:5]
+    n = max(len(steps), 1)
+    step_w = Inches(12.33 / n)
+    line_y = Inches(3.2)
+    _add_rect(slide, Inches(0.5) + step_w * 0.35,
+              line_y + Inches(0.25),
+              Inches(12.33) - step_w * 0.7,
+              Inches(0.04), _tint(primary, 0.55))
+    for i, step in enumerate(steps):
+        sx = Inches(0.5) + i * step_w
+        cx = sx + step_w / 2
+        c_size = Inches(0.6)
+        circ = slide.shapes.add_shape(MSO_SHAPE.OVAL,
+                                      cx - c_size / 2,
+                                      line_y,
+                                      c_size, c_size)
+        circ.fill.solid()
+        circ.fill.fore_color.rgb = primary
+        circ.line.fill.background()
+        _add_textbox(slide, cx - c_size / 2, line_y + Inches(0.07),
+                     c_size, Inches(0.48),
+                     str(i + 1), font_size=17, color=_WHITE_CLR, bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+        _add_textbox(slide, sx + Inches(0.1), line_y + Inches(0.75),
+                     step_w - Inches(0.2), Inches(0.6),
+                     step.get("label", ""), font_size=15, color=_BODY_CLR, bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+        _add_textbox(slide, sx + Inches(0.15), line_y + Inches(1.4),
+                     step_w - Inches(0.3), Inches(1.4),
+                     step.get("description", ""), font_size=13, color=_MUTED_CLR,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+
+
+def _cdeck_table(prs, primary: RGBColor, title: str,
+                 columns: List[str], features: List[Dict[str, Any]]) -> None:
+    """Comparison table: primary-color header row, alternating grey data rows."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, _WHITE_CLR)
+    _add_textbox(slide, Inches(0.5), Inches(0.32), Inches(12.33), Inches(0.78),
+                 title, font_size=36, color=primary, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    cols = (columns or [])[:5]
+    feats = (features or [])[:8]
+    n_cols = len(cols) + 1
+    n_rows = len(feats) + 1
+    tbl_x = Inches(0.5)
+    tbl_y = Inches(1.3)
+    tbl_w = Inches(12.33)
+    tbl_h = Inches(5.9)
+    col_w = tbl_w / n_cols
+    row_h = tbl_h / n_rows
+    _add_rect(slide, tbl_x, tbl_y, tbl_w, row_h, primary)
+    _add_textbox(slide, tbl_x + Inches(0.12), tbl_y, col_w - Inches(0.12), row_h,
+                 "Feature", font_size=14, color=_WHITE_CLR, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    for c, cname in enumerate(cols):
+        _add_textbox(slide, tbl_x + col_w * (c + 1), tbl_y, col_w, row_h,
+                     cname, font_size=14, color=_WHITE_CLR, bold=True,
+                     alignment=PP_ALIGN.CENTER, font_name="Calibri")
+    for r, feat in enumerate(feats):
+        ry = tbl_y + row_h * (r + 1)
+        _add_rect(slide, tbl_x, ry, tbl_w, row_h,
+                  _ROW_ALT if r % 2 == 0 else _WHITE_CLR)
+        _add_textbox(slide, tbl_x + Inches(0.12), ry, col_w - Inches(0.12), row_h,
+                     feat.get("feature", ""), font_size=13, color=_BODY_CLR, bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
+        for c, val in enumerate((feat.get("values") or [])[:len(cols)]):
+            _add_textbox(slide, tbl_x + col_w * (c + 1), ry, col_w, row_h,
+                         str(val), font_size=13, color=_BODY_CLR,
+                         alignment=PP_ALIGN.CENTER, font_name="Calibri")
+
+
+def _cdeck_timeline(prs, primary: RGBColor, title: str,
+                    milestones: List[Dict[str, str]]) -> None:
+    """Timeline: horizontal line with alternating above/below milestone labels."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, _WHITE_CLR)
+    _add_textbox(slide, Inches(0.5), Inches(0.32), Inches(12.33), Inches(0.78),
+                 title, font_size=36, color=primary, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    mss = (milestones or [])[:6]
+    n = max(len(mss), 1)
+    tl_x = Inches(0.7)
+    tl_y = Inches(3.9)
+    tl_w = Inches(11.6)
+    _add_rect(slide, tl_x, tl_y, tl_w, Inches(0.05), primary)
+    step = tl_w / (n - 1) if n > 1 else tl_w
+    for i, ms in enumerate(mss):
+        mx = tl_x + step * i if n > 1 else tl_x + tl_w / 2
+        item_w = Inches(min(1.9, 11.6 / n * 0.85))
+        d = Inches(0.22)
+        dot = slide.shapes.add_shape(MSO_SHAPE.OVAL,
+                                     mx - d / 2,
+                                     tl_y - d / 2 + Inches(0.025),
+                                     d, d)
+        dot.fill.solid()
+        dot.fill.fore_color.rgb = primary
+        dot.line.fill.background()
+        hw = item_w / 2
+        if i % 2 == 0:
+            _add_textbox(slide, mx - hw, tl_y - Inches(1.7), item_w, Inches(0.45),
+                         ms.get("date", ""), font_size=12, color=_MUTED_CLR,
+                         alignment=PP_ALIGN.CENTER, font_name="Calibri")
+            _add_textbox(slide, mx - hw, tl_y - Inches(1.2), item_w, Inches(0.55),
+                         ms.get("label", ""), font_size=14, color=_BODY_CLR, bold=True,
+                         alignment=PP_ALIGN.CENTER, font_name="Calibri")
+            if ms.get("description"):
+                _add_textbox(slide, mx - hw, tl_y - Inches(0.62), item_w, Inches(0.5),
+                             ms["description"], font_size=12, color=_MUTED_CLR,
+                             alignment=PP_ALIGN.CENTER, font_name="Calibri")
+        else:
+            _add_textbox(slide, mx - hw, tl_y + Inches(0.25), item_w, Inches(0.55),
+                         ms.get("label", ""), font_size=14, color=_BODY_CLR, bold=True,
+                         alignment=PP_ALIGN.CENTER, font_name="Calibri")
+            _add_textbox(slide, mx - hw, tl_y + Inches(0.8), item_w, Inches(0.45),
+                         ms.get("date", ""), font_size=12, color=_MUTED_CLR,
+                         alignment=PP_ALIGN.CENTER, font_name="Calibri")
+            if ms.get("description"):
+                _add_textbox(slide, mx - hw, tl_y + Inches(1.25), item_w, Inches(0.5),
+                             ms["description"], font_size=12, color=_MUTED_CLR,
+                             alignment=PP_ALIGN.CENTER, font_name="Calibri")
+
+
+def _cdeck_closing(prs, primary: RGBColor, title: str,
+                   tagline: str = "", contact: str = "", cta: str = "") -> None:
+    """Closing slide: mirrors title — primary bg, white left-aligned text."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_bg(slide, primary)
+    _add_textbox(slide, Inches(0.7), Inches(1.8), Inches(11.6), Inches(1.9),
+                 title, font_size=46, color=_WHITE_CLR, bold=True,
+                 alignment=PP_ALIGN.LEFT, font_name="Calibri Light")
+    if tagline:
+        _add_textbox(slide, Inches(0.7), Inches(3.85), Inches(9.5), Inches(0.75),
+                     tagline, font_size=22, color=_tint(primary, 0.72),
+                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    if cta:
+        _add_textbox(slide, Inches(0.7), Inches(4.85), Inches(7.0), Inches(0.7),
+                     cta, font_size=22, color=_WHITE_CLR, bold=True,
+                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
+    if contact:
+        _add_textbox(slide, Inches(0.7), Inches(6.65), Inches(11.6), Inches(0.5),
+                     contact, font_size=14, color=_tint(primary, 0.60),
+                     alignment=PP_ALIGN.LEFT, font_name="Calibri")
+
+
+# ── Body Converters (fallback parsers when structured data not provided) ───────
+
+def _body_to_stats(body: List[str]) -> List[Dict[str, str]]:
+    out = []
+    for line in (body or [])[:3]:
+        parts = (line or "").strip().split(" ", 1)
+        out.append({"number": parts[0], "label": parts[1] if len(parts) > 1 else ""})
+    return out or [{"number": "—", "label": ""}]
+
+
+def _body_to_items(body: List[str]) -> List[Dict[str, str]]:
+    out = []
+    for line in (body or [])[:6]:
+        parts = (line or "").split(":", 1)
+        out.append({"label": parts[0].strip(),
+                    "description": parts[1].strip() if len(parts) > 1 else ""})
+    return out
+
+
+def _body_to_steps(body: List[str]) -> List[Dict[str, str]]:
+    out = []
+    for line in (body or [])[:5]:
+        parts = (line or "").split(":", 1)
+        out.append({"label": parts[0].strip(),
+                    "description": parts[1].strip() if len(parts) > 1 else ""})
+    return out
+
+
+def _body_to_features(body: List[str]) -> List[Dict[str, Any]]:
+    return [{"feature": (line or "").strip(), "values": ["✓", "✓", "✓"]}
+            for line in (body or [])[:8]]
+
+
+def _body_to_milestones(body: List[str]) -> List[Dict[str, str]]:
+    out = []
+    for i, line in enumerate((body or [])[:6]):
+        parts = (line or "").split(":", 1)
+        out.append({"label": parts[0].strip(),
+                    "description": parts[1].strip() if len(parts) > 1 else "",
+                    "date": f"Phase {i + 1}"})
+    return out
+
+
+# ── Main Clean Deck Builder ─────────────────────────────────────────────────────
+
+async def create_clean_deck_async(
+    topic: str,
+    slides_plan: List[Dict[str, Any]],
+    business_name: str = "My Business",
+    brand_color: str = "",
+) -> Dict[str, Any]:
+    """
+    Build a clean python-pptx presentation using the structured design system.
+    No AI image generation — entirely rendered via python-pptx for crisp,
+    typographically consistent, human-quality output.
+
+    Each slide in slides_plan may include:
+        title        (str)
+        layout       (str): title | stat_callout | two_column | icon_grid | flow |
+                            comparison_table | timeline | closing | content
+        body         (list[str])  : bullets (fallback if structured data absent)
+        subtitle     (str)        : subheader line on content slides
+        tagline      (str)        : tagline for title / closing slides
+        stats        (list[dict]) : [{number, label, sublabel}] for stat_callout
+        items        (list[dict]) : [{label, description}] for icon_grid
+        steps        (list[dict]) : [{label, description}] for flow
+        columns      (list[str])  : tier names for comparison_table
+        features     (list[dict]) : [{feature, values[]}] for comparison_table
+        milestones   (list[dict]) : [{date, label, description}] for timeline
+        left_items   (list[str])  : left column bullets for two_column
+        right_items  (list)       : right column — str list OR [{number, label}]
+        website      (str)        : for title/closing footer
+        founder      (str)        : for title slide footer
+        contact      (str)        : for closing footer
+        cta          (str)        : call-to-action text for closing slide
+    """
+    import logging as _log
+
+    primary = _hex_to_rgb(brand_color) if brand_color else RGBColor(0x1B, 0x43, 0x32)
+
+    prs = Presentation()
+    prs.slide_width  = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+
+    for i, sd in enumerate(slides_plan):
+        layout = ((sd.get("layout") or "") or ("title" if i == 0 else "content")).lower().strip()
+        body   = sd.get("body") or []
+
+        if layout == "title":
+            _cdeck_title(prs, primary,
+                         sd.get("title", topic),
+                         sd.get("tagline") or sd.get("subtitle") or (body[0] if body else ""),
+                         sd.get("website", ""),
+                         sd.get("founder", ""))
+
+        elif layout == "stat_callout":
+            _cdeck_stat_callout(prs, primary, sd.get("title", ""),
+                                sd.get("stats") or _body_to_stats(body))
+
+        elif layout == "two_column":
+            left  = sd.get("left_items") or sd.get("left") or []
+            right = sd.get("right_items") or sd.get("right") or []
+            if not left and not right and body:
+                half  = max(1, len(body) // 2)
+                left, right = body[:half], body[half:]
+            elif not left:
+                left = body
+            _cdeck_two_column(prs, primary, sd.get("title", ""), left, right)
+
+        elif layout == "icon_grid":
+            _cdeck_icon_grid(prs, primary, sd.get("title", ""),
+                             sd.get("items") or _body_to_items(body))
+
+        elif layout == "flow":
+            _cdeck_flow(prs, primary, sd.get("title", ""),
+                        sd.get("steps") or _body_to_steps(body))
+
+        elif layout == "comparison_table":
+            _cdeck_table(prs, primary, sd.get("title", ""),
+                         sd.get("columns") or ["Starter", "Pro", "Enterprise"],
+                         sd.get("features") or _body_to_features(body))
+
+        elif layout == "timeline":
+            _cdeck_timeline(prs, primary, sd.get("title", ""),
+                            sd.get("milestones") or _body_to_milestones(body))
+
+        elif layout == "closing":
+            _cdeck_closing(prs, primary,
+                           sd.get("title", ""),
+                           sd.get("tagline") or sd.get("subtitle") or "",
+                           sd.get("contact", ""),
+                           sd.get("cta") or "Let's talk.")
+
+        else:  # content fallback
+            _cdeck_content(prs, primary, sd.get("title", ""),
+                           body, sd.get("subtitle", ""))
+
+    filename = f"clean-deck-{uuid.uuid4().hex[:8]}.pptx"
+    filepath = os.path.join(PRESENTATIONS_DIR, filename)
+    prs.save(filepath)
+
+    file_url = f"/api/media/presentations/{filename}"
+    try:
+        from pathlib import Path as _Path
+        from image_handler import S3Handler
+        _fbytes = _Path(filepath).read_bytes()
+        _b64    = base64.b64encode(_fbytes).decode()
+        s3_name = f"clean-deck-{uuid.uuid4().hex[:8]}.pptx"
+        s3_url  = await S3Handler.upload_file(
+            _b64, s3_name,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        if s3_url:
+            file_url = s3_url
+    except Exception as e:
+        _log.warning("[clean_deck] S3 upload skipped: %s", e)
+    finally:
+        try:
+            os.unlink(filepath)
+        except Exception:
+            pass
+
+    return {
+        "success":     True,
+        "url":         file_url,
+        "filename":    filename,
+        "slide_count": len(slides_plan),
+        "deck_type":   "clean",
+    }

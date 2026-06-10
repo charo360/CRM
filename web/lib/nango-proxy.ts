@@ -5,7 +5,15 @@
 
 const NANGO_API = process.env.NANGO_API_URL || "https://api.nango.dev";
 const NANGO_KEY = process.env.NANGO_SECRET_KEY || "";
-const BACKEND   = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+
+function backendAuthMeUrl(): string {
+  const publicBase = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api").trim();
+  if (publicBase.startsWith("http://") || publicBase.startsWith("https://")) {
+    return `${publicBase.replace(/\/$/, "")}/auth/me`;
+  }
+  const internal = (process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+  return `${internal}/api/auth/me`;
+}
 
 /** Resolve the user_id from a Bearer token via /auth/me */
 export async function resolveUserId(authHeader: string | null): Promise<string | null> {
@@ -13,7 +21,7 @@ export async function resolveUserId(authHeader: string | null): Promise<string |
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(`${BACKEND}/auth/me`, {
+    const res = await fetch(backendAuthMeUrl(), {
       headers: { Authorization: authHeader },
       signal: controller.signal,
     });
@@ -84,7 +92,8 @@ export async function getComposioGmailConnectionId(
   authHeader: string,
 ): Promise<string | null> {
   try {
-    const res = await fetch(`${BACKEND}/composio/connections/gmail`, {
+    const internal = (process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+    const res = await fetch(`${internal}/api/composio/connections/gmail`, {
       headers: { Authorization: authHeader },
     });
     if (!res.ok) return null;

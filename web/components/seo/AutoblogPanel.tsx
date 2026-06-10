@@ -3,16 +3,6 @@
 import React, { useEffect, useState } from "react";
 import { blogApi, settingsApi, businessKnowledgeApi, type BlogStatus, type AutoblogPost } from "@/lib/api";
 import { getUser } from "@/lib/auth";
-
-/** Autoblog routes use Mongo `client_id` (= user id). Never use `wp_slug` for these calls. */
-function autoblogClientId(blog: BlogStatus | null): string {
-  if (!blog?.connected) return "";
-  if (blog.client_id) return blog.client_id;
-  const u = getUser();
-  if (!u) return "";
-  const raw = u.id ?? u._id;
-  return raw != null ? String(raw) : "";
-}
 import {
   Rss,
   Globe,
@@ -28,6 +18,16 @@ import {
   AlertCircle,
   Settings,
 } from "lucide-react";
+
+/** Autoblog routes use Mongo `client_id` (= user id). Never use `wp_slug` for these calls. */
+function autoblogClientId(blog: BlogStatus | null): string {
+  if (!blog?.connected) return "";
+  if (blog.client_id) return blog.client_id;
+  const u = getUser();
+  if (!u) return "";
+  const raw = u.id ?? u._id;
+  return raw != null ? String(raw) : "";
+}
 
 function Badge({ active }: { active: boolean }) {
   return (
@@ -65,6 +65,7 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
   const [activating, setActivating] = useState(false);
+  const [refreshingFavicon, setRefreshingFavicon] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -173,6 +174,20 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
       setError(err instanceof Error ? err.message : "Failed to publish post.");
     } finally {
       setPublishing(false);
+    }
+  }
+
+  async function handleRefreshFavicon() {
+    setRefreshingFavicon(true);
+    setError("");
+    setSuccess("");
+    try {
+      const result = await blogApi.refreshFavicon();
+      setSuccess(result.message || "Favicon updated successfully.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update favicon.");
+    } finally {
+      setRefreshingFavicon(false);
     }
   }
 
@@ -327,7 +342,7 @@ export default function AutoblogPanel({ embedded }: { embedded?: boolean }) {
                   required
                   value={form.location}
                   onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
-                  placeholder="e.g. Nairobi, Westlands"
+                  placeholder="e.g. New York, Brooklyn"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>

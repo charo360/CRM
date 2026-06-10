@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
-import { customersApi, zernioApi, type ZernioCommentAutoReplySettings } from "@/lib/api";
+import { customersApi, zernioApi, settingsApi, type ZernioCommentAutoReplySettings } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import {
   Inbox, RefreshCw, Send,
   MessageCircle, Globe, ChevronLeft, CheckCircle, XCircle, Loader2
@@ -10,6 +11,10 @@ type Account = { id: string; platform: string; name: string; username?: string; 
 type Conversation = {
   id: string;
   platform: string;
+  source?: "social" | "email";
+  emailProvider?: "gmail" | "microsoft";
+  threadId?: string;
+  subject?: string;
   accountId?: string;
   account_id?: string;
   participantId?: string;
@@ -20,7 +25,16 @@ type Conversation = {
   unread?: number;
   avatar?: string;
 };
-type Message = { id: string; content: string; direction: "in" | "out"; created_at: string; sender?: string };
+type Message = {
+  id: string;
+  content: string;
+  direction: "in" | "out";
+  created_at: string;
+  sender?: string;
+  from?: string;
+  date?: string;
+  body?: string;
+};
 type CommentedPost = {
   id: string;
   accountId?: string;
@@ -291,6 +305,8 @@ const PLATFORM_ICON: Record<string, React.ReactNode> = {
   ),
   whatsapp: <MessageCircle size={14} className="text-green-500" />,
   telegram: <Send size={14} className="text-sky-400" />,
+  gmail: <Inbox size={14} className="text-rose-500" />,
+  microsoft: <Inbox size={14} className="text-blue-600" />,
 };
 
 const PLATFORM_COLOR: Record<string, string> = {
@@ -299,6 +315,8 @@ const PLATFORM_COLOR: Record<string, string> = {
   twitter: "bg-sky-50 text-sky-700 border-sky-200",
   whatsapp: "bg-green-50 text-green-700 border-green-200",
   telegram: "bg-sky-50 text-sky-600 border-sky-200",
+  gmail: "bg-rose-50 text-rose-700 border-rose-200",
+  microsoft: "bg-blue-50 text-blue-700 border-blue-200",
 };
 
 function PlatformBadge({ platform }: { platform: string }) {
@@ -318,6 +336,17 @@ function timeAgo(dateStr?: string) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function extractEmailAddress(input?: string): string {
+  if (!input) return "";
+  const m = input.match(/<([^>]+)>/);
+  return (m ? m[1] : input).trim();
 }
 
 function isOlderThanHours(dateStr: string | undefined, hours: number): boolean {
@@ -587,7 +616,7 @@ function postLookupKeys(post: CommentedPost): string[] {
     String(raw.external_post_id || ""),
     String(raw.permalink || ""),
   ]
-    .map((x) => x.trim())
+    .map((x) => String(x ?? "").trim())
     .filter(Boolean);
   return Array.from(new Set(keys));
 }
@@ -604,7 +633,7 @@ function postAnalyticsIds(post: CommentedPost): string[] {
     String(raw.external_post_id || ""),
     String(raw.zernio_post_id || ""),
   ]
-    .map((x) => x.trim())
+    .map((x) => String(x ?? "").trim())
     .filter(Boolean);
   return Array.from(new Set(ids));
 }
@@ -771,6 +800,8 @@ export default function SocialInboxPage() {
   const [engagementDebugByPost, setEngagementDebugByPost] = useState<Record<string, EngagementDebug>>({});
   const [commentAutoReply, setCommentAutoReply] = useState<ZernioCommentAutoReplySettings>(DEFAULT_COMMENT_AUTOREPLY);
   const [savingCommentAutoReply, setSavingCommentAutoReply] = useState(false);
+  const [dmAutoReply, setDmAutoReply] = useState(false);
+  const [savingDmAutoReply, setSavingDmAutoReply] = useState(false);
   const [newRuleKeyword, setNewRuleKeyword] = useState("");
   const [newRuleMessage, setNewRuleMessage] = useState("");
   const [newStepType, setNewStepType] = useState<"text" | "image" | "video" | "file">("text");
@@ -843,37 +874,48 @@ export default function SocialInboxPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [status, accs, customers, autoReplySettings] = await Promise.all([
+      const [status, accs, customers, autoReplySettings, bizSettings, emailRes] = await Promise.all([
         zernioApi.status(),
         zernioApi.accounts().catch(() => ({})),
         customersApi.list().catch(() => [] as AiCustomer[]),
         zernioApi.getCommentAutoReplySettings().catch(() => DEFAULT_COMMENT_AUTOREPLY),
+        settingsApi.get().catch(() => null),
+        fetch("/api/email?limit=50", { headers: authHeaders() }).catch(() => null),
       ]);
-      const isConnected = (status as { connected?: boolean }).connected === true;
+      if (bizSettings) setDmAutoReply(Boolean(bizSettings.social_dm_autoreply_enabled));
+      const socialConnected = (status as { connected?: boolean }).connected === true;
+      const emailPayload = emailRes && emailRes.ok
+        ? (await emailRes.json() as { connected?: boolean; threads?: Array<Record<string, unknown>> })
+        : null;
+      const emailConnected = Boolean(emailPayload?.connected);
+      const isConnected = socialConnected || emailConnected;
       setConnected(isConnected);
       if (isConnected) {
+        let socialConversations: Conversation[] = [];
         const list = pickList<Account>(accs, ["accounts"]);
         setAccounts(list);
-        // Load inbox
-        const inbox = await zernioApi.inbox(platformFilter || undefined);
-        const normalizedConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
-        setConversations(normalizedConversations);
-        const cposts = await zernioApi.commentedPosts({
-          ...(platformFilter ? { platform: platformFilter } : {}),
-          ...(accountFilter ? { account_id: accountFilter } : {}),
-          limit: 50,
-        }).catch(() => ({}));
-        const [commentedRaw, postsRaw, analyticsRaw] = await Promise.all([
-          Promise.resolve(pickList<CommentedPost>(cposts, ["posts", "comments"])),
-          zernioApi.posts(platformFilter || undefined).then((p) => pickList<CommentedPost>(p, ["posts"])).catch(() => [] as CommentedPost[]),
-          zernioApi.analytics({
-            platform: platformFilter || "facebook",
+        if (socialConnected) {
+          // Load social inbox
+          const inbox = await zernioApi.inbox(platformFilter || undefined);
+          socialConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
+        }
+        if (socialConnected) {
+          const cposts = await zernioApi.commentedPosts({
+            ...(platformFilter ? { platform: platformFilter } : {}),
             ...(accountFilter ? { account_id: accountFilter } : {}),
-            metrics: "likes,comments,shares,saves,clicks,reach,impressions",
-            limit: 100,
-            page: 1,
-          }).then((p) => pickAnalyticsRows(p)).catch(() => [] as CommentedPost[]),
-        ]);
+            limit: 50,
+          }).catch(() => ({}));
+          const [commentedRaw, postsRaw, analyticsRaw] = await Promise.all([
+            Promise.resolve(pickList<CommentedPost>(cposts, ["posts", "comments"])),
+            zernioApi.posts(platformFilter || undefined).then((p) => pickList<CommentedPost>(p, ["posts"])).catch(() => [] as CommentedPost[]),
+            zernioApi.analytics({
+              platform: platformFilter || "facebook",
+              ...(accountFilter ? { account_id: accountFilter } : {}),
+              metrics: "likes,comments,shares,saves,clicks,reach,impressions",
+              limit: 100,
+              page: 1,
+            }).then((p) => pickAnalyticsRows(p)).catch(() => [] as CommentedPost[]),
+          ]);
         const postsByKey = new Map<string, CommentedPost>();
         postsRaw.map(normalizeCommentedPost).forEach((p) => {
           postLookupKeys(p).forEach((k) => postsByKey.set(k, p));
@@ -1075,6 +1117,37 @@ export default function SocialInboxPage() {
           .slice(0, 8);
         setAiCustomers(relevantCustomers);
       }
+        const emailThreads = Array.isArray(emailPayload?.threads) ? emailPayload.threads : [];
+        const emailConversations: Conversation[] = emailThreads.map((t) => {
+          const provider = String(t.provider || "gmail").toLowerCase() as "gmail" | "microsoft";
+          const threadId = String(t.id || "");
+          const from = String(t.from || "").trim();
+          return normalizeConversation({
+            id: `email:${provider}:${threadId}`,
+            threadId,
+            source: "email",
+            emailProvider: provider,
+            platform: provider,
+            participant_name: from || "(unknown sender)",
+            participant: from || "(unknown sender)",
+            last_message: String(t.snippet || ""),
+            last_message_at: String(t.date || ""),
+            unread: Number(t.unread ? 1 : 0),
+            accountId: "",
+            account_id: "",
+            subject: String(t.subject || "(no subject)"),
+          } as Conversation);
+        });
+        const merged = [...socialConversations, ...emailConversations].sort((a, b) =>
+          new Date(b.last_message_at || 0).getTime() - new Date(a.last_message_at || 0).getTime(),
+        );
+        setConversations(merged);
+        if (!socialConnected) {
+          setCommentedPosts([]);
+          setEngagementDebugByPost({});
+          setAiCustomers([]);
+        }
+      }
       const settings = autoReplySettings as ZernioCommentAutoReplySettings;
       if (settings && typeof settings === "object") {
         setCommentAutoReply({
@@ -1091,16 +1164,138 @@ export default function SocialInboxPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  async function openConversation(conv: Conversation) {
+  // Background polling for new messages in the active conversation
+  useEffect(() => {
+    if (!selected) return;
+
+    const interval = setInterval(() => {
+      // Only poll if we are not currently loading messages or sending a message
+      if (!loadingMsgs && !sending) {
+        openConversation(selected, true).catch((err) => {
+          console.warn("Polling messages failed:", err);
+        });
+      }
+    }, 8000); // Poll active conversation messages every 8 seconds
+
+    return () => clearInterval(interval);
+  }, [selected, loadingMsgs, sending]);
+
+  // Background polling for new conversations in the inbox list
+  useEffect(() => {
+    if (!connected) return;
+
+    const interval = setInterval(async () => {
+      if (loading || sending) return;
+      try {
+        let socialConversations: Conversation[] = [];
+        const status = await zernioApi.status().catch(() => ({}));
+        const socialConnected = (status as { connected?: boolean }).connected === true;
+        
+        if (socialConnected) {
+          const inbox = await zernioApi.inbox(platformFilter || undefined);
+          socialConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
+        }
+
+        let emailConversations: Conversation[] = [];
+        const emailRes = await fetch("/api/email?limit=50", { headers: authHeaders() }).catch(() => null);
+        if (emailRes && emailRes.ok) {
+          const emailPayload = await emailRes.json() as { threads?: Array<Record<string, unknown>> };
+          const emailThreads = Array.isArray(emailPayload?.threads) ? emailPayload.threads : [];
+          emailConversations = emailThreads.map((t) => {
+            const provider = String(t.provider || "gmail").toLowerCase() as "gmail" | "microsoft";
+            const threadId = String(t.id || "");
+            const from = String(t.from || "").trim();
+            return normalizeConversation({
+              id: `email:${provider}:${threadId}`,
+              threadId,
+              source: "email",
+              emailProvider: provider,
+              platform: provider,
+              participant_name: from || "(unknown sender)",
+              participant: from || "(unknown sender)",
+              last_message: String(t.snippet || ""),
+              last_message_at: String(t.date || ""),
+              unread: Number(t.unread ? 1 : 0),
+              accountId: "",
+              account_id: "",
+              subject: String(t.subject || "(no subject)"),
+            } as Conversation);
+          });
+        }
+
+        const merged = [...socialConversations, ...emailConversations].sort((a, b) =>
+          new Date(b.last_message_at || 0).getTime() - new Date(a.last_message_at || 0).getTime()
+        );
+        
+        setConversations((prev) => {
+          const hasChanged = prev.length !== merged.length || prev.some((c, idx) => {
+            const m = merged[idx];
+            return !m || c.id !== m.id || c.last_message_at !== m.last_message_at || c.unread !== m.unread;
+          });
+          return hasChanged ? merged : prev;
+        });
+      } catch (err) {
+        console.warn("Background inbox polling failed:", err);
+      }
+    }, 15000); // Poll conversation list every 15 seconds
+
+    return () => clearInterval(interval);
+  }, [connected, loading, sending, platformFilter, accountFilter]);
+
+  async function openConversation(conv: Conversation, silent = false) {
     setSelected(conv);
-    setLoadingMsgs(true);
-    setMessages([]);
+    if (!silent) {
+      setLoadingMsgs(true);
+      setMessages([]);
+    }
     try {
-      const data = await zernioApi.conversation(conv.id, conv.accountId || conv.account_id);
-      const normalized = pickList<Message>(data, ["messages"]).map((m) => normalizeMessage(m, conv));
-      setMessages(rebalanceDirections(normalized, conv));
-    } finally { setLoadingMsgs(false); }
-    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+      if (conv.source === "email" && conv.threadId) {
+        const res = await fetch("/api/email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({
+            action: "get_thread",
+            threadId: conv.threadId,
+            provider: conv.emailProvider || conv.platform,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json() as { messages?: Message[] };
+        const normalized = pickList<Message>(data, ["messages"]).map((m) => {
+          const sender = extractEmailAddress(m.from);
+          const participant = extractEmailAddress(conv.participant_name || conv.participant || "");
+          const maybeBody = (m as unknown as { body?: string }).body;
+          return {
+            ...m,
+            content: maybeBody || m.content || "",
+            direction: participant && sender && sender === participant ? "in" : "out",
+            created_at: m.date || m.created_at || new Date().toISOString(),
+          } as Message;
+        });
+        
+        setMessages((prev) => {
+          const hasNew = prev.length !== normalized.length || prev.some((m, i) => !normalized[i] || m.id !== normalized[i].id);
+          if (hasNew || !silent) {
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+          }
+          return normalized;
+        });
+      } else {
+        const data = await zernioApi.conversation(conv.id, conv.accountId || conv.account_id);
+        const normalized = pickList<Message>(data, ["messages"]).map((m) => normalizeMessage(m, conv));
+        const rebalanced = rebalanceDirections(normalized, conv);
+        
+        setMessages((prev) => {
+          const hasNew = prev.length !== rebalanced.length || prev.some((m, i) => !rebalanced[i] || m.id !== rebalanced[i].id);
+          if (hasNew || !silent) {
+            setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+          }
+          return rebalanced;
+        });
+      }
+    } finally {
+      if (!silent) setLoadingMsgs(false);
+    }
   }
 
   async function sendReply() {
@@ -1108,22 +1303,64 @@ export default function SocialInboxPage() {
     setSending(true);
     setSendResult(null);
     setSendError(null);
+    
+    const replyText = reply.trim();
+    
+    // 1. Optimistic UI update: instantly append sent message to the chat list
+    const tempId = "temp-" + Date.now();
+    const tempMsg: Message = {
+      id: tempId,
+      content: replyText,
+      direction: "out",
+      created_at: new Date().toISOString(),
+      sender: "Me",
+    };
+    setMessages((prev) => [...prev, tempMsg]);
+    setReply(""); // Clear text input box instantly
+    
+    // Auto-scroll to show the newly added message
+    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+
     try {
-      await zernioApi.send(
-        selected.id,
-        reply.trim(),
-        selected.accountId || selected.account_id,
-        selected.platform,
-        facebookReplyWindowClosed ? "MESSAGE_TAG" : undefined,
-        facebookReplyWindowClosed ? fbTag : undefined
-      );
-      setReply("");
+      if (selected.source === "email") {
+        const to = extractEmailAddress(selected.participant_name || selected.participant || "");
+        const subjectBase = selected.subject || "Message";
+        const subject = /^re:/i.test(subjectBase) ? subjectBase : `Re: ${subjectBase}`;
+        const res = await fetch("/api/email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({
+            action: "send",
+            provider: selected.emailProvider || selected.platform,
+            to,
+            subject,
+            replyBody: replyText,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+      } else {
+        await zernioApi.send(
+          selected.id,
+          replyText,
+          selected.accountId || selected.account_id,
+          selected.platform,
+          facebookReplyWindowClosed ? "MESSAGE_TAG" : undefined,
+          facebookReplyWindowClosed ? fbTag : undefined
+        );
+      }
       setSendResult("ok");
-      await openConversation(selected);
+      setSending(false); // Stop loading immediately since the message is successfully delivered!
+      // 2. Silent reload to sync actual server-side IDs and timestamps in the background (non-blocking)
+      openConversation(selected, true).catch((err) => {
+        console.warn("Background conversation refresh failed:", err);
+      });
     } catch (e) {
+      // Revert optimistic update on failure
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setReply(replyText); // Restore input so user doesn't lose text
+      
       setSendResult("err");
       const raw = e instanceof Error ? e.message : "Could not send message";
-      // Common case: Facebook 24-hour messaging window limits replies on old threads.
       if (raw.toLowerCase().includes("24") || raw.toLowerCase().includes("window")) {
         setSendError(`${raw}. This thread may be outside Facebook's reply window.`);
       } else {
@@ -1201,6 +1438,18 @@ export default function SocialInboxPage() {
       });
     } finally {
       setSavingCommentAutoReply(false);
+    }
+  }
+
+  async function saveDmAutoReply(enabled: boolean) {
+    setDmAutoReply(enabled);
+    setSavingDmAutoReply(true);
+    try {
+      await settingsApi.update({ social_dm_autoreply_enabled: enabled });
+    } catch {
+      setDmAutoReply(!enabled); // revert on failure
+    } finally {
+      setSavingDmAutoReply(false);
     }
   }
 
@@ -1393,6 +1642,21 @@ export default function SocialInboxPage() {
                 <option value="unanswered">Unanswered first</option>
                 <option value="ai_autoreply">AI auto-reply customers</option>
               </select>
+            )}
+            {viewMode === "messages" && (
+              <label
+                className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+                title="When on, the AI automatically replies to new Instagram DMs even when this tab is closed."
+              >
+                <input
+                  type="checkbox"
+                  checked={dmAutoReply}
+                  disabled={savingDmAutoReply}
+                  onChange={(e) => void saveDmAutoReply(e.target.checked)}
+                />
+                AI auto-reply DMs
+                {savingDmAutoReply && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+              </label>
             )}
             {viewMode === "comments" && (
               <select

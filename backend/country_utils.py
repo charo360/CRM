@@ -55,10 +55,31 @@ COUNTRY_PAYMENT_METHODS = {
     "GB": {"currency": "GBP", "methods": ["Bank Transfer", "Card", "Cash"]},
     "EU": {"currency": "EUR", "methods": ["Bank Transfer", "Card", "Cash"]},
     "CA": {"currency": "CAD", "methods": ["Interac e-Transfer", "Card", "Cash"]},
+    "FI": {"currency": "EUR", "methods": ["Bank Transfer", "MobilePay", "Card"]},
 
     # Default fallback
     "DEFAULT": {"currency": "USD", "methods": ["Cash", "Bank Transfer", "Card"]}
 }
+
+# ISO 3166-1 alpha-2 → E.164 country calling code (no +)
+ISO_DIAL_CODES = {
+    "KE": "254", "TZ": "255", "UG": "256", "RW": "250", "ET": "251", "ZM": "260", "ZW": "263",
+    "NG": "234", "GH": "233", "SN": "221", "CI": "225", "CM": "237",
+    "ZA": "27", "EG": "20", "MA": "212", "SA": "966", "AE": "971",
+    "IN": "91", "PK": "92", "BD": "880",
+    "ID": "62", "PH": "63", "MY": "60", "TH": "66", "VN": "84",
+    "BR": "55", "MX": "52", "AR": "54", "CO": "57", "CL": "56", "PE": "51",
+    "US": "1", "CA": "1", "GB": "44", "FI": "358", "SE": "46", "NO": "47", "DK": "45",
+    "DE": "49", "FR": "33", "NL": "31", "BE": "32", "ES": "34", "IT": "39", "PT": "351",
+    "IE": "353", "AT": "43", "CH": "41", "PL": "48", "AU": "61", "NZ": "64",
+    "JP": "81", "KR": "82", "SG": "65", "HK": "852", "TW": "886",
+}
+
+
+def get_dial_code(country_code: str) -> str:
+    """Return E.164 calling code digits for an ISO country code, or empty string."""
+    return ISO_DIAL_CODES.get((country_code or "").strip().upper(), "")
+
 
 def detect_country_from_phone(phone_number: str) -> str:
     """
@@ -111,6 +132,7 @@ def detect_country_from_phone(phone_number: str) -> str:
         # Europe / North America
         "1": "US",     # USA/Canada (broad — refined below)
         "44": "GB",    # UK
+        "358": "FI",   # Finland
     }
     
     # Try to match country code

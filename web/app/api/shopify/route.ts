@@ -377,6 +377,55 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // ── Policies ─────────────────────────────────────────────────────────────
+    if (action === "policies") {
+      const gql = `{
+        shop {
+          refundPolicy { title body url }
+          privacyPolicy { title body url }
+          termsOfService { title body url }
+          shippingPolicy { title body url }
+          legalNotice { title body url }
+        }
+      }`;
+      const data = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/graphql.json`, { query: gql }) as {
+        data?: { shop?: Record<string, { title: string; body: string; url: string } | null> };
+      };
+      return NextResponse.json({ policies: data?.data?.shop ?? {}, connected: true });
+    }
+
+    // ── Low stock check ─────────────────────────────────────────────────────
+    if (action === "low_stock") {
+      const threshold = parseInt(sp.get("threshold") ?? "5");
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/products.json`, {
+        limit: "250", status: "active", fields: "id,title,variants",
+      }) as { products: { id: number; title: string; variants: { id: number; title: string; sku: string; inventory_quantity: number }[] }[] };
+      const low: { product_id: string; product_title: string; variant_id: string; variant_title: string; sku: string; quantity: number }[] = [];
+      for (const p of data.products ?? []) {
+        for (const v of p.variants ?? []) {
+          if (v.inventory_quantity <= threshold) {
+            low.push({ product_id: String(p.id), product_title: p.title, variant_id: String(v.id), variant_title: v.title, sku: v.sku, quantity: v.inventory_quantity });
+          }
+        }
+      }
+      low.sort((a, b) => a.quantity - b.quantity);
+      return NextResponse.json({ low_stock: low, threshold, alert_count: low.length, connected: true });
+    }
+
+    // ── Auto-fulfillment history ───────────────────────────────────────────────
+    if (action === "auto_fulfillments") {
+      return NextResponse.json({ message: "Query via backend /api/shopify/auto-fulfillments", connected: true });
+    }
+
+    // ── Collections ──────────────────────────────────────────────────────────
+    if (action === "collections") {
+      const data = await shopifyGet(req, auth, `/admin/api/${SHOPIFY_API}/custom_collections.json`, {
+        limit: "250",
+        fields: "id,title,handle,products_count,published_at,sort_order",
+      }) as { custom_collections: { id: number; title: string; handle: string; products_count: number; published_at: string | null; sort_order: string }[] };
+      return NextResponse.json({ collections: data.custom_collections ?? [], connected: true });
+    }
+
     return err("Unknown action");
   } catch (e) {
     return err(e instanceof Error ? e.message : "Shopify request failed", 500);
@@ -428,7 +477,39 @@ export async function POST(req: NextRequest) {
       tags?: string;
       vendor?: string;
       variants?: { title: string; price: string; compare_at_price?: string; inventory_quantity?: number }[];
+      images?: { src: string }[];
     };
+    // product deletion
+    productId?: string;
+    productIds?: string[];
+    // product update
+    title?: string;
+    description?: string;
+    tags?: string;
+    vendor?: string;
+    productType?: string;
+    status?: string;
+    // collections
+    collectionId?: string;
+    collectionIds?: string[];
+    // policies (set_policy action)
+    refundPolicy?: string;
+    privacyPolicy?: string;
+    termsOfService?: string;
+    shippingPolicy?: string;
+    legalNotice?: string;
+    // customer update
+    customerId?: string;
+    first_name?: string;
+    last_name?: string;
+    email?: string;
+    phone?: string;
+    note?: string;
+    // product images
+    imageUrls?: string[];
+    // seo
+    seoTitle?: string;
+    seoDescription?: string;
   };
 
   try {
@@ -562,10 +643,164 @@ export async function POST(req: NextRequest) {
           status: "active",
           tags: p.tags ?? "",
           variants,
+          ...(p.images ? { images: p.images } : {}),
         },
       };
       const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/products.json`, payload) as { product: { id: number; title: string; handle: string; admin_graphql_api_id: string } };
       return NextResponse.json({ ok: true, product: result.product });
+    }
+
+    // ── Delete single product ────────────────────────────────────────────────
+    if (body.action === "delete_product") {
+      if (!body.productId) return err("productId required");
+      await shopifyDelete(req, auth, `/admin/api/${SHOPIFY_API}/products/${body.productId}.json`);
+      return NextResponse.json({ ok: true });
+    }
+
+    // ── Bulk delete products ─────────────────────────────────────────────────
+    if (body.action === "bulk_delete_products") {
+      if (!body.productIds?.length) return err("productIds required");
+      const results = await Promise.allSettled(
+        body.productIds.map((id) =>
+          shopifyDelete(req, auth, `/admin/api/${SHOPIFY_API}/products/${id}.json`)
+        )
+      );
+      const failed = results.filter((r) => r.status === "rejected").length;
+      return NextResponse.json({ ok: true, deleted: results.length - failed, failed });
+    }
+
+    // ── Update product ───────────────────────────────────────────────────────
+    if (body.action === "update_product") {
+      if (!body.productId) return err("productId required");
+      const update: Record<string, unknown> = { id: body.productId };
+      if (body.title)        update.title        = body.title;
+      if (body.description)  update.body_html    = `<p>${body.description}</p>`;
+      if (body.tags != null) update.tags         = body.tags;
+      if (body.vendor)       update.vendor       = body.vendor;
+      if (body.productType)  update.product_type = body.productType;
+      if (body.status)       update.status       = body.status;
+      const result = await shopifyPut(req, auth, `/admin/api/${SHOPIFY_API}/products/${body.productId}.json`, { product: update });
+      return NextResponse.json({ ok: true, product: (result as { product?: unknown }).product });
+    }
+
+    // ── Create collection ────────────────────────────────────────────────────
+    if (body.action === "create_collection") {
+      if (!body.title) return err("title required");
+      const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/custom_collections.json`, {
+        custom_collection: {
+          title:      body.title,
+          body_html:  body.description ? `<p>${body.description}</p>` : "",
+          published:  true,
+          sort_order: "best-selling",
+        },
+      }) as { custom_collection: { id: number; title: string; handle: string } };
+      return NextResponse.json({ ok: true, collection: result.custom_collection });
+    }
+
+    // ── Add products to collection ───────────────────────────────────────────
+    if (body.action === "add_to_collection") {
+      if (!body.collectionId || !body.productIds?.length) return err("collectionId and productIds required");
+      const results = await Promise.allSettled(
+        body.productIds.map((pid: string) =>
+          shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/collects.json`, {
+            collect: { collection_id: body.collectionId, product_id: pid },
+          })
+        )
+      );
+      const added = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - added;
+      return NextResponse.json({ ok: true, added, failed });
+    }
+
+    // ── Delete collection(s) ──────────────────────────────────────────────────
+    if (body.action === "delete_collection") {
+      const ids: string[] = body.collectionIds ?? (body.collectionId ? [body.collectionId] : []);
+      if (!ids.length) return err("collectionId or collectionIds required");
+      let deleted = 0, failed = 0;
+      for (const cid of ids) {
+        // Try custom collection first, fall back to smart collection
+        let ok = false;
+        try {
+          await shopifyDelete(req, auth, `/admin/api/${SHOPIFY_API}/custom_collections/${cid}.json`);
+          ok = true;
+        } catch { /* try smart */ }
+        if (!ok) {
+          try {
+            await shopifyDelete(req, auth, `/admin/api/${SHOPIFY_API}/smart_collections/${cid}.json`);
+            ok = true;
+          } catch { failed++; continue; }
+        }
+        if (ok) deleted++;
+      }
+      return NextResponse.json({ ok: failed === 0, deleted, failed });
+    }
+
+    // ── Update customer ───────────────────────────────────────────────────────
+    if (body.action === "update_customer") {
+      if (!body.customerId) return err("customerId required");
+      const update: Record<string, unknown> = { id: body.customerId };
+      for (const f of ["first_name","last_name","email","phone","note","tags"] as const) {
+        if (body[f as keyof typeof body] != null) update[f] = body[f as keyof typeof body];
+      }
+      const result = await shopifyPut(req, auth, `/admin/api/${SHOPIFY_API}/customers/${body.customerId}.json`, { customer: update });
+      return NextResponse.json({ ok: true, customer: (result as { customer?: unknown }).customer });
+    }
+
+    // ── Add product images ────────────────────────────────────────────────────
+    if (body.action === "add_product_images") {
+      if (!body.productId || !body.imageUrls?.length) return err("productId and imageUrls required");
+      const results = await Promise.allSettled(
+        body.imageUrls.map((url: string) =>
+          shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/products/${body.productId}/images.json`, { image: { src: url } })
+        )
+      );
+      const added = results.filter((r) => r.status === "fulfilled").length;
+      return NextResponse.json({ ok: true, added, failed: results.length - added });
+    }
+
+    // ── Set SEO metafields ────────────────────────────────────────────────────
+    if (body.action === "set_seo_metafields") {
+      if (!body.productId) return err("productId required");
+      const mfs: { namespace: string; key: string; value: string; type: string }[] = [];
+      if (body.seoTitle)       mfs.push({ namespace: "global", key: "title_tag",       value: body.seoTitle,       type: "single_line_text_field" });
+      if (body.seoDescription) mfs.push({ namespace: "global", key: "description_tag", value: body.seoDescription, type: "single_line_text_field" });
+      if (!mfs.length) return err("seoTitle or seoDescription required");
+      const results = await Promise.allSettled(
+        mfs.map((mf) => shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/products/${body.productId}/metafields.json`, { metafield: mf }))
+      );
+      return NextResponse.json({ ok: true, set: results.filter((r) => r.status === "fulfilled").length });
+    }
+
+    // ── Set store policies via GraphQL ───────────────────────────────────────
+    if (body.action === "set_policy") {
+      const policyMap: Record<string, string> = {
+        refundPolicy:    body.refundPolicy    ?? "",
+        privacyPolicy:   body.privacyPolicy   ?? "",
+        termsOfService:  body.termsOfService  ?? "",
+        shippingPolicy:  body.shippingPolicy  ?? "",
+        legalNotice:     body.legalNotice     ?? "",
+      };
+      const provided = Object.entries(policyMap).filter(([, v]) => v);
+      if (!provided.length) return err("At least one policy field required");
+
+      const mutArgs  = provided.map(([k]) => `$${k}: ShopPolicyInput`).join(", ");
+      const callArgs = provided.map(([k]) => `${k}: $${k}`).join(", ");
+      const mutation = `
+        mutation SetPolicies(${mutArgs}) {
+          shopPoliciesUpdate(${callArgs}) {
+            shopPolicies { type title url }
+            userErrors { field message }
+          }
+        }`;
+      const variables = Object.fromEntries(provided.map(([k, v]) => [k, { body: v }]));
+      const result = await shopifyPost(req, auth, `/admin/api/${SHOPIFY_API}/graphql.json`, {
+        query: mutation, variables,
+      }) as { data?: { shopPoliciesUpdate?: { shopPolicies: { type: string }[]; userErrors: { field: string; message: string }[] } } };
+
+      const gqlResult = result?.data?.shopPoliciesUpdate;
+      const errors = gqlResult?.userErrors ?? [];
+      if (errors.length) return NextResponse.json({ ok: false, errors }, { status: 422 });
+      return NextResponse.json({ ok: true, updated: gqlResult?.shopPolicies?.map((p) => p.type) ?? [] });
     }
 
     return err("Unknown action");

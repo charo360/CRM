@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Simple in-process LRU-style cache: key → (chips, expires_at)
 # TTL of 300s means repeated identical replies (e.g. "ok noted") reuse chips.
@@ -25,7 +25,7 @@ AGENTS_WITH_SUGGESTION_CHIPS = frozenset({
     "meta_ads", "google_ads", "x_ads", "social_media", "design", "creative",
     "general", "sales", "customers", "orders", "broadcasts", "follow_ups", "followups",
     "bookings", "finance", "automations", "shopify", "shopify_orders",
-    "shopify_products", "shopify_analytics", "social_inbox", "social_scheduler",
+    "shopify_products", "shopify_analytics", "shopify_customers", "social_inbox", "social_scheduler",
     "social_monitor", "tiktok_ads", "linkedin_ads", "pinterest_ads", "youtube_ads",
     # Document / writing agents — chips let owners pick options without typing
     "document", "quotes",
@@ -63,6 +63,7 @@ def _agent_label(agent_id: str) -> str:
         "shopify_orders": "Shopify Orders",
         "shopify_products": "Shopify Products",
         "shopify_analytics": "Shopify Analytics",
+        "shopify_customers": "Shopify Customers",
     }.get(agent_id, "Zilo")
 
 
@@ -115,20 +116,64 @@ _INLINE_OPTION_RE = re.compile(
     r"^\s*(?:[-*+]\s+)?(?:\(?[A-Za-z][.):\]]|\(?\d{1,2}[.):\]])\s+\S",
     re.MULTILINE,
 )
+# Same markers mid-line: "A. foo B. bar C. baz" on one line
+_INLINE_OPTION_ANYWHERE_RE = re.compile(
+    r"(?:^|[\s(])(?:\(?[A-Za-z][.):\]]|\(?\d{1,2}[.):\]])\s+\S",
+)
 
 
 def _reply_has_inline_options(reply: str) -> bool:
     """Return True when the reply already contains a structured numbered/lettered
     option list that the frontend will parse into tap chips automatically.
     In that case a second LLM call for chips is redundant."""
-    matches = _INLINE_OPTION_RE.findall(reply)
-    return len(matches) >= 2
+    if not (reply or "").strip():
+        return False
+    # Strip blockquote markers so "> A. foo" matches (common in assistant replies).
+    normalized = re.sub(r"^>\s?", "", reply, flags=re.MULTILINE)
+    if len(_INLINE_OPTION_RE.findall(normalized)) >= 2:
+        return True
+    if len(_INLINE_OPTION_ANYWHERE_RE.findall(normalized)) >= 2:
+        return True
+    _global_letter_re = re.compile(r"(?:^|\s)([A-Za-z])[.)]\s+\S", re.MULTILINE)
+    if len(_global_letter_re.findall(normalized)) >= 2:
+        return True
+    return False
+
+
+def _document_draft_pending(steps: Optional[List[Dict[str, Any]]]) -> bool:
+    if not steps:
+        return False
+    has_plan = any(
+        (s.get("tool") == "plan_business_document")
+        and isinstance(s.get("result"), dict)
+        and s["result"].get("plan_ready")
+        for s in steps
+    )
+    if not has_plan:
+        return False
+    exported = any(
+        (s.get("tool") == "create_business_document")
+        and isinstance(s.get("result"), dict)
+        and not s["result"].get("error")
+        for s in steps
+    )
+    return not exported
+
+
+def _reply_is_full_document_dump(reply: str) -> bool:
+    text = (reply or "").strip()
+    if len(text) < 500:
+        return False
+    lowered = text.lower()
+    markers = ("## ", "who we are", "company profile", "what we do", "the problem")
+    return sum(1 for m in markers if m in lowered) >= 2
 
 
 async def build_reply_suggestions(
     agent_id: str,
     user_message: str,
     assistant_reply: str,
+    steps: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
     """Return 4–6 short follow-up messages the UI can show as tap chips. Fully AI-generated."""
     if agent_id not in AGENTS_WITH_SUGGESTION_CHIPS:
@@ -136,6 +181,23 @@ async def build_reply_suggestions(
     reply = (assistant_reply or "").strip()
     if not reply:
         return []
+
+    _GENERIC_REPLIES = frozenset({
+        "I've completed the requested actions.",
+        "I couldn't complete that request — please try again or rephrase.",
+    })
+    if reply in _GENERIC_REPLIES or reply.startswith(
+        "I pulled your business data but didn't finish the document yet."
+    ):
+        return []
+
+    if agent_id == "document":
+        if _document_draft_pending(steps):
+            return []
+        if _reply_is_full_document_dump(reply):
+            return []
+        if "approve & export pdf" in reply.lower() or "review it below" in reply.lower():
+            return []
 
     # Skip the extra LLM call when the reply already has a structured option list —
     # the frontend's extractInlineOptionList will turn those into chips automatically.

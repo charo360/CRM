@@ -302,56 +302,56 @@ export default function SalesPage() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-5">
-      <div className="flex items-start justify-between flex-wrap gap-4">
+    <div className="min-w-0 p-4 sm:p-6 max-w-6xl mx-auto space-y-4 sm:space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Sales & Expenses</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Sales & Expenses</h1>
           <p className="text-slate-500 text-sm mt-1">Track revenue and spending — same flows as the mobile app</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:gap-2">
           <button
             onClick={exportCSV}
-            className="flex items-center gap-2 px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600"
+            className="flex items-center justify-center gap-2 px-3 py-2.5 text-sm border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 sm:py-2"
           >
             <Download size={14} /> Export
           </button>
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand"
+            className="flex w-full items-center justify-center gap-2 px-4 py-2.5 bg-brand-dark text-white text-sm font-semibold rounded-lg hover:bg-brand sm:w-auto sm:py-2"
           >
             <Plus size={15} /> {tab === "sales" ? "Add Sale" : "Add Expense"}
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
+        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm text-slate-500 font-medium">Revenue</p>
             <div className="w-8 h-8 bg-green-50 rounded-lg flex items-center justify-center">
               <TrendingUp size={16} className="text-green-600" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900">{formatCurrency(totalSales)}</p>
+          <p className="text-xl sm:text-2xl font-bold text-slate-900">{formatCurrency(totalSales)}</p>
           <p className="text-xs text-slate-400 mt-1">{filteredSales.length} sales</p>
         </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5">
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm text-slate-500 font-medium">Expenses</p>
             <div className="w-8 h-8 bg-red-50 rounded-lg flex items-center justify-center">
               <TrendingDown size={16} className="text-red-500" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900">{formatCurrency(totalExpenses)}</p>
+          <p className="text-xl sm:text-2xl font-bold text-slate-900">{formatCurrency(totalExpenses)}</p>
           <p className="text-xs text-slate-400 mt-1">{filteredExpenses.length} expenses</p>
         </div>
         <div
-          className={`rounded-xl border p-5 ${
+          className={`rounded-xl border p-4 sm:p-5 ${
             netProfit >= 0 ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"
           }`}
         >
           <p className="text-sm font-medium text-slate-600 mb-2">Net Profit</p>
-          <p className={`text-2xl font-bold ${netProfit >= 0 ? "text-green-700" : "text-red-700"}`}>
+          <p className={`text-xl sm:text-2xl font-bold ${netProfit >= 0 ? "text-green-700" : "text-red-700"}`}>
             {netProfit >= 0 ? "+" : ""}
             {formatCurrency(netProfit)}
           </p>
@@ -359,18 +359,20 @@ export default function SalesPage() {
         </div>
       </div>
 
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex gap-1">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex w-full gap-1 overflow-x-auto sm:w-auto">
           {(["sales", "expenses"] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${
+              className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium capitalize transition-colors sm:px-4 ${
                 tab === t
                   ? "bg-brand-dark text-white"
                   : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
+              <span className="sm:hidden">{t === "sales" ? "Sales" : "Expenses"}</span>
+              <span className="hidden sm:inline">
               {t === "sales"
                 ? saleListSearch.trim()
                   ? `Sales (${salesTableRows.length} of ${filteredSales.length})`
@@ -378,14 +380,15 @@ export default function SalesPage() {
                 : expenseListSearch.trim()
                   ? `Expenses (${expensesTableRows.length} of ${filteredExpenses.length})`
                   : `Expenses (${filteredExpenses.length})`}
+              </span>
             </button>
           ))}
         </div>
-        <div className="relative">
+        <div className="relative w-full sm:w-auto">
           <select
             value={range}
             onChange={(e) => setRange(e.target.value as DateRange)}
-            className="appearance-none pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white text-slate-700"
+            className="w-full appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-8 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-brand sm:w-auto"
           >
             {(["Today", "This Week", "This Month", "All Time"] as DateRange[]).map((r) => (
               <option key={r}>{r}</option>
@@ -465,7 +468,144 @@ export default function SalesPage() {
             ) : null}
           </div>
         )}
-        <div className="overflow-x-auto">
+        <div className="md:hidden divide-y divide-slate-100">
+          {loading &&
+            Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="p-4 space-y-2 animate-pulse">
+                <div className="h-4 w-1/2 rounded bg-slate-100" />
+                <div className="h-3 w-2/3 rounded bg-slate-100" />
+                <div className="h-5 w-1/3 rounded bg-slate-100" />
+              </div>
+            ))}
+          {!loading && tab === "sales" && salesTableRows.length === 0 && (
+            <p className="px-4 py-12 text-center text-sm text-slate-500">
+              {filteredSales.length === 0
+                ? "No sales in this period"
+                : (
+                  <>
+                    No sales match “{saleListSearch.trim()}”.{" "}
+                    <button
+                      type="button"
+                      onClick={() => setSaleListSearch("")}
+                      className="font-semibold text-brand-dark hover:text-brand-dark"
+                    >
+                      Clear search
+                    </button>
+                  </>
+                )}
+            </p>
+          )}
+          {!loading &&
+            tab === "sales" &&
+            salesTableRows.map((s) => {
+              const isWalkIn = s.customer_id === "walk-in";
+              const canResend = !isWalkIn && (!s.is_credit || Boolean(s.paid_date));
+              const showMarkPaid = s.is_credit && !s.paid_date;
+              return (
+                <div key={s.id} className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-900">{s.customer_name}</p>
+                      <p className="text-xs text-slate-400">{isWalkIn ? "Walk-in" : s.customer_phone}</p>
+                      <p className="mt-1 text-sm text-slate-700">{s.item}</p>
+                    </div>
+                    <p className="shrink-0 text-base font-bold text-slate-900">{formatCurrency(s.amount)}</p>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                    {s.payment_method ? (
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">{s.payment_method}</span>
+                    ) : null}
+                    {s.is_credit ? (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">
+                        {s.paid_date ? "Paid" : "Credit"}
+                      </span>
+                    ) : null}
+                    <span className="text-slate-400">{formatDate(s.created_at)}</span>
+                  </div>
+                  {(canResend || showMarkPaid) && (
+                    <div className="mt-3 flex items-center gap-2">
+                      {canResend && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            api
+                              .post(`/sales/${s.id}/resend-receipt`, {})
+                              .then(() => alert("Receipt sent!"))
+                              .catch(() => alert("Failed to send receipt"))
+                          }
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-brand/10 hover:text-brand-dark"
+                        >
+                          <Send size={13} /> Receipt
+                        </button>
+                      )}
+                      {showMarkPaid && (
+                        <button
+                          type="button"
+                          onClick={() => handleMarkPaid(s)}
+                          disabled={markingPaidId === s.id}
+                          className="inline-flex items-center gap-1 rounded-lg border border-green-200 bg-green-50 px-2.5 py-1.5 text-xs font-medium text-green-700 hover:bg-green-100 disabled:opacity-50"
+                        >
+                          {markingPaidId === s.id ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <CheckCircle2 size={13} />
+                          )}
+                          Mark paid
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          {!loading && tab === "expenses" && expensesTableRows.length === 0 && (
+            <p className="px-4 py-12 text-center text-sm text-slate-500">
+              {filteredExpenses.length === 0
+                ? "No expenses in this period"
+                : (
+                  <>
+                    No expenses match “{expenseListSearch.trim()}”.{" "}
+                    <button
+                      type="button"
+                      onClick={() => setExpenseListSearch("")}
+                      className="font-semibold text-brand-dark hover:text-brand-dark"
+                    >
+                      Clear search
+                    </button>
+                  </>
+                )}
+            </p>
+          )}
+          {!loading &&
+            tab === "expenses" &&
+            expensesTableRows.map((exp) => (
+              <div key={exp.id} className="flex items-start justify-between gap-3 p-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
+                      {exp.category}
+                    </span>
+                    <span className="text-xs text-slate-400">{formatDate(exp.created_at)}</span>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-600">{exp.description || "—"}</p>
+                </div>
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <p className="text-base font-bold text-red-600">{formatCurrency(exp.amount)}</p>
+                  <button
+                    onClick={async () => {
+                      await expensesApi.delete(exp.id);
+                      await load();
+                    }}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
+                    aria-label="Delete expense"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+        <div className="hidden overflow-x-auto md:block">
           {tab === "sales" ? (
             <table className="w-full text-sm">
               <thead>
@@ -639,16 +779,16 @@ export default function SalesPage() {
       </div>
 
       {showAdd && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg my-8">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/50 p-0 sm:items-center sm:p-4">
+          <div className="my-0 max-h-[92dvh] w-full overflow-y-auto rounded-t-2xl bg-white shadow-xl sm:my-8 sm:max-w-lg sm:rounded-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-4 sm:px-6">
               <h3 className="font-bold text-slate-900">{tab === "sales" ? "Add Sale" : "Add Expense"}</h3>
               <button type="button" onClick={() => setShowAdd(false)} aria-label="Close">
                 <X size={20} className="text-slate-400" />
               </button>
             </div>
             {tab === "sales" ? (
-              <form onSubmit={handleSaleAdd} className="p-6 space-y-4 max-h-[calc(100vh-8rem)] overflow-y-auto">
+              <form onSubmit={handleSaleAdd} className="max-h-[calc(92dvh-4rem)] space-y-4 overflow-y-auto p-4 sm:p-6">
                 <div>
                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Customer</p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -830,7 +970,7 @@ export default function SalesPage() {
                 </button>
               </form>
             ) : (
-              <form onSubmit={handleExpenseAdd} className="p-6 space-y-4">
+              <form onSubmit={handleExpenseAdd} className="space-y-4 p-4 sm:p-6">
                 <SelectField
                   label="Category *"
                   value={expForm.category}

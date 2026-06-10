@@ -13,12 +13,28 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 logger = logging.getLogger(__name__)
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+_retry_decorator = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception(_is_retryable),
+    reraise=True,
+)
 
 
 # ── DeepSeek DSML tool-call parser ───────────────────────────────────────────
@@ -27,28 +43,26 @@ logger = logging.getLogger(__name__)
 # This parser extracts them and converts to OpenAI-compatible format.
 
 _DSML_BLOCK_RE = re.compile(
-    r"<｜+DSML｜+tool_calls>(.*?)</｜+DSML｜+tool_calls>",
+    r"<[｜|]+DSML[｜|]+\s*tool_calls>(.*?)</[｜|]+DSML[｜|]+\s*tool_calls>",
     re.DOTALL,
 )
 _DSML_INVOKE_RE = re.compile(
-    r'<｜+DSML｜+invoke\s+name=["\']([^"\']+)["\']>(.*?)</｜+DSML｜+invoke>',
+    r'<[｜|]+DSML[｜|]+\s*invoke\s+name=["\']([^"\']+)["\'][^>]*>(.*?)</[｜|]+DSML[｜|]+\s*invoke>',
     re.DOTALL,
 )
 _DSML_PARAM_RE = re.compile(
-    r'<｜+DSML｜+parameter\s+name=["\']([^"\']+)["\'][^>]*>(.*?)</｜+DSML｜+parameter>',
+    r'<[｜|]+DSML[｜|]+\s*parameter\s+name=["\']([^"\']+)["\'][^>]*>(.*?)</[｜|]+DSML[｜|]+\s*parameter>',
     re.DOTALL,
 )
 
 
 def _parse_dsml_tool_calls(content: str) -> tuple[str, list]:
     """Extract DSML tool calls from content. Returns (clean_content, tool_calls)."""
-    match = _DSML_BLOCK_RE.search(content)
-    if not match:
-        return content, []
-
     tool_calls = []
-    block = match.group(1)
-    for invoke in _DSML_INVOKE_RE.finditer(block):
+    block_match = _DSML_BLOCK_RE.search(content)
+    search_text = block_match.group(1) if block_match else content
+
+    for invoke in _DSML_INVOKE_RE.finditer(search_text):
         name = invoke.group(1).strip()
         params_text = invoke.group(2)
         args = {}
@@ -60,14 +74,19 @@ def _parse_dsml_tool_calls(content: str) -> tuple[str, list]:
             "arguments": args,
         })
 
-    # Remove the entire DSML block from content
-    clean = _DSML_BLOCK_RE.sub("", content).strip()
+    clean = _DSML_BLOCK_RE.sub("", content)
+    clean = _DSML_INVOKE_RE.sub("", clean)
+    clean = _strip_dsml(clean)
     return clean, tool_calls
 
 
 def _strip_dsml(text: str) -> str:
     """Strip any DSML markup from a text chunk (for streaming)."""
-    return _DSML_BLOCK_RE.sub("", text).strip()
+    text = _DSML_BLOCK_RE.sub("", text)
+    text = _DSML_INVOKE_RE.sub("", text)
+    # ASCII-pipe variants sometimes leak through
+    text = re.sub(r"<\|+\s*DSML\s*\|+[^>]*>.*?(?:</\|+\s*DSML\s*\|+[^>]*>|$)", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
 
 # ── Model registry ────────────────────────────────────────────────────────────
 # id ↔ provider + upstream model name. id is what the UI passes.
@@ -76,8 +95,8 @@ MODEL_REGISTRY: Dict[str, Dict[str, str]] = {
     "deepseek-v4-flash":       {"provider": "deepseek",  "model": "deepseek-v4-flash",         "label": "DeepSeek V4 Flash (fast)"},
     "claude-sonnet-4.6":       {"provider": "anthropic", "model": "claude-sonnet-4-6",         "label": "Claude Sonnet 4.6"},
     "claude-3.5-sonnet":       {"provider": "anthropic", "model": "claude-3-5-sonnet-latest",  "label": "Claude 3.5 Sonnet"},
-    "grok-4.20":               {"provider": "grok",      "model": "grok-4.20",                 "label": "Grok 4.20"},
-    "grok-4.20-reasoning":     {"provider": "grok",      "model": "grok-4.20-reasoning",       "label": "Grok 4.20 Reasoning"},
+    "grok-4.3":                {"provider": "grok",      "model": "grok-4.3",                  "label": "Grok 4.3"},
+    "grok-4-0709":             {"provider": "grok",      "model": "grok-4-0709",               "label": "Grok 4 (0709)"},
 }
 
 DEFAULT_MODEL = os.environ.get("ASSISTANT_DEFAULT_MODEL", "deepseek-v4-pro")
@@ -109,6 +128,26 @@ def resolve_model(model_id: Optional[str]) -> Dict[str, str]:
         if _provider_available(cfg["provider"]):
             return {**cfg, "id": mid}
     raise RuntimeError("No LLM provider is configured. Set at least one API key (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc).")
+
+
+# ── Persistent HTTP client (shared across all non-streaming LLM calls) ────────
+# Creating a new httpx.AsyncClient per request incurs TCP + TLS setup overhead
+# (~50-200ms). A shared client with connection keepalive eliminates that.
+_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=120.0,
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,
+            ),
+        )
+    return _HTTP_CLIENT
 
 
 # ── Chat entrypoint ───────────────────────────────────────────────────────────
@@ -144,7 +183,7 @@ async def chat_with_tools(
         ("anthropic","claude-haiku-4-5-20251001"),
     ]
     providers_to_try = [cfg] + [
-        {"provider": p, "model": m}
+        {"provider": p, "model": m, "id": m}
         for p, m in _FALLBACK_CHAIN
         if p != provider and os.environ.get({"deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY",
                                               "grok": "GROK_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(p, ""))
@@ -158,13 +197,17 @@ async def chat_with_tools(
                 return await _call_openai_compatible(attempt_cfg, messages, tools, temperature, timeout)
             if p == "anthropic":
                 return await _call_anthropic(attempt_cfg, messages, tools, temperature, timeout, attachments=attachments)
-        except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+        except (httpx.TimeoutException, httpx.HTTPStatusError, KeyError, ValueError, RuntimeError) as exc:
             if attempt_cfg is not providers_to_try[-1]:
                 logger.warning("[models] provider %s failed (%s), trying fallback", attempt_cfg["provider"], exc)
                 last_exc = exc
                 continue
             raise
-        except Exception:
+        except Exception as exc:
+            logger.warning("[models] provider %s unexpected error (%s), trying fallback", attempt_cfg.get("provider"), exc)
+            if attempt_cfg is not providers_to_try[-1]:
+                last_exc = exc
+                continue
             raise
 
     raise last_exc
@@ -183,6 +226,7 @@ _OAI_KEY_ENV = {
 }
 
 
+@_retry_decorator
 async def _call_openai_compatible(
     cfg: Dict[str, str],
     messages: List[Dict[str, Any]],
@@ -203,16 +247,32 @@ async def _call_openai_compatible(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json=payload,
-        )
-        if r.status_code >= 400:
-            logger.error("[models] %s chat/completions %s: %s", provider, r.status_code, r.text[:500])
-        r.raise_for_status()
-        data = r.json()
+    client = _get_http_client()
+    start_time = time.perf_counter()
+    r = await client.post(
+        f"{base}/chat/completions",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=timeout,
+    )
+    if r.status_code >= 400:
+        logger.error("[models] %s chat/completions %s: %s", provider, r.status_code, r.text[:500])
+    r.raise_for_status()
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    data = r.json()
+
+    # Log per-provider latency span to llm_call_log for SLA analysis
+    usage = data.get("usage") or {}
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    llm_call_logger = logging.getLogger("llm_call_log")
+    llm_call_logger.info(json.dumps({
+        "provider": provider,
+        "model": cfg.get("model"),
+        "latency_ms": latency_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }))
 
     choice = data["choices"][0]
     msg = choice["message"]
@@ -231,22 +291,73 @@ async def _call_openai_compatible(
     # DeepSeek sometimes puts tool calls in DSML format inside content instead
     # of the standard tool_calls field — parse and promote them.
     raw_content = msg.get("content") or ""
-    if not tool_calls and "<｜" in raw_content and "DSML" in raw_content and "tool_calls" in raw_content:
+    if not tool_calls and "DSML" in raw_content and ("tool_calls" in raw_content or "invoke" in raw_content):
         raw_content, dsml_calls = _parse_dsml_tool_calls(raw_content)
         if dsml_calls:
             logger.debug("[models] promoted %d DSML tool call(s) from content", len(dsml_calls))
             tool_calls = dsml_calls
+            msg = {**msg, "content": raw_content}
+
+    raw_content = _strip_dsml(raw_content)
 
     return {
         "content": raw_content,
         "tool_calls": tool_calls,
         "finish_reason": choice.get("finish_reason", "stop"),
-        "model": cfg["id"],
+        "model": cfg.get("id") or cfg.get("model", ""),
         "raw_assistant_message": msg,
     }
 
 
 # ── Anthropic ─────────────────────────────────────────────────────────────────
+def _merge_user_anthropic_content(prev: Any, cur: Any) -> Any:
+    """Merge two user message contents (Anthropic rejects consecutive user turns)."""
+    if isinstance(prev, str) and isinstance(cur, str):
+        return f"{prev}\n\n{cur}".strip()
+    if isinstance(prev, list) and isinstance(cur, str):
+        return prev + [{"type": "text", "text": cur}]
+    if isinstance(prev, str) and isinstance(cur, list):
+        return [{"type": "text", "text": prev}] + cur
+    if isinstance(prev, list) and isinstance(cur, list):
+        return prev + cur
+    return cur or prev
+
+
+def _merge_assistant_anthropic_content(prev: Any, cur: Any) -> Any:
+    if isinstance(prev, list) and isinstance(cur, list):
+        return prev + cur
+    if isinstance(prev, str) and isinstance(cur, str):
+        return prev + "\n\n" + cur
+    if isinstance(prev, str):
+        return [{"type": "text", "text": prev}] + (cur if isinstance(cur, list) else [{"type": "text", "text": cur}])
+    if isinstance(cur, str):
+        return (prev if isinstance(prev, list) else [{"type": "text", "text": prev}]) + [{"type": "text", "text": cur}]
+    return cur or prev
+
+
+def _merge_consecutive_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Anthropic requires alternating roles — merge consecutive user/assistant messages."""
+    if not messages:
+        return messages
+    merged: List[Dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if merged and merged[-1].get("role") == role:
+            prev_content = merged[-1].get("content")
+            cur_content = m.get("content")
+            if role == "user":
+                merged[-1]["content"] = _merge_user_anthropic_content(prev_content, cur_content)
+            elif role == "assistant":
+                merged[-1]["content"] = _merge_assistant_anthropic_content(prev_content, cur_content)
+            continue
+        merged.append(dict(m))
+    # First message must be user (Anthropic API rule).
+    while merged and merged[0].get("role") != "user":
+        merged.pop(0)
+    return merged
+
+
+@_retry_decorator
 async def _call_anthropic(
     cfg: Dict[str, str],
     messages: List[Dict[str, Any]],
@@ -315,6 +426,8 @@ async def _call_anthropic(
         a_messages.append({"role": role, "content": m.get("content") or ""})
         i += 1
 
+    a_messages = _merge_consecutive_anthropic_messages(a_messages)
+
     # Attach documents/images natively to the FIRST user message (one-shot).
     # Only done on the fresh turn; subsequent tool-use loops don't re-attach.
     if attachments:
@@ -351,10 +464,17 @@ async def _call_anthropic(
         "input_schema": t["function"]["parameters"],
     } for t in tools]
 
+    _LONG_FORM_SIGNALS = (
+        "business plan", "proposal", "contract", "press release",
+        "pitch deck", "presentation", "executive summary", "investment memo",
+        "brochure", "slide deck", "powerpoint",
+    )
+    _recent_text = " ".join(str(m.get("content", "")) for m in messages[-4:]).lower()
+    _max_tok = 4096 if any(s in _recent_text for s in _LONG_FORM_SIGNALS) else 2048
     payload: Dict[str, Any] = {
         "model": cfg["model"],
         "messages": a_messages,
-        "max_tokens": 8192,
+        "max_tokens": _max_tok,
         "temperature": temperature,
     }
     if system_text:
@@ -362,18 +482,36 @@ async def _call_anthropic(
     if a_tools:
         payload["tools"] = a_tools
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        data = r.json()
+    client = _get_http_client()
+    start_time = time.perf_counter()
+    r = await client.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    if r.status_code >= 400:
+        logger.error("[models] anthropic messages %s: %s", r.status_code, r.text[:1000])
+    r.raise_for_status()
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    data = r.json()
+
+    # Log per-provider latency span to llm_call_log for SLA analysis
+    usage = data.get("usage") or {}
+    prompt_tokens = usage.get("input_tokens", 0)
+    completion_tokens = usage.get("output_tokens", 0)
+    llm_call_logger = logging.getLogger("llm_call_log")
+    llm_call_logger.info(json.dumps({
+        "provider": "anthropic",
+        "model": cfg.get("model"),
+        "latency_ms": latency_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }))
 
     content_text = ""
     tool_calls = []
@@ -393,7 +531,7 @@ async def _call_anthropic(
         "content": content_text,
         "tool_calls": tool_calls,
         "finish_reason": data.get("stop_reason", "stop"),
-        "model": cfg["id"],
+        "model": cfg.get("id") or cfg.get("model", ""),
         "raw_assistant_message": {
             "role": "assistant",
             "content": content_text,
@@ -424,14 +562,52 @@ async def stream_reply(
     cfg = resolve_model(model_id)
     provider = cfg["provider"]
 
-    if provider in ("openai", "deepseek", "grok"):
-        async for chunk in _stream_openai_compatible(cfg, messages, tools, temperature, timeout):
-            yield chunk
-    elif provider == "anthropic":
-        async for chunk in _stream_anthropic(cfg, messages, tools, temperature, timeout):
-            yield chunk
-    else:
-        raise RuntimeError(f"Unsupported provider for streaming: {provider}")
+    _FALLBACK_CHAIN = [
+        ("deepseek", "deepseek-chat"),
+        ("openai",   "gpt-4o-mini"),
+        ("grok",     "grok-3-mini"),
+        ("anthropic", "claude-haiku-4-5-20251001"),
+    ]
+    providers_to_try = [cfg] + [
+        {"provider": p, "model": m, "id": m}
+        for p, m in _FALLBACK_CHAIN
+        if p != provider and os.environ.get({"deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY",
+                                              "grok": "GROK_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(p, ""))
+    ]
+
+    last_exc = None
+    for attempt_cfg in providers_to_try:
+        try:
+            p = attempt_cfg["provider"]
+            if attempt_cfg is providers_to_try[0]:
+                try:
+                    if p in ("openai", "deepseek", "grok"):
+                        async for chunk in _stream_openai_compatible(attempt_cfg, messages, tools, temperature, timeout):
+                            yield chunk
+                    elif p == "anthropic":
+                        async for chunk in _stream_anthropic(attempt_cfg, messages, tools, temperature, timeout):
+                            yield chunk
+                    return
+                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
+                    logger.warning("[models] stream primary provider %s failed (%s), using fallback non-stream", p, e)
+                    last_exc = e
+            else:
+                resp = await chat_with_tools(
+                    messages=messages, tools=tools,
+                    model_id=attempt_cfg.get("id") or attempt_cfg.get("model"),
+                    temperature=temperature, timeout=timeout
+                )
+                content = resp.get("content", "")
+                if content:
+                    yield content
+                return
+        except Exception as e:
+            logger.warning("[models] stream fallback provider %s failed (%s)", attempt_cfg.get("provider"), e)
+            last_exc = e
+            continue
+
+    if last_exc:
+        raise last_exc
 
 
 async def _stream_openai_compatible(
@@ -568,10 +744,19 @@ async def _stream_anthropic(
         a_messages.append({"role": role, "content": m.get("content") or ""})
         j += 1
 
+    a_messages = _merge_consecutive_anthropic_messages(a_messages)
+
+    _LONG_FORM_SIGNALS = (
+        "business plan", "proposal", "contract", "press release",
+        "pitch deck", "presentation", "executive summary", "investment memo",
+        "brochure", "slide deck", "powerpoint",
+    )
+    _recent_text = " ".join(str(m.get("content", "")) for m in messages[-4:]).lower()
+    _max_tok = 4096 if any(s in _recent_text for s in _LONG_FORM_SIGNALS) else 2048
     payload: Dict[str, Any] = {
         "model": cfg["model"],
         "messages": a_messages,
-        "max_tokens": 8192,
+        "max_tokens": _max_tok,
         "temperature": temperature,
         "stream": True,
     }
@@ -585,6 +770,9 @@ async def _stream_anthropic(
             headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
             json=payload,
         ) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread())[:1000]
+                logger.error("[models] anthropic stream %s: %s", resp.status_code, body)
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):

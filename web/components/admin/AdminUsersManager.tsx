@@ -8,6 +8,8 @@ import {
   Building2,
   Calendar,
   Edit,
+  Globe,
+  Loader2,
   Mail,
   Phone,
   RefreshCw,
@@ -89,6 +91,7 @@ export default function AdminUsersManager() {
   const [selected, setSelected] = useState<AdminUser | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [refreshingFavicon, setRefreshingFavicon] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "ok" | "err" } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<EditForm>({
@@ -170,6 +173,19 @@ export default function AdminUsersManager() {
       showToast(e instanceof Error ? e.message : "Failed to delete", "err");
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleRefreshFavicon() {
+    if (!selected) return;
+    setRefreshingFavicon(true);
+    try {
+      await adminApi.refreshFavicon(selected.id);
+      showToast("Site icon refreshed");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Failed to refresh favicon", "err");
+    } finally {
+      setRefreshingFavicon(false);
     }
   }
 
@@ -410,17 +426,29 @@ export default function AdminUsersManager() {
                 </label>
               </div>
             </div>
-            <div className="flex justify-end gap-2 px-6 pb-5">
-              <button className="px-4 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setSelected(null)}>
-                Cancel
-              </button>
+            <div className="flex items-center justify-between px-6 pb-5">
               <button
-                className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
-                onClick={() => void saveEdit()}
-                disabled={saving}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium hover:bg-slate-200 disabled:opacity-50 transition-colors"
+                onClick={() => void handleRefreshFavicon()}
+                disabled={refreshingFavicon}
+                title="Re-upload the Zilo logo as this user's site favicon"
               >
-                {saving ? "Saving…" : "Save changes"}
+                {refreshingFavicon
+                  ? <><Loader2 size={13} className="animate-spin" /> Updating…</>
+                  : <><Globe size={13} /> Refresh Site Icon</>}
               </button>
+              <div className="flex gap-2">
+                <button className="px-4 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setSelected(null)}>
+                  Cancel
+                </button>
+                <button
+                  className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  onClick={() => void saveEdit()}
+                  disabled={saving}
+                >
+                  {saving ? "Saving…" : "Save changes"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

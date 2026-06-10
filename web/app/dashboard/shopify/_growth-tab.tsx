@@ -108,7 +108,7 @@ function MCard({ icon: Icon, label, value, sub, color = "text-slate-400", alert 
   icon: React.ElementType; label: string; value: string; sub?: string; color?: string; alert?: boolean;
 }) {
   return (
-    <div className={cn("rounded-2xl border p-4 flex flex-col gap-2", alert ? "border-amber-800/40 bg-amber-900/10" : "border-slate-800 bg-slate-900")}>
+    <div className={cn("rounded-2xl border p-4 flex flex-col gap-2", alert ? "border-amber-800/40 bg-amber-50/10" : "border-slate-200 bg-white")}>
       <div className="flex items-center justify-between">
         <span className="text-xs text-slate-500">{label}</span>
         <Icon size={13} className={color} />
@@ -130,17 +130,17 @@ function CACCalculator({ avgLtv, aov }: { avgLtv: number; aov: number }) {
   const ltvCac   = cac > 0 && avgLtv > 0 ? avgLtv / cac : 0;
   const payback  = cac > 0 && aov > 0 ? Math.ceil(cac / aov) : 0;
 
-  const ltvCacColor = ltvCac >= 3 ? "text-emerald-400" : ltvCac >= 1 ? "text-amber-400" : "text-rose-400";
+  const ltvCacColor = ltvCac >= 3 ? "text-emerald-600" : ltvCac >= 1 ? "text-amber-600" : "text-rose-600";
   const ltvCacLabel = ltvCac >= 3 ? "Healthy — great ROI" : ltvCac >= 1 ? "Marginal — needs improvement" : cac > 0 ? "Losing money — fix now" : "Enter spend above";
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
+    <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-4">
       <div className="flex items-center gap-2">
         <Target size={13} className="text-brand" />
         <p className="text-sm font-semibold">CAC vs LTV Calculator</p>
       </div>
       <p className="text-xs text-slate-500 leading-relaxed">
-        The golden ratio is <span className="text-emerald-400 font-medium">LTV:CAC ≥ 3:1</span>. Below 1:1 means you're spending more to acquire a customer than they're worth.
+        The golden ratio is <span className="text-emerald-600 font-medium">LTV:CAC ≥ 3:1</span>. Below 1:1 means you're spending more to acquire a customer than they're worth.
       </p>
 
       <div className="grid grid-cols-2 gap-3">
@@ -151,7 +151,7 @@ function CACCalculator({ avgLtv, aov }: { avgLtv: number; aov: number }) {
             onChange={(e) => setInputs((p) => ({ ...p, adSpend: e.target.value }))}
             type="number"
             placeholder="e.g. 2000"
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700"
+            className="w-full bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
           />
         </div>
         <div>
@@ -161,32 +161,32 @@ function CACCalculator({ avgLtv, aov }: { avgLtv: number; aov: number }) {
             onChange={(e) => setInputs((p) => ({ ...p, newCustomers: e.target.value }))}
             type="number"
             placeholder="e.g. 40"
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700"
+            className="w-full bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200"
           />
         </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+        <div className="bg-slate-100 rounded-xl p-3 text-center">
           <p className="text-[10px] text-slate-500 mb-1">Your CAC</p>
-          <p className="text-base font-bold text-slate-200">{cac > 0 ? fmt(cac) : "—"}</p>
+          <p className="text-base font-bold text-slate-800">{cac > 0 ? fmt(cac) : "—"}</p>
         </div>
-        <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+        <div className="bg-slate-100 rounded-xl p-3 text-center">
           <p className="text-[10px] text-slate-500 mb-1">Avg LTV</p>
-          <p className="text-base font-bold text-emerald-400">{avgLtv > 0 ? fmt(avgLtv) : "—"}</p>
+          <p className="text-base font-bold text-emerald-600">{avgLtv > 0 ? fmt(avgLtv) : "—"}</p>
         </div>
-        <div className={cn("rounded-xl p-3 text-center border", ltvCac >= 3 ? "bg-emerald-900/20 border-emerald-800/40" : ltvCac >= 1 ? "bg-amber-900/20 border-amber-800/40" : cac > 0 ? "bg-rose-900/20 border-rose-800/40" : "bg-slate-800/60 border-transparent")}>
+        <div className={cn("rounded-xl p-3 text-center border", ltvCac >= 3 ? "bg-emerald-50/20 border-emerald-800/40" : ltvCac >= 1 ? "bg-amber-50/20 border-amber-800/40" : cac > 0 ? "bg-rose-50/20 border-rose-800/40" : "bg-slate-100 border-transparent")}>
           <p className="text-[10px] text-slate-500 mb-1">LTV:CAC</p>
           <p className={cn("text-base font-bold", ltvCacColor)}>{ltvCac > 0 ? `${ltvCac.toFixed(1)}:1` : "—"}</p>
         </div>
-        <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+        <div className="bg-slate-100 rounded-xl p-3 text-center">
           <p className="text-[10px] text-slate-500 mb-1">Payback</p>
-          <p className="text-base font-bold text-slate-200">{payback > 0 ? `${payback} orders` : "—"}</p>
+          <p className="text-base font-bold text-slate-800">{payback > 0 ? `${payback} orders` : "—"}</p>
         </div>
       </div>
 
       {cac > 0 && (
-        <div className={cn("rounded-xl px-3 py-2 text-xs flex items-center gap-2", ltvCac >= 3 ? "bg-emerald-900/20 text-emerald-400" : ltvCac >= 1 ? "bg-amber-900/20 text-amber-400" : "bg-rose-900/20 text-rose-400")}>
+        <div className={cn("rounded-xl px-3 py-2 text-xs flex items-center gap-2", ltvCac >= 3 ? "bg-emerald-50/20 text-emerald-600" : ltvCac >= 1 ? "bg-amber-50/20 text-amber-600" : "bg-rose-50/20 text-rose-600")}>
           {ltvCac >= 3 ? <CheckCircle2 size={12} /> : ltvCac >= 1 ? <AlertTriangle size={12} /> : <XCircle size={12} />}
           {ltvCacLabel}
         </div>
@@ -210,8 +210,8 @@ function ChannelBars({ channels }: { channels: { channel: string; revenue: numbe
     "Google Ads": "bg-amber-500",
     "Email": "bg-brand",
     "WhatsApp": "bg-emerald-500",
-    "Organic": "bg-brand",
-    "Direct / Other": "bg-slate-600",
+    "Organic": "bg-teal-500",
+    "Direct / Other": "bg-slate-200",
   };
 
   return (
@@ -221,8 +221,8 @@ function ChannelBars({ channels }: { channels: { channel: string; revenue: numbe
         return (
           <div key={channel} className="flex items-center gap-3">
             <span className="text-xs text-slate-400 w-24 truncate shrink-0">{channel}</span>
-            <div className="flex-1 bg-slate-800 rounded-full h-2">
-              <div className={cn("h-2 rounded-full", COLORS[channel] ?? "bg-slate-500")} style={{ width: `${share}%` }} />
+            <div className="flex-1 bg-slate-100 rounded-full h-2">
+              <div className={cn("h-2 rounded-full", COLORS[channel] ?? "bg-slate-300")} style={{ width: `${share}%` }} />
             </div>
             <span className="text-xs text-slate-400 w-8 text-right">{share}%</span>
             <span className="text-xs text-slate-600 w-16 text-right">{fmt(revenue)}</span>
@@ -274,14 +274,14 @@ function TrustChecklist() {
             onClick={() => toggle(i)}
             className={cn(
               "flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all",
-              item.checked ? "border-emerald-800/40 bg-emerald-900/10" : "border-slate-800 bg-slate-900/50 hover:border-slate-700"
+              item.checked ? "border-emerald-800/40 bg-emerald-50/10" : "border-slate-200 bg-slate-50 hover:border-slate-200"
             )}
           >
-            <div className={cn("mt-0.5 shrink-0 rounded-full w-4 h-4 flex items-center justify-center border", item.checked ? "bg-emerald-600 border-emerald-600" : "border-slate-600")}>
+            <div className={cn("mt-0.5 shrink-0 rounded-full w-4 h-4 flex items-center justify-center border", item.checked ? "bg-emerald-600 border-emerald-600" : "border-slate-200")}>
               {item.checked && <CheckCircle2 size={12} className="text-white" />}
             </div>
             <div className="flex-1 min-w-0">
-              <p className={cn("text-xs font-medium", item.checked ? "text-emerald-300 line-through opacity-70" : "text-slate-200")}>{item.label}</p>
+              <p className={cn("text-xs font-medium", item.checked ? "text-emerald-700 line-through opacity-70" : "text-slate-800")}>{item.label}</p>
               <p className="text-[11px] text-slate-600 mt-0.5">{item.desc}</p>
             </div>
             {item.crmLink && !item.checked && (
@@ -313,11 +313,11 @@ function ConversionGap({ aov }: { aov: number }) {
   const lostOrders = v > 0 ? Math.floor((gap / 100) * v) : 0;
   const lostRevenue = lostOrders * aov;
 
-  const color = convRate >= 2.5 ? "text-emerald-400" : convRate >= 1.4 ? "text-amber-400" : "text-rose-400";
+  const color = convRate >= 2.5 ? "text-emerald-600" : convRate >= 1.4 ? "text-amber-600" : "text-rose-600";
   const barPct = Math.min((convRate / 4) * 100, 100);
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
+    <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-4">
       <div className="flex items-center gap-2">
         <BarChart3 size={13} className="text-brand" />
         <p className="text-sm font-semibold">Conversion Rate Gap</p>
@@ -327,12 +327,12 @@ function ConversionGap({ aov }: { aov: number }) {
         <div>
           <label className="text-[10px] text-slate-500 mb-1 block">Monthly visitors</label>
           <input value={visitors} onChange={(e) => setVisitors(e.target.value)} type="number" placeholder="e.g. 5000"
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700" />
+            className="w-full bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
         </div>
         <div>
           <label className="text-[10px] text-slate-500 mb-1 block">Monthly orders</label>
           <input value={orders} onChange={(e) => setOrders(e.target.value)} type="number" placeholder="e.g. 70"
-            className="w-full bg-slate-800 text-sm text-slate-200 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-700" />
+            className="w-full bg-slate-100 text-sm text-slate-800 placeholder-slate-500 rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand border border-slate-200" />
         </div>
       </div>
 
@@ -342,9 +342,9 @@ function ConversionGap({ aov }: { aov: number }) {
           <span className="text-slate-500">Your rate</span>
           <span className={cn("font-bold", color)}>{convRate > 0 ? `${convRate.toFixed(2)}%` : "—"}</span>
         </div>
-        <div className="relative h-3 bg-slate-800 rounded-full overflow-hidden">
-          <div className="absolute left-0 h-full bg-slate-700 rounded-full" style={{ width: "35%" }} title="Shopify avg 1.4%" />
-          <div className="absolute left-0 h-full bg-slate-600 rounded-full" style={{ width: "62.5%" }} title="Industry avg 2.5%" />
+        <div className="relative h-3 bg-slate-100 rounded-full overflow-hidden">
+          <div className="absolute left-0 h-full bg-slate-200 rounded-full" style={{ width: "35%" }} title="Shopify avg 1.4%" />
+          <div className="absolute left-0 h-full bg-slate-200 rounded-full" style={{ width: "62.5%" }} title="Industry avg 2.5%" />
           {convRate > 0 && (
             <div className={cn("absolute left-0 h-full rounded-full", convRate >= 2.5 ? "bg-emerald-500" : convRate >= 1.4 ? "bg-amber-500" : "bg-rose-500")} style={{ width: `${barPct}%` }} />
           )}
@@ -358,8 +358,8 @@ function ConversionGap({ aov }: { aov: number }) {
       </div>
 
       {lostRevenue > 0 && (
-        <div className="bg-rose-900/20 border border-rose-800/30 rounded-xl px-3 py-2.5 text-xs">
-          <p className="text-rose-400 font-semibold flex items-center gap-1.5">
+        <div className="bg-rose-50/20 border border-rose-800/30 rounded-xl px-3 py-2.5 text-xs">
+          <p className="text-rose-600 font-semibold flex items-center gap-1.5">
             <TrendingDown size={12} /> Conversion gap costs you ~{fmt(lostRevenue)}/mo
           </p>
           <p className="text-slate-500 mt-1">
@@ -404,7 +404,7 @@ Keep it under 200 words. Be direct, no fluff.`);
   }
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+    <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Sparkles size={13} className="text-brand" />
@@ -434,8 +434,8 @@ Keep it under 200 words. Be direct, no fluff.`);
       )}
 
       {plan && (
-        <div className="bg-slate-800/40 rounded-xl p-4 border border-slate-700/50">
-          <pre className="text-xs text-slate-300 whitespace-pre-wrap font-sans leading-relaxed">{plan}</pre>
+        <div className="bg-slate-100 rounded-xl p-4 border border-slate-200/50">
+          <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">{plan}</pre>
         </div>
       )}
     </div>
@@ -469,7 +469,7 @@ function ChannelPresence() {
   const score = Math.round((active.size / channels.length) * 100);
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+    <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -479,7 +479,7 @@ function ChannelPresence() {
           <p className="text-[11px] text-slate-500 mt-0.5">Stores relying on a single channel are one algorithm change away from failure</p>
         </div>
         <div className="text-right">
-          <p className={cn("text-xl font-bold", score >= 60 ? "text-emerald-400" : score >= 40 ? "text-amber-400" : "text-rose-400")}>{score}%</p>
+          <p className={cn("text-xl font-bold", score >= 60 ? "text-emerald-600" : score >= 40 ? "text-amber-600" : "text-rose-600")}>{score}%</p>
           <p className="text-[10px] text-slate-600">active</p>
         </div>
       </div>
@@ -493,12 +493,12 @@ function ChannelPresence() {
               onClick={() => toggle(key)}
               className={cn(
                 "flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all",
-                on ? "border-emerald-800/40 bg-emerald-900/10" : "border-slate-800 hover:border-slate-700"
+                on ? "border-emerald-800/40 bg-emerald-50/10" : "border-slate-200 hover:border-slate-200"
               )}
             >
-              <Icon size={13} className={on ? "text-emerald-400 mt-0.5 shrink-0" : "text-slate-500 mt-0.5 shrink-0"} />
+              <Icon size={13} className={on ? "text-emerald-600 mt-0.5 shrink-0" : "text-slate-500 mt-0.5 shrink-0"} />
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium text-slate-200">{label}</p>
+                <p className="text-xs font-medium text-slate-800">{label}</p>
                 <p className="text-[10px] text-slate-600 mt-0.5">{desc}</p>
               </div>
               {on
@@ -549,48 +549,48 @@ export default function GrowthTab() {
           <p className="text-sm font-semibold">Growth Intelligence</p>
           <p className="text-xs text-slate-500 mt-0.5">Based on last 90 days · {data.totalCustomers} customers</p>
         </div>
-        <button onClick={load} className="p-1.5 text-slate-500 hover:text-slate-300 transition-colors"><RefreshCw size={13} /></button>
+        <button onClick={load} className="p-1.5 text-slate-500 hover:text-slate-700 transition-colors"><RefreshCw size={13} /></button>
       </div>
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <MCard icon={Repeat2} label="Repeat purchase rate" value={pct(data.repeatRate)}
           sub={`${data.repeatCustomers} repeat buyers`}
-          color={data.repeatRate >= 27 ? "text-emerald-400" : "text-amber-400"}
+          color={data.repeatRate >= 27 ? "text-emerald-600" : "text-amber-600"}
           alert={data.repeatRate < 20} />
         <MCard icon={TrendingDown} label="Revenue at risk" value={data.revenueAtRisk > 0 ? fmt(data.revenueAtRisk) : "$0"}
           sub={`${data.atRiskCount} at-risk customers`}
-          color="text-rose-400" alert={data.revenueAtRisk > 500} />
+          color="text-rose-600" alert={data.revenueAtRisk > 500} />
         <MCard icon={Users} label="Avg customer LTV" value={fmt(data.avgLtv)}
           sub="lifetime spend per customer" color="text-brand" />
         <MCard icon={Mail} label="Marketing subscribers" value={pct(data.subscriberRate)}
           sub={`${data.subscribers} opted in`}
-          color={data.subscriberRate >= 30 ? "text-emerald-400" : "text-amber-400"} />
+          color={data.subscriberRate >= 30 ? "text-emerald-600" : "text-amber-600"} />
       </div>
 
       {/* New vs Returning */}
       {(data.newCust > 0 || data.returningCust > 0) && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div className="bg-white border border-slate-200 rounded-2xl p-4">
           <p className="text-xs font-semibold text-slate-400 mb-3">New vs Returning (last 30 days)</p>
           <div className="flex items-center gap-3">
             <div className="flex-1 space-y-1.5">
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-400 w-24">New customers</span>
-                <div className="flex-1 bg-slate-800 rounded-full h-2">
+                <div className="flex-1 bg-slate-100 rounded-full h-2">
                   <div className="h-2 bg-blue-500 rounded-full" style={{ width: `${data.newCust + data.returningCust > 0 ? Math.round((data.newCust / (data.newCust + data.returningCust)) * 100) : 0}%` }} />
                 </div>
-                <span className="text-xs font-semibold text-blue-400 w-8 text-right">{data.newCust}</span>
+                <span className="text-xs font-semibold text-blue-600 w-8 text-right">{data.newCust}</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-400 w-24">Returning</span>
-                <div className="flex-1 bg-slate-800 rounded-full h-2">
+                <div className="flex-1 bg-slate-100 rounded-full h-2">
                   <div className="h-2 bg-emerald-500 rounded-full" style={{ width: `${data.newCust + data.returningCust > 0 ? Math.round((data.returningCust / (data.newCust + data.returningCust)) * 100) : 0}%` }} />
                 </div>
-                <span className="text-xs font-semibold text-emerald-400 w-8 text-right">{data.returningCust}</span>
+                <span className="text-xs font-semibold text-emerald-600 w-8 text-right">{data.returningCust}</span>
               </div>
             </div>
-            <div className="text-center pl-3 border-l border-slate-800">
-              <p className="text-xl font-bold text-emerald-400">
+            <div className="text-center pl-3 border-l border-slate-200">
+              <p className="text-xl font-bold text-emerald-600">
                 {data.newCust + data.returningCust > 0 ? Math.round((data.returningCust / (data.newCust + data.returningCust)) * 100) : 0}%
               </p>
               <p className="text-[10px] text-slate-600">returning</p>
@@ -610,9 +610,9 @@ export default function GrowthTab() {
       <ConversionGap aov={data.aov} />
 
       {/* Channel attribution */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
         <div className="flex items-center gap-2">
-          <BarChart3 size={13} className="text-amber-400" />
+          <BarChart3 size={13} className="text-amber-600" />
           <p className="text-sm font-semibold">Revenue by Channel</p>
           <span className="text-[10px] text-slate-600 ml-1">from order tags</span>
         </div>
@@ -623,7 +623,7 @@ export default function GrowthTab() {
       <ChannelPresence />
 
       {/* Trust checklist */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+      <div className="bg-white border border-slate-200 rounded-2xl p-4">
         <TrustChecklist />
       </div>
 

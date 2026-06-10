@@ -9,12 +9,20 @@ def tenant_user_id(user: Dict[str, Any]) -> str:
     return str(user.get("business_id") or user["_id"])
 
 
-def conversation_list_filter(user: Dict[str, Any]) -> Dict[str, Any]:
-    """Mongo filter: conversations this user may see."""
+def tenant_user_ids(user: Dict[str, Any]) -> List[str]:
+    """All ids that may own a conversation row (legacy chats used account `_id` only)."""
     bid = tenant_user_id(user)
     uid = str(user["_id"])
+    if uid == bid:
+        return [bid]
+    return [bid, uid]
+
+
+def conversation_list_filter(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Mongo filter: conversations this user may see."""
+    uid = str(user["_id"])
     return {
-        "user_id": bid,
+        "user_id": {"$in": tenant_user_ids(user)},
         "$or": [
             {"visibility": {"$nin": ["private"]}},
             {"visibility": {"$exists": False}},
@@ -27,7 +35,7 @@ def conversation_list_filter(user: Dict[str, Any]) -> Dict[str, Any]:
 def can_access_conversation_row(row: Optional[Dict[str, Any]], user: Dict[str, Any]) -> bool:
     if not row:
         return False
-    if str(row.get("user_id")) != tenant_user_id(user):
+    if str(row.get("user_id")) not in tenant_user_ids(user):
         return False
     vis = row.get("visibility") or "team"
     if vis != "private":

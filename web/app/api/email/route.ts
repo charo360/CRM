@@ -4,17 +4,21 @@ import {
   detectAllEmailProviders,
   nangoProxy,
 } from "@/lib/nango-proxy";
-
-const BACKEND = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+import { buildServerCrmApiUrl } from "@/lib/server-crm-api";
 
 /** Call a Composio Gmail structured backend endpoint */
-async function composioBackend(auth: string, path: string, opts?: { method?: string; body?: unknown }): Promise<Response> {
+async function composioBackend(
+  req: NextRequest,
+  auth: string,
+  path: string,
+  opts?: { method?: string; body?: unknown },
+): Promise<Response> {
   const init: RequestInit = {
     method: opts?.method ?? "GET",
     headers: { Authorization: auth, "Content-Type": "application/json" },
   };
   if (opts?.body) init.body = JSON.stringify(opts.body);
-  return fetch(`${BACKEND}${path}`, init);
+  return fetch(buildServerCrmApiUrl(req, path), init);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -67,17 +71,28 @@ type ComposioMessage = {
   date: string; body: string; unread: boolean;
 };
 
-async function composioGmailListThreads(auth: string, query = "", maxResults = 25): Promise<ComposioThread[]> {
+async function composioGmailListThreads(
+  auth: string,
+  query = "",
+  maxResults = 25,
+  req?: NextRequest,
+): Promise<ComposioThread[]> {
   const params = new URLSearchParams({ limit: String(maxResults) });
   if (query) params.set("q", query);
-  const res = await composioBackend(auth, `/composio/gmail/threads?${params}`);
+  if (!req) throw new Error("Missing request context");
+  const res = await composioBackend(req, auth, `/composio/gmail/threads?${params}`);
   if (!res.ok) throw new Error(`Composio Gmail threads ${res.status}`);
   const data = await res.json() as { threads?: ComposioThread[] };
   return data.threads ?? [];
 }
 
-async function composioGmailGetThread(auth: string, threadId: string): Promise<{ messages: ComposioMessage[] }> {
-  const res = await composioBackend(auth, `/composio/gmail/threads/${encodeURIComponent(threadId)}`);
+async function composioGmailGetThread(
+  auth: string,
+  threadId: string,
+  req?: NextRequest,
+): Promise<{ messages: ComposioMessage[] }> {
+  if (!req) throw new Error("Missing request context");
+  const res = await composioBackend(req, auth, `/composio/gmail/threads/${encodeURIComponent(threadId)}`);
   if (!res.ok) throw new Error(`Composio Gmail thread ${res.status}`);
   return res.json() as Promise<{ messages: ComposioMessage[] }>;
 }
@@ -181,12 +196,14 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get("q") ?? "";
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") ?? "25"), 100);
   const preferredProvider = req.nextUrl.searchParams.get("provider") as "gmail" | "microsoft" | null ?? undefined;
+  // Webhook-first mode (default): read from DB only and avoid costly live provider fetch loops.
+  const liveFetch = req.nextUrl.searchParams.get("live") === "1";
 
   // ── Try DB first (instant) ─────────────────────────────────────────────────
   try {
     const params = new URLSearchParams({ limit: String(limit) });
     if (q) params.set("q", q);
-    const dbRes = await fetch(`${BACKEND}/email-db/threads?${params}`, {
+    const dbRes = await fetch(`${buildServerCrmApiUrl(req, "/email-db/threads")}?${params}`, {
       headers: { Authorization: auth! },
     });
     if (dbRes.ok) {
@@ -203,71 +220,148 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* fall through to live fetch */ }
 
-  // ── Fall back to live Gmail fetch ─────────────────────────────────────────
+  // Webhook-first default behavior: when DB has no rows, return connected state
+  // without calling live provider APIs. This prevents repeated GMAIL_FETCH_EMAILS
+  // loops from UI refresh/polling.
+  if (!liveFetch) {
+    try {
+      const allProviders = await detectAllEmailProviders(userId, auth ?? undefined);
+      const connectedProviders = [...new Set(allProviders.map((p) => p.provider))] as ("gmail" | "microsoft")[];
+      return NextResponse.json({
+        threads: [],
+        provider: preferredProvider ?? connectedProviders[0] ?? null,
+        connected: allProviders.length > 0,
+        connectedProviders,
+        source: "db-only",
+      });
+    } catch {
+      return NextResponse.json({
+        threads: [],
+        provider: preferredProvider ?? null,
+        connected: false,
+        connectedProviders: [],
+        source: "db-only",
+      });
+    }
+  }
+
+  // ── Optional live provider fetch (with provider fallback) ─────────────────
   try {
     const allProviders = await detectAllEmailProviders(userId, auth ?? undefined);
     const connectedProviders = [...new Set(allProviders.map((p) => p.provider))] as ("gmail" | "microsoft")[];
-
-    let provider = allProviders[0];
-    if (preferredProvider) {
-      const match = allProviders.find((p) => p.provider === preferredProvider);
-      if (match) provider = match;
+    if (allProviders.length === 0) {
+      return NextResponse.json({ threads: [], provider: null, connected: false, connectedProviders: [] });
     }
 
-    if (!provider) return NextResponse.json({ threads: [], provider: null, connected: false, connectedProviders: [] });
-
-    const viaComposio = (provider as { via?: string }).via === "composio";
-
-    if (provider.provider === "gmail") {
-      // Composio path — backend already returns fully-shaped threads
-      if (viaComposio) {
-        const threads = await composioGmailListThreads(auth!, q, limit);
-        return NextResponse.json({ threads, provider: "gmail", connected: true, connectedProviders });
+    const listThreadsForProvider = async (provider: (typeof allProviders)[number]) => {
+      const viaComposio = (provider as { via?: string }).via === "composio";
+      if (provider.provider === "gmail") {
+        // Composio path — backend already returns fully-shaped threads
+        if (viaComposio) {
+          const threads = await composioGmailListThreads(auth!, q, limit, req);
+          return { threads, provider: "gmail" as const };
+        }
+        // Nango path — fetch each thread for header details
+        const rawThreads = await gmailListThreads(provider.connectionId, q, limit);
+        const threads = await Promise.all(
+          rawThreads.slice(0, limit).map(async (t) => {
+            try {
+              const full = await gmailGetThread(provider.connectionId, t.id);
+              const last = full.messages[full.messages.length - 1];
+              const hdrs = last.payload.headers;
+              const unread = last.labelIds?.includes("UNREAD") ?? false;
+              return {
+                id: t.id,
+                subject: headerVal(hdrs, "Subject") || "(no subject)",
+                from: headerVal(last.payload.headers, "From"),
+                date: new Date(parseInt(last.internalDate)).toISOString(),
+                snippet: t.snippet,
+                unread,
+                messageCount: full.messages.length,
+                provider: "gmail" as const,
+              };
+            } catch {
+              return {
+                id: t.id, subject: "(error)", from: "", date: "", snippet: t.snippet,
+                unread: false, messageCount: 1, provider: "gmail" as const,
+              };
+            }
+          }),
+        );
+        return { threads, provider: "gmail" as const };
       }
 
-      // Nango path — fetch each thread for header details
-      const rawThreads = await gmailListThreads(provider.connectionId, q, limit);
-      const threads = await Promise.all(
-        rawThreads.slice(0, limit).map(async (t) => {
-          try {
-            const full = await gmailGetThread(provider.connectionId, t.id);
-            const last  = full.messages[full.messages.length - 1];
-            const hdrs  = last.payload.headers;
-            const unread = last.labelIds?.includes("UNREAD") ?? false;
-            return {
-              id:           t.id,
-              subject:      headerVal(hdrs, "Subject") || "(no subject)",
-              from:         headerVal(last.payload.headers, "From"),
-              date:         new Date(parseInt(last.internalDate)).toISOString(),
-              snippet:      t.snippet,
-              unread,
-              messageCount: full.messages.length,
-              provider:     "gmail" as const,
-            };
-          } catch {
-            return {
-              id: t.id, subject: "(error)", from: "", date: "", snippet: t.snippet,
-              unread: false, messageCount: 1, provider: "gmail" as const,
-            };
-          }
-        }),
-      );
-      return NextResponse.json({ threads, provider: "gmail", connected: true, connectedProviders });
+      const msgs = await msListMessages(provider.connectionId, q, limit) as Record<string, unknown>[];
+      const threads = msgs.map((m) => ({
+        id: m.id as string,
+        subject: (m.subject as string) || "(no subject)",
+        from: ((m.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.name || (m.from as { emailAddress?: { address?: string } })?.emailAddress?.address) ?? "",
+        date: m.receivedDateTime as string,
+        snippet: (m.bodyPreview as string) ?? "",
+        unread: m.isRead === false,
+        messageCount: 1,
+        provider: "microsoft" as const,
+      }));
+      return { threads, provider: "microsoft" as const };
+    };
+
+    // Try preferred provider first (if provided), then the rest.
+    const orderedProviders = (() => {
+      if (!preferredProvider) return allProviders;
+      const preferred = allProviders.filter((p) => p.provider === preferredProvider);
+      const others = allProviders.filter((p) => p.provider !== preferredProvider);
+      return [...preferred, ...others];
+    })();
+
+    let lastResult: { threads: unknown[]; provider: "gmail" | "microsoft" } | null = null;
+    for (const p of orderedProviders) {
+      try {
+        const result = await listThreadsForProvider(p);
+        lastResult = result;
+        if ((result.threads ?? []).length > 0) {
+          return NextResponse.json({ ...result, connected: true, connectedProviders });
+        }
+      } catch {
+        // Try next connected provider.
+      }
     }
 
-    // Microsoft
-    const msgs = await msListMessages(provider.connectionId, q, limit) as Record<string, unknown>[];
-    const threads = msgs.map((m) => ({
-      id:           m.id as string,
-      subject:      (m.subject as string) || "(no subject)",
-      from:         ((m.from as { emailAddress?: { name?: string; address?: string } })?.emailAddress?.name || (m.from as { emailAddress?: { address?: string } })?.emailAddress?.address) ?? "",
-      date:         m.receivedDateTime as string,
-      snippet:      (m.bodyPreview as string) ?? "",
-      unread:       m.isRead === false,
-      messageCount: 1,
-      provider:     "microsoft" as const,
-    }));
-    return NextResponse.json({ threads, provider: "microsoft", connected: true, connectedProviders });
+    // No provider had threads (or all failed) — one-shot recovery sync, then re-read DB.
+    try {
+      const syncRes = await fetch(buildServerCrmApiUrl(req, "/email-db/sync"), {
+        method: "POST",
+        headers: { Authorization: auth!, "Content-Type": "application/json" },
+      });
+      if (syncRes.ok) {
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (q) params.set("q", q);
+        const dbRes = await fetch(`${buildServerCrmApiUrl(req, "/email-db/threads")}?${params}`, {
+          headers: { Authorization: auth! },
+        });
+        if (dbRes.ok) {
+          const data = await dbRes.json() as { threads?: unknown[] };
+          if (Array.isArray(data.threads) && data.threads.length > 0) {
+            return NextResponse.json({
+              threads: data.threads,
+              provider: preferredProvider ?? connectedProviders[0] ?? null,
+              connected: true,
+              connectedProviders,
+              source: "db-after-sync",
+            });
+          }
+        }
+      }
+    } catch {
+      // If recovery sync fails, fall through to connected-empty response.
+    }
+
+    // Still empty — report connected so UI can show provider/sync state.
+    return NextResponse.json({
+      threads: lastResult?.threads ?? [],
+      provider: lastResult?.provider ?? (preferredProvider ?? connectedProviders[0] ?? null),
+      connected: true,
+      connectedProviders,
+    });
   } catch (e) {
     return err(e instanceof Error ? e.message : "Failed to load email", 500);
   }
@@ -293,7 +387,7 @@ export async function POST(req: NextRequest) {
 
   // ── Sync action — backend handles Gmail + Outlook via Composio ─────────────
   if (body.action === "sync") {
-    const syncRes = await fetch(`${BACKEND}/email-db/sync`, {
+    const syncRes = await fetch(buildServerCrmApiUrl(req, "/email-db/sync"), {
       method: "POST",
       headers: { Authorization: auth!, "Content-Type": "application/json" },
     });
@@ -305,9 +399,12 @@ export async function POST(req: NextRequest) {
   // ── get_thread — try DB first ─────────────────────────────────────────────
   if (body.action === "get_thread" && body.threadId) {
     try {
-      const dbRes = await fetch(`${BACKEND}/email-db/threads/${encodeURIComponent(body.threadId)}/messages`, {
+      const dbRes = await fetch(
+        buildServerCrmApiUrl(req, `/email-db/threads/${encodeURIComponent(body.threadId)}/messages`),
+        {
         headers: { Authorization: auth! },
-      });
+        },
+      );
       if (dbRes.ok) {
         const data = await dbRes.json() as { messages?: unknown[] };
         if (data.messages && data.messages.length > 0) {
@@ -334,7 +431,7 @@ export async function POST(req: NextRequest) {
       if (provider.provider === "gmail") {
         if (viaComposio) {
           // Composio path — messages already flat from backend
-          const result = await composioGmailGetThread(auth!, body.threadId);
+          const result = await composioGmailGetThread(auth!, body.threadId, req);
           return NextResponse.json({ messages: result.messages, provider: "gmail" });
         }
         // Nango path
@@ -417,7 +514,7 @@ export async function POST(req: NextRequest) {
             } catch { return ""; }
           })();
           if (!sendTo) return err("to is required for Gmail send");
-          const res = await composioBackend(auth!, "/composio/gmail/send", {
+          const res = await composioBackend(req, auth!, "/composio/gmail/send", {
             method: "POST",
             body: { to: sendTo, subject: sendSubject, body: sendBody },
           });

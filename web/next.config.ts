@@ -6,12 +6,21 @@ import { fileURLToPath } from "url";
 // In production on Render, set this to your backend's internal/public URL.
 const BACKEND_ORIGIN = process.env.BACKEND_INTERNAL_URL || "http://localhost:8000";
 
-/** This app’s directory (…/CRM/web). Required when another lockfile exists higher on disk (e.g. C:\\Users\\…\\package-lock.json) or Turbopack infers the wrong monorepo root and every App Router page 404s. */
+/** This app’s directory (…/CRM/web). */
 const WEB_PACKAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
+// On Vercel, outputFileTracingRoot is set to the repo root (/vercel/path0).
+// turbopack.root must match it exactly — use the parent dir (repo root) on Vercel,
+// or the web dir locally (to avoid Turbopack picking up a parent package-lock.json).
+const TURBO_ROOT = process.env.VERCEL
+  ? path.join(WEB_PACKAGE_ROOT, "..")
+  : WEB_PACKAGE_ROOT;
+
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: TURBO_ROOT,
+  transpilePackages: ["mjml"],
   turbopack: {
-    root: WEB_PACKAGE_ROOT,
+    root: TURBO_ROOT,
   },
   async rewrites() {
     return [
@@ -26,6 +35,18 @@ const nextConfig: NextConfig = {
         // /api/media/presentations/:file → backend static mount
         source: "/api/media/presentations/:file*",
         destination: `${BACKEND_ORIGIN}/api/media/presentations/:file*`,
+      },
+      {
+        source: "/api/document-preview/:key*",
+        destination: `${BACKEND_ORIGIN}/api/document-preview/:key*`,
+      },
+      {
+        source: "/api/images/s3/:path*",
+        destination: `${BACKEND_ORIGIN}/api/images/s3/:path*`,
+      },
+      {
+        source: "/uploads/:path*",
+        destination: `${BACKEND_ORIGIN}/uploads/:path*`,
       },
     ];
   },

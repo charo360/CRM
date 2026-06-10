@@ -1,29 +1,37 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Toaster } from "sonner";
 import { isAuthenticated } from "@/lib/auth";
 import { BusinessProvider } from "@/contexts/BusinessContext";
+import { ZernioAccountsProvider } from "@/contexts/ZernioAccountsContext";
+import { MeetingRecorderProvider } from "@/contexts/MeetingRecorderContext";
 import Sidebar from "@/components/Sidebar";
 import Navbar from "@/components/Navbar";
 import AssistantLauncher from "@/components/AssistantLauncher";
 import CommandBar from "@/components/CommandBar";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
+import MeetingOverlay from "@/components/MeetingOverlay";
+import { EntitlementBanner } from "@/components/billing/EntitlementBanner";
 
 /**
  * Auth uses localStorage, which is absent on the server. Without a client-only gate,
  * the server renders `null` while the client renders the shell — a hydration mismatch.
- * Browser extensions that inject nodes into the layout can also trigger warnings; we
- * set suppressHydrationWarning on the shell for that case.
  */
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [mounted, setMounted] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
 
   // Defer auth redirect to the next macrotask so the App Router action queue is ready
   // (avoids "Router action dispatched before initialization" during dev / HMR).
@@ -42,30 +50,50 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <BusinessProvider>
-      <div className="flex h-screen bg-slate-50" suppressHydrationWarning>
-        {/* Sidebar */}
-        {!mounted ? (
-          <aside
-            className="flex w-56 shrink-0 flex-col overflow-y-auto border-r border-brand-dark/20 bg-[#071a10] text-slate-100 min-h-screen"
-            aria-hidden
-          />
-        ) : (
-          <Sidebar />
-        )}
-        
-        {/* Right side - Navbar and Main Content */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Sticky Navbar */}
-          {mounted && <Navbar />}
-          
-          {/* Main Content */}
-          <main className="flex-1 overflow-auto bg-slate-50 text-slate-900">{children}</main>
-        </div>
-      </div>
-      {mounted && <AssistantLauncher />}
-      {mounted && <CommandBar />}
-      {mounted && <OnboardingWizard />}
-      <Toaster richColors position="top-center" />
+      <ZernioAccountsProvider>
+        <MeetingRecorderProvider>
+          <div className="flex h-[100dvh] min-h-screen bg-slate-50" suppressHydrationWarning>
+            {mounted && mobileNavOpen && (
+              <button
+                type="button"
+                aria-label="Close navigation menu"
+                className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+                onClick={() => setMobileNavOpen(false)}
+              />
+            )}
+
+            {!mounted ? (
+              <aside
+                className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r border-brand-dark/20 bg-[#071a10] text-slate-100 min-h-screen lg:flex"
+                aria-hidden
+              />
+            ) : (
+              <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
+            )}
+
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              {mounted && (
+                <Navbar
+                  onMenuClick={() => setMobileNavOpen(true)}
+                  onSearchClick={() =>
+                    window.dispatchEvent(
+                      new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true })
+                    )
+                  }
+                />
+              )}
+              {mounted && <EntitlementBanner />}
+
+              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50 text-slate-900">{children}</main>
+            </div>
+          </div>
+          {mounted && <AssistantLauncher />}
+          {mounted && <CommandBar />}
+          {mounted && <OnboardingWizard />}
+          {mounted && <MeetingOverlay />}
+          <Toaster richColors position="top-center" />
+        </MeetingRecorderProvider>
+      </ZernioAccountsProvider>
     </BusinessProvider>
   );
 }

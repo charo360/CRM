@@ -54,7 +54,7 @@ export default function CustomersScreen() {
 
   // New customer form
   const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('+254');
+  const [newPhone, setNewPhone] = useState('+1');
   const [newNotes, setNewNotes] = useState('');
   const [newTags, setNewTags] = useState<string[]>(['New']);
   const [saving, setSaving] = useState(false);
@@ -181,7 +181,7 @@ export default function CustomersScreen() {
 
   const resetForm = () => {
     setNewName('');
-    setNewPhone('+254');
+    setNewPhone('+1');
     setNewNotes('');
     setNewTags(['New']);
     setSelectedCustomer(null);
@@ -227,9 +227,9 @@ export default function CustomersScreen() {
     // Remove all non-digit characters
     let cleaned = phone.replace(/\D/g, '');
 
-    // If starts with 0, replace with +254 (Kenya)
+    // If starts with 0, add + prefix without assuming a country code
     if (cleaned.startsWith('0')) {
-      cleaned = '254' + cleaned.substring(1);
+      cleaned = cleaned.substring(1);
     }
 
     // Add + if not present

@@ -6,7 +6,7 @@ import { getToken } from "./auth";
  * using the Next rewrite (`/proxy` → backend `/api/*`). Render/env values often
  * omit `/api` — that produces 404 on routes like the SEO coach.
  */
-function normalizeCrmApiBase(raw: string): string {
+export function normalizeCrmApiBase(raw: string): string {
   const t = raw.trim().replace(/\/+$/, "");
   if (!t) return "http://127.0.0.1:8000/api";
   if (t.endsWith("/proxy") || t === "/proxy") return t;
@@ -15,7 +15,10 @@ function normalizeCrmApiBase(raw: string): string {
   return t;
 }
 
-const API_BASE = normalizeCrmApiBase(process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api");
+/** Local default uses Next `/proxy` rewrite (see web/next.config.ts). */
+export const API_BASE = normalizeCrmApiBase(
+  process.env.NEXT_PUBLIC_API_URL || (typeof window !== "undefined" ? "/proxy" : "http://127.0.0.1:8000/api"),
+);
 
 function formatErrorBody(res: Response, rawText: string): string {
   let err: { detail?: unknown; error?: unknown; message?: unknown; details?: unknown } = {};
@@ -32,9 +35,11 @@ function formatErrorBody(res: Response, rawText: string): string {
         ? d
             .map((x: { msg?: string }) => (typeof x === "object" && x && "msg" in x ? x.msg : String(x)))
             .join("; ")
-        : typeof d === "object" && d !== null
-          ? JSON.stringify(d)
-          : rawText || res.statusText || "Request failed";
+        : typeof d === "object" && d !== null && "message" in d && typeof (d as { message?: unknown }).message === "string"
+          ? (d as { message: string }).message
+          : typeof d === "object" && d !== null
+            ? JSON.stringify(d)
+            : rawText || res.statusText || "Request failed";
   return msg ? `${res.status}: ${msg}` : `${res.status}: Request failed`;
 }
 
@@ -61,10 +66,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const maxAttempts = 5;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const isFormData = options.body instanceof FormData;
     const res = await fetch(`${API_BASE}${path}`, {
       ...options,
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers || {}),
       },
@@ -104,6 +110,7 @@ export const api = {
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  postForm: <T>(path: string, form: FormData) => request<T>(path, { method: "POST", body: form }),
 };
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -448,6 +455,8 @@ export interface BusinessSettings {
   faqs?: string;
   auto_reply_enabled?: boolean;
   auto_reply_audience?: string;
+  /** AI auto-reply for Instagram DMs (Composio social inbox). */
+  social_dm_autoreply_enabled?: boolean;
   ai_model?: string;
   notification_enabled?: boolean;
   notification_time?: string;
@@ -461,6 +470,10 @@ export interface BusinessSettings {
   account_mode?: string;
   /** Web onboarding wizard; `false` = show wizard for new web signups. */
   onboarding_v1_completed?: boolean | null;
+  /** Google Analytics 4 Measurement ID (G-XXXXXXXXXX) */
+  ga4_measurement_id?: string;
+  /** Enable/disable behavior-triggered discount campaigns */
+  behavior_discounts_enabled?: boolean;
 }
 
 /** Backend `/business-knowledge` payload (journey + AI fields). */
@@ -674,6 +687,15 @@ export const designTemplatesApi = {
     }
     return res.json() as Promise<Record<string, unknown>>;
   },
+  list: (params?: { platform?: string; content_type?: string; source?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.platform) query.set("platform", params.platform);
+    if (params?.content_type) query.set("content_type", params.content_type);
+    if (params?.source) query.set("source", params.source);
+    return api.get<any[]>(`/design-templates?${query.toString()}`);
+  },
+  cleanBackground: (file_url: string) =>
+    api.post<{ status: string; file_url: string }>("/design-templates/clean-background", { file_url }),
 };
 
 export const teamApi = {
@@ -792,6 +814,15 @@ export const adminApi = {
     if (!res.ok) throw new Error(formatErrorBody(res, raw));
     return (raw ? JSON.parse(raw) : {}) as { ok: boolean };
   },
+  refreshFavicon: async (id: string) => {
+    const res = await fetch(`/api/admin/users/${id}/refresh-favicon`, {
+      method: "POST",
+      headers: adminHeaders(),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as { status: string; site: string };
+  },
 };
 
 export interface CollaborationWorkspace {
@@ -875,6 +906,62 @@ export const collaborationApi = {
       matched_rule: string | null;
       used_default: boolean;
     }>("/business/collaboration/inbound-routing/preview", body),
+};
+
+
+
+export type Entitlements = {
+  owner_id: string;
+  effective_plan: string;
+  subscription_plan?: string | null;
+  subscription_active: boolean;
+  paid_active: boolean;
+  trial_active: boolean;
+  trial_available: boolean;
+  trial_ends_at?: string | null;
+  dashboard_access: boolean;
+  subscription_current_period_end?: string | null;
+  subscription_cancel_at_period_end?: boolean;
+  trial_credits?: number;
+  usage: {
+    outbound_messages_month: number;
+    outbound_messages_cap: number;
+    outbound_messages_remaining: number;
+    trial_credits?: number;
+  };
+  features: Record<string, boolean>;
+};
+
+export type SubscriptionPlan = {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  amount_display: string;
+  interval: string;
+  features: string[];
+};
+
+export const subscriptionApi = {
+  publicPlans: (currency = "USD") =>
+    api.get<SubscriptionPlan[]>(`/subscription/plans/public?currency=${encodeURIComponent(currency)}`),
+  plans: () => api.get<SubscriptionPlan[]>("/subscription/plans"),
+  entitlements: () => api.get<Entitlements>("/subscription/entitlements"),
+  status: () => api.get<Entitlements & { extra_credits?: number; subscription_date?: string }>("/subscription/status"),
+  startTrial: () => api.post<Entitlements & { status: string; trial_days: number }>("/subscription/start-trial", {}),
+  checkout: (plan_id: string) =>
+    api.post<{ url: string; session_id: string }>("/subscription/checkout", { plan_id }),
+  portal: () => api.post<{ url: string }>("/subscription/portal", {}),
+  invoices: () =>
+    api.get<{ invoices: Array<{
+      id: string;
+      number?: string;
+      status?: string;
+      amount_due?: number;
+      currency?: string;
+      hosted_invoice_url?: string;
+      invoice_pdf?: string;
+    }> }>("/subscription/invoices"),
 };
 
 export const authApi = {
@@ -1008,23 +1095,371 @@ export const telegramApi = {
 export interface PaystackConnection {
   connected: boolean;
   business_name?: string;
+  default_currency?: string;
+  payout_type?: "bank" | "mobile_money";
+  subaccount_code?: string;
+  subaccount_name?: string;
+  settlement_bank?: string;
+  account_number?: string;
+  auth_mode?: "platform" | "merchant" | null;
+  platform_managed?: boolean;
+  platform_available?: boolean;
 }
 
-export const paystackApi = {
-  connection: () => api.get<PaystackConnection>("/paystack/connection"),
-  connect: (secret_key: string) =>
-    api.post<{ status: string; connected: boolean; business_name: string }>(
-      "/paystack/connect",
-      { secret_key }
+export interface PaystackSetup {
+  platform_available: boolean;
+  currencies: string[];
+  default_currency: string;
+  payout_types?: Array<"bank" | "mobile_money">;
+  mobile_money_currencies?: string[];
+}
+
+export interface PaystackPayoutOption {
+  code: string;
+  name: string;
+}
+
+export interface PaystackUsageSummary {
+  payments: {
+    count: number;
+    by_currency: Record<string, { count: number; volume_major: number }>;
+  };
+}
+
+export type MerchantPaymentProvider = "paystack" | "stripe" | "flutterwave" | "payhero";
+
+export interface MerchantPaymentConnectionInfo {
+  connected: boolean;
+  label?: string;
+  currency?: string;
+  subaccount_code?: string;
+  subaccount_id?: string;
+  checkout_ready?: boolean;
+  channel_id?: number;
+}
+
+export interface MerchantPaymentTransaction {
+  id: string;
+  provider: MerchantPaymentProvider;
+  reference: string;
+  amount_major?: number;
+  currency: string;
+  status: string;
+  order_id?: string;
+  customer_email?: string;
+  channel?: string;
+  created_at?: string;
+  refundable?: boolean;
+  refund_mode?: "manual";
+}
+
+export interface MerchantPaymentsOverview {
+  connected_providers: MerchantPaymentProvider[];
+  connections: Partial<Record<MerchantPaymentProvider, MerchantPaymentConnectionInfo>>;
+  preferred_provider: MerchantPaymentProvider | null;
+  transactions: MerchantPaymentTransaction[];
+}
+
+export const merchantPaymentsApi = {
+  overview: (limit = 50) =>
+    api.get<MerchantPaymentsOverview>(`/merchant-payments/overview?limit=${limit}`),
+  setPreferredProvider: (provider: MerchantPaymentProvider | null) =>
+    api.put<{ preferred_provider: MerchantPaymentProvider | null }>(
+      "/merchant-payments/preferred-provider",
+      { provider }
     ),
+  refund: (params: { provider: MerchantPaymentProvider; ledger_id: string }) =>
+    api.post<{
+      status: string;
+      provider: string;
+      provider_refund_id?: string;
+      manual_followup?: string;
+    }>("/merchant-payments/refund", params),
+};
+
+export const paystackApi = {
+  setup: async () => {
+    const res = await fetch("/api/paystack/setup");
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as PaystackSetup;
+  },
+  payoutOptions: async (params: { currency: string; payout_type: "bank" | "mobile_money" }) => {
+    const qs = `currency=${encodeURIComponent(params.currency)}&payout_type=${encodeURIComponent(params.payout_type)}`;
+    const res = await fetch(`/api/paystack/payout-options?${qs}`);
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as {
+      currency: string;
+      payout_type: "bank" | "mobile_money";
+      options: PaystackPayoutOption[];
+      supported?: boolean;
+      hint?: string;
+    };
+  },
+  connection: () => api.get<PaystackConnection>("/paystack/connection"),
+  connect: (payload: {
+    secret_key?: string;
+    currency?: string;
+    payout_type?: "bank" | "mobile_money";
+    settlement_bank?: string;
+    account_number?: string;
+    business_name?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      business_name: string;
+      default_currency?: string;
+      payout_type?: "bank" | "mobile_money";
+      subaccount_code?: string;
+    }>("/paystack/connect", payload),
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/paystack/connect"),
+  usageSummary: () => api.get<PaystackUsageSummary>("/paystack/usage/summary"),
+  usageLedger: (limit = 50) =>
+    api.get<{ entries: Record<string, unknown>[] }>(
+      `/paystack/usage/ledger?limit=${limit}`
+    ),
+  initializeTransaction: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    callback_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      authorization_url: string;
+      reference: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/paystack/transaction/initialize", params),
+  verifyTransaction: (reference: string) =>
+    api.get<{ status: string; data: Record<string, unknown> }>(
+      `/paystack/transaction/verify/${encodeURIComponent(reference)}`
+    ),
+};
+
+export interface FlutterwaveConnection {
+  connected: boolean;
+  business_name?: string;
+  default_currency?: string;
+  subaccount_id?: string;
+  subaccount_name?: string;
+  settlement_bank?: string;
+  account_number?: string;
+  business_email?: string;
+  country?: string;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+}
+
+export interface FlutterwaveSetup {
+  platform_available: boolean;
+  currencies: string[];
+  default_currency: string;
+  merchant_split_percent?: number;
+}
+
+export interface FlutterwavePayoutOption {
+  code: string;
+  name: string;
+}
+
+export const flutterwaveApi = {
+  setup: async () => {
+    const res = await fetch("/api/flutterwave/setup");
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as FlutterwaveSetup;
+  },
+  payoutOptions: async (params: { currency: string }) => {
+    const qs = `currency=${encodeURIComponent(params.currency)}`;
+    const res = await fetch(`/api/flutterwave/payout-options?${qs}`);
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, raw));
+    }
+    return JSON.parse(raw) as {
+      currency: string;
+      country: string;
+      options: FlutterwavePayoutOption[];
+    };
+  },
+  connection: () => api.get<FlutterwaveConnection>("/flutterwave/connection"),
+  connect: (payload: {
+    currency?: string;
+    country?: string;
+    account_bank?: string;
+    account_number?: string;
+    business_name?: string;
+    business_email?: string;
+    business_contact?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      business_name: string;
+      default_currency?: string;
+      subaccount_id?: string;
+    }>("/flutterwave/connect", payload),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/flutterwave/connect"),
+  initializeTransaction: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    callback_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      payment_link: string;
+      authorization_url: string;
+      reference: string;
+      tx_ref: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/flutterwave/transaction/initialize", params),
+};
+
+export type StripeConnectStatus =
+  | "not_connected"
+  | "onboarding"
+  | "verification_pending"
+  | "ready";
+
+export interface StripeConnection {
+  connected: boolean;
+  checkout_ready?: boolean;
+  status?: StripeConnectStatus;
+  business_name?: string;
+  default_currency?: string;
+  country?: string;
+  connect_email?: string;
+  account_id?: string;
+  charges_enabled?: boolean;
+  payouts_enabled?: boolean;
+  details_submitted?: boolean;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+}
+
+export interface StripeSetup {
+  platform_available: boolean;
+  currencies: string[];
+  countries: string[];
+  default_currency: string;
+  default_country?: string;
+  connect_note?: string;
+  merchant_transfer_percent?: number;
+  platform_fee_percent?: number;
+}
+
+export const stripeConnectApi = {
+  setup: async () => {
+    const parse = (raw: string, res: Response): StripeSetup => {
+      if (!res.ok) {
+        throw new Error(formatErrorBody(res, raw));
+      }
+      return JSON.parse(raw) as StripeSetup;
+    };
+    let res = await fetch("/api/stripe/setup", { cache: "no-store" });
+    let raw = await res.text();
+    if (res.ok) return parse(raw, res);
+    try {
+      res = await fetch(`${API_BASE}/stripe/setup`, { cache: "no-store" });
+      raw = await res.text();
+      if (res.ok) return parse(raw, res);
+    } catch {
+      /* use primary error below */
+    }
+    throw new Error(formatErrorBody(res, raw));
+  },
+  connection: () => api.get<StripeConnection>("/stripe/connection"),
+  connect: (payload: {
+    email: string;
+    business_name: string;
+    currency?: string;
+    country?: string;
+  }) =>
+    api.post<{
+      status: string;
+      connected: boolean;
+      checkout_ready: boolean;
+      onboarding_url: string;
+      account_id: string;
+      business_name: string;
+      default_currency?: string;
+    }>("/stripe/connect", payload),
+  accountLink: () =>
+    api.post<{ onboarding_url: string }>("/stripe/connect/account-link", {}),
+  disconnect: () =>
+    api.delete<{ status: string; connected: boolean }>("/stripe/connect"),
+  initializeCheckout: (params: {
+    email: string;
+    amount: number;
+    currency?: string;
+    order_id?: string;
+    customer_id?: string;
+    customer_name?: string;
+    external_reference?: string;
+    order_number?: string;
+    success_url?: string;
+    cancel_url?: string;
+  }) =>
+    api.post<{
+      status: string;
+      authorization_url: string;
+      checkout_url: string;
+      session_id: string;
+      reference: string;
+      intent_id: string;
+      currency: string;
+      amount_major: number;
+    }>("/stripe/checkout/initialize", params),
+  verifyCheckout: (sessionId: string) =>
+    api.get<{ status: string; data: Record<string, unknown> }>(
+      `/stripe/checkout/verify/${encodeURIComponent(sessionId)}`
+    ),
 };
 
 export interface PayheroConnection {
   connected: boolean;
   username?: string;
   channel_id?: number | string | null;
+  auth_mode?: "platform" | "merchant" | null;
+  platform_managed?: boolean;
+  platform_available?: boolean;
+  platform_account_configured?: boolean;
+  channel_type?: "paybill" | "till" | "bank" | string | null;
+  short_code?: number | string | null;
+  account_number?: string | null;
+  channel_description?: string | null;
+  channel_active?: boolean | null;
+}
+
+export interface PayheroBankPaybill {
+  id?: string | number;
+  name: string;
+  paybill: string;
 }
 
 export interface PayheroChannel {
@@ -1036,13 +1471,72 @@ export interface PayheroChannel {
   short_code?: string;
 }
 
+export interface PayheroFeeQuote {
+  gross_kes: number;
+  payhero_fee_kes: number;
+  merchant_receives_kes: number;
+  tier_min_kes: number;
+  tier_max_kes: number;
+  rate_card_version: string;
+}
+
+export interface PayheroUsageSummary {
+  rate_card_version: string;
+  currency: string;
+  mpesa_payments: {
+    count: number;
+    gross_collected_kes: number;
+    estimated_payhero_fees_kes: number;
+  };
+  sms: { messages: number; fees_kes: number };
+  whatsapp: { messages: number; fees_kes: number };
+  total_estimated_fees_kes: number;
+}
+
 export const payheroApi = {
+  rates: () =>
+    api.get<{
+      version: string;
+      currency: string;
+      mpesa_tiers: { min_kes: number; max_kes: number; fee_kes: number }[];
+      sms_per_message_kes: number;
+      whatsapp_per_message_kes: number;
+      platform_available?: boolean;
+      platform_account_configured?: boolean;
+    }>("/payhero/rates"),
+  feeQuote: (amount: number) =>
+    api.get<PayheroFeeQuote>(`/payhero/fees/quote?amount=${encodeURIComponent(String(amount))}`),
+  usageSummary: () => api.get<PayheroUsageSummary>("/payhero/usage/summary"),
+  usageLedger: (limit = 50) =>
+    api.get<{ entries: Record<string, unknown>[] }>(`/payhero/usage/ledger?limit=${limit}`),
+  bankPaybills: () =>
+    api.get<{ banks: PayheroBankPaybill[] }>("/payhero/bank_paybills"),
   connection: () => api.get<PayheroConnection>("/payhero/connection"),
-  connect: (username: string, password: string) =>
-    api.post<{ status: string; connected: boolean; username: string }>(
-      "/payhero/connect",
-      { username, password }
-    ),
+  connect: async (payload: {
+    api_token?: string;
+    username?: string;
+    password?: string;
+    label?: string;
+    channel_type?: "paybill" | "till" | "bank";
+    short_code?: string;
+    account_number?: string;
+    description?: string;
+  }) => {
+    const token = getToken();
+    const res = await fetch("/api/payhero/connect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return JSON.parse(rawText) as { status: string; connected: boolean; username: string };
+  },
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/payhero/connect"),
   channels: () =>
@@ -1054,11 +1548,37 @@ export const payheroApi = {
       "/payhero/channel",
       { channel_id }
     ),
-  stkPush: (phone: string, amount: number, external_reference?: string, customer_name?: string) =>
-    api.post<{ status: string; payhero_response: unknown }>(
-      "/payhero/stk-push",
-      { phone, amount, external_reference, customer_name }
-    ),
+  stkPush: (params: {
+    phone: string;
+    amount: number;
+    external_reference?: string;
+    customer_name?: string;
+    order_id?: string;
+  }) =>
+    api.post<{
+      status: string;
+      intent_id?: string;
+      fee_quote?: { payhero_fee_kes: number; merchant_receives_kes: number };
+      payhero_response: unknown;
+    }>("/payhero/stk-push", params),
+};
+
+// ── Supplier connections (CJ + AliExpress per-user credentials) ──────────────
+export interface SupplierConnections {
+  cj: boolean;
+  aliexpress: boolean;
+}
+
+export const supplierApi = {
+  connections: () => api.get<SupplierConnections>("/supplier-connections"),
+  connectCJ: (email: string, api_key: string) =>
+    api.post<{ connected: boolean }>("/supplier-connections/cj", { email, api_key }),
+  disconnectCJ: () =>
+    api.delete<{ connected: boolean }>("/supplier-connections/cj"),
+  connectAliExpress: (app_key: string, app_secret: string, access_token: string) =>
+    api.post<{ connected: boolean }>("/supplier-connections/aliexpress", { app_key, app_secret, access_token }),
+  disconnectAliExpress: () =>
+    api.delete<{ connected: boolean }>("/supplier-connections/aliexpress"),
 };
 
 // ── Assistant ────────────────────────────────────────────────────────────────
@@ -1083,6 +1603,8 @@ export interface AssistantMessage {
   agent?: string;
   /** Tap-to-send follow-ups (e.g. Meta / Google Ads step-by-step) */
   suggestions?: string[];
+  /** Documents attached to this user message (shown as chips in the bubble) */
+  documents?: AssistantDocument[];
 }
 
 export interface AssistantAgent {
@@ -1202,7 +1724,9 @@ export const assistantApi = {
     auto_approve?: boolean;
     agent?: string;
     visibility?: "team" | "private";
+    signal?: AbortSignal;
   }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
     const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
     let controller!: ReadableStreamDefaultController<string>;
     const stream = new ReadableStream<string>({
@@ -1216,7 +1740,8 @@ export const assistantApi = {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(bodyRest),
+          signal,
         });
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => res.statusText);
@@ -1244,6 +1769,190 @@ export const assistantApi = {
     })();
     return stream;
   },
+  generateDocumentStream: (body: {
+    title: string;
+    content_md?: string;
+    body_markdown?: string;
+    doc_type?: string;
+    conversation_id?: string | null;
+    message_index?: number;
+    edited?: boolean;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/document/generate/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  saveDocumentPlan: (body: {
+    conversation_id: string;
+    message_index: number;
+    title: string;
+    content_md: string;
+    body_markdown: string;
+  }) =>
+    api.post<{
+      success: boolean;
+      title: string;
+      content_md: string;
+      saved_at: string;
+    }>("/assistant/document/plan/update", body),
+  generatePresentationStream: (body: {
+    topic: string;
+    slides: Record<string, unknown>[];
+    conversation_id?: string | null;
+    message_index?: number;
+    edited?: boolean;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/presentation/generate/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  regeneratePresentationSlideStream: (body: {
+    conversation_id: string;
+    message_index: number;
+    slide_index: number;
+    instruction: string;
+    slides: Record<string, unknown>[];
+    image_urls: string[];
+    topic?: string;
+    text_edited?: boolean;
+    signal?: AbortSignal;
+  }): ReadableStream<string> => {
+    const { signal, ...bodyRest } = body;
+    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    let controller!: ReadableStreamDefaultController<string>;
+    const stream = new ReadableStream<string>({
+      start(c) { controller = c; },
+    });
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/assistant/presentation/regenerate-slide/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(bodyRest),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const text = await res.text().catch(() => res.statusText);
+          controller.error(new Error(`${res.status}: ${text}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (line.startsWith("data: ")) controller.enqueue(line.slice(6));
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    })();
+    return stream;
+  },
+  updatePresentationPlan: (body: {
+    conversation_id: string;
+    message_index: number;
+    topic: string;
+    slides: Record<string, unknown>[];
+  }) =>
+    api.post<{
+      success: boolean;
+      slides: Record<string, unknown>[];
+      topic: string;
+      user_edited: boolean;
+      saved_at: string;
+    }>("/assistant/presentation/plan/update", body),
   listDocuments: (conversationId: string) =>
     api.get<{ documents: AssistantDocument[] }>(
       `/assistant/conversations/${conversationId}/documents`
@@ -1254,7 +1963,7 @@ export const assistantApi = {
     api.get<AssistantAuditEntry[]>(`/assistant/audit?limit=${limit}`),
   exportDocument: async (
     content: string,
-    format: "pdf" | "docx",
+    format: "pdf" | "docx" | "xlsx",
     filename?: string
   ): Promise<void> => {
     const token = getToken();
@@ -1277,6 +1986,33 @@ export const assistantApi = {
     a.download = `${filename || "zilo-export"}.${format}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
+  uploadDocumentWithProgress: (
+    file: File,
+    conversationId: string | null | undefined,
+    onProgress: (pct: number) => void,
+  ): Promise<{ conversation_id: string; document: AssistantDocument }> => {
+    return new Promise((resolve, reject) => {
+      const token = getToken();
+      const form = new FormData();
+      form.append("file", file);
+      const qs = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/assistant/upload${qs}`);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) onProgress(Math.round((ev.loaded / ev.total) * 100));
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error("Invalid response")); }
+        } else {
+          try { reject(new Error(JSON.parse(xhr.responseText)?.detail ?? xhr.statusText)); } catch { reject(new Error(xhr.statusText)); }
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload failed"));
+      xhr.send(form);
+    });
   },
   uploadDocument: async (file: File, conversationId?: string | null) => {
     const token = getToken();
@@ -1479,6 +2215,18 @@ export interface ScheduledPost {
   assets?: ScheduledPostAsset[];
   image_url?: string;
   publish_error?: string;
+  zernio_post_id?: string;
+  external_post_id?: string;
+  publish_provider?: string;
+  engagement_synced_at?: string;
+  engagement?: {
+    likes: number;
+    comments: number;
+    shares: number;
+    reach: number;
+    clicks: number;
+    saves: number;
+  };
 }
 
 export type ScheduledPostInput = Omit<ScheduledPost, "id" | "created_at" | "updated_at">;
@@ -1498,13 +2246,54 @@ export interface SocialAnalytics {
   avg_engagement_rate: number;
 }
 
+export type SocialPostPublishResult = {
+  success: boolean;
+  zernio_post_id?: string | null;
+  external_post_id?: string | null;
+  publish_provider?: string | null;
+  error?: string | null;
+  crm_status?: string;
+};
+
+export interface ComposioFacebookPage {
+  id: string;
+  name: string;
+  username?: string;
+  category?: string;
+  instagram_user_id?: string | null;
+}
+
+export interface ComposioSocialSettings {
+  facebook: { connected: boolean; page_id?: string | null; page_name?: string | null };
+  instagram: { connected: boolean; user_id?: string | null };
+  youtube: { connected: boolean };
+}
+
+export const composioSocialApi = {
+  settings: () => api.get<ComposioSocialSettings>("/composio/social/settings"),
+  facebookPages: () => api.get<{ pages: ComposioFacebookPage[] }>("/composio/social/facebook/pages"),
+  selectFacebookPage: (page_id: string, page_name?: string, instagram_user_id?: string | null) =>
+    api.post<{ ok: boolean; page_id: string; page_name: string; instagram_user_id?: string | null }>(
+      "/composio/social/facebook/page",
+      { page_id, page_name, instagram_user_id },
+    ),
+};
+
 export const socialSchedulerApi = {
   list: (status?: string) =>
     api.get<{ posts: ScheduledPost[] }>(`/marketing/social-posts${status ? `?status=${status}` : ""}`),
+  get: (id: string) =>
+    api.get<{ post: ScheduledPost }>(`/marketing/social-posts/${id}`),
   create: (body: Partial<ScheduledPostInput> & { title: string; body: string }) =>
-    api.post<{ post: ScheduledPost }>("/marketing/social-posts", body),
+    api.post<{ post: ScheduledPost; publish?: SocialPostPublishResult }>(
+      "/marketing/social-posts",
+      body,
+    ),
   update: (id: string, body: Partial<ScheduledPostInput>) =>
-    api.patch<{ post: ScheduledPost }>(`/marketing/social-posts/${id}`, body),
+    api.patch<{ post: ScheduledPost; publish?: SocialPostPublishResult }>(
+      `/marketing/social-posts/${id}`,
+      body,
+    ),
   delete: (id: string) =>
     api.delete<{ status: string; id: string }>(`/marketing/social-posts/${id}`),
   analytics: (days = 30, channel?: string) =>
@@ -1528,10 +2317,26 @@ export const whatsappApi = {
     api.post<{ pairing_code?: string; status: string; message?: string }>("/whatsapp/connect", { phone_number: phoneNumber }),
   disconnect: () => api.post<{ status: string }>("/whatsapp/disconnect", {}),
   sync: () => api.post<{ status: string }>("/whatsapp/sync", {}),
-  /** Start a QR-code based connection. Returns base64 QR image. */
-  qrStart: () => api.post<{ status: string; qr_base64: string }>("/whatsapp/qr-start", {}),
+  /** Start a QR-code based connection. Uses long-timeout App Route (not /proxy rewrite). */
+  qrStart: async () => {
+    const token = getToken();
+    const res = await fetch("/api/whatsapp/qr-start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: "{}",
+    });
+    const rawText = await res.text();
+    if (!res.ok) {
+      throw new Error(formatErrorBody(res, rawText));
+    }
+    return (rawText ? JSON.parse(rawText) : {}) as { status: string; qr_base64: string };
+  },
   /** Fetch a refreshed QR code for the pending instance. */
-  qrFetch: () => api.get<{ qr_base64: string }>("/whatsapp/qr"),
+  qrFetch: () =>
+    api.get<{ qr_base64: string; connection_state?: string }>("/whatsapp/qr"),
 };
 
 export const onboardingApi = {
@@ -1717,6 +2522,29 @@ export const financeApi = {
   },
 };
 
+// ── Budgets ───────────────────────────────────────────────────────────────────
+export const budgetApi = {
+  list: (params?: { period?: string; year?: number; month?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.period) q.set("period", params.period);
+    if (params?.year != null) q.set("year", String(params.year));
+    if (params?.month != null) q.set("month", String(params.month));
+    return api.get<Record<string, unknown>[]>(`/finance/budgets${q.toString() ? `?${q}` : ""}`);
+  },
+  upsert: (body: { category: string; amount: number; period?: string; year?: number; month?: number; currency?: string; notes?: string }) =>
+    api.post<Record<string, unknown>>("/finance/budgets", body),
+  update: (id: string, body: { amount?: number; notes?: string; currency?: string }) =>
+    api.put<Record<string, unknown>>(`/finance/budgets/${id}`, body),
+  delete: (id: string) => api.delete<{ deleted: boolean }>(`/finance/budgets/${id}`),
+  vsActual: (params?: { year?: number; month?: number; period?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.year != null) q.set("year", String(params.year));
+    if (params?.month != null) q.set("month", String(params.month));
+    if (params?.period) q.set("period", params.period);
+    return api.get<Record<string, unknown>>(`/finance/budgets/vs-actual${q.toString() ? `?${q}` : ""}`);
+  },
+};
+
 // ── Quotes ────────────────────────────────────────────────────────────────────
 export const quotesApi = {
   list: (params?: { status?: string; q?: string }) => {
@@ -1739,6 +2567,93 @@ export const quotesApi = {
   getBranding: () => api.get<Record<string, unknown>>("/quotes/meta/branding"),
   aiDraft: (body: { prompt: string; currency?: string; customer_name?: string }) =>
     api.post<{ customer_name: string; items: Array<{ name: string; description?: string; qty: number; unit_price: number; amount: number }>; notes: string; terms: string }>("/quotes/ai/draft", body),
+};
+
+// ── Field Agents ──────────────────────────────────────────────────────────────
+export const fieldAgentsApi = {
+  listAgents: () => api.get<Record<string, unknown>[]>("/field-agents/agents"),
+  getAgent: (id: string) => api.get<Record<string, unknown>>(`/field-agents/agents/${id}`),
+  summary: () => api.get<Record<string, unknown>>("/field-agents/summary"),
+  listTasks: (params?: { agent_id?: string; status?: string; priority?: string; from_date?: string; to_date?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id)  q.set("agent_id",  params.agent_id);
+    if (params?.status)    q.set("status",    params.status);
+    if (params?.priority)  q.set("priority",  params.priority);
+    if (params?.from_date) q.set("from_date", params.from_date);
+    if (params?.to_date)   q.set("to_date",   params.to_date);
+    return api.get<Record<string, unknown>[]>(`/field-agents/tasks${q.toString() ? `?${q}` : ""}`);
+  },
+  createTask: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/field-agents/tasks", body),
+  updateTask: (id: string, body: Record<string, unknown>) => api.put<Record<string, unknown>>(`/field-agents/tasks/${id}`, body),
+  deleteTask: (id: string) => api.delete<{ deleted: boolean }>(`/field-agents/tasks/${id}`),
+  checkIn:  (taskId: string, body: { location_note?: string; notes?: string }) =>
+    api.post<Record<string, unknown>>(`/field-agents/tasks/${taskId}/checkin`, body),
+  checkOut: (taskId: string, body: { outcome?: string; notes?: string; status?: string }) =>
+    api.put<Record<string, unknown>>(`/field-agents/tasks/${taskId}/checkout`, body),
+  listActivity: (params?: { agent_id?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id) q.set("agent_id", params.agent_id);
+    if (params?.limit)    q.set("limit", String(params.limit));
+    return api.get<Record<string, unknown>[]>(`/field-agents/activity${q.toString() ? `?${q}` : ""}`);
+  },
+  setCommission: (agentId: string, body: { commission_type: string; commission_rate: number }) =>
+    api.put<Record<string, unknown>>(`/field-agents/agents/${agentId}/commission`, body),
+  listCollections: (params?: { agent_id?: string; reconciliation_status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.agent_id)              q.set("agent_id", params.agent_id);
+    if (params?.reconciliation_status) q.set("reconciliation_status", params.reconciliation_status);
+    return api.get<Record<string, unknown>>(`/field-agents/collections${q.toString() ? `?${q}` : ""}`);
+  },
+  reconcileEntry: (entryId: string) =>
+    api.put<Record<string, unknown>>(`/field-agents/collections/${entryId}/reconcile`, {}),
+  reconcileAll: () =>
+    api.post<{ reconciled: number }>("/field-agents/collections/reconcile-all", {}),
+};
+
+// ── Smart Notes ───────────────────────────────────────────────────────────────
+
+export interface DiarizeUtterance {
+  speaker: string;   // "A" | "B" | ... from AssemblyAI, then overwritten with real name
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface DiarizeResult {
+  status: "queued" | "processing" | "completed" | "error";
+  speakers?: string[];
+  utterances?: DiarizeUtterance[];
+  text?: string;
+  error?: string;
+}
+
+export const smartNotesApi = {
+  upcoming: () => api.get<{ meetings: Record<string, unknown>[]; connected: boolean }>("/smart-notes/upcoming"),
+  transcribe: (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "recording.webm");
+    return api.postForm<{ transcript: string }>("/smart-notes/transcribe", form);
+  },
+  startDiarize: (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "recording.webm");
+    return api.postForm<{ job_id: string }>("/smart-notes/diarize", form);
+  },
+  pollDiarize: (jobId: string) => api.get<DiarizeResult>(`/smart-notes/diarize/${jobId}`),
+  generate: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes/generate", body),
+  list: () => api.get<{ notes: Record<string, unknown>[] }>("/smart-notes"),
+  save: (body: Record<string, unknown>) => api.post<Record<string, unknown>>("/smart-notes", body),
+  get: (id: string) => api.get<Record<string, unknown>>(`/smart-notes/${id}`),
+  update: (id: string, body: { 
+    title?: string; 
+    summary?: string; 
+    action_items?: string[]; 
+    key_points?: string[]; 
+    decisions?: string[]; 
+    next_steps?: string; 
+    transcript?: string; 
+  }) => api.patch<Record<string, unknown>>(`/smart-notes/${id}`, body),
+  delete: (id: string) => api.delete<{ ok: boolean }>(`/smart-notes/${id}`),
 };
 
 // ── Loyalty ───────────────────────────────────────────────────────────────────
@@ -1912,11 +2827,47 @@ export interface SeoKeyword {
   difficulty: string;
   priority: number;
   content_idea: string;
-  /** Present when results come from DataForSEO Labs */
   search_volume?: number | null;
+  local_country?: string | null;
+  global_search_volume?: number | null;
+  top_region?: string | null;
+  top_region_volume?: number | null;
   cpc?: number | null;
   competition?: string | null;
   keyword_difficulty_score?: number | null;
+}
+
+export interface ContentLink {
+  title: string;
+  url: string;
+  published_at: string;
+}
+
+export interface SerpRankingEntry {
+  keyword: string;
+  domain: string;
+  position: number | null;
+  global_position?: number | null;
+  checked_at: string;
+  location_code?: number;
+  search_volume?: number | null;
+  local_country?: string | null;
+  global_search_volume?: number | null;
+  top_region?: string | null;
+  top_region_volume?: number | null;
+  cpc?: number | null;
+  difficulty?: string | null;
+  trend?: "rising" | "declining" | "stable" | null;
+  content_idea?: string | null;
+  posts?: ContentLink[];
+}
+
+export interface AiVisibilityAudit {
+  url: string;
+  ai_score: number | null;
+  grade: string;
+  issues_count: number;
+  created_at: string;
 }
 
 export interface BlogPost {
@@ -1934,10 +2885,20 @@ export interface BlogPost {
   created_at: string;
   updated_at: string;
   published_at?: string;
+  site_post_url?: string;
   /** Calendar generation metadata */
   calendar_week?: number;
   calendar_day?: string;
   word_count?: number;
+  /** Social shares tracking */
+  social_shares?: {
+    platform: string;
+    account_id: string;
+    social_post_id: string;
+    caption: string;
+    link_url: string;
+    shared_at: string;
+  }[];
 }
 
 export interface BlogGenerateResult {
@@ -1971,12 +2932,17 @@ export interface SeoBusinessContext {
   context_snippet: string;
   /** True when DATAFORSEO_TOKEN is set — Keywords tab can use live Google metrics. */
   live_keyword_data?: boolean;
+  website_url?: string;
 }
 
 export interface SeoSummary {
   total_posts: number;
   published_posts: number;
   draft_posts: number;
+  scheduled_posts: number;
+  autoblog_posts: number;
+  keywords_saved: number;
+  rankings_tracked: number;
   total_audits: number;
   avg_seo_score: number | null;
   last_audit: SeoAudit | null;
@@ -1995,7 +2961,8 @@ export const seoApi = {
       keywords: SeoKeyword[];
       business_type: string;
       location: string;
-      keyword_source: "dataforseo" | "ai";
+      keyword_source: "dataforseo" | "vebapi" | "ai";
+      excluded_count?: number;
     }>("/seo/keywords", {
       business_type: business_type ?? "",
       location: location ?? "",
@@ -2012,7 +2979,14 @@ export const seoApi = {
     business_name?: string;
     include_faq?: boolean;
     model_pref?: string;
+    existing_titles?: string[];
   }) => api.post<BlogGenerateResult>("/seo/blog/generate", body),
+
+  addContentLink: (keyword: string, domain: string, title: string, url: string) =>
+    api.post<{ ok: boolean }>("/seo/content-links", { keyword, domain, title, url }),
+
+  suggestAngles: (keyword: string, existingTitles: string[]) =>
+    api.post<{ keyword: string; angles: { title: string; angle: string }[] }>("/seo/suggest-angles", { keyword, existing_titles: existingTitles }),
 
   // Blog CRUD
   listPosts: () => api.get<BlogPost[]>("/seo/blog/posts"),
@@ -2020,6 +2994,14 @@ export const seoApi = {
   createPost: (body: Partial<BlogPost>) => api.post<BlogPost>("/seo/blog/posts", body),
   updatePost: (id: string, body: Partial<BlogPost>) => api.patch<BlogPost>(`/seo/blog/posts/${id}`, body),
   deletePost: (id: string) => api.delete<{ ok: boolean }>(`/seo/blog/posts/${id}`),
+  shareBlogToSocial: (post_id: string, body: { platform: string; account_id: string; caption: string; link_url?: string; image_url?: string }) =>
+    api.post<{ ok: boolean; social_post_id: string; platform: string }>(`/seo/blog/posts/${post_id}/share-social`, body),
+
+  // Auto-share settings
+  getAutoShareSettings: () =>
+    api.get<{ enabled: boolean; trigger: string; account_ids: string[]; account_platforms: Record<string, string> }>("/seo/social-auto-share/settings"),
+  updateAutoShareSettings: (body: { enabled: boolean; trigger: string; account_ids: string[]; account_platforms: Record<string, string> }) =>
+    api.put<{ ok: boolean; settings: Record<string, unknown> }>("/seo/social-auto-share/settings", body),
 
   // Publish
   publishPost: (body: {
@@ -2100,9 +3082,80 @@ export const seoApi = {
     platform: string;
     name: string;
     address: string;
-    phone: string;
-    website: string;
+    phone?: string;
+    website?: string;
   }) => api.post<{ success: boolean; listing: Record<string, unknown> }>("/seo/local/listings", body),
+  updateLocalListing: (id: string, body: Partial<{ platform: string; name: string; address: string; phone: string; website: string; status: string; rating: number; reviews: number }>) =>
+    api.patch<{ success: boolean; listing: Record<string, unknown> }>(`/seo/local/listings/${id}`, body),
+  deleteLocalListing: (id: string) =>
+    api.delete<{ ok: boolean }>(`/seo/local/listings/${id}`),
+
+  // Analytics events log
+  analyticsEvents: (limit = 50) =>
+    api.get<{ id: string; type: string; created_at: string; payload?: Record<string, unknown> }[]>(`/seo/analytics/events?limit=${limit}`),
+
+  // Page indexing breakdown (URL Inspection API)
+  getPageIndexingStatus: (siteUrl?: string, sitemapUrl?: string, maxUrls = 20) =>
+    api.get<{
+      connected: boolean; error?: string;
+      total_inspected?: number; indexed?: number; not_indexed?: number;
+      sitemap_url?: string;
+      reasons?: {
+        reason: string; label: string; color: string; fix: string | null;
+        count: number; urls: string[];
+      }[];
+    }>(
+      `/seo/analytics/search-console/indexing?max_urls=${maxUrls}` +
+      (siteUrl ? `&site_url=${encodeURIComponent(siteUrl)}` : "") +
+      (sitemapUrl ? `&sitemap_url=${encodeURIComponent(sitemapUrl)}` : "")
+    ),
+
+  // List sitemaps for a GSC property
+  listSearchConsoleSitemaps: (siteUrl?: string) =>
+    api.get<{
+      connected: boolean; site_url?: string; error?: string;
+      sitemaps: { path: string; last_submitted: string; last_downloaded: string; is_pending: boolean; warnings: number; errors: number; submitted: number; indexed: number }[];
+    }>(`/seo/analytics/search-console/sitemaps${siteUrl ? `?site_url=${encodeURIComponent(siteUrl)}` : ""}`),
+
+  // List verified GSC properties
+  listSearchConsoleSites: () =>
+    api.get<{ connected: boolean; sites: { url: string; level: string }[]; error?: string }>("/seo/analytics/search-console/sites"),
+
+  // Google Search Console (via Composio)
+  getSearchConsoleData: (siteUrl?: string, days = 28, searchType = "web") =>
+    api.get<{
+      connected: boolean; error?: string; site_url?: string; period_days?: number;
+      summary?: { total_clicks: number; total_impressions: number; avg_ctr: number; avg_position: number };
+      top_queries?: { query: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      top_pages?: { page: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      devices?: { device: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      countries?: { country: string; clicks: number; impressions: number; ctr: number; position: number }[];
+      trend?: { date: string; clicks: number; impressions: number }[];
+    }>(`/seo/analytics/search-console?days=${days}&search_type=${searchType}${siteUrl ? `&site_url=${encodeURIComponent(siteUrl)}` : ""}`),
+
+  // Google Analytics 4 (via Composio)
+  getGa4Data: (propertyId?: string, days = 28) =>
+    api.get<{
+      connected: boolean; error?: string; property_id?: string; period_days?: number;
+      summary?: { total_sessions: number; total_users: number; total_views: number };
+      daily?: { date: string; sessions: number; users: number; views: number; bounce_rate: number; avg_session_duration: number }[];
+    }>(`/seo/analytics/ga4${propertyId ? `?property_id=${encodeURIComponent(propertyId)}&days=${days}` : `?days=${days}`}`),
+
+  // Google Ads (via Composio)
+  getGoogleAdsData: (customerId?: string, days = 30) =>
+    api.get<{
+      connected: boolean; error?: string; customer_id?: string; period_days?: number;
+      summary?: { total_spend: number; total_clicks: number; total_impressions: number; avg_ctr: number; avg_cpc: number };
+      campaigns?: { id: string; name: string; status: string; impressions: number; clicks: number; cost: number; ctr: number; avg_cpc: number }[];
+    }>(`/seo/analytics/google-ads${customerId ? `?customer_id=${encodeURIComponent(customerId)}&days=${days}` : `?days=${days}`}`),
+
+  // Scheduled posts queue
+  scheduledPosts: () =>
+    api.get<{ id: string; title: string; scheduled_at: string; platform: string; status: string; content_preview: string }[]>("/seo/blog/scheduled"),
+
+  /** Batch-schedule calendar topics — creates or promotes draft→scheduled with a publish date. */
+  scheduleCalendarPosts: (items: { title: string; keywords: string[]; scheduled_at: string; topic?: string; week?: number; day?: string }[]) =>
+    api.post<{ ok: boolean; scheduled: number; results: { post_id: string; title: string; action: string }[] }>("/seo/blog/schedule-batch", { items }),
 
   /** Scrape a website (homepage + sub-pages) and use LLM to write rich content for all Settings fields. */
   scrapeWebsite: (url: string) =>
@@ -2122,6 +3175,87 @@ export const seoApi = {
         delivery_info?: string;
       };
     }>("/seo/scrape-website", { url }),
+
+  // SERP Rankings
+  getRankings: (keyword?: string, domain?: string, limit = 200) =>
+    api.get<{ rankings: SerpRankingEntry[] }>(
+      `/seo/serp/rankings?limit=${limit}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ""}${domain ? `&domain=${encodeURIComponent(domain)}` : ""}`
+    ),
+  getRankingTrends: (keyword: string, domain: string, days = 30) =>
+    api.get<{ trends: { date: string; position: number | null; checks: number }[]; keyword: string; domain: string }>(
+      `/seo/serp/rankings/trends?keyword=${encodeURIComponent(keyword)}&domain=${encodeURIComponent(domain)}&days=${days}`
+    ),
+  checkRanking: (keyword: string, domain: string, country?: string, article_url?: string, article_title?: string) =>
+    api.post<{ keyword: string; domain: string; position: number | null; article_url?: string; article_title?: string; country: string; checked_at: string; top_results: { pos: number; domain: string; url: string }[]; total_results: number }>(
+      "/seo/serp/check", { keyword, domain, country, article_url, article_title }
+    ),
+  bulkCheckRankings: (keywords: Partial<SeoKeyword>[], domain: string, country?: string) =>
+    api.post<{ results: { keyword: string; position: number | null; checked_at: string }[]; domain: string; checked: number; failed: number }>(
+      "/seo/serp/bulk-check", { keywords, domain, country }
+    ),
+  refreshAllRankings: (country?: string) =>
+    api.post<{ checked: number; failed: number; results: { keyword: string; position: number | null; checked_at: string }[] }>(
+      "/seo/serp/refresh-all", { country }
+    ),
+  backfillVolumes: () =>
+    api.post<{ updated: number }>("/seo/serp/backfill-volumes", {}),
+  deleteRanking: (keyword: string, domain: string) =>
+    api.delete<{ deleted: number }>(`/seo/serp/rankings?keyword=${encodeURIComponent(keyword)}&domain=${encodeURIComponent(domain)}`),
+
+  // AI Visibility Audit History
+  getAiAudits: (limit = 30) =>
+    api.get<{ audits: AiVisibilityAudit[] }>(`/seo/ai-audits?limit=${limit}`),
+
+  // AI-Powered Analysis
+  getGscAiAnalysis: (site_url: string, days = 28) =>
+    api.get<{
+      analysis: {
+        overall_health: "good" | "warning" | "critical";
+        health_reason: string;
+        summary: string;
+        wins: { title: string; detail: string; metric: string }[];
+        concerns: { title: string; detail: string; action: string }[];
+        opportunities: { title: string; action: string; estimated_impact: "low" | "medium" | "high" }[];
+        priority_actions: string[];
+      };
+      raw_data: { total_clicks: number; total_impressions: number; avg_ctr: number; avg_position: number };
+      period_days: number;
+    }>(`/seo/analytics/search-console/ai-analysis?site_url=${encodeURIComponent(site_url)}&days=${days}`),
+
+  getRankAiDiagnosis: () =>
+    api.get<{
+      movers: { keyword: string; current_position: number; previous_position: number; change: number; direction: string; last_checked: string }[];
+      stable_count: number;
+      improved_count: number;
+      declined_count: number;
+      diagnosis: {
+        overall_trend: string;
+        overall_summary: string;
+        diagnoses: { keyword: string; direction: string; change: number; diagnosis: string; action: string }[];
+        top_priority: string;
+      } | null;
+      overall_trend: string;
+      summary?: string;
+    }>("/seo/serp/ai-diagnosis"),
+
+  generateBlogSchema: (payload: { post_id?: string; title?: string; content?: string; keywords?: string[]; url?: string; author?: string }) =>
+    api.post<{ schemas: object[]; script_tags: string; count: number }>("/seo/blog/schema", payload),
+
+  getInternalLinkSuggestions: () =>
+    api.get<{
+      suggestions: {
+        from_post_id: string;
+        from_post_title: string;
+        to_post_id: string;
+        to_post_title: string;
+        anchor_text: string;
+        reason: string;
+        priority: "high" | "medium" | "low";
+        where_to_add: string;
+      }[];
+      summary: string;
+      posts_analyzed: number;
+    }>("/seo/blog/internal-links"),
 };
 
 // ── Zernio Live Ads ───────────────────────────────────────────────────────────
@@ -2288,6 +3422,38 @@ export interface SeoAgentConversationDetail extends SeoAgentConversation {
   messages: { role: "user" | "assistant"; content: string; tool_steps?: SeoAgentToolStep[]; ts: string }[];
 }
 
+export interface SeoBriefAction {
+  id: string;
+  priority: number;
+  type: "write_post" | "run_audit" | "research_keywords" | "check_rankings" | "fix_issue";
+  title: string;
+  reason: string;
+  effort: string;
+  keyword?: string | null;
+  url?: string | null;
+  agent_prompt: string;
+}
+
+export interface SeoBrief {
+  health_score: number;
+  health_grade: string;
+  status_summary: string;
+  wins: string[];
+  gaps: string[];
+  actions: SeoBriefAction[];
+  generated_at: string;
+  next_check: string;
+  data_snapshot: {
+    published_posts: number;
+    draft_posts: number;
+    keywords_tracked: number;
+    keywords_without_post: number;
+    audit_score: number | null;
+    days_since_audit: number | null;
+    rankings_tracked: number;
+  };
+}
+
 // ── Zilo Autoblogging ─────────────────────────────────────────────────────────
 
 export interface BlogStatus {
@@ -2320,6 +3486,9 @@ export interface KeywordTrackerRow {
   posts: { title: string; url: string; published_at: string }[];
   created_at: string;
   updated_at: string;
+  position: number | null;
+  position_checked_at: string | null;
+  ranked_domain: string | null;
 }
 
 export const blogApi = {
@@ -2339,7 +3508,7 @@ export const blogApi = {
   activate: (clientId: string) =>
     request<{ status: string }>(`/blog/activate/${clientId}`, { method: "PATCH" }),
   /** Publish a pre-written SEO post directly to the user's WordPress subsite. */
-  publishFromSeo: (body: { title: string; content: string; keywords?: string[]; excerpt?: string }) =>
+  publishFromSeo: (body: { title: string; content: string; keywords?: string[]; excerpt?: string; post_id?: string }) =>
     api.post<{ status: string; post_url: string; post_id: number; blog_url: string }>("/blog/publish-from-seo", body),
   /** Keyword tracker — save a keyword to the tracker table. */
   saveKeywordToTracker: (body: { keyword: string; search_volume?: number; difficulty?: string; intent?: string; content_idea?: string }) =>
@@ -2350,7 +3519,34 @@ export const blogApi = {
   /** Get all tracked keywords with their linked blog posts. */
   getKeywordTracker: () =>
     api.get<{ keywords: KeywordTrackerRow[] }>("/blog/keyword-tracker"),
+  /** Batch-fetch real search volumes from DataForSEO for keywords missing volumes. */
+  enrichVolumes: () =>
+    api.post<{ ok: boolean; updated: number; checked: number; message?: string }>("/blog/keyword-tracker/enrich-volumes", {}),
+  /** Delete a keyword from the tracker permanently. */
+  deleteKeyword: (keyword: string) =>
+    request<{ ok: boolean; message: string }>(`/blog/keyword-tracker/${encodeURIComponent(keyword)}`, { method: "DELETE" }),
+  /** Regenerate and upload a custom favicon for the user's WordPress subsite. */
+  refreshFavicon: () =>
+    api.post<{ status: string; message: string }>("/blog/refresh-favicon", {}),
 };
+
+export interface SeoCacheToolStat {
+  tool: string;
+  cached: number;
+  hits: number;
+  ttl_days: number;
+}
+
+export interface SeoCacheStats {
+  total_cached: number;
+  valid_cached: number;
+  expired_cached: number;
+  api_calls_saved: number;
+  oldest_entry: string | null;
+  newest_entry: string | null;
+  by_tool: SeoCacheToolStat[];
+  error?: string;
+}
 
 export const seoAgentApi = {
   chat: (message: string, conversation_id?: string, history?: { role: string; content: string }[]) =>
@@ -2367,4 +3563,20 @@ export const seoAgentApi = {
   deleteConversation: (id: string) => api.delete<{ ok: boolean }>(`/seo-agent/conversations/${id}`),
 
   status: () => api.get<{ available: boolean; tools: string[] }>("/seo-agent/status"),
+
+  brief: (refresh = false) =>
+    api.get<SeoBrief>(`/seo-agent/brief${refresh ? "?refresh=true" : ""}`),
+
+  executeAction: (agent_prompt: string, conversation_id?: string) =>
+    api.post<SeoAgentChatResponse>("/seo-agent/execute-action", {
+      agent_prompt,
+      conversation_id: conversation_id ?? null,
+    }),
+
+  cacheStats: () => api.get<SeoCacheStats>("/seo-agent/cache/stats"),
+
+  clearCache: (tool = "") =>
+    api.delete<{ ok: boolean; deleted: number }>(
+      `/seo-agent/cache${tool ? `?tool=${encodeURIComponent(tool)}` : ""}`
+    ),
 };

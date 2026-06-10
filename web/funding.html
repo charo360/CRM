@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Funding — AI Scout</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    /* ---- Alert Banner ---- */
+    .alert-banner {
+      background: linear-gradient(135deg, #ECFDF5 0%, #D1FAE5 100%);
+      border: 1px solid var(--gborder);
+      border-radius: var(--radius-lg);
+      padding: 16px 20px;
+      margin: 20px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .alert-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .alert-content {
+      flex: 1;
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .alert-content strong {
+      font-weight: 700;
+      color: var(--green);
+    }
+
+    /* ---- Funding List ---- */
+    .funding-list {
+      padding: 0 24px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ---- Funding Card ---- */
+    .funding-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 1fr 80px 120px 180px;
+      gap: 20px;
+      align-items: center;
+      transition: all 0.15s;
+    }
+
+    .funding-card:hover {
+      border-color: var(--border2);
+      box-shadow: var(--shadow-md);
+    }
+
+    /* ---- Card Content ---- */
+    .funding-content {
+      min-width: 0;
+    }
+
+    .funding-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .funding-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .funding-type-tag {
+      padding: 3px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .funding-type-tag.grant {
+      background: #FEF3C7;
+      color: #92400E;
+    }
+
+    .funding-type-tag.loan {
+      background: #DBEAFE;
+      color: #1E40AF;
+    }
+
+    .funding-type-tag.accelerator {
+      background: #E0E7FF;
+      color: #4338CA;
+    }
+
+    .funding-type-tag.vc {
+      background: #FCE7F3;
+      color: #9F1239;
+    }
+
+    .funding-meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .funding-desc {
+      font-size: 12px;
+      color: var(--text2);
+      line-height: 1.5;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    /* ---- Score Ring ---- */
+    .funding-score {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .score-ring {
+      position: relative;
+      width: 56px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .score-value {
+      position: absolute;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .score-label {
+      font-size: 10px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    /* ---- Deadline ---- */
+    .funding-deadline {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      text-align: center;
+    }
+
+    .deadline-value {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .deadline-label {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .deadline-status {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .deadline-value.urgent { color: var(--red); }
+    .deadline-value.warning { color: var(--amber); }
+    .deadline-value.info { color: var(--blue); }
+
+    /* ---- Actions ---- */
+    .funding-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .btn-apply {
+      width: 100%;
+      padding: 10px 16px;
+      border-radius: var(--radius);
+      border: none;
+      background: var(--green);
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.12s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .btn-apply:hover {
+      background: #047857;
+    }
+
+    .btn-apply.secondary {
+      background: var(--blue);
+    }
+
+    .btn-apply.secondary:hover {
+      background: #1D4ED8;
+    }
+
+    .action-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn-save {
+      flex: 1;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.12s;
+    }
+
+    .btn-save:hover {
+      background: var(--surface2);
+      color: var(--text);
+      border-color: var(--border2);
+    }
+
+    .btn-save.saved {
+      background: var(--gdim);
+      color: var(--green);
+      border-color: var(--gborder);
+    }
+
+    /* ---- Empty State ---- */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px;
+      color: var(--muted);
+      gap: 8px;
+      text-align: center;
+    }
+
+    .empty-state .es-icon {
+      font-size: 48px;
+      margin-bottom: 8px;
+      opacity: 0.3;
+    }
+
+    .empty-state .es-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <a class="brand" href="#">
+      <div class="brand-dot"></div>
+      <span class="brand-name">AI Scout</span>
+    </a>
+    <div class="top-chips">
+      <div class="chip"><strong>302</strong>&nbsp;scanned</div>
+      <div class="chip"><strong>3</strong>&nbsp;agents live</div>
+      <div class="chip"><strong>KES 0</strong>&nbsp;spent</div>
+      <div class="live-badge"><div class="live-dot"></div> LIVE</div>
+    </div>
+    <div class="avatar">SM</div>
+  </header>
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="nav-section">Leads</div>
+    <a class="nav-item" href="hunt.html">
+      <i class="ti ti-target nav-icon"></i> Hunt
+      <span class="nav-badge red">7</span>
+    </a>
+    <a class="nav-item" href="pulse.html">
+      <i class="ti ti-radar nav-icon"></i> Pulse
+    </a>
+    <div class="nav-section">Intelligence</div>
+    <a class="nav-item active" href="funding.html">
+      <i class="ti ti-moneybag nav-icon"></i> Funding
+      <span class="nav-badge grn">2</span>
+    </a>
+    <a class="nav-item" href="radar.html">
+      <i class="ti ti-trending-up nav-icon"></i> Market radar
+      <span class="nav-badge blu">5</span>
+    </a>
+    <div class="nav-section">Automation</div>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-adjustments-horizontal nav-icon"></i> Scouts setup
+    </a>
+    <a class="nav-item" href="setup.html">
+      <i class="ti ti-robot nav-icon"></i> Autopilot
+    </a>
+    <div class="sidebar-bottom">
+      <a class="nav-item" href="setup.html">
+        <i class="ti ti-settings nav-icon"></i> Settings
+      </a>
+    </div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+    <!-- Page header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">Funding opportunities</div>
+        <div class="page-subtitle">AI-matched grants, VCs and accelerators for your business</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn">
+          <i class="ti ti-refresh"></i> Refresh
+        </button>
+        <button class="btn">
+          <i class="ti ti-filter"></i> Filter
+        </button>
+      </div>
+    </div>
+
+    <!-- Main scroll -->
+    <div class="main-scroll">
+      <!-- Alert Banner -->
+      <div class="alert-banner">
+        <div class="alert-icon">🎯</div>
+        <div class="alert-content">
+          <strong>2 strong matches this week.</strong> KCB SME Grant closes in 11 days — AI rates your fit at 9.1/10. Apply before the deadline.
+        </div>
+      </div>
+
+      <!-- Funding List -->
+      <div class="funding-list">
+
+        <!-- Funding 1 — Grant -->
+        <div class="funding-card">
+          <div class="funding-content">
+            <div class="funding-header">
+              <div class="funding-title">KCB SME Business Grant 2025</div>
+              <div class="funding-type-tag grant">Grant</div>
+            </div>
+            <div class="funding-meta">KCB Foundation · Kenya · Up to KES 1,000,000</div>
+            <div class="funding-desc">
+              Supporting small businesses in manufacturing, trade and services. Priority for businesses with 2+ employees and 1+ year track record. Furniture and home goods sector eligible.
+            </div>
+          </div>
+
+          <div class="funding-score">
+            <div class="score-ring">
+              <svg width="56" height="56" viewBox="0 0 56 56">
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#A7F3D0" stroke-width="4"/>
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#059669" stroke-width="4"
+                  stroke-dasharray="151" stroke-dashoffset="8" stroke-linecap="round"
+                  style="transform: rotate(-90deg); transform-origin: center;"/>
+              </svg>
+              <div class="score-value" style="color:#059669">9.1</div>
+            </div>
+            <div class="score-label">AI match</div>
+          </div>
+
+          <div class="funding-deadline">
+            <div class="deadline-value urgent">11 days</div>
+            <div class="deadline-label">Deadline left</div>
+          </div>
+
+          <div class="funding-actions">
+            <button class="btn-apply" onclick="alert('Opening application...')">
+              Apply now →
+            </button>
+            <div class="action-row">
+              <button class="btn-save" onclick="toggleSave(this)">Save for later</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Funding 2 — Loan -->
+        <div class="funding-card">
+          <div class="funding-content">
+            <div class="funding-header">
+              <div class="funding-title">Equity Bank Biashara Loan</div>
+              <div class="funding-type-tag loan">Loan</div>
+            </div>
+            <div class="funding-meta">Equity Bank · Kenya · KES 50K – 5M</div>
+            <div class="funding-desc">
+              Low-interest SME financing for inventory and equipment. No collateral required under KES 600K. Fast approval within 5 working days for qualifying businesses.
+            </div>
+          </div>
+
+          <div class="funding-score">
+            <div class="score-ring">
+              <svg width="56" height="56" viewBox="0 0 56 56">
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#BFDBFE" stroke-width="4"/>
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#2563EB" stroke-width="4"
+                  stroke-dasharray="151" stroke-dashoffset="18" stroke-linecap="round"
+                  style="transform: rotate(-90deg); transform-origin: center;"/>
+              </svg>
+              <div class="score-value" style="color:#2563EB">8.4</div>
+            </div>
+            <div class="score-label">AI match</div>
+          </div>
+
+          <div class="funding-deadline">
+            <div class="deadline-value info">Rolling</div>
+            <div class="deadline-label">Apply anytime</div>
+          </div>
+
+          <div class="funding-actions">
+            <button class="btn-apply secondary" onclick="alert('Opening application...')">
+              Apply now →
+            </button>
+            <div class="action-row">
+              <button class="btn-save" onclick="toggleSave(this)">Save for later</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Funding 3 — Accelerator -->
+        <div class="funding-card">
+          <div class="funding-content">
+            <div class="funding-header">
+              <div class="funding-title">Nairobi Innovation Hub Accelerator</div>
+              <div class="funding-type-tag accelerator">Accelerator</div>
+            </div>
+            <div class="funding-meta">NiHub · Nairobi · 6-month programme</div>
+            <div class="funding-desc">
+              Business acceleration for tech-enabled SMEs in East Africa. Includes mentorship, workspace, and investor connections. Accepts businesses with a digital product component.
+            </div>
+          </div>
+
+          <div class="funding-score">
+            <div class="score-ring">
+              <svg width="56" height="56" viewBox="0 0 56 56">
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#C7D2FE" stroke-width="4"/>
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#6366F1" stroke-width="4"
+                  stroke-dasharray="151" stroke-dashoffset="57" stroke-linecap="round"
+                  style="transform: rotate(-90deg); transform-origin: center;"/>
+              </svg>
+              <div class="score-value" style="color:#6366F1">6.3</div>
+            </div>
+            <div class="score-label">AI match</div>
+          </div>
+
+          <div class="funding-deadline">
+            <div class="deadline-value warning">32 days</div>
+            <div class="deadline-label">Deadline left</div>
+          </div>
+
+          <div class="funding-actions">
+            <button class="btn-apply secondary" onclick="alert('Opening application...')">
+              Learn more →
+            </button>
+            <div class="action-row">
+              <button class="btn-save" onclick="toggleSave(this)">Save for later</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Funding 4 — VC -->
+        <div class="funding-card">
+          <div class="funding-content">
+            <div class="funding-header">
+              <div class="funding-title">Africa Business Angels Network</div>
+              <div class="funding-type-tag vc">VC / Angel</div>
+            </div>
+            <div class="funding-meta">ABAN · Pan-Africa · USD 25K – 250K</div>
+            <div class="funding-desc">
+              Early-stage investment for African startups with regional growth ambition. Looking for scalable models with evidence of traction and clear path to profitability.
+            </div>
+          </div>
+
+          <div class="funding-score">
+            <div class="score-ring">
+              <svg width="56" height="56" viewBox="0 0 56 56">
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#E5E7EB" stroke-width="4"/>
+                <circle cx="28" cy="28" r="24" fill="none" stroke="#9CA3AF" stroke-width="4"
+                  stroke-dasharray="151" stroke-dashoffset="98" stroke-linecap="round"
+                  style="transform: rotate(-90deg); transform-origin: center;"/>
+              </svg>
+              <div class="score-value" style="color:#6B7280">3.5</div>
+            </div>
+            <div class="score-label">AI match</div>
+          </div>
+
+          <div class="funding-deadline">
+            <div class="deadline-value">Open</div>
+            <div class="deadline-label">Rolling intake</div>
+          </div>
+
+          <div class="funding-actions">
+            <button class="btn-apply secondary" onclick="alert('Opening details...')">
+              View details
+            </button>
+            <div class="action-row">
+              <button class="btn-save" onclick="toggleSave(this)">Save for later</button>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /funding-list -->
+    </div><!-- /main-scroll -->
+  </main>
+
+</div><!-- /shell -->
+
+<script src="api-client.js"></script>
+<script>
+  let fundingData = [];
+  let savedItems = new Set();
+
+  // Load funding on page load
+  document.addEventListener('DOMContentLoaded', loadFunding);
+
+  async function loadFunding() {
+    try {
+      const data = await scoutApi.getOpportunities();
+      fundingData = (data.opportunities || []).filter(o => o.kind === 'funding');
+      renderFunding();
+    } catch (error) {
+      console.error('Failed to load funding:', error);
+      showToast(error.message, 'error');
+    }
+  }
+
+  function renderFunding() {
+    const container = document.querySelector('.funding-list');
+    if (!container) return;
+    
+    if (fundingData.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="es-icon">💰</div>
+          <div class="es-title">No funding opportunities</div>
+          <div>Check back later for new matches</div>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = fundingData.map(item => {
+      const score = item.score || 5;
+      const scoreColor = score >= 8 ? '#059669' : score >= 6 ? '#2563EB' : '#6B7280';
+      const scoreBg = score >= 8 ? '#A7F3D0' : score >= 6 ? '#BFDBFE' : '#E5E7EB';
+      const circumference = 151;
+      const offset = circumference * (1 - score / 10);
+      
+      const typeTag = item.metadata?.type || 'grant';
+      const typeClass = typeTag.toLowerCase();
+      
+      const deadline = item.metadata?.deadline || 'Rolling';
+      const deadlineClass = deadline.includes('day') && parseInt(deadline) < 15 ? 'urgent' : 
+                            deadline.includes('day') && parseInt(deadline) < 40 ? 'warning' : 'info';
+      
+      return `
+        <div class="funding-card">
+          <div class="funding-content">
+            <div class="funding-header">
+              <div class="funding-title">${item.title}</div>
+              <div class="funding-type-tag ${typeClass}">${typeTag}</div>
+            </div>
+            <div class="funding-meta">${item.metadata?.organization || 'Unknown'} · ${item.metadata?.location || 'Kenya'} · ${item.metadata?.amount || 'TBD'}</div>
+            <div class="funding-desc">${item.snippet || item.detail || 'No description available'}</div>
+          </div>
+
+          <div class="funding-score">
+            <div class="score-ring">
+              <svg width="56" height="56" viewBox="0 0 56 56">
+                <circle cx="28" cy="28" r="24" fill="none" stroke="${scoreBg}" stroke-width="4"/>
+                <circle cx="28" cy="28" r="24" fill="none" stroke="${scoreColor}" stroke-width="4"
+                  stroke-dasharray="151" stroke-dashoffset="${offset}" stroke-linecap="round"
+                  style="transform: rotate(-90deg); transform-origin: center;"/>
+              </svg>
+              <div class="score-value" style="color:${scoreColor}">${score.toFixed(1)}</div>
+            </div>
+            <div class="score-label">AI match</div>
+          </div>
+
+          <div class="funding-deadline">
+            <div class="deadline-value ${deadlineClass}">${deadline}</div>
+            <div class="deadline-label">${deadline === 'Rolling' ? 'Apply anytime' : 'Deadline left'}</div>
+          </div>
+
+          <div class="funding-actions">
+            <button class="btn-apply" onclick="window.open('${item.url || '#'}', '_blank')">
+              Apply now →
+            </button>
+            <div class="action-row">
+              <button class="btn-save" onclick="toggleSave('${item._id}', this)">
+                ${savedItems.has(item._id) ? '✓ Saved' : 'Save for later'}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function toggleSave(id, btn) {
+    if (savedItems.has(id)) {
+      savedItems.delete(id);
+      btn.classList.remove('saved');
+      btn.textContent = 'Save for later';
+    } else {
+      savedItems.add(id);
+      btn.classList.add('saved');
+      btn.textContent = '✓ Saved';
+    }
+  }
+
+  // Auto-refresh every 5 minutes
+  setInterval(loadFunding, 300000);
+</script>
+</body>
+</html>

@@ -247,38 +247,50 @@ def _get_forms_for_industry(industry: str) -> List[Dict[str, Any]]:
 # ── WPForms field type mapper ──────────────────────────────────────────────────
 
 def _wpforms_field(idx: int, field: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert our simple field definition to WPForms REST API field format."""
+    """Convert our simple field definition to the WPForms internal JSON format.
+
+    WPForms Lite reads post_content as JSON when rendering [wpforms id="X"].
+    Critical rules:
+    - Field IDs must be strings matching the outer dict key.
+    - 'name' type is a compound WPForms type that needs sub-format — use 'text' instead.
+    - submit is NOT a field; it lives in settings.submit_text.
+    - choices must be a dict keyed by string integers.
+    """
     field_type = field["type"]
+    # WPForms 'name' type renders as first/last sub-fields which require extra config.
+    # A plain 'text' field is simpler and guaranteed to work with WPForms Lite.
+    if field_type == "name":
+        field_type = "text"
+
     base: Dict[str, Any] = {
-        "id": idx,
+        "id": str(idx),
         "type": field_type,
         "label": field["label"],
         "required": "1" if field.get("required") else "0",
+        "size": "medium",
+        "label_hide": "0",
+        "sublabel_hide": "0",
+        "placeholder": "",
     }
-    if field_type == "select" and "choices" in field:
-        base["choices"] = {str(i): {"label": c, "value": c} for i, c in enumerate(field["choices"], 1)}
-    elif field_type in ("radio", "checkbox") and "choices" in field:
-        base["choices"] = {str(i): {"label": c, "value": c} for i, c in enumerate(field["choices"], 1)}
+    if field_type in ("select", "radio", "checkbox") and "choices" in field:
+        base["choices"] = {
+            str(i): {"label": c, "value": c, "selected": "0"}
+            for i, c in enumerate(field["choices"], 1)
+        }
     return base
 
 
 def _build_wpforms_payload(form_def: Dict[str, Any], business_name: str) -> Dict[str, Any]:
+    # Build fields dict — submit button belongs in settings, NOT here
     fields = {str(i): _wpforms_field(i, f) for i, f in enumerate(form_def["fields"], 1)}
-    # Add hidden submit button field (WPForms requires it)
-    submit_id = len(fields) + 1
-    fields[str(submit_id)] = {
-        "id": submit_id,
-        "type": "submit",
-        "label": "Send Message",
-    }
     return {
-        "title": form_def["name"],
         "fields": fields,
         "settings": {
             "form_title": form_def["name"],
             "form_desc": "",
             "submit_text": "Send Message",
             "submit_text_processing": "Sending…",
+            "ajax_submit": "1",
             "notification_enable": "1",
             "notifications": {
                 "1": {
@@ -287,11 +299,15 @@ def _build_wpforms_payload(form_def: Dict[str, Any], business_name: str) -> Dict
                     "email": "{admin_email}",
                     "subject": f"New {form_def['name']} from {business_name}",
                     "sender_name": business_name,
+                    "sender_address": "{admin_email}",
                     "message": "{all_fields}",
                 }
             },
             "confirmation_type": "message",
-            "confirmation_message": f"<p>Thank you! We've received your message and will get back to you shortly via WhatsApp or email.</p>",
+            "confirmation_message": "<p>Thank you! We've received your message and will get back to you shortly via WhatsApp or email.</p>",
+        },
+        "meta": {
+            "template": "simple-contact-form-template",
         },
     }
 

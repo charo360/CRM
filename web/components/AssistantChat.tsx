@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
+  api,
   assistantApi,
   teamApi,
   customersApi,
@@ -19,6 +21,7 @@ import { getAgentPersona, personaBadgeLabel, personaHandoffLine, personaThinking
 import {
   Loader2,
   Send,
+  Square,
   Wrench,
   AlertTriangle,
   CheckCircle2,
@@ -35,20 +38,47 @@ import {
   PencilLine,
   UserPlus,
   RefreshCw,
+  Eye,
+  Mail,
+  Save,
+  BookTemplate,
+  ChevronUp,
+  ChevronDown,
+  Trash2,
+  Plus,
+  Menu,
+  Check,
+  Copy,
+  ExternalLink,
 } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import { TemplateGallery } from "@/components/TemplateGallery";
 import { getBusinessId, getUser } from "@/lib/auth";
-import { downloadAsset } from "@/lib/utils";
+import { downloadAsset, resolveMediaUrl } from "@/lib/utils";
+import {
+  clonePlanSlides,
+  isPlanSuperseded,
+  normalizeSlidesForGeneration,
+  planAwaitingApproval,
+  slidesPlanDirty,
+  type PlanSlide,
+} from "@/lib/presentationLoop";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
 
 interface Props {
   conversationId?: string | null;
   /** Fired when a new conversation id is created, or pass `null` when the thread is reset (e.g. agent switch). */
   onConversationChange?: (id: string | null) => void;
   compact?: boolean;
+  /** Hide the built-in header when the parent shell provides its own chrome. */
+  hideHeader?: boolean;
+  /** Close handler for floating / mobile shells. */
+  onClose?: () => void;
+  /** Open the conversation history drawer (full-page mobile layout). */
+  onOpenHistory?: () => void;
   /** Pre-fill the message input on mount (e.g. from a template clone). */
   initialMessage?: string;
 }
@@ -56,6 +86,11 @@ interface Props {
 
 /** Maps raw tool names → friendly activity labels shown during streaming and in steps trail */
 const TOOL_LABELS: Record<string, string> = {
+  starting_request:     "Starting request…",
+  loading_context:      "Loading context…",
+  routing_request:      "Choosing specialist…",
+  planning_specialist:  "Planning next steps…",
+  drafting_reply:       "Writing reply…",
   // Customers
   list_customers:        "Checking customers…",
   get_customer:          "Looking up customer…",
@@ -88,6 +123,7 @@ const TOOL_LABELS: Record<string, string> = {
   web_search:            "Searching the web…",
   // Documents
   create_business_document: "Designing document…",
+  plan_business_document:   "Building document draft…",
   create_presentation:        "Building presentation…",
   browse_presentation_themes: "Browse Presentation Themes",
   generate_document:     "Generating document…",
@@ -110,6 +146,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_owner_info:        "Getting business info…",
   list_design_library_assets: "Loading design assets…",
   // Shopify
+  shopify_partner_create_store: "Creating Shopify store…",
   list_shopify_orders:   "Fetching Shopify orders…",
   list_shopify_products: "Fetching Shopify products…",
   get_shopify_analytics: "Pulling Shopify analytics…",
@@ -243,7 +280,7 @@ const BASE_PROMPTS = [
   "Schedule a WhatsApp check-in with my top 5 customers",
 ];
 
-export default function AssistantChat({ conversationId, onConversationChange, compact, initialMessage }: Props) {
+export default function AssistantChat({ conversationId, onConversationChange, compact, hideHeader, onClose, onOpenHistory, initialMessage }: Props) {
   const [models, setModels] = useState<AssistantModel[]>([]);
   const [modelId, setModelId] = useState<string>("");
   /** Last resolved agent id (for specialist persona badge). */
@@ -272,11 +309,25 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   const [shareBusy, setShareBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [documents, setDocuments] = useState<AssistantDocument[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState<{ name: string; progress: number }[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamReaderRef = useRef<ReadableStreamDefaultReader<string> | null>(null);
+  // AbortController for the active chatStream fetch — aborting this kills the network request.
+  const abortControllerRef = useRef<AbortController | null>(null);
+  // Set to true when the user intentionally stops generation so send() knows not to show an error.
+  const stopRequestedRef = useRef(false);
+  // Stores the message currently being streamed so stopGeneration can restore it to the input.
+  const currentMsgRef = useRef<string>("");
+  // Ref-based sending guard to prevent race conditions with multiple rapid clicks.
+  const sendingRef = useRef(false);
+  // Timestamp of last stop click — used to block accidental re-sends within 500ms.
+  const lastStopAtRef = useRef(0);
+  // When this component creates a new conversation itself, the parent echoes the id
+  // back as `conversationId` prop. We must NOT reload the conversation in that case
+  // (messages are already in state) — doing so causes the visible blink/flash.
+  const selfCreatedConvIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     assistantApi
@@ -348,6 +399,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
 
   const loadConversation = useCallback(async (id: string) => {
     setLoadingConv(true);
+    setError(null);
     try {
       const conv: AssistantConversation = await assistantApi.getConversation(id);
       const msgs = conv.messages || [];
@@ -359,12 +411,21 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       else setActiveAgent("general");
       const docs = await assistantApi.listDocuments(id).catch(() => ({ documents: [] }));
       setDocuments(docs.documents || []);
-    } catch {
-      setError("Could not load that conversation");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      const gone = /404|not found/i.test(msg);
+      if (gone) {
+        setConvId(null);
+        setMessages([]);
+        setDocuments([]);
+        onConversationChange?.(null);
+      } else {
+        setError(msg || "Could not load that conversation");
+      }
     } finally {
       setLoadingConv(false);
     }
-  }, []);
+  }, [onConversationChange]);
 
   useEffect(() => {
     if (!shareOpen) return;
@@ -394,23 +455,44 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     }
   }
 
+  const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+
   async function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
     e.target.value = "";
     setError(null);
-    setUploading(true);
+
+    // Client-side size check
+    const tooBig = files.filter((f) => f.size > MAX_FILE_BYTES);
+    if (tooBig.length) {
+      setError(`File${tooBig.length > 1 ? "s" : ""} too large (max 50 MB): ${tooBig.map((f) => f.name).join(", ")}`);
+      return;
+    }
+
+    // Register a progress entry for each file
+    setUploadingFiles(files.map((f) => ({ name: f.name, progress: 0 })));
     try {
-      const res = await assistantApi.uploadDocument(file, convId);
-      if (!convId) {
-        setConvId(res.conversation_id);
-        onConversationChange?.(res.conversation_id);
+      const results = await Promise.all(
+        files.map((f, i) =>
+          assistantApi.uploadDocumentWithProgress(f, convId, (pct) =>
+            setUploadingFiles((prev) =>
+              prev.map((u, j) => (j === i ? { ...u, progress: pct } : u))
+            )
+          )
+        )
+      );
+      const firstNew = results[0];
+      if (!convId && firstNew) {
+        selfCreatedConvIdRef.current = firstNew.conversation_id;
+        setConvId(firstNew.conversation_id);
+        onConversationChange?.(firstNew.conversation_id);
       }
-      setDocuments((prev) => [...prev, res.document]);
+      setDocuments((prev) => [...prev, ...results.map((r) => r.document)]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
-      setUploading(false);
+      setUploadingFiles([]);
     }
   }
 
@@ -428,6 +510,13 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   // prevent loading when the component remounts with the same id.
   useEffect(() => {
     if (!conversationId) return;
+    // If this component just created the conversation, the parent reflects the id
+    // back as a prop change. Skip the reload — messages are already in state.
+    if (conversationId === selfCreatedConvIdRef.current) {
+      selfCreatedConvIdRef.current = null;
+      setConvId(conversationId);
+      return;
+    }
     setConvId(conversationId);
     void loadConversation(conversationId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -437,24 +526,61 @@ export default function AssistantChat({ conversationId, onConversationChange, co
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, sending]);
 
+  function stopGeneration() {
+    // Guard against double-clicking
+    if (stopRequestedRef.current) return;
+    
+    stopRequestedRef.current = true;
+    lastStopAtRef.current = Date.now();
+    // Do NOT reset sendingRef here — only finally() should do that.
+    
+    // Cancel the stream reader first — this drains any buffered chunks and
+    // causes the next read() in send() to return {done:true}, breaking the loop.
+    try { streamReaderRef.current?.cancel(); } catch { /* ignore */ }
+    
+    // Also abort the underlying fetch to stop the network request.
+    try { abortControllerRef.current?.abort(); } catch { /* ignore */ }
+    
+    // Use flushSync to force React to process these state updates SYNCHRONOUSLY
+    // so the UI reflects the stopped state before any JS continues.
+    const msg = currentMsgRef.current;
+    flushSync(() => {
+      setInput(msg);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        return last?.role === "user" && last.content === msg ? prev.slice(0, -1) : prev;
+      });
+      setSending(false);
+      setStreamingText("");
+      setStreamingTools([]);
+      setStreamingAgentId(null);
+      setPendingConfirm(null);
+    });
+  }
+
   async function send(messageOverride?: string, autoApprove = false) {
     const msg = (messageOverride ?? input).trim();
-    if (!msg || sending) return;
+    const msSinceStop = Date.now() - lastStopAtRef.current;
+    if (!msg || sending || sendingRef.current || msSinceStop < 500) return;
+    sendingRef.current = true;
+    currentMsgRef.current = msg;
+    const attachedDocs = documents.length ? [...documents] : undefined;
     setInput("");
     setError(null);
     setSending(true);
+    setDocuments([]);
+    stopRequestedRef.current = false;
     setStreamingText("");
     setStreamingTools([]);
     setStreamingAgentId(null);
 
     // Optimistic user bubble
-    setMessages((prev) => [...prev, { role: "user", content: msg }]);
+    setMessages((prev) => [...prev, { role: "user", content: msg, documents: attachedDocs }]);
 
-    // Cancel any previous stream
-    if (streamReaderRef.current) {
-      try { await streamReaderRef.current.cancel(); } catch { /* ignore */ }
-      streamReaderRef.current = null;
-    }
+    // Abort any in-flight request before starting a new one
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       const stream = assistantApi.chatStream({
@@ -462,6 +588,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         conversation_id: convId,
         model: modelId || undefined,
         auto_approve: autoApprove,
+        signal: abortController.signal,
       });
       const reader = stream.getReader();
       streamReaderRef.current = reader;
@@ -470,8 +597,10 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       let donePayload: AssistantChatResponse | null = null;
 
       while (true) {
+        if (stopRequestedRef.current) break;
         const { done, value } = await reader.read();
         if (done) break;
+        if (stopRequestedRef.current) break;
         try {
           const event = JSON.parse(value) as {
             type: string;
@@ -496,7 +625,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             setStreamingTools((prev) => [...prev, event.tool ?? ""]);
           } else if (event.type === "token") {
             fullReply += event.text ?? "";
-            setStreamingText(fullReply);
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
           } else if (event.type === "done") {
             donePayload = {
               conversation_id: event.conversation_id ?? convId ?? "",
@@ -516,8 +645,13 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         }
       }
 
-      if (donePayload) {
+      if (stopRequestedRef.current) {
+        // UI already restored by stopGeneration() — nothing to do here.
+      } else if (donePayload) {
         if (!convId) {
+          // Mark as self-created BEFORE calling onConversationChange so the
+          // useEffect above can recognise the echo-back and skip loadConversation.
+          selfCreatedConvIdRef.current = donePayload.conversation_id;
           setConvId(donePayload.conversation_id);
           onConversationChange?.(donePayload.conversation_id);
         }
@@ -538,14 +672,484 @@ export default function AssistantChat({ conversationId, onConversationChange, co
         setMessages((prev) => [...prev, { role: "assistant", content: fullReply }]);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send");
-      setMessages((prev) => prev.slice(0, -1));
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to send");
+        // Remove the optimistic user bubble on real errors.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          return last?.role === "user" && last.content === msg ? prev.slice(0, -1) : prev;
+        });
+      }
+      // If stopRequestedRef is true, UI was already restored by stopGeneration() — skip.
     } finally {
-      setSending(false);
-      setStreamingText("");
-      setStreamingTools([]);
-      setStreamingAgentId(null);
+      // If user stopped generation, stopGeneration() already cleaned up the UI.
+      // Don't undo it or re-enable the send button.
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      // Always clean up refs
       streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
+    }
+  }
+
+  async function generatePresentationFromPlan(
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+    edited: boolean,
+  ) {
+    if (sending || sendingRef.current) return;
+    sendingRef.current = true;
+    setError(null);
+    setSending(true);
+    stopRequestedRef.current = false;
+    setStreamingText("");
+    setStreamingTools(["create_visual_presentation"]);
+    setStreamingAgentId("document");
+
+    const userLabel = edited
+      ? "✓ Approved edited slide plan — generate the presentation now."
+      : "✓ Approved slide plan — generate the presentation now.";
+
+    setMessages((prev) => [...prev, { role: "user", content: userLabel }]);
+
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    const payload = normalizeSlidesForGeneration(slides);
+
+    try {
+      const stream = assistantApi.generatePresentationStream({
+        topic,
+        slides: payload,
+        conversation_id: convId,
+        message_index: messageIndex,
+        edited,
+        signal: abortController.signal,
+      });
+      const reader = stream.getReader();
+      streamReaderRef.current = reader;
+
+      let fullReply = "";
+      let donePayload: AssistantChatResponse | null = null;
+
+      while (true) {
+        if (stopRequestedRef.current) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (stopRequestedRef.current) break;
+        try {
+          const event = JSON.parse(value) as {
+            type: string;
+            text?: string;
+            tool?: string;
+            agent?: string;
+            reply?: string;
+            steps?: AssistantStep[];
+            conversation_id?: string;
+            message?: string;
+            active_agent?: string;
+            active_agent_label?: string;
+          };
+
+          if (event.type === "thinking") {
+            if (event.agent) setStreamingAgentId(event.agent);
+          } else if (event.type === "tool_start") {
+            setStreamingTools((prev) => [...prev, event.tool ?? ""]);
+          } else if (event.type === "token") {
+            fullReply += event.text ?? "";
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
+          } else if (event.type === "done") {
+            donePayload = {
+              conversation_id: event.conversation_id ?? convId ?? "",
+              reply: event.reply ?? fullReply,
+              steps: event.steps ?? [],
+              model: null,
+              needs_confirmation: null,
+              active_agent: event.active_agent ?? "document",
+              active_agent_label: event.active_agent_label ?? "Document Writer",
+            };
+          } else if (event.type === "error") {
+            throw new Error(event.message ?? "Stream error");
+          }
+        } catch {
+          /* skip non-JSON */
+        }
+      }
+
+      if (!stopRequestedRef.current && donePayload) {
+        if (!convId) {
+          selfCreatedConvIdRef.current = donePayload.conversation_id;
+          setConvId(donePayload.conversation_id);
+          onConversationChange?.(donePayload.conversation_id);
+        }
+        if (donePayload.active_agent) setActiveAgent(donePayload.active_agent);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: donePayload!.reply,
+            steps: donePayload!.steps,
+            agent: donePayload!.active_agent,
+          },
+        ]);
+      } else if (!stopRequestedRef.current && fullReply) {
+        setMessages((prev) => [...prev, { role: "assistant", content: fullReply, agent: "document" }]);
+      }
+    } catch (e) {
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to generate presentation");
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          return last?.role === "user" && last.content === userLabel ? prev.slice(0, -1) : prev;
+        });
+      }
+    } finally {
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
+    }
+  }
+
+  async function regeneratePresentationSlide(
+    messageIndex: number,
+    slideIndex: number,
+    instruction: string,
+    slides: Record<string, unknown>[],
+    imageUrls: string[],
+    topic: string,
+    textEdited: boolean,
+  ) {
+    if (sending || sendingRef.current || !convId) return;
+    sendingRef.current = true;
+    setError(null);
+    setSending(true);
+    stopRequestedRef.current = false;
+    setStreamingText("");
+    setStreamingTools(["regenerate_slide"]);
+    setStreamingAgentId("document");
+
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const stream = assistantApi.regeneratePresentationSlideStream({
+        conversation_id: convId,
+        message_index: messageIndex,
+        slide_index: slideIndex,
+        instruction,
+        slides,
+        image_urls: imageUrls,
+        topic,
+        text_edited: textEdited,
+        signal: abortController.signal,
+      });
+      const reader = stream.getReader();
+      streamReaderRef.current = reader;
+
+      let fullReply = "";
+      let donePayload: {
+        reply?: string;
+        steps?: AssistantStep[];
+        message_index?: number;
+      } | null = null;
+
+      while (true) {
+        if (stopRequestedRef.current) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (stopRequestedRef.current) break;
+        try {
+          const event = JSON.parse(value) as {
+            type: string;
+            text?: string;
+            reply?: string;
+            steps?: AssistantStep[];
+            message_index?: number;
+            message?: string;
+          };
+
+          if (event.type === "token") {
+            fullReply += event.text ?? "";
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
+          } else if (event.type === "done") {
+            donePayload = event;
+          } else if (event.type === "error") {
+            throw new Error(event.message ?? "Stream error");
+          }
+        } catch {
+          /* skip non-JSON */
+        }
+      }
+
+      if (!stopRequestedRef.current && donePayload?.steps?.length) {
+        const idx = donePayload.message_index ?? messageIndex;
+        setMessages((prev) =>
+          prev.map((m, i) =>
+            i === idx
+              ? {
+                  ...m,
+                  content: donePayload!.reply ?? m.content,
+                  steps: donePayload!.steps,
+                  agent: m.agent ?? "document",
+                }
+              : m,
+          ),
+        );
+        toast.success(`Slide ${slideIndex + 1} updated`);
+      } else if (!stopRequestedRef.current && donePayload?.reply) {
+        toast.success(donePayload.reply.replace(/\*\*/g, "").split("\n")[0]);
+      }
+    } catch (e) {
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to regenerate slide");
+        toast.error(e instanceof Error ? e.message : "Failed to regenerate slide");
+      }
+    } finally {
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
+    }
+  }
+
+  async function savePresentationPlan(
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+  ): Promise<boolean> {
+    if (!convId) {
+      toast.error("Conversation not ready — wait a moment and try again.");
+      return false;
+    }
+    try {
+      const payload = normalizeSlidesForGeneration(slides);
+      const res = await assistantApi.updatePresentationPlan({
+        conversation_id: convId,
+        message_index: messageIndex,
+        topic,
+        slides: payload,
+      });
+      setMessages((prev) => {
+        const msg = prev[messageIndex];
+        if (!msg?.steps) return prev;
+        const newSteps = msg.steps.map((s) => {
+          if (s.tool !== "plan_visual_presentation") return s;
+          const result = s.result as Record<string, unknown> | undefined;
+          if (!result?.plan_ready) return s;
+          return {
+            ...s,
+            result: {
+              ...result,
+              slides: res.slides,
+              topic: res.topic ?? topic,
+              user_edited: true,
+              saved_at: res.saved_at,
+            },
+          };
+        });
+        const next = [...prev];
+        next[messageIndex] = { ...msg, steps: newSteps };
+        return next;
+      });
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not save plan");
+      return false;
+    }
+  }
+
+  async function generateDocumentFromPlan(
+    messageIndex: number,
+    title: string,
+    bodyMarkdown: string,
+    contentMd: string,
+    docType: string,
+    edited: boolean,
+  ) {
+    if (sending || sendingRef.current) return;
+    sendingRef.current = true;
+    setError(null);
+    setSending(true);
+    stopRequestedRef.current = false;
+    setStreamingText("");
+    setStreamingTools(["create_business_document"]);
+    setStreamingAgentId("document");
+
+    const userLabel = edited
+      ? "✓ Approved edited document — export PDF now."
+      : "✓ Approved document draft — export PDF now.";
+    setMessages((prev) => [...prev, { role: "user", content: userLabel }]);
+
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const stream = assistantApi.generateDocumentStream({
+        title,
+        body_markdown: bodyMarkdown,
+        content_md: contentMd,
+        doc_type: docType,
+        conversation_id: convId,
+        message_index: messageIndex,
+        edited,
+        signal: abortController.signal,
+      });
+      const reader = stream.getReader();
+      streamReaderRef.current = reader;
+
+      let fullReply = "";
+      let donePayload: AssistantChatResponse | null = null;
+
+      while (true) {
+        if (stopRequestedRef.current) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (stopRequestedRef.current) break;
+        try {
+          const event = JSON.parse(value) as {
+            type: string;
+            text?: string;
+            tool?: string;
+            agent?: string;
+            reply?: string;
+            steps?: AssistantStep[];
+            conversation_id?: string;
+            message?: string;
+            active_agent?: string;
+            active_agent_label?: string;
+          };
+          if (event.type === "thinking") {
+            if (event.agent) setStreamingAgentId(event.agent);
+          } else if (event.type === "tool_start") {
+            setStreamingTools((prev) => [...prev, event.tool ?? ""]);
+          } else if (event.type === "token") {
+            fullReply += event.text ?? "";
+            if (!stopRequestedRef.current) setStreamingText(fullReply);
+          } else if (event.type === "done") {
+            donePayload = {
+              conversation_id: event.conversation_id ?? convId ?? "",
+              reply: event.reply ?? fullReply,
+              steps: event.steps ?? [],
+              model: null,
+              needs_confirmation: null,
+              active_agent: event.active_agent ?? "document",
+              active_agent_label: event.active_agent_label ?? "Document Writer",
+            };
+          } else if (event.type === "error") {
+            throw new Error(event.message ?? "Stream error");
+          }
+        } catch {
+          /* skip non-JSON */
+        }
+      }
+
+      if (!stopRequestedRef.current && donePayload) {
+        if (!convId) {
+          selfCreatedConvIdRef.current = donePayload.conversation_id;
+          setConvId(donePayload.conversation_id);
+          onConversationChange?.(donePayload.conversation_id);
+        }
+        if (donePayload.active_agent) setActiveAgent(donePayload.active_agent);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: donePayload!.reply,
+            steps: donePayload!.steps,
+            agent: donePayload!.active_agent,
+          },
+        ]);
+      }
+    } catch (e) {
+      if (!stopRequestedRef.current) {
+        setError(e instanceof Error ? e.message : "Failed to export document");
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          return last?.role === "user" && last.content === userLabel ? prev.slice(0, -1) : prev;
+        });
+      }
+    } finally {
+      if (!stopRequestedRef.current) {
+        setSending(false);
+        setStreamingText("");
+        setStreamingTools([]);
+        setStreamingAgentId(null);
+      }
+      streamReaderRef.current = null;
+      abortControllerRef.current = null;
+      stopRequestedRef.current = false;
+      sendingRef.current = false;
+    }
+  }
+
+  async function saveDocumentPlan(
+    messageIndex: number,
+    title: string,
+    contentMd: string,
+    bodyMarkdown: string,
+  ): Promise<boolean> {
+    if (!convId) {
+      toast.error("Conversation not ready — wait a moment and try again.");
+      return false;
+    }
+    try {
+      const res = await assistantApi.saveDocumentPlan({
+        conversation_id: convId,
+        message_index: messageIndex,
+        title,
+        content_md: contentMd,
+        body_markdown: bodyMarkdown,
+      });
+      setMessages((prev) => {
+        const msg = prev[messageIndex];
+        if (!msg?.steps) return prev;
+        const newSteps = msg.steps.map((s) => {
+          if (s.tool !== "plan_business_document") return s;
+          const result = s.result as Record<string, unknown> | undefined;
+          if (!result?.plan_ready) return s;
+          return {
+            ...s,
+            result: {
+              ...result,
+              title: res.title ?? title,
+              content_md: res.content_md,
+              body_markdown: bodyMarkdown,
+              user_edited: true,
+              saved_at: res.saved_at,
+            },
+          };
+        });
+        const next = [...prev];
+        next[messageIndex] = { ...msg, steps: newSteps };
+        return next;
+      });
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not save draft");
+      return false;
     }
   }
 
@@ -565,22 +1169,33 @@ export default function AssistantChat({ conversationId, onConversationChange, co
   const headerPersona = getAgentPersona(activeAgent);
 
   return (
-    <div className="flex h-full flex-col bg-white">
+    <div className="flex h-full min-h-0 flex-col bg-white">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-100 bg-white/80 px-4 py-2.5 backdrop-blur">
-        <div className="flex items-center gap-1">
+      {!hideHeader && (
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 bg-white/80 px-3 py-2 backdrop-blur sm:px-4 sm:py-2.5">
+        <div className="flex min-w-0 items-center gap-1">
+          {onOpenHistory ? (
+            <button
+              type="button"
+              onClick={onOpenHistory}
+              className="mr-1 inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 lg:hidden"
+              aria-label="Open chat history"
+            >
+              <Menu size={16} />
+            </button>
+          ) : null}
           <ZiloLogo size={28} className="shrink-0" />
-          <div>
-            <div className="text-sm font-semibold text-slate-900">Zilo Chat</div>
-            <div className="text-[10px] text-slate-400">
-              {compact ? "Ask me anything" : "Namedff specialists for each area — Zilo picks who fits best"}
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-slate-900">Zilo Chat</div>
+            <div className="hidden truncate text-[10px] text-slate-400 sm:block">
+              {compact ? "Ask me anything" : "Named specialists for each area — Zilo picks who fits best"}
             </div>
           </div>
         </div>
-        <div className="flex flex-nowrap items-center gap-2">
+        <div className="flex shrink-0 flex-nowrap items-center gap-1 sm:gap-2">
           {/* Which named specialist is active (router picks; user always sees a person + specialty). */}
           <span
-            className={`inline-flex max-w-56 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
+            className={`${compact ? "hidden sm:inline-flex" : "inline-flex"} max-w-32 sm:max-w-56 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${headerPersona.cls}`}
             title={
               activeAgent === "general"
                 ? "Zilo is your main guide. A named specialist will join when your question needs one."
@@ -590,9 +1205,9 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <Bot size={10} />
             <span className="truncate">{personaBadgeLabel(activeAgent)}</span>
           </span>
-          {convId ? (
+          {convId && !compact ? (
             <span
-              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+              className={`hidden rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide sm:inline ${
                 convVisibility === "private"
                   ? "bg-amber-100 text-amber-800"
                   : "bg-slate-100 text-slate-600"
@@ -602,11 +1217,11 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               {convVisibility === "private" ? "Private" : "Team"}
             </span>
           ) : null}
-          {convId ? (
+          {convId && !compact ? (
             <button
               type="button"
               onClick={() => setShareOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              className="hidden items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-600 hover:border-brand/50 hover:text-brand-dark sm:inline-flex"
               title="Invite teammates to this chat"
             >
               <UserPlus size={11} /> Share
@@ -615,7 +1230,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
           {!compact && (
             <Link
               href="/dashboard/assistant/audit"
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-500 hover:border-brand/50 hover:text-brand-dark"
+              className="hidden items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10.5px] text-slate-500 hover:border-brand/50 hover:text-brand-dark sm:inline-flex"
               title="View audit log"
             >
               <ShieldCheck size={11} /> Audit
@@ -629,7 +1244,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               persistAssistantModelId(v);
             }}
             disabled={!models.length}
-            className="max-w-35 truncate rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none disabled:opacity-50"
+            className={`${compact ? "max-w-[5.5rem] sm:max-w-35" : "max-w-35"} truncate rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[10px] text-slate-700 focus:outline-none disabled:opacity-50 sm:px-2 sm:text-[11px]`}
           >
             {models.map((m) => (
               <option key={m.id} value={m.id}>
@@ -638,8 +1253,19 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             ))}
             {!models.length && <option>No models</option>}
           </select>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              aria-label="Close chat"
+            >
+              <XIcon size={16} />
+            </button>
+          ) : null}
         </div>
       </div>
+      )}
 
       {shareOpen ? (
         <div
@@ -702,13 +1328,13 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       ) : null}
 
       {/* Messages — centered ChatGPT/Claude column */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-4 py-6">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-3 py-4 sm:px-4 sm:py-6">
           {empty ? (
-            <div className="flex min-h-[60vh] flex-col items-center justify-center gap-6 text-center">
-              <ZiloLogo size={56} className="shrink-0" />
+            <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center sm:min-h-[60vh] sm:gap-6">
+              <ZiloLogo size={compact ? 44 : 56} className="shrink-0" />
               <div>
-                <p className="text-2xl font-semibold text-slate-900">How can I help today?</p>
+                <p className="text-xl font-semibold text-slate-900 sm:text-2xl">How can I help today?</p>
                 <p className="mx-auto mt-2 max-w-lg text-sm text-slate-500">
                   Ask anything — I&apos;ll bring in the right context and tools as we go. Attach a document and I&apos;ll read it with you.
                 </p>
@@ -778,7 +1404,21 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                     )}
                     <MessageBubble
                       msg={m}
+                      messageIndex={i}
+                      allMessages={messages}
+                      presentationBusy={sending}
                       onSuggestionSend={(text) => void send(text)}
+                      onGeneratePresentation={(messageIndex, topic, slides, edited) =>
+                        void generatePresentationFromPlan(messageIndex, topic, slides, edited)
+                      }
+                      onSavePresentationPlan={savePresentationPlan}
+                      onGenerateDocument={(messageIndex, title, bodyMarkdown, contentMd, docType, edited) =>
+                        void generateDocumentFromPlan(messageIndex, title, bodyMarkdown, contentMd, docType, edited)
+                      }
+                      onSaveDocumentPlan={saveDocumentPlan}
+                      onRegeneratePresentationSlide={(messageIndex, slideIndex, instruction, slides, imageUrls, topic, textEdited) =>
+                        void regeneratePresentationSlide(messageIndex, slideIndex, instruction, slides, imageUrls, topic, textEdited)
+                      }
                       onUserResend={
                         m.role === "user"
                           ? (editedText) => {
@@ -891,8 +1531,26 @@ export default function AssistantChat({ conversationId, onConversationChange, co
       )}
 
       {/* Composer — centered Claude/ChatGPT-style pill */}
-      <div className="border-t border-slate-100 bg-linear-to-b from-white to-slate-50/40">
-        <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-3">
+      <div className="shrink-0 border-t border-slate-100 bg-linear-to-b from-white to-slate-50/40">
+        <div className="mx-auto w-full max-w-3xl px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-4 sm:pb-4 sm:pt-3">
+          {/* Uploading progress chips */}
+          {uploadingFiles.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {uploadingFiles.map((u) => (
+                <div key={u.name} className="flex w-40 flex-col gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+                  <p className="truncate text-[11px] font-medium text-slate-700">{u.name}</p>
+                  <div className="h-1 w-full overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className="h-full rounded-full bg-brand transition-all duration-200"
+                      style={{ width: `${u.progress}%` }}
+                    />
+                  </div>
+                  <p className="text-right text-[10px] text-slate-400">{u.progress}%</p>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Attachment chips */}
           {documents.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
@@ -924,7 +1582,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
                     <button
                       type="button"
                       onClick={() => void removeDocument(d.id)}
-                      className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition group-hover:opacity-100 hover:bg-red-600"
+                      className="absolute right-0.5 top-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition group-hover:opacity-100 hover:bg-red-600"
                       aria-label="Remove image"
                     >
                       <XIcon size={8} />
@@ -969,6 +1627,7 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               className="hidden"
               accept=".pdf,.docx,.txt,.md,.csv,image/png,image/jpeg,image/webp,image/gif"
               onChange={onFilePicked}
@@ -976,12 +1635,12 @@ export default function AssistantChat({ conversationId, onConversationChange, co
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
+              disabled={uploadingFiles.length > 0}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-brand-dark disabled:opacity-50"
               aria-label="Attach document"
-              title="Attach PDF, DOCX, TXT, CSV, or image"
+              title="Attach PDF, DOCX, TXT, CSV, or image (max 50 MB each)"
             >
-              {uploading ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
+              {uploadingFiles.length > 0 ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
             </button>
             <textarea
               ref={textareaRef}
@@ -1011,14 +1670,26 @@ export default function AssistantChat({ conversationId, onConversationChange, co
               }
               className="max-h-60 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-2 text-[14px] text-slate-900 placeholder:text-slate-400 focus:outline-none"
             />
-            <button
-              type="submit"
-              disabled={!input.trim() || sending}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-brand disabled:bg-slate-200 disabled:text-slate-400"
-              aria-label="Send"
-            >
-              {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            </button>
+            {sending ? (
+              <button
+                type="button"
+                onClick={stopGeneration}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-500 text-white transition hover:bg-red-600 active:scale-95"
+                aria-label="Stop generation"
+                title="Stop generating"
+              >
+                <Square size={13} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-brand disabled:bg-slate-200 disabled:text-slate-400"
+                aria-label="Send"
+              >
+                <Send size={14} />
+              </button>
+            )}
           </form>
           <p className="mt-2 text-center text-[10.5px] text-slate-400">
             Zilo brings in a named specialist for the task (e.g. Elena for Meta Ads, Stephen for sales). You&apos;ll confirm anything sensitive before it runs.
@@ -1176,11 +1847,86 @@ function WhatsAppPickerModal({
 const MULTI_SELECT_RE =
   /\b(select all that apply|choose one or more|pick any|you can select multiple|select as many|tick all|check all that apply|pick all|you may select more than one)\b/i;
 
+/** Split "A. foo B. bar C. baz" on one line into separate option lines. */
+function splitInlineLetteredLine(line: string): string[] | null {
+  const re = /(?:^|\s)([A-Za-z])[.)]\s+/g;
+  const hits: { index: number; letter: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    hits.push({ index: m.index + (m[0].startsWith(" ") ? 1 : 0), letter: m[1] });
+  }
+  if (hits.length < 2) return null;
+  const parts: string[] = [];
+  for (let i = 0; i < hits.length; i++) {
+    const start = hits[i].index;
+    const end = i + 1 < hits.length ? hits[i + 1].index : line.length;
+    parts.push(line.slice(start, end).trim());
+  }
+  return parts.every((p) => /^\(?[A-Za-z][.)]\s+\S/.test(p)) ? parts : null;
+}
+
+function expandOptionLines(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const split = splitInlineLetteredLine(line);
+    if (split) out.push(...split);
+    else out.push(line);
+  }
+  return out;
+}
+
+/** Parse lettered options anywhere in text (fallback when line-based detection fails). */
+function parseLetteredOptionsGlobally(content: string): { label: string; display: string }[] | null {
+  const re = /(?:^|\s)([A-Za-z])[.)]\s+([\s\S]+?)(?=(?:\s+[A-Za-z][.)]\s+)|$)/g;
+  const parsed: { label: string; display: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const text = m[2].replace(/\*\*/g, "").trim();
+    if (!text) continue;
+    parsed.push({
+      label: text,
+      display: `${m[1]}. ${text}`,
+    });
+  }
+  return parsed.length >= 2 && parsed.length <= 10 ? parsed : null;
+}
+
+interface ChecklistOption {
+  id?: string;
+  label?: string;
+  value?: string;
+}
+
+/** Structured options from check_document_requirements tool result. */
+function extractDocumentChecklistOptions(steps?: AssistantStep[]): {
+  question?: string;
+  options: { label: string; display: string; sendValue: string }[];
+} | null {
+  const step = [...(steps ?? [])]
+    .reverse()
+    .find((s) => s.tool === "check_document_requirements" && s.result && !(s.result as Record<string, unknown>).error);
+  if (!step) return null;
+  const result = step.result as Record<string, unknown>;
+  if (result.ready) return null;
+  const checklist = result.checklist as Array<{ question?: string; label?: string; options?: ChecklistOption[] }> | undefined;
+  const first = checklist?.[0];
+  const raw = first?.options?.filter((o) => o.label?.trim()) ?? [];
+  if (raw.length < 2) return null;
+  return {
+    question: first?.question || first?.label,
+    options: raw.map((o, i) => {
+      const label = (o.label ?? "").trim();
+      const sendValue = (o.value ?? "").trim() || label;
+      return { label, display: `${String.fromCharCode(65 + i)}. ${label}`, sendValue };
+    }),
+  };
+}
+
 function extractInlineOptionList(content: string):
   | { before: string; after: string; options: { label: string; display: string }[]; multiSelect: boolean }
   | null {
   if (!content) return null;
-  const lines = content.split("\n");
+  const lines = expandOptionLines(content.split("\n"));
 
   const bulletRe = /^\s*[-*+]\s+\S/;
   const letterAnyRe = /^\s*(?:[-*+]\s+)?\(?[A-Za-z][.):\]]\s+\S/;
@@ -1216,7 +1962,19 @@ function extractInlineOptionList(content: string):
     }
     i = lastOption + 1;
   }
-  if (bestStart < 0) return null;
+  if (bestStart < 0) {
+    const global = parseLetteredOptionsGlobally(content);
+    if (!global) return null;
+    const cutRe = /(?:^|[\n\s])([A-Za-z])[.)]\s+/;
+    const cutMatch = cutRe.exec(content);
+    const before = cutMatch ? content.slice(0, cutMatch.index).trim() : content;
+    return {
+      before,
+      after: "",
+      options: global,
+      multiSelect: MULTI_SELECT_RE.test(content),
+    };
+  }
 
   // Keep only the option lines themselves (drop interleaved blanks before parsing).
   const optionLines = lines
@@ -1274,13 +2032,22 @@ function extractInlineOptionList(content: string):
     if (ok && numParsed.length >= 2) parsed = numParsed;
   }
 
-  if (!parsed || parsed.length > 10) return null;
+  if (!parsed || parsed.length > 10) {
+    // Fallback: options jammed onto one line (e.g. "A. KES 500,000 B. KES 1,000,000 …")
+    const global = parseLetteredOptionsGlobally(content);
+    if (!global) return null;
+    parsed = global;
+  }
+
+  const parsedFromLetteredList = parsed.some((o) => /^[A-Za-z][.)]\s/.test(o.display));
 
   // ── Informational-list guard ────────────────────────────────────────────────
   // Only promote to clickable chips when items look like genuine user choices.
   // Informational lists (facts, summaries, confirmations) stay as plain markdown.
   const isFactItem = (label: string, display?: string) => {
     const plain = label.replace(/\*\*/g, "").trim();
+    // Lettered tap-to-send choices (amounts, bank names) are never summary facts.
+    if (parsedFromLetteredList) return false;
     // Strip leading emoji / non-ASCII characters so "🎨 Visual: …" still matches "Key: value"
     const plainNoEmoji = plain.replace(/^[\p{Emoji}\p{S}\s]+/u, "").trim();
     // "Key: value" pattern (e.g. "Visual: Deep green", "Status: Published")
@@ -1446,21 +2213,322 @@ function InlineForm({
   );
 }
 
+// ── Email HTML detection + preview ──────────────────────────────────────────
+
+function extractEmailHtml(content: string): string | null {
+  const blockMatch = content.match(/```(?:html)?\s*([\s\S]*?)\s*```/i);
+  if (blockMatch) {
+    const inner = blockMatch[1].trim();
+    if (/<!DOCTYPE html/i.test(inner) || /<html[\s>]/i.test(inner)) return inner;
+  }
+  const trimmed = content.trim();
+  if (/^<!DOCTYPE html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) return trimmed;
+  return null;
+}
+
+const API_BASE_EMAIL = process.env.NEXT_PUBLIC_API_URL ?? "";
+
+function EmailChatPreviewModal({
+  html,
+  onClose,
+  onRequestChange,
+}: {
+  html: string;
+  onClose: () => void;
+  onRequestChange: (msg: string) => void;
+}) {
+  const [tab, setTab] = useState<"desktop" | "mobile">("desktop");
+  const [saveMode, setSaveMode] = useState<"campaign" | "template" | null>(null);
+  const [name, setName] = useState("");
+  const [subject, setSubject] = useState("");
+  const [changeText, setChangeText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  async function saveItem() {
+    if (!name.trim()) { toast.error("Enter a name first"); return; }
+    setSaving(true);
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      if (saveMode === "campaign") {
+        await fetch(`${API_BASE_EMAIL}/api/email-marketing/campaigns`, {
+          method: "POST", headers,
+          body: JSON.stringify({ name: name.trim(), subject: subject.trim() || name.trim(), body_html: html }),
+        });
+        setSaved("Campaign saved as draft!");
+        toast.success("Draft campaign created — find it in Email Marketing");
+      } else {
+        await fetch(`${API_BASE_EMAIL}/api/email-marketing/templates`, {
+          method: "POST", headers,
+          body: JSON.stringify({ name: name.trim(), subject: subject.trim() || name.trim(), body_html: html, category: "AI Generated" }),
+        });
+        setSaved("Saved to template library!");
+        toast.success("Saved to Email Marketing → Library");
+      }
+    } catch {
+      toast.error("Save failed — check your connection");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center">
+              <Mail size={16} className="text-indigo-600" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Email Preview</p>
+              <p className="text-xs text-slate-400">Review, request changes, or save your AI-generated email</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setTab("desktop")}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                tab === "desktop" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"
+              }`}>Desktop</button>
+            <button onClick={() => setTab("mobile")}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                tab === "mobile" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"
+              }`}>Mobile</button>
+            <button onClick={onClose} className="ml-2 text-slate-400 hover:text-slate-600">
+              <XIcon size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex flex-1 min-h-0">
+          {/* Preview iframe */}
+          <div className="flex-1 bg-slate-100 flex items-center justify-center p-4 overflow-auto">
+            <div className={`bg-white shadow-lg rounded overflow-hidden ${
+              tab === "mobile" ? "w-[375px]" : "w-full max-w-[640px]"
+            } h-full`}>
+              <iframe
+                srcDoc={html}
+                className="w-full h-full border-0"
+                sandbox="allow-same-origin"
+                title="Email Preview"
+              />
+            </div>
+          </div>
+
+          {/* Actions sidebar */}
+          <div className="w-72 shrink-0 border-l border-slate-100 flex flex-col p-4 gap-4 overflow-y-auto">
+            {/* Request Changes */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Request Changes</p>
+              <textarea
+                value={changeText}
+                onChange={e => setChangeText(e.target.value)}
+                placeholder="e.g. Make the headline bigger, change button colour to green, add a discount code..."
+                rows={4}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+              <button
+                onClick={() => {
+                  if (!changeText.trim()) return;
+                  onRequestChange(`Please update the email with these changes: ${changeText.trim()}`);
+                  onClose();
+                }}
+                disabled={!changeText.trim()}
+                className="w-full py-2 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-slate-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-2">
+                <Send size={13} /> Send to Zilo
+              </button>
+            </div>
+
+            <div className="border-t border-slate-100" />
+
+            {/* Save */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Save Email</p>
+              {saved ? (
+                <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
+                  <CheckCircle2 size={15} /> {saved}
+                </div>
+              ) : (
+                <>
+                  <div className="flex gap-2">
+                    <button onClick={() => setSaveMode("campaign")}
+                      className={`flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-colors ${
+                        saveMode === "campaign"
+                          ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                          : "border-slate-200 text-slate-600 hover:border-slate-300"
+                      }`}>
+                      <Save size={12} className="inline mr-1" />Campaign
+                    </button>
+                    <button onClick={() => setSaveMode("template")}
+                      className={`flex-1 py-2 rounded-xl text-xs font-medium border-2 transition-colors ${
+                        saveMode === "template"
+                          ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                          : "border-slate-200 text-slate-600 hover:border-slate-300"
+                      }`}>
+                      <BookTemplate size={12} className="inline mr-1" />Template
+                    </button>
+                  </div>
+                  {saveMode && (
+                    <div className="space-y-2">
+                      <input value={name} onChange={e => setName(e.target.value)}
+                        placeholder={saveMode === "campaign" ? "Campaign name" : "Template name"}
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+                      <input value={subject} onChange={e => setSubject(e.target.value)}
+                        placeholder="Subject line (optional)"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+                      <button onClick={saveItem} disabled={saving || !name.trim()}
+                        className="w-full py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-2">
+                        {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                        {saving ? "Saving…" : `Save ${saveMode === "campaign" ? "Draft Campaign" : "to Library"}`}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Options that need free-text input instead of tap-to-send. */
+function isFreeTextOption(label: string): boolean {
+  return /something else|describe it|i['']ll describe|i['']ll explain|none of these|not listed|type (the )?(name|bank|lender|amount)|other bank|other amount|other —|different amount|i['']ll specify/i.test(
+    label,
+  );
+}
+
+function freeTextOptionPlaceholder(label: string, display?: string): string {
+  const text = `${label} ${display ?? ""}`;
+  if (/bank|lender/i.test(text)) return "Type bank name…";
+  if (/amount/i.test(text)) return "Type amount…";
+  return "Type here…";
+}
+
+function OptionInputChip({
+  letter,
+  label,
+  display,
+  onSubmit,
+}: {
+  letter?: string;
+  label: string;
+  display?: string;
+  onSubmit: (text: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  const placeholder = freeTextOptionPlaceholder(label, display);
+
+  return (
+    <div className="group flex items-center gap-2 rounded-xl border border-brand/30 bg-white px-2.5 py-2 shadow-sm transition focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30">
+      {letter ? (
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[12px] font-bold text-brand-dark">
+          {letter}
+        </span>
+      ) : null}
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && value.trim()) {
+            onSubmit(value.trim());
+            setValue("");
+          }
+        }}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 border-0 bg-transparent text-[13px] font-medium text-slate-800 placeholder:font-normal placeholder:text-slate-400 outline-none"
+        aria-label={display || label}
+      />
+      <button
+        type="button"
+        disabled={!value.trim()}
+        onClick={() => {
+          if (value.trim()) {
+            onSubmit(value.trim());
+            setValue("");
+          }
+        }}
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-brand transition hover:bg-brand/10 disabled:opacity-30"
+        aria-label="Send"
+      >
+        <Send size={14} />
+      </button>
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
+  messageIndex,
+  allMessages,
+  presentationBusy,
   onSuggestionSend,
+  onGeneratePresentation,
+  onSavePresentationPlan,
+  onGenerateDocument,
+  onSaveDocumentPlan,
+  onRegeneratePresentationSlide,
   onUserResend,
 }: {
   msg: AssistantMessage;
+  messageIndex: number;
+  allMessages: AssistantMessage[];
+  presentationBusy?: boolean;
   onSuggestionSend?: (text: string) => void;
+  onGeneratePresentation?: (
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+    edited: boolean,
+  ) => void;
+  onSavePresentationPlan?: (
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+  ) => Promise<boolean>;
+  onGenerateDocument?: (
+    messageIndex: number,
+    title: string,
+    bodyMarkdown: string,
+    contentMd: string,
+    docType: string,
+    edited: boolean,
+  ) => void;
+  onSaveDocumentPlan?: (
+    messageIndex: number,
+    title: string,
+    contentMd: string,
+    bodyMarkdown: string,
+  ) => Promise<boolean>;
+  onRegeneratePresentationSlide?: (
+    messageIndex: number,
+    slideIndex: number,
+    instruction: string,
+    slides: Record<string, unknown>[],
+    imageUrls: string[],
+    topic: string,
+    textEdited: boolean,
+  ) => void;
   onUserResend?: (text: string) => void;
 }) {
-  const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
+  const [exporting, setExporting] = useState<"pdf" | "docx" | "xlsx" | null>(null);
   const [showWaPicker, setShowWaPicker] = useState(false);
+  const [showEmailPreview, setShowEmailPreview] = useState(false);
   const [editingUserPrompt, setEditingUserPrompt] = useState(false);
+
+  const emailHtml = useMemo(() => {
+    if (msg.role !== "assistant") return null;
+    return extractEmailHtml(msg.content ?? "");
+  }, [msg.role, msg.content]);
   const [editedUserPrompt, setEditedUserPrompt] = useState(msg.content ?? "");
   const [checkedOptions, setCheckedOptions] = useState<Set<string>>(new Set());
-  const [describeText, setDescribeText] = useState("");
 
   // Inline form — takes priority over chip options when detected
   const inlineForm = useMemo(() => {
@@ -1469,16 +2537,22 @@ function MessageBubble({
   }, [msg.role, msg.content]);
 
   // Promote bullet/lettered/numbered option lists to tap-to-send chips with A/B/C
-  // letter badges, unless the backend already supplied msg.suggestions (avoid dupes)
-  // or we're rendering a form instead.
+  // letter badges. Structured checklist options from check_document_requirements
+  // take priority; msg.suggestions are a separate fallback row at the bottom.
+  const documentChecklist = useMemo(
+    () => (msg.role === "assistant" ? extractDocumentChecklistOptions(msg.steps) : null),
+    [msg.role, msg.steps],
+  );
+
   const inlineOptions = useMemo(() => {
     if (msg.role !== "assistant") return null;
     if (inlineForm) return null;
-    if (msg.suggestions && msg.suggestions.length > 0) return null;
+    if (documentChecklist) return null;
+    if (planAwaitingApproval(allMessages, messageIndex)) return null;
     return extractInlineOptionList(msg.content ?? "");
-  }, [msg.role, msg.content, msg.suggestions, inlineForm]);
+  }, [msg.role, msg.content, inlineForm, documentChecklist, allMessages, messageIndex]);
 
-  async function handleExport(format: "pdf" | "docx") {
+  async function handleExport(format: "pdf" | "docx" | "xlsx") {
     if (!msg.content || exporting) return;
     setExporting(format);
     try {
@@ -1530,8 +2604,36 @@ function MessageBubble({
               </div>
             </div>
           ) : (
-            <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[14px] text-slate-900">
-              {msg.content}
+            <div className="space-y-1.5">
+              {msg.documents && msg.documents.length > 0 && (
+                <div className="flex flex-wrap justify-end gap-1.5">
+                  {msg.documents.map((d) => (
+                    d.kind === "image" ? (
+                      <div key={d.id} className="relative h-16 w-16 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+                        {d.public_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={d.public_url} alt={d.filename} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center bg-slate-100">
+                            <ImageIcon size={18} className="text-slate-400" />
+                          </div>
+                        )}
+                        <div className="absolute inset-x-0 bottom-0 bg-black/50 px-1 py-0.5">
+                          <p className="truncate text-[8px] font-medium text-white">{d.filename}</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={d.id} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-700 shadow-sm">
+                        <FileText size={11} className="text-brand" />
+                        <span className="max-w-[160px] truncate">{d.filename}</span>
+                      </div>
+                    )
+                  ))}
+                </div>
+              )}
+              <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[14px] text-slate-900">
+                {msg.content}
+              </div>
             </div>
           )}
           <div className="flex justify-end">
@@ -1552,7 +2654,9 @@ function MessageBubble({
     );
   }
   if (msg.role === "assistant") {
-    const hasContent = (msg.content ?? "").length > 120;
+    const documentDraftPending = isDocumentDraftPending(msg.steps);
+    const displayContent = documentDraftPending ? documentDraftIntro(msg.content ?? "") : (msg.content ?? "");
+    const hasContent = displayContent.length > 120;
     return (
       <div className="flex justify-start">
         <div className="flex w-full max-w-full gap-3">
@@ -1610,38 +2714,16 @@ function MessageBubble({
                             </button>
                           );
                         }
-                        // Escape hatch — render as text input so user can describe freely
-                        const isEscapeOpt = /something else|describe it|i['']ll describe|i['']ll explain|none of these/i.test(opt.label);
-                        if (isEscapeOpt) {
+                        // Free-text option — compact input chip (e.g. "Other bank — type name")
+                        if (isFreeTextOption(opt.label)) {
                           return (
-                            <div key={`${i}-${opt.label}`} className="flex gap-2">
-                              <input
-                                type="text"
-                                value={describeText}
-                                onChange={(e) => setDescribeText(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" && describeText.trim()) {
-                                    onSuggestionSend(describeText.trim());
-                                    setDescribeText("");
-                                  }
-                                }}
-                                placeholder="Describe what you want…"
-                                className="flex-1 rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-[13px] text-slate-700 placeholder:text-slate-400 shadow-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
-                              />
-                              <button
-                                type="button"
-                                disabled={!describeText.trim()}
-                                onClick={() => {
-                                  if (describeText.trim()) {
-                                    onSuggestionSend(describeText.trim());
-                                    setDescribeText("");
-                                  }
-                                }}
-                                className="rounded-xl bg-brand px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-40"
-                              >
-                                Send
-                              </button>
-                            </div>
+                            <OptionInputChip
+                              key={`${i}-${opt.label}`}
+                              letter={letter}
+                              label={opt.label}
+                              display={opt.display}
+                              onSubmit={onSuggestionSend}
+                            />
                           );
                         }
                         return (
@@ -1681,61 +2763,92 @@ function MessageBubble({
                       </div>
                     )}
                   </>
+                ) : documentChecklist && onSuggestionSend ? (
+                  <>
+                    <MarkdownBody content={msg.content} steps={msg.steps} />
+                    <div className="mt-2 flex flex-col items-stretch gap-1.5">
+                      {documentChecklist.options.map((opt, i) => {
+                        const letter = String.fromCharCode(65 + i);
+                        if (isFreeTextOption(opt.label)) {
+                          return (
+                            <OptionInputChip
+                              key={`doc-${i}-${opt.label}`}
+                              letter={letter}
+                              label={opt.label}
+                              display={opt.display}
+                              onSubmit={onSuggestionSend}
+                            />
+                          );
+                        }
+                        return (
+                          <button
+                            key={`doc-${i}-${opt.label}`}
+                            type="button"
+                            onClick={() => onSuggestionSend(opt.sendValue)}
+                            className="group flex items-center gap-2.5 rounded-xl border border-brand/30 bg-white px-2.5 py-2 text-left text-[13px] leading-snug text-brand-ink shadow-sm transition hover:border-brand hover:bg-brand/10"
+                          >
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[12px] font-bold text-brand-dark group-hover:bg-brand group-hover:text-white">
+                              {letter}
+                            </span>
+                            <span className="min-w-0 flex-1 break-words font-medium">{opt.display}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
                 ) : (
-                  <MarkdownBody content={msg.content} steps={msg.steps} />
+                  <MarkdownBody content={displayContent} steps={msg.steps} />
                 )
               ) : (
                 <span className="italic text-slate-400">(no reply)</span>
               )}
             </div>
             <VideoPreview steps={msg.steps} />
-            <PresentationPlanPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
-            <PresentationPreview steps={msg.steps} onSuggestionSend={onSuggestionSend} />
+            <PresentationPlanPreview
+              steps={msg.steps}
+              messageIndex={messageIndex}
+              superseded={isPlanSuperseded(allMessages, messageIndex)}
+              busy={presentationBusy}
+              onGeneratePresentation={onGeneratePresentation}
+              onSavePlan={onSavePresentationPlan}
+            />
+            <PresentationPreview
+              steps={msg.steps}
+              messageIndex={messageIndex}
+              presentationBusy={presentationBusy}
+              onRegenerateSlide={onRegeneratePresentationSlide}
+            />
             <DesignPreview steps={msg.steps} />
+            <DocumentDraftPlan
+              steps={msg.steps}
+              messageIndex={messageIndex}
+              busy={presentationBusy}
+              onGenerateDocument={onGenerateDocument}
+              onSavePlan={onSaveDocumentPlan}
+            />
             <DocumentPreview steps={msg.steps} />
+            <FormCreatedPreview steps={msg.steps} />
             <TemplateGalleryPreview steps={msg.steps} onSelect={(id, name) => onSuggestionSend?.(`Use template "${name}" — ID: ${id}`)} />
             {msg.suggestions &&
               msg.suggestions.length > 0 &&
-              onSuggestionSend && (
+              onSuggestionSend &&
+              !documentDraftPending &&
+              !inlineOptions &&
+              !documentChecklist &&
+              !inlineForm && (
                 <div className="mt-3 space-y-1.5">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                     Suggested next step — tap to send
                   </p>
                   <div className="flex flex-col gap-2">
                     {msg.suggestions.map((chip) => {
-                      // Detect "escape hatch" options — render as text input instead of button
-                      const isEscapeOption = /something else|describe it|i['']ll describe|i['']ll explain|none of these/i.test(chip);
-
-                      if (isEscapeOption) {
+                      if (isFreeTextOption(chip)) {
                         return (
-                          <div key={chip} className="flex gap-2">
-                            <input
-                              type="text"
-                              value={describeText}
-                              onChange={(e) => setDescribeText(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" && describeText.trim()) {
-                                  onSuggestionSend(describeText.trim());
-                                  setDescribeText("");
-                                }
-                              }}
-                              placeholder="Describe what you want…"
-                              className="flex-1 rounded-xl border-2 border-brand/30 bg-white px-3.5 py-2.5 text-[13px] text-slate-700 placeholder:text-slate-400 shadow-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand/30"
-                            />
-                            <button
-                              type="button"
-                              disabled={!describeText.trim()}
-                              onClick={() => {
-                                if (describeText.trim()) {
-                                  onSuggestionSend(describeText.trim());
-                                  setDescribeText("");
-                                }
-                              }}
-                              className="rounded-xl bg-brand px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm transition hover:bg-brand-dark disabled:opacity-40"
-                            >
-                              Send
-                            </button>
-                          </div>
+                          <OptionInputChip
+                            key={chip}
+                            label={chip}
+                            onSubmit={onSuggestionSend}
+                          />
                         );
                       }
 
@@ -1774,6 +2887,17 @@ function MessageBubble({
                   {exporting === "docx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
                   Word
                 </button>
+                {msg.content && msg.content.includes("|") && (
+                  <button
+                    type="button"
+                    onClick={() => void handleExport("xlsx")}
+                    disabled={!!exporting}
+                    className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2 py-0.5 text-[10.5px] font-medium text-green-700 hover:bg-green-100 hover:border-green-400 disabled:opacity-50"
+                  >
+                    {exporting === "xlsx" ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />}
+                    Excel
+                  </button>
+                )}
                 <span className="text-[10px] text-slate-300">|</span>
                 <button
                   type="button"
@@ -1784,6 +2908,27 @@ function MessageBubble({
                   Send via WhatsApp
                 </button>
               </div>
+            )}
+            {emailHtml && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEmailPreview(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100 hover:border-indigo-300 transition-colors"
+                >
+                  <Eye size={11} /> Preview Email · Approve or Request Changes
+                </button>
+              </div>
+            )}
+            {showEmailPreview && emailHtml && (
+              <EmailChatPreviewModal
+                html={emailHtml}
+                onClose={() => setShowEmailPreview(false)}
+                onRequestChange={(text) => {
+                  setShowEmailPreview(false);
+                  onSuggestionSend?.(text);
+                }}
+              />
             )}
             {showWaPicker && msg.content && (
               <WhatsAppPickerModal
@@ -1844,9 +2989,104 @@ function _stripDesignUrls(content: string, designUrls: Set<string>): string {
     .trim();
 }
 
+/** Repair UTF-8 mojibake (e.g. â€" → –) from Windows-1252 mis-decoding. */
+function fixTextEncoding(text: string): string {
+  if (!text) return text;
+  let out = text;
+  if (/â|Ã/.test(out)) {
+    try {
+      const bytes = new Uint8Array(
+        [...out].map((c) => {
+          const cp = c.charCodeAt(0);
+          // Windows-1252 high bytes (matches Python cp1252 encode for mojibake repair)
+          if (cp === 0x20ac) return 0x80;
+          if (cp === 0x201c) return 0x93;
+          if (cp === 0x201d) return 0x94;
+          if (cp === 0x2018) return 0x91;
+          if (cp === 0x2019) return 0x92;
+          if (cp === 0x2026) return 0x85;
+          if (cp >= 0x100) return 0x3f;
+          return cp & 0xff;
+        }),
+      );
+      const repaired = new TextDecoder("utf-8").decode(bytes);
+      if (repaired && !repaired.includes("\uFFFD")) out = repaired;
+    } catch {
+      /* keep original */
+    }
+  }
+  out = out.replace(/â€(.)/g, (full, third: string) => {
+    if (third === "\u201c" || third === "\u0093") return "–";
+    if (third === "\u201d" || third === "\u0094") return "—";
+    if (third === "\u2018" || third === "\u0091") return "'";
+    if (third === "\u2019" || third === "\u0092") return "'";
+    return full;
+  });
+  for (const [bad, good] of [
+    ["Â·", "·"],
+    ["Â ", " "],
+  ] as const) {
+    out = out.split(bad).join(good);
+  }
+  return out;
+}
+
+function ensureBlankLineBeforeTables(md: string): string {
+  const lines = md.split("\n");
+  const out: string[] = [];
+  for (const line of lines) {
+    const s = line.trim();
+    if (s.startsWith("|") && out.length) {
+      const prev = out[out.length - 1].trim();
+      if (prev && !prev.startsWith("|") && !/^[-|:|\s]+$/.test(prev)) out.push("");
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+function isDocumentDraftPending(steps?: AssistantStep[]): boolean {
+  return (steps ?? []).some(
+    (s) =>
+      s.tool === "plan_business_document" &&
+      (s.result as Record<string, unknown>)?.plan_ready &&
+      !(steps ?? []).some(
+        (x) => x.tool === "create_business_document" && !(x.result as Record<string, unknown>)?.error,
+      ),
+  );
+}
+
+function documentDraftIntro(content: string): string {
+  const clean = stripDsmlMarkup(content).trim();
+  if (clean.length <= 320) return clean;
+  const intro: string[] = [];
+  for (const line of clean.split("\n")) {
+    const trimmed = line.trim();
+    if (/^#{1,2}\s/.test(trimmed)) break;
+    if (trimmed) intro.push(trimmed);
+  }
+  if (intro.length) return intro.join(" ");
+  return "Here's your draft — review it below. Edit anything inline, then hit **Approve & Export PDF** when you're ready.";
+}
+
+function stripDsmlMarkup(text: string): string {
+  if (!text || !text.includes("DSML")) return text;
+  return text
+    .replace(/<｜+DSML｜+tool_calls>[\s\S]*?<\/｜+DSML｜+tool_calls>/gi, "")
+    .replace(/<｜+DSML｜+invoke[\s\S]*?<\/｜+DSML｜+invoke>/gi, "")
+    .replace(/<\|+\s*DSML\s*\|+[\s\S]*?(?:<\/\|+\s*DSML\s*\|+[^>]*>|$)/gi, "")
+    .trim();
+}
+
 function MarkdownBody({ content, steps }: { content: string; steps?: AssistantStep[] }) {
   const designUrls = useMemo(() => _designImageUrls(steps), [steps]);
-  const cleanContent = useMemo(() => _stripDesignUrls(content, designUrls), [content, designUrls]);
+  const cleanContent = useMemo(
+    () =>
+      ensureBlankLineBeforeTables(
+        fixTextEncoding(_stripDesignUrls(stripDsmlMarkup(content), designUrls)),
+      ),
+    [content, designUrls],
+  );
   return (
     <div className="markdown-body">
       <ReactMarkdown
@@ -2216,27 +3456,601 @@ function TemplateGalleryPreview({
   );
 }
 
+function DocumentDraftPlan({
+  steps,
+  messageIndex,
+  busy,
+  onGenerateDocument,
+  onSavePlan,
+}: {
+  steps?: AssistantStep[];
+  messageIndex: number;
+  busy?: boolean;
+  onGenerateDocument?: (
+    messageIndex: number,
+    title: string,
+    bodyMarkdown: string,
+    contentMd: string,
+    docType: string,
+    edited: boolean,
+  ) => void;
+  onSavePlan?: (
+    messageIndex: number,
+    title: string,
+    contentMd: string,
+    bodyMarkdown: string,
+  ) => Promise<boolean>;
+}) {
+  const step = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find((s) => {
+        if (s.tool !== "plan_business_document") return false;
+        const r = s.result as Record<string, unknown> | undefined;
+        return Boolean(r?.plan_ready && (r?.html_preview || r?.preview_key));
+      }),
+    [steps],
+  );
+
+  const exported = useMemo(
+    () => (steps ?? []).some((s) => s.tool === "create_business_document" && !(s.result as Record<string, unknown>)?.error),
+    [steps],
+  );
+
+  const result = step?.result as Record<string, unknown> | undefined;
+  const title = (result?.title as string) ?? "Document";
+  const docType = (result?.doc_type as string) ?? "other";
+  const htmlPreviewRaw = typeof result?.html_preview === "string" ? result.html_preview : "";
+  const htmlPreview = useMemo(() => fixTextEncoding(htmlPreviewRaw), [htmlPreviewRaw]);
+  const previewKey = result?.preview_key as string | undefined;
+  const previewUrlRaw =
+    (result?.preview_url as string | undefined) || (previewKey ? `/api/document-preview/${previewKey}` : "");
+  const previewIframeSrc = previewUrlRaw ? resolveMediaUrl(previewUrlRaw) || previewUrlRaw : "";
+
+  const initialBody = useMemo(() => {
+    const body = (result?.body_markdown as string) || "";
+    const raw = body.trim()
+      ? body
+      : (() => {
+          const md = (result?.content_md as string) || "";
+          if (md.startsWith("#")) return md.split("\n").slice(1).join("\n").trim();
+          return md;
+        })();
+    return fixTextEncoding(raw);
+  }, [result?.body_markdown, result?.content_md]);
+
+  const [editing, setEditing] = useState(false);
+  const [draftBody, setDraftBody] = useState(initialBody);
+  const [committedBody, setCommittedBody] = useState(initialBody);
+  const [saving, setSaving] = useState(false);
+  const [planSaved, setPlanSaved] = useState(Boolean(result?.user_edited));
+
+  useEffect(() => {
+    if (editing) return;
+    setDraftBody(initialBody);
+    setCommittedBody(initialBody);
+    setPlanSaved(Boolean(result?.user_edited));
+  }, [initialBody, result?.user_edited, editing]);
+
+  if (!step || exported) return null;
+
+  const editDirty = draftBody.trim() !== committedBody.trim();
+
+  async function approveDraft() {
+    if (!onGenerateDocument || busy || saving) return;
+    let body = committedBody;
+    let wasEdited = planSaved;
+    if (editing || editDirty) {
+      if (!onSavePlan) return;
+      const contentMd = `# ${title}\n\n${draftBody.trim()}`;
+      setSaving(true);
+      const ok = await onSavePlan(messageIndex, title, contentMd, draftBody.trim());
+      setSaving(false);
+      if (!ok) return;
+      body = draftBody.trim();
+      setCommittedBody(body);
+      setEditing(false);
+      wasEdited = true;
+    }
+    onGenerateDocument(messageIndex, title, body, `# ${title}\n\n${body}`, docType, wasEdited);
+  }
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-brand/30 shadow-sm">
+      <div className="flex items-center justify-between gap-2 border-b border-brand/20 bg-brand/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-brand-ink">
+          <FileText size={13} className="text-brand shrink-0" />
+          Document draft — {title}
+        </div>
+      </div>
+      {editing ? (
+        <div className="p-3">
+          <textarea
+            value={draftBody}
+            onChange={(e) => setDraftBody(e.target.value)}
+            className="min-h-[280px] w-full rounded-lg border border-slate-200 p-3 font-mono text-[12px] leading-relaxed text-slate-800"
+            spellCheck
+          />
+        </div>
+      ) : (
+        !previewIframeSrc && htmlPreview ? (
+          <iframe
+            srcDoc={htmlPreview}
+            title="Document draft preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "560px" }}
+            sandbox="allow-same-origin"
+          />
+        ) : previewIframeSrc ? (
+          <iframe
+            src={previewIframeSrc}
+            title="Document draft preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "560px" }}
+          />
+        ) : null
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2">
+        {editing ? (
+          <>
+            <button
+              type="button"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
+              onClick={() => {
+                setDraftBody(committedBody);
+                setEditing(false);
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white"
+              onClick={async () => {
+                if (!onSavePlan) return;
+                setSaving(true);
+                const ok = await onSavePlan(
+                  messageIndex,
+                  title,
+                  `# ${title}\n\n${draftBody.trim()}`,
+                  draftBody.trim(),
+                );
+                setSaving(false);
+                if (!ok) return;
+                setCommittedBody(draftBody.trim());
+                setPlanSaved(true);
+                setEditing(false);
+              }}
+            >
+              {saving ? "Saving…" : "Save edits"}
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="text-[10.5px] text-slate-500">
+              {busy ? "Exporting PDF…" : "Review the draft, edit if needed, then export."}
+            </span>
+            <button
+              type="button"
+              disabled={busy || saving}
+              onClick={() => void approveDraft()}
+              className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+            >
+              {busy ? "Exporting…" : "✓ Approve & Export PDF"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setEditing(true)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600"
+            >
+              <span className="inline-flex items-center gap-1">
+                <PencilLine size={11} />
+                Edit draft
+              </span>
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FormCreatedPreview({ steps }: { steps?: AssistantStep[] }) {
+  const [copied, setCopied] = useState(false);
+  const [showWaPicker, setShowWaPicker] = useState(false);
+
+  // Interactive Form States
+  const [formValues, setFormValues] = useState<Record<string, any>>({});
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [successMsg, setSuccessMsg] = useState("");
+
+  const formStep = useMemo(
+    () =>
+      [...(steps ?? [])].reverse().find(
+        (s) =>
+          s.tool === "create_form_from_description" &&
+          s.result &&
+          (s.result as Record<string, unknown>).status === "created",
+      ),
+    [steps],
+  );
+
+  if (!formStep) return null;
+
+  const result = formStep.result as {
+    form_id: string;
+    slug: string;
+    title: string;
+    share_url: string;
+    preview_url: string;
+    form?: {
+      title: string;
+      description?: string;
+      fields: Array<{
+        id: string;
+        type: "text" | "email" | "phone" | "textarea" | "dropdown" | "checkbox" | "checklist";
+        label: string;
+        placeholder?: string;
+        required?: boolean;
+        options?: string[];
+      }>;
+      branding?: {
+        logo_url?: string;
+        header_bg?: string;
+        header_text?: string;
+        button_bg?: string;
+        button_text?: string;
+        page_bg?: string;
+      };
+    };
+  };
+  const args = formStep.arguments as {
+    title: string;
+    description?: string;
+    fields?: Array<{
+      id: string;
+      type: "text" | "email" | "phone" | "textarea" | "dropdown" | "checkbox" | "checklist";
+      label: string;
+      placeholder?: string;
+      required?: boolean;
+      options?: string[];
+    }>;
+    branding?: {
+      logo_url?: string;
+      header_bg?: string;
+      header_text?: string;
+      button_bg?: string;
+      button_text?: string;
+      page_bg?: string;
+    };
+  };
+
+  const formId = result.form_id;
+  const slug = result.slug;
+  const title = result.form?.title || args.title || result.title;
+  const description = result.form?.description ?? args.description;
+  const fields = result.form?.fields || args.fields || [];
+  const branding = result.form?.branding || args.branding || {};
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const editUrl = `${origin}/dashboard/forms/${formId}`;
+  const publicUrl = `${origin}/f/${slug}`;
+
+  const defaultLogoUrl = branding.logo_url ? resolveMediaUrl(branding.logo_url) || branding.logo_url : "";
+  const primaryBg = branding.header_bg || "var(--brand, #0f172a)";
+  const primaryText = branding.header_text || "#ffffff";
+  const btnBg = branding.button_bg || "var(--brand, #0f172a)";
+  const btnText = branding.button_text || "#ffffff";
+  const pageBg = branding.page_bg || "#f8fafc";
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(publicUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const errs: Record<string, string> = {};
+    fields.forEach((f) => {
+      const val = formValues[f.label];
+      if (f.required && (!val || (typeof val === "string" && !val.trim()))) {
+        errs[f.label] = `${f.label} is required`;
+      }
+      if (f.type === "email" && val && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
+        errs[f.label] = "Please enter a valid email address";
+      }
+    });
+
+    if (Object.keys(errs).length > 0) {
+      setFormErrors(errs);
+      return;
+    }
+
+    setSubmitting(true);
+    setFormErrors({});
+
+    try {
+      const res = await api.post<{ status: string; message?: string }>(
+        `/forms/public/${slug}/submit`,
+        { data: formValues }
+      );
+      setSuccessMsg(res.message || "Thank you! We'll be in touch soon.");
+      setSubmitSuccess(true);
+      toast.success("Form submitted successfully!");
+    } catch (err: any) {
+      setFormErrors({ _form: err?.message || "Submission failed. Please try again." });
+      toast.error(err?.message || "Failed to submit form.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm max-w-lg">
+      {/* Header bar */}
+      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700">
+          <BookTemplate size={13} className="text-brand shrink-0" />
+          Form Created — {title}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <a
+            href={editUrl}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+          >
+            <PencilLine size={10} />
+            Open Builder
+          </a>
+          <a
+            href={publicUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-semibold text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+          >
+            <ExternalLink size={10} />
+            View Public Form
+          </a>
+        </div>
+      </div>
+
+      {/* Styled Interactive Live Form Mockup */}
+      <div className="p-4" style={{ background: pageBg }}>
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden animate-fade-in">
+          {/* Header area */}
+          <div className="px-6 py-5" style={{ background: primaryBg, color: primaryText }}>
+            {defaultLogoUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={defaultLogoUrl}
+                alt="Logo"
+                className="h-8 w-auto object-contain mb-3"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            )}
+            <h4 className="text-base font-bold">{title}</h4>
+            {description && (
+              <p className="text-xs mt-1 opacity-80 leading-relaxed">{description}</p>
+            )}
+          </div>
+
+          {submitSuccess ? (
+            <div className="px-6 py-8 text-center bg-white">
+              <div
+                className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3"
+                style={{ background: btnBg + "20" }}
+              >
+                <CheckCircle2 size={24} style={{ color: btnBg }} />
+              </div>
+              <h4 className="text-sm font-bold text-slate-800 mb-1">Submitted!</h4>
+              <p className="text-slate-500 text-xs leading-relaxed">{successMsg}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setFormValues({});
+                  setFormErrors({});
+                  setSubmitSuccess(false);
+                }}
+                className="mt-4 text-xs font-semibold hover:underline"
+                style={{ color: btnBg }}
+              >
+                Fill out another response
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4 bg-white">
+              {formErrors._form && (
+                <div className="flex items-center gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                  <AlertTriangle size={13} className="shrink-0" /> {formErrors._form}
+                </div>
+              )}
+              {fields.map((f, index) => (
+                <div key={f.id || `field-${index}`} className="space-y-1.5">
+                  <label className="block text-xs font-medium text-slate-700">
+                    {f.label}
+                    {f.required && <span className="text-rose-500 ml-0.5">*</span>}
+                  </label>
+
+                  {f.type === "textarea" ? (
+                    <textarea
+                      placeholder={f.placeholder || "Enter details..."}
+                      rows={3}
+                      value={formValues[f.label] ?? ""}
+                      onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.value }))}
+                      className={`w-full rounded-xl border px-3.5 py-2.5 text-xs text-slate-700 outline-none resize-none transition-colors ${
+                        formErrors[f.label]
+                          ? "border-rose-300 bg-rose-50/10 focus:ring-2 focus:ring-rose-200"
+                          : "border-slate-200 bg-white hover:border-slate-300 focus:ring-2 focus:ring-slate-100"
+                      }`}
+                    />
+                  ) : f.type === "dropdown" ? (
+                    <select
+                      value={formValues[f.label] ?? ""}
+                      onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.value }))}
+                      className={`w-full rounded-xl border px-3.5 py-2.5 text-xs text-slate-700 outline-none appearance-none transition-colors ${
+                        formErrors[f.label]
+                          ? "border-rose-300 bg-rose-50/10 focus:ring-2 focus:ring-rose-200"
+                          : "border-slate-200 bg-white hover:border-slate-300 focus:ring-2 focus:ring-slate-100"
+                      }`}
+                    >
+                      <option value="">{f.placeholder || "Select option..."}</option>
+                      {(f.options || []).map((opt, oidx) => (
+                        <option key={oidx} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  ) : f.type === "checkbox" ? (
+                    <label className="flex items-center gap-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formValues[f.label] === "yes"}
+                        onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.checked ? "yes" : "no" }))}
+                        className="h-5 w-5 rounded border-slate-300 text-brand focus:ring-brand/35 cursor-pointer"
+                        style={{ accentColor: btnBg }}
+                      />
+                      <span className="text-xs text-slate-600">{f.placeholder || "Yes"}</span>
+                    </label>
+                  ) : f.type === "checklist" ? (
+                    <div className="space-y-2 border border-slate-100 bg-slate-50/30 rounded-xl p-4">
+                      {(f.options || []).map((opt, oidx) => {
+                        const currentVal = formValues[f.label] || "";
+                        const selectedList = currentVal ? currentVal.split(", ") : [];
+                        const isChecked = selectedList.includes(opt);
+                        const toggleCheck = (checked: boolean) => {
+                          let newList;
+                          if (checked) {
+                            newList = [...selectedList, opt];
+                          } else {
+                            newList = selectedList.filter((item: string) => item !== opt);
+                          }
+                          setFormValues(v => ({ ...v, [f.label]: newList.join(", ") }));
+                        };
+                        return (
+                          <label key={oidx} className="flex items-center gap-3 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => toggleCheck(e.target.checked)}
+                              className="h-5 w-5 rounded border-slate-300 text-brand focus:ring-brand/35 cursor-pointer"
+                              style={{ accentColor: btnBg }}
+                            />
+                            <span className="text-xs text-slate-600">{opt}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <input
+                      type={f.type === "email" ? "email" : f.type === "phone" ? "tel" : "text"}
+                      placeholder={f.placeholder}
+                      value={formValues[f.label] ?? ""}
+                      onChange={(e) => setFormValues(v => ({ ...v, [f.label]: e.target.value }))}
+                      className={`w-full rounded-xl border px-3.5 py-2.5 text-xs text-slate-700 outline-none transition-colors ${
+                        formErrors[f.label]
+                          ? "border-rose-300 bg-rose-50/10 focus:ring-2 focus:ring-rose-200"
+                          : "border-slate-200 bg-white hover:border-slate-300 focus:ring-2 focus:ring-slate-100"
+                      }`}
+                    />
+                  )}
+                  {formErrors[f.label] && (
+                    <p className="text-[10px] text-rose-500">{formErrors[f.label]}</p>
+                  )}
+                </div>
+              ))}
+
+              {/* Submit button */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full rounded-xl py-3 text-xs font-semibold shadow-sm transition disabled:opacity-90 flex items-center justify-center gap-2 text-white"
+                  style={{ background: btnBg, color: btnText }}
+                >
+                  {submitting ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <Send size={13} />
+                  )}
+                  {submitting ? "Submitting..." : "Submit"}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+
+      {/* Card Actions Footer */}
+      <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px]">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-100 hover:border-slate-300"
+        >
+          {copied ? (
+            <>
+              <Check size={11} className="text-emerald-600" />
+              Copied!
+            </>
+          ) : (
+            <>
+              <Copy size={11} />
+              Copy Link
+            </>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowWaPicker(true)}
+          className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-green-50 px-2.5 py-1 font-semibold text-green-700 hover:bg-green-100 hover:border-green-300"
+        >
+          <MessageCircle size={11} />
+          Send via WhatsApp
+        </button>
+
+        {showWaPicker && (
+          <WhatsAppPickerModal
+            content={`Please fill out this form: ${publicUrl}`}
+            onClose={() => setShowWaPicker(false)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
   const [collapsed, setCollapsed] = React.useState(false);
   const [wordLoading, setWordLoading] = React.useState(false);
 
   const docStep = useMemo(
     () =>
-      [...(steps ?? [])].reverse().find(
-        (s) =>
-          (s.tool === "generate_document" || s.tool === "create_business_document") &&
-          (s.result as Record<string, unknown>)?.html_preview,
-      ),
+      [...(steps ?? [])].reverse().find((s) => {
+        if (s.tool !== "generate_document" && s.tool !== "create_business_document") return false;
+        const r = s.result as Record<string, unknown> | undefined;
+        if (!r || r.error) return false;
+        const html = typeof r.html_preview === "string" ? r.html_preview.trim() : "";
+        return Boolean(html || r.preview_key || r.preview_url);
+      }),
     [steps],
   );
 
   if (!docStep) return null;
 
   const result = docStep.result as Record<string, unknown>;
-  const htmlPreview = result.html_preview as string;
+  const htmlPreview = typeof result.html_preview === "string" ? result.html_preview : "";
+  const previewKey = result.preview_key as string | undefined;
+  const previewUrlRaw = (result.preview_url as string | undefined) || (previewKey ? `/api/document-preview/${previewKey}` : "");
+  const previewIframeSrc = previewUrlRaw ? resolveMediaUrl(previewUrlRaw) || previewUrlRaw : "";
   const filename = (result.filename as string | undefined) ?? "document";
   const s3Url = (result.download_url ?? result.pdf_url) as string | undefined;
   const contentMd = result.content_md as string | undefined;
+  const isXlsx = result.format === "xlsx" || filename.toLowerCase().endsWith(".xlsx");
 
   /** Download as Word — reuses the existing assistantApi.exportDocument helper */
   const handleDownloadWord = async () => {
@@ -2269,13 +4083,17 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
                   window.open(s3Url, "_blank", "noopener,noreferrer")
                 )
               }
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-medium text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10.5px] font-medium ${
+                isXlsx
+                  ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100 hover:border-green-400"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-brand/50 hover:text-brand-dark"
+              }`}
             >
               <Download size={10} />
-              PDF
+              {isXlsx ? "Excel" : "PDF"}
             </button>
           )}
-          {contentMd && (
+          {contentMd && !isXlsx && (
             <button
               type="button"
               onClick={() => void handleDownloadWord()}
@@ -2302,13 +4120,22 @@ function DocumentPreview({ steps }: { steps?: AssistantStep[] }) {
 
       {/* Rendered document — injected via srcDoc so CSS is isolated and no fetch needed */}
       {!collapsed && (
-        <iframe
-          srcDoc={htmlPreview}
-          title="Document Preview"
-          className="w-full border-0 bg-white"
-          style={{ height: "700px" }}
-          sandbox="allow-same-origin"
-        />
+        previewIframeSrc ? (
+          <iframe
+            src={previewIframeSrc}
+            title="Document Preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "700px" }}
+          />
+        ) : htmlPreview ? (
+          <iframe
+            srcDoc={htmlPreview}
+            title="Document Preview"
+            className="w-full border-0 bg-white"
+            style={{ height: "700px" }}
+            sandbox="allow-same-origin"
+          />
+        ) : null
       )}
     </div>
   );
@@ -2336,7 +4163,26 @@ function PresentationPlanningCard() {
   );
 }
 
-function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: AssistantStep[]; onSuggestionSend?: (t: string) => void }) {
+function PresentationPlanPreview({
+  steps,
+  messageIndex,
+  superseded,
+  busy,
+  onGeneratePresentation,
+  onSavePlan,
+}: {
+  steps?: AssistantStep[];
+  messageIndex: number;
+  superseded?: boolean;
+  busy?: boolean;
+  onGeneratePresentation?: (
+    messageIndex: number,
+    topic: string,
+    slides: PlanSlide[],
+    edited: boolean,
+  ) => void;
+  onSavePlan?: (messageIndex: number, topic: string, slides: PlanSlide[]) => Promise<boolean>;
+}) {
   const step = useMemo(
     () =>
       [...(steps ?? [])].reverse().find(
@@ -2348,17 +4194,122 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
     [steps],
   );
 
-  if (!step) return null;
+  const result = step?.result as Record<string, unknown> | undefined;
+  const topic = (result?.topic as string) ?? "Presentation";
+  const styleNote = (result?.style_note as string | undefined) ?? "";
+  const audience = (result?.audience as string | undefined) ?? "";
 
-  const result = step.result as Record<string, unknown>;
-  const topic = (result.topic as string) ?? "Presentation";
-  const slides = (result.slides as Array<Record<string, unknown>>) ?? [];
-  const styleNote = (result.style_note as string | undefined) ?? "";
-  const audience = (result.audience as string | undefined) ?? "";
+  const [editing, setEditing] = useState(false);
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [committedSlides, setCommittedSlides] = useState<PlanSlide[]>([]);
+  const [draftSlides, setDraftSlides] = useState<PlanSlide[]>([]);
+  const [planSaved, setPlanSaved] = useState(false);
+
+  useEffect(() => {
+    if (!step || editing) return;
+    const nextSlides =
+      ((step.result as Record<string, unknown>)?.slides as PlanSlide[] | undefined) ?? [];
+    const cloned = clonePlanSlides(nextSlides);
+    setCommittedSlides(cloned);
+    setDraftSlides(clonePlanSlides(cloned));
+    setPlanSaved(Boolean(result?.user_edited));
+  }, [step, result?.user_edited, result?.saved_at, editing]);
+
+  if (!step || superseded) return null;
+
+  const slides = editing ? draftSlides : committedSlides;
+  const editDirty = slidesPlanDirty(committedSlides, draftSlides);
+
+  function startEditing() {
+    setDraftSlides(clonePlanSlides(committedSlides));
+    setEditing(true);
+  }
+
+  function cancelEditing() {
+    setDraftSlides(clonePlanSlides(committedSlides));
+    setEditing(false);
+  }
+
+  async function updatePlan() {
+    if (!onSavePlan || savingPlan) return;
+    const normalized = normalizeSlidesForGeneration(draftSlides);
+    const next = clonePlanSlides(normalized);
+    setSavingPlan(true);
+    const ok = await onSavePlan(messageIndex, topic, next);
+    setSavingPlan(false);
+    if (!ok) return;
+    setCommittedSlides(next);
+    setDraftSlides(clonePlanSlides(next));
+    setPlanSaved(true);
+    setEditing(false);
+    toast.success("Plan saved");
+  }
+
+  function updateSlide(index: number, patch: Partial<PlanSlide>) {
+    setDraftSlides((prev) => prev.map((s, i) => (i === index ? { ...s, ...patch } : s)));
+  }
+
+  function moveSlide(index: number, direction: -1 | 1) {
+    setDraftSlides((prev) => {
+      const next = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next.map((s, i) => ({ ...s, is_title: i === 0 }));
+    });
+  }
+
+  function removeSlide(index: number) {
+    setDraftSlides((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((_, i) => i !== index);
+      if (next[0]) next[0] = { ...next[0], is_title: true };
+      return next;
+    });
+  }
+
+  function addSlide() {
+    setDraftSlides((prev) => [
+      ...prev,
+      {
+        title: `Slide ${prev.length + 1}`,
+        layout: "content",
+        body: [""],
+        image_prompt: "",
+      },
+    ]);
+  }
+
+  async function approvePlan() {
+    if (!onGeneratePresentation || busy || savingPlan) return;
+
+    let slidesToGenerate = normalizeSlidesForGeneration(committedSlides);
+    let wasEdited = planSaved;
+
+    if (editing || editDirty) {
+      if (!onSavePlan) return;
+      const normalized = normalizeSlidesForGeneration(draftSlides);
+      const next = clonePlanSlides(normalized);
+      setSavingPlan(true);
+      const ok = await onSavePlan(messageIndex, topic, next);
+      setSavingPlan(false);
+      if (!ok) {
+        toast.error("Save your edits with Update plan before generating.");
+        return;
+      }
+      setCommittedSlides(next);
+      setDraftSlides(clonePlanSlides(next));
+      setPlanSaved(true);
+      setEditing(false);
+      slidesToGenerate = normalizeSlidesForGeneration(next);
+      wasEdited = true;
+    }
+
+    onGeneratePresentation(messageIndex, topic, slidesToGenerate, wasEdited);
+  }
 
   return (
     <div className="mt-3 overflow-hidden rounded-xl border border-brand/30 shadow-sm">
-      {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-brand/20 bg-brand/5 px-3 py-2.5">
         <div className="flex items-center gap-2">
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 fill-brand" aria-hidden>
@@ -2367,20 +4318,95 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
           <span className="text-[12px] font-semibold text-slate-800">{topic}</span>
           {audience && <span className="text-[10px] text-slate-500">· for {audience}</span>}
         </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand-dark">
-            {slides.length} slides · awaiting approval
-          </span>
-        </div>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+          busy
+            ? "bg-brand/15 text-brand-dark"
+            : editing
+              ? "bg-amber-100 text-amber-800"
+              : "bg-brand/15 text-brand-dark"
+        }`}>
+          {busy
+            ? `${slides.length} slides · generating…`
+            : editing
+              ? `${slides.length} slides · editing`
+              : planSaved
+                ? `${slides.length} slides · saved`
+                : `${slides.length} slides · review & approve`}
+        </span>
       </div>
 
-      {/* Slide list */}
       <div className="divide-y divide-slate-100 bg-white">
         {slides.map((s, i) => {
           const title = (s.title as string) ?? `Slide ${i + 1}`;
           const body = (s.body as string[] | undefined) ?? [];
-          const imageConcept = (s.image_concept as string | undefined) ?? "";
-          const isTitle = Boolean(s.is_title);
+          const tagline = (s.tagline as string | undefined) ?? "";
+          const layout = (s.layout as string | undefined) ?? "";
+          const imageConcept =
+            (s.image_prompt as string | undefined) ||
+            (s.image_concept as string | undefined) ||
+            "";
+          const isTitle = Boolean(s.is_title) || layout === "title" || i === 0;
+          const isClosing = layout === "closing";
+
+          if (editing) {
+            return (
+              <div key={i} className="px-3 py-3">
+                <div className="flex items-start gap-2">
+                  <span className={`mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold ${isTitle ? "bg-brand text-white" : "bg-slate-100 text-slate-500"}`}>
+                    {isTitle ? "★" : i + 1}
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <input
+                      type="text"
+                      value={title}
+                      onChange={(e) => updateSlide(i, { title: e.target.value })}
+                      placeholder="Slide title"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-slate-800 focus:border-brand/50 focus:outline-none"
+                    />
+                    {(isTitle || isClosing) && (
+                      <input
+                        type="text"
+                        value={tagline}
+                        onChange={(e) => updateSlide(i, { tagline: e.target.value })}
+                        placeholder="Tagline (one-line pitch)"
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-700 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none"
+                      />
+                    )}
+                    {!isTitle && (
+                      <textarea
+                        value={body.join("\n")}
+                        onChange={(e) => updateSlide(i, { body: e.target.value.split("\n") })}
+                        rows={Math.max(2, Math.min(body.length || 2, 5))}
+                        placeholder="One bullet per line"
+                        className="w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-700 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none"
+                      />
+                    )}
+                    <input
+                      type="text"
+                      value={imageConcept}
+                      onChange={(e) =>
+                        updateSlide(i, { image_prompt: e.target.value, image_concept: e.target.value })
+                      }
+                      placeholder="Background scene (optional)"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[10.5px] text-slate-600 placeholder:text-slate-400 focus:border-brand/50 focus:outline-none"
+                    />
+                    <div className="flex items-center gap-1">
+                      <button type="button" disabled={i === 0} onClick={() => moveSlide(i, -1)} className="rounded border border-slate-200 p-1 text-slate-500 hover:bg-slate-50 disabled:opacity-30" title="Move up">
+                        <ChevronUp size={12} />
+                      </button>
+                      <button type="button" disabled={i === slides.length - 1} onClick={() => moveSlide(i, 1)} className="rounded border border-slate-200 p-1 text-slate-500 hover:bg-slate-50 disabled:opacity-30" title="Move down">
+                        <ChevronDown size={12} />
+                      </button>
+                      <button type="button" disabled={slides.length <= 1} onClick={() => removeSlide(i)} className="ml-auto rounded border border-red-200 p-1 text-red-500 hover:bg-red-50 disabled:opacity-30" title="Remove slide">
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div key={i} className="px-3 py-2.5">
               <div className="flex items-start gap-2">
@@ -2389,7 +4415,10 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="text-[12.5px] font-semibold text-slate-800">{title}</p>
-                  {body.length > 0 && (
+                  {tagline && (isTitle || isClosing) && (
+                    <p className="mt-0.5 text-[11px] font-medium italic text-brand-dark/90">{tagline}</p>
+                  )}
+                  {!isTitle && body.length > 0 && (
                     <ul className="mt-0.5 space-y-0.5">
                       {body.slice(0, 4).map((b, bi) => (
                         <li key={bi} className="text-[11px] text-slate-500">· {b}</li>
@@ -2409,31 +4438,90 @@ function PresentationPlanPreview({ steps, onSuggestionSend }: { steps?: Assistan
         })}
       </div>
 
-      {/* Visual style note */}
-      {styleNote && (
+      {editing && (
+        <div className="border-t border-slate-100 bg-white px-3 py-2">
+          <button
+            type="button"
+            onClick={addSlide}
+            className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:border-brand/40 hover:text-brand-dark"
+          >
+            <Plus size={12} />
+            Add slide
+          </button>
+        </div>
+      )}
+
+      {planSaved && !editing && !busy && (
+        <div className="border-t border-emerald-100 bg-emerald-50 px-3 py-2 text-[10.5px] text-emerald-800">
+          <span className="font-semibold">Plan saved</span>
+          {" — "}Your edits are stored in this conversation. Approve &amp; generate when ready.
+        </div>
+      )}
+
+      {styleNote && !editing && (
         <div className="border-t border-slate-100 bg-slate-50 px-3 py-2 text-[10.5px] text-slate-500">
           <span className="font-medium text-slate-600">Visual style:</span> {styleNote}
         </div>
       )}
 
-      {/* Action buttons */}
-      {onSuggestionSend && (
-        <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2.5">
-          <span className="text-[10.5px] text-slate-500">Happy with this plan?</span>
-          <button
-            type="button"
-            onClick={() => onSuggestionSend("Looks great, go ahead and generate all the slides")}
-            className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-brand-dark transition"
-          >
-            ✓ Approve &amp; Generate
-          </button>
-          <button
-            type="button"
-            onClick={() => onSuggestionSend("I'd like to make some changes to the slide plan")}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800 transition"
-          >
-            Edit plan
-          </button>
+      {onGeneratePresentation && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2.5">
+          {editing ? (
+            <>
+              <span className="text-[10.5px] text-slate-500">Edit slides below, then save.</span>
+              <button
+                type="button"
+                disabled={busy || savingPlan || !editDirty}
+                onClick={() => void updatePlan()}
+                className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-brand-dark transition disabled:opacity-50"
+              >
+                <span className="inline-flex items-center gap-1">
+                  {savingPlan ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+                  {savingPlan ? "Saving…" : "Update plan"}
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={cancelEditing}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800 transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="text-[10.5px] text-slate-500">
+                {busy ? "Building your AI-designed deck…" : planSaved ? "Your edits are saved — generate when ready." : "Happy with this plan?"}
+              </span>
+              <button
+                type="button"
+                disabled={busy || savingPlan}
+                onClick={() => void approvePlan()}
+                className="rounded-lg bg-brand px-3 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-brand-dark transition disabled:opacity-50"
+              >
+                {busy ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Loader2 size={11} className="animate-spin" />
+                    Generating…
+                  </span>
+                ) : (
+                  <>✓ Approve &amp; Generate</>
+                )}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={startEditing}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800 transition disabled:opacity-50"
+              >
+                <span className="inline-flex items-center gap-1">
+                  <PencilLine size={11} />
+                  Edit plan
+                </span>
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -2502,7 +4590,27 @@ function PresentationRenderingCard() {
   );
 }
 
-function PresentationPreview({ steps, onSuggestionSend }: { steps?: AssistantStep[]; onSuggestionSend?: (t: string) => void }) {
+function PresentationPreview({
+  steps,
+  messageIndex,
+  presentationBusy,
+  onRegenerateSlide,
+}: {
+  steps?: AssistantStep[];
+  messageIndex: number;
+  presentationBusy?: boolean;
+  onRegenerateSlide?: (
+    messageIndex: number,
+    slideIndex: number,
+    instruction: string,
+    slides: Record<string, unknown>[],
+    imageUrls: string[],
+    topic: string,
+    textEdited: boolean,
+  ) => void;
+}) {
+  type SlideTextEdit = { title: string; tagline: string; body: string[] };
+
   // Always pick the LATEST successful presentation result (create or regenerate)
   const step = useMemo(
     () =>
@@ -2515,33 +4623,124 @@ function PresentationPreview({ steps, onSuggestionSend }: { steps?: AssistantSte
     [steps],
   );
 
-  const [inputs, setInputs] = useState<Record<number, string>>({});
+  const [visualInputs, setVisualInputs] = useState<Record<number, string>>({});
+  const [textEdits, setTextEdits] = useState<Record<number, SlideTextEdit>>({});
+  const [expandedText, setExpandedText] = useState<Record<number, boolean>>({});
   const [regenerating, setRegenerating] = useState<number | null>(null);
+  const [activePreview, setActivePreview] = useState(0);
+  const [downloading, setDownloading] = useState(false);
+
+  const result = step?.result as Record<string, unknown> | undefined;
+  const url = (result?.url as string | undefined) ?? "";
+  const topic = (result?.topic as string | undefined) ?? "Presentation";
+  const slideCount = (result?.slide_count as number | undefined) ?? 0;
+  const slides = (result?.slides as Array<Record<string, unknown>> | undefined) ?? [];
+  const imageUrls = (result?.image_urls as string[] | undefined) ?? [];
+  const imagesGenerated = (result?.images_generated as number | undefined) ?? 0;
+  const previewUrls = useMemo(
+    () => imageUrls.map((u) => resolveMediaUrl(u) || u).filter(Boolean) as string[],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable when deck URL or thumbs change
+    [url, imageUrls.join("\u0000")],
+  );
+
+  const deckKey = url || String(slideCount);
+
+  useEffect(() => {
+    setActivePreview(0);
+  }, [deckKey]);
+
+  useEffect(() => {
+    if (activePreview >= previewUrls.length && previewUrls.length > 0) {
+      setActivePreview(0);
+    }
+  }, [activePreview, previewUrls.length]);
+
+  function handleDownload(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!url || downloading) return;
+    setDownloading(true);
+    const safeName = topic.replace(/[^a-z0-9_\-. ]/gi, "_").trim() || "presentation";
+    void downloadAsset(url, safeName)
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Download failed");
+      })
+      .finally(() => setDownloading(false));
+  }
+
+  useEffect(() => {
+    if (!slides.length) return;
+    const next: Record<number, SlideTextEdit> = {};
+    slides.forEach((s, i) => {
+      const rawBody = ((s.body as string[] | undefined) ?? []).slice(0, 3);
+      const body = [...rawBody];
+      while (body.length < 3) body.push("");
+      next[i] = {
+        title: String(s.title ?? ""),
+        tagline: String(s.tagline ?? ""),
+        body,
+      };
+    });
+    setTextEdits(next);
+  }, [deckKey]);
 
   if (!step) return null;
 
-  const result = step.result as Record<string, unknown>;
-  const url = result.url as string;
-  const topic = (result.topic as string | undefined) ?? "Presentation";
-  const slideCount = (result.slide_count as number | undefined) ?? 0;
-  const slides = (result.slides as Array<Record<string, unknown>> | undefined) ?? [];
-  const imageUrls = (result.image_urls as string[] | undefined) ?? [];
-  const imagesGenerated = (result.images_generated as number | undefined) ?? 0;
+  function slideTextChanged(index: number): boolean {
+    const s = slides[index];
+    const e = textEdits[index];
+    if (!s || !e) return false;
+    const origTitle = String(s.title ?? "").trim();
+    const origTagline = String(s.tagline ?? "").trim();
+    const origBody = ((s.body as string[] | undefined) ?? []).map((b) => String(b).trim()).filter(Boolean);
+    const newBody = e.body.map((b) => b.trim()).filter(Boolean);
+    return (
+      e.title.trim() !== origTitle ||
+      e.tagline.trim() !== origTagline ||
+      JSON.stringify(newBody) !== JSON.stringify(origBody)
+    );
+  }
+
+  function buildSlidesForRegenerate(): Record<string, unknown>[] {
+    return slides.map((s, i) => {
+      const e = textEdits[i];
+      if (!e) return s;
+      const body = e.body.map((b) => b.trim()).filter(Boolean).slice(0, 3);
+      return {
+        ...s,
+        title: e.title.trim() || s.title,
+        tagline: e.tagline.trim(),
+        body,
+      };
+    });
+  }
 
   function handleRegenerate(index: number) {
-    const instruction = (inputs[index] || "").trim();
-    if (!instruction || !onSuggestionSend) return;
+    const instruction = (visualInputs[index] || "").trim();
+    const textChanged = slideTextChanged(index);
+    if ((!instruction && !textChanged) || !onRegenerateSlide) return;
     setRegenerating(index);
-    const slideTitle = (slides[index]?.title as string | undefined) ?? `slide ${index + 1}`;
-    // Build a natural message the AI will parse to call regenerate_slide
-    const slidesJson = JSON.stringify(slides);
-    const urlsJson = JSON.stringify(imageUrls);
-    onSuggestionSend(
-      `Regenerate slide ${index + 1} ("${slideTitle}") with this instruction: ${instruction}. ` +
-      `Use slides=${slidesJson} and image_urls=${urlsJson} and topic="${topic}".`
+    onRegenerateSlide(
+      messageIndex,
+      index,
+      instruction,
+      buildSlidesForRegenerate(),
+      imageUrls,
+      topic,
+      textChanged,
     );
-    setInputs(prev => ({ ...prev, [index]: "" }));
+    setVisualInputs((prev) => ({ ...prev, [index]: "" }));
   }
+
+  function canRegenerate(index: number): boolean {
+    return Boolean((visualInputs[index] || "").trim()) || slideTextChanged(index);
+  }
+
+  useEffect(() => {
+    if (!presentationBusy && regenerating !== null) {
+      setRegenerating(null);
+    }
+  }, [presentationBusy, regenerating]);
 
   return (
     <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
@@ -2555,52 +4754,152 @@ function PresentationPreview({ steps, onSuggestionSend }: { steps?: AssistantSte
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-400">{slideCount} slides · {imagesGenerated} AI images</span>
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-md border border-brand/40 bg-brand/10 px-2.5 py-1 text-[11px] font-semibold text-brand-dark hover:bg-brand/20"
+          <button
+            type="button"
+            disabled={downloading || !url}
+            onClick={handleDownload}
+            className="inline-flex items-center gap-1 rounded-md border border-brand/40 bg-brand/10 px-2.5 py-1 text-[11px] font-semibold text-brand-dark hover:bg-brand/20 disabled:opacity-50"
           >
-            <Download size={11} />
-            Download .pptx
-          </a>
+            {downloading ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+            {downloading ? "Downloading…" : "Download .pptx"}
+          </button>
         </div>
       </div>
+
+      {previewUrls.length > 0 && (
+        <div className="border-b border-slate-200 bg-slate-950">
+          <div className="relative flex aspect-video max-h-[240px] w-full items-center justify-center bg-slate-900">
+            <img
+              src={previewUrls[activePreview]}
+              alt={`Slide ${activePreview + 1} preview`}
+              className="max-h-full max-w-full object-contain"
+            />
+            <span className="absolute bottom-2 right-2 rounded bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white">
+              Slide {activePreview + 1} / {previewUrls.length}
+            </span>
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto p-2">
+            {previewUrls.map((src, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setActivePreview(i)}
+                className={`shrink-0 overflow-hidden rounded border-2 transition ${
+                  i === activePreview ? "border-brand ring-1 ring-brand/30" : "border-slate-700 opacity-75 hover:opacity-100"
+                }`}
+                title={`Preview slide ${i + 1}`}
+              >
+                <img src={src} alt="" className="h-11 w-20 object-cover" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Per-slide list with edit inputs */}
       {slides.length > 0 ? (
         <div className="divide-y divide-slate-100 bg-white">
           {slides.map((s, i) => {
-            const title = (s.title as string | undefined) ?? `Slide ${i + 1}`;
-            const body = (s.body as string[] | undefined) ?? [];
+            const edit = textEdits[i];
+            const title = edit?.title || (s.title as string | undefined) || `Slide ${i + 1}`;
+            const body = edit?.body.filter((b) => b.trim()) ?? (s.body as string[] | undefined) ?? [];
             const isTitle = Boolean(s.is_title);
             const isRegenerating = regenerating === i;
+            const showText = expandedText[i] ?? slideTextChanged(i);
             return (
               <div key={i} className="px-3 py-2.5">
                 <div className="flex items-start gap-2">
-                  {/* Slide number badge */}
                   <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-bold ${isTitle ? "bg-brand text-white" : "bg-slate-100 text-slate-500"}`}>
                     {isTitle ? "★" : i + 1}
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-[12px] font-semibold text-slate-800">{title}</p>
-                    {body.length > 0 && (
+                    {body.length > 0 && !showText && (
                       <p className="text-[10.5px] text-slate-400">{body.slice(0, 2).join(" · ")}{body.length > 2 ? "…" : ""}</p>
                     )}
-                    {/* Inline edit input */}
+
+                    <button
+                      type="button"
+                      onClick={() => setExpandedText((prev) => ({ ...prev, [i]: !showText }))}
+                      className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-brand-dark hover:text-brand"
+                    >
+                      <PencilLine size={10} />
+                      {showText ? "Hide text editor" : "Edit title & bullets"}
+                    </button>
+
+                    {showText && edit && (
+                      <div className="mt-2 space-y-1.5 rounded-lg border border-slate-100 bg-slate-50/80 p-2">
+                        <label className="block">
+                          <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">Title</span>
+                          <input
+                            type="text"
+                            value={edit.title}
+                            onChange={(e) =>
+                              setTextEdits((prev) => ({
+                                ...prev,
+                                [i]: { ...edit, title: e.target.value },
+                              }))
+                            }
+                            disabled={isRegenerating || presentationBusy}
+                            className="mt-0.5 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-brand/50 focus:outline-none disabled:opacity-50"
+                          />
+                        </label>
+                        {isTitle && (
+                          <label className="block">
+                            <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">Subtitle / tagline</span>
+                            <input
+                              type="text"
+                              value={edit.tagline}
+                              onChange={(e) =>
+                                setTextEdits((prev) => ({
+                                  ...prev,
+                                  [i]: { ...edit, tagline: e.target.value },
+                                }))
+                              }
+                              disabled={isRegenerating || presentationBusy}
+                              className="mt-0.5 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-brand/50 focus:outline-none disabled:opacity-50"
+                            />
+                          </label>
+                        )}
+                        {!isTitle &&
+                          edit.body.map((bullet, bi) => (
+                            <label key={bi} className="block">
+                              <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                                Bullet {bi + 1}
+                              </span>
+                              <input
+                                type="text"
+                                value={bullet}
+                                onChange={(e) => {
+                                  const nextBody = [...edit.body];
+                                  nextBody[bi] = e.target.value;
+                                  setTextEdits((prev) => ({
+                                    ...prev,
+                                    [i]: { ...edit, body: nextBody },
+                                  }));
+                                }}
+                                disabled={isRegenerating || presentationBusy}
+                                placeholder={bi === 0 ? "Optional — leave blank to omit" : "Optional"}
+                                className="mt-0.5 w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-brand/50 focus:outline-none disabled:opacity-50"
+                              />
+                            </label>
+                          ))}
+                      </div>
+                    )}
+
                     <div className="mt-1.5 flex items-center gap-1.5">
                       <input
                         type="text"
-                        value={inputs[i] ?? ""}
-                        onChange={e => setInputs(prev => ({ ...prev, [i]: e.target.value }))}
-                        onKeyDown={e => { if (e.key === "Enter" && !isRegenerating) handleRegenerate(i); }}
-                        placeholder={`Change slide ${i + 1} background…`}
-                        disabled={isRegenerating || !onSuggestionSend}
+                        value={visualInputs[i] ?? ""}
+                        onChange={(e) => setVisualInputs((prev) => ({ ...prev, [i]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !isRegenerating) handleRegenerate(i); }}
+                        placeholder="Visual changes (color, background, style)…"
+                        disabled={isRegenerating || !onRegenerateSlide || presentationBusy}
                         className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-800 placeholder:text-slate-400 focus:border-brand/50 focus:bg-white focus:outline-none disabled:opacity-50"
                       />
                       <button
                         type="button"
-                        disabled={!(inputs[i] || "").trim() || isRegenerating || !onSuggestionSend}
+                        disabled={!canRegenerate(i) || isRegenerating || !onRegenerateSlide || presentationBusy}
                         onClick={() => handleRegenerate(i)}
                         className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1.5 text-[11px] font-semibold text-brand-dark transition hover:bg-brand/20 disabled:opacity-40"
                       >

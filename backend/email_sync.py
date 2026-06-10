@@ -20,6 +20,8 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+_ACTIVE_SYNCS: set[str] = set()
+
 # ── Quote stripping ────────────────────────────────────────────────────────────
 
 def strip_quoted_reply(text: str) -> str:
@@ -170,9 +172,10 @@ async def _fetch_and_store_batch(
     db: Any,
     query: str = "",
     max_results: int = 10,
+    max_pages: int = 50,
 ) -> dict[str, Any]:
     """
-    Fetch ALL emails matching the query by paginating through results.
+    Fetch emails matching the query by paginating through results up to max_pages.
     Each page requests max_results (default 10) to stay under Composio's payload limit.
     Keeps fetching next pages until no more results.
     """
@@ -187,9 +190,8 @@ async def _fetch_and_store_batch(
     total_messages = 0
     page_token: Optional[str] = None
     page = 0
-    MAX_PAGES = 50  # safety cap: max 50 pages per day = 500 emails/day
 
-    while page < MAX_PAGES:
+    while page < max_pages:
         params: dict[str, Any] = {"max_results": max_results}
         if query:
             params["query"] = query
@@ -237,30 +239,60 @@ async def sync_emails_for_user(
     user_id: str,
     db: Any,
     max_results: int = 10,
+    trigger_briefing_ingest: bool = False,
 ) -> dict[str, Any]:
     """
     Quick sync — fetch the most recent inbox/important emails from ALL connected providers.
     Gmail: via Composio. Outlook: via Composio.
     """
-    total_threads = 0
-    total_messages = 0
+    if user_id in _ACTIVE_SYNCS:
+        logger.info("[email_sync] Sync already in progress for user %s, skipping", user_id)
+        return {"synced_threads": 0, "synced_messages": 0, "status": "already_syncing"}
 
-    # Gmail sync
-    gmail_query = "in:inbox -category:promotions -category:social -category:updates -category:forums"
-    gmail_result = await _fetch_and_store_batch(user_id, db, query=gmail_query, max_results=max_results)
-    if "error" not in gmail_result:
-        total_threads  += gmail_result.get("synced_threads", 0)
-        total_messages += gmail_result.get("synced_messages", 0)
+    _ACTIVE_SYNCS.add(user_id)
+    try:
+        total_threads = 0
+        total_messages = 0
 
-    # Outlook sync via Composio
-    outlook_result = await _fetch_and_store_outlook_batch(user_id, db, max_results=max_results)
-    if "error" not in outlook_result:
-        total_threads  += outlook_result.get("synced_threads", 0)
-        total_messages += outlook_result.get("synced_messages", 0)
+        # Gmail sync (quick sync limited to 1 page)
+        gmail_query = "in:inbox -category:promotions -category:social -category:updates -category:forums"
+        gmail_result = await _fetch_and_store_batch(user_id, db, query=gmail_query, max_results=max_results, max_pages=1)
+        if "error" not in gmail_result:
+            total_threads  += gmail_result.get("synced_threads", 0)
+            total_messages += gmail_result.get("synced_messages", 0)
 
-    result = {"synced_threads": total_threads, "synced_messages": total_messages}
-    logger.info("[email_sync] quick sync user=%s → %s", user_id, result)
-    return result
+        # Outlook sync via Composio
+        outlook_result = await _fetch_and_store_outlook_batch(user_id, db, max_results=max_results)
+        if "error" not in outlook_result:
+            total_threads  += outlook_result.get("synced_threads", 0)
+            total_messages += outlook_result.get("synced_messages", 0)
+
+        result = {"synced_threads": total_threads, "synced_messages": total_messages}
+        logger.info("[email_sync] quick sync user=%s → %s", user_id, result)
+
+        if total_messages > 0 and trigger_briefing_ingest:
+            try:
+                import asyncio as _asyncio
+                from rex.integrations.briefing_refresh import ingest_crm_signals_for_user_id
+                _asyncio.create_task(ingest_crm_signals_for_user_id(db, user_id))
+            except Exception as e:
+                logger.warning("[zilo] schedule briefing ingest after sync: %s", e)
+
+        # Auto-classify new email contacts after sync
+        if total_messages > 0:
+            try:
+                from email_classifier import get_email_classifier
+                classifier = get_email_classifier(db)
+                classify_result = await classifier.classify_new_emails(user_id)
+                result["contacts_classified"] = classify_result.get("classified", 0)
+                result["contacts_created"] = classify_result.get("created", 0)
+                result["contacts_updated"] = classify_result.get("updated", 0)
+            except Exception as e:
+                logger.warning("[email_sync] classification failed for user %s: %s", user_id, e)
+
+        return result
+    finally:
+        _ACTIVE_SYNCS.discard(user_id)
 
 
 async def _fetch_and_store_outlook_batch(
@@ -381,6 +413,17 @@ async def deep_sync_user(user_id: str, db: Any) -> None:
     )
     logger.info("[email_sync] deep_sync COMPLETE user=%s %d threads %d messages", user_id, total_threads, total_messages)
 
+    # Auto-classify historical email contacts after deep sync complete
+    if total_messages > 0:
+        try:
+            from email_classifier import get_email_classifier
+            classifier = get_email_classifier(db)
+            classify_result = await classifier.classify_new_emails(user_id)
+            logger.info("[email_sync] deep_sync contact classification complete user=%s: %s", user_id, classify_result)
+        except Exception as e:
+            logger.warning("[email_sync] classification failed after deep sync for user %s: %s", user_id, e)
+
+
 
 # ── DB read helpers ────────────────────────────────────────────────────────────
 
@@ -469,6 +512,10 @@ async def ensure_indexes(db: Any) -> None:
         await db.email_threads.create_index([("user_id", 1), ("last_message_at", -1)])
         await db.email_threads.create_index([("user_id", 1), ("subject", "text"), ("snippet", "text")])
         await db.email_messages.create_index([("user_id", 1), ("thread_id", 1), ("date", 1)])
+        await db.email_messages.create_index([("user_id", 1), ("contact_classified", 1)])
+        await db.email_messages.create_index([("user_id", 1), ("contact_classified", 1), ("date", -1)])
+        await db.customers.create_index([("user_id", 1), ("email", 1)])
+        await db.pending_email_classifications.create_index([("user_id", 1), ("status", 1)])
     except Exception as e:
         logger.warning("[email_sync] index creation failed: %s", e)
 

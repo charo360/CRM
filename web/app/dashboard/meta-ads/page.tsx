@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { MarketingApiBanner } from "@/components/marketing/MarketingApiBanner";
 import { marketingApi, assistantApi, zernioAdsApi, adHealthApi, type MetaAdsCampaignDraft, type ZernioAdsInsights, type ZernioCampaignMetrics, type AdHealthCampaign, type AdAlertRule, type AdAlertHistoryEntry } from "@/lib/api";
 import { getCurrency } from "@/lib/auth";
@@ -34,7 +34,10 @@ import {
   Settings,
   Clock,
   Zap,
+  Eye,
 } from "lucide-react";
+
+
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -143,7 +146,7 @@ function SummaryCards({ rows }: { rows: MetaAdsCampaignDraft[] }) {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {cards.map((c) => (
-        <div key={c.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div key={c.label} className="rounded-lg border border-slate-200 bg-white p-4">
           <div className={`mb-1 ${c.color}`}>
             <c.icon size={16} />
           </div>
@@ -298,9 +301,9 @@ function AICampaignBuilderDrawer({
               </p>
               <div className="space-y-2 text-left mt-4">
                 {[
-                  "I run a restaurant in Nairobi and want more table bookings from young professionals",
+                  "I run a restaurant in Austin and want more table bookings from young professionals",
                   "Promote my online clothing store to women aged 18-35 interested in fashion",
-                  "Get leads for my real estate project targeting high-income buyers in Kenya",
+                  "Get leads for my real estate project targeting high-income buyers in the US",
                 ].map((ex) => (
                   <button
                     key={ex}
@@ -632,16 +635,201 @@ function CampaignModal({
   );
 }
 
+// ── Campaign detail drawer ───────────────────────────────────────────────────
+
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="border-b border-slate-100 py-3 last:border-0">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+        {label}
+      </p>
+      <div className="mt-1 text-sm text-slate-800">{children}</div>
+    </div>
+  );
+}
+
+function CampaignDetailDrawer({
+  campaign,
+  onClose,
+  onEdit,
+}: {
+  campaign: MetaAdsCampaignDraft | null;
+  onClose: () => void;
+  onEdit: (r: MetaAdsCampaignDraft) => void;
+}) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!campaign) {
+      setVisible(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setVisible(true));
+    return () => cancelAnimationFrame(frame);
+  }, [campaign]);
+
+  if (!campaign) return null;
+
+  const obj = objectiveMeta(campaign.objective ?? "");
+  const parts = metaNotesToParts(campaign.notes ?? "{}");
+  const src = sourceLabel(campaign.source);
+
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        className={`fixed inset-0 z-40 bg-slate-900/30 transition-opacity duration-200 ${
+          visible ? "opacity-100" : "opacity-0"
+        }`}
+        onClick={onClose}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Campaign details"
+        className={`fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-slate-200 bg-white transition-transform duration-200 ease-out ${
+          visible ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        <div className="flex shrink-0 items-start justify-between border-b border-slate-200 px-5 py-4">
+          <div className="min-w-0 pr-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+              Campaign details
+            </p>
+            <h2 className="mt-1 text-base font-semibold text-slate-900">
+              {campaign.name}
+            </h2>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${obj.color}`}
+              >
+                {obj.label}
+              </span>
+              <span
+                className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${
+                  STATUS_BADGE[campaign.status] ?? "bg-slate-100 text-slate-600"
+                }`}
+              >
+                {campaign.status}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-2">
+          <DetailRow label="Daily budget">
+            <span className="font-semibold tabular-nums">
+              {campaign.currency} {campaign.daily_budget.toFixed(2)}
+            </span>
+          </DetailRow>
+
+          {(parts.start_date || parts.end_date) && (
+            <DetailRow label="Schedule">
+              {parts.start_date || "—"}
+              {parts.end_date ? ` → ${parts.end_date}` : ""}
+            </DetailRow>
+          )}
+
+          {parts.audience && (
+            <DetailRow label="Audience">
+              <p className="whitespace-pre-wrap leading-relaxed text-slate-700">
+                {parts.audience}
+              </p>
+            </DetailRow>
+          )}
+
+          {parts.strategy && (
+            <DetailRow label="Strategy">
+              <p className="whitespace-pre-wrap leading-relaxed text-slate-700">
+                {parts.strategy}
+              </p>
+            </DetailRow>
+          )}
+
+          {parts.creative_format && (
+            <DetailRow label="Creative format">{parts.creative_format}</DetailRow>
+          )}
+
+          {parts.products_advertised && (
+            <DetailRow label="Products advertised">
+              <p className="whitespace-pre-wrap leading-relaxed text-slate-700">
+                {parts.products_advertised}
+              </p>
+            </DetailRow>
+          )}
+
+          {parts.creative_assets_plan && (
+            <DetailRow label="Creative assets plan">
+              <p className="whitespace-pre-wrap leading-relaxed text-slate-700">
+                {parts.creative_assets_plan}
+              </p>
+            </DetailRow>
+          )}
+
+          {parts.ad_preview && (
+            <DetailRow label="Ad preview">
+              <p className="whitespace-pre-wrap leading-relaxed text-slate-700">
+                {parts.ad_preview}
+              </p>
+            </DetailRow>
+          )}
+
+          <DetailRow label="Created">
+            {campaign.created_at ? formatDateTime(campaign.created_at) : "—"}
+            {src ? ` · ${src}` : ""}
+          </DetailRow>
+        </div>
+
+        <div className="flex shrink-0 gap-2 border-t border-slate-200 px-5 py-4">
+          <button
+            type="button"
+            onClick={() => {
+              onEdit(campaign);
+              onClose();
+            }}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#1877F2] px-4 py-2 text-sm font-semibold text-white hover:bg-[#166fe5]"
+          >
+            <Pencil size={14} />
+            Edit campaign
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Campaigns table ────────────────────────────────────────────────────────────
 
 function CampaignsTable({
   rows,
+  onView,
   onEdit,
   onDuplicate,
   onDelete,
   onToggleStatus,
 }: {
   rows: MetaAdsCampaignDraft[];
+  onView: (r: MetaAdsCampaignDraft) => void;
   onEdit: (r: MetaAdsCampaignDraft) => void;
   onDuplicate: (r: MetaAdsCampaignDraft) => void;
   onDelete: (id: string) => void;
@@ -658,10 +846,18 @@ function CampaignsTable({
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[700px] text-left text-sm">
-          <thead className="border-b border-slate-100 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        <table className="w-full min-w-[880px] table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[26%]" />
+            <col className="w-[11%]" />
+            <col className="w-[26%]" />
+            <col className="w-[12%]" />
+            <col className="w-[10%]" />
+            <col className="w-[15%]" />
+          </colgroup>
+          <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-4 py-3">Campaign</th>
               <th className="px-4 py-3">Objective</th>
@@ -677,42 +873,48 @@ function CampaignsTable({
               const parts = metaNotesToParts(r.notes ?? "{}");
               const canToggle = r.status === "active" || r.status === "paused";
               return (
-                <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
-                  <td className="px-4 py-3 max-w-[200px]">
-                    <p className="font-medium text-slate-900 truncate">{r.name}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
+                <tr key={r.id} className="hover:bg-slate-50/80">
+                  <td className="px-4 py-3 min-w-0">
+                    <p className="truncate font-medium text-slate-900" title={r.name}>
+                      {r.name}
+                    </p>
+                    <p className="mt-0.5 truncate text-[11px] text-slate-400">
                       {r.created_at ? formatDateTime(r.created_at) : "—"}
                       {sourceLabel(r.source) ? ` · ${sourceLabel(r.source)}` : ""}
                     </p>
                     {parts.start_date && (
-                      <p className="text-[11px] text-slate-400">
-                        {parts.start_date}{parts.end_date ? ` → ${parts.end_date}` : ""}
-                      </p>
-                    )}
-                    {(parts.products_advertised || parts.creative_format) && (
-                      <p className="text-[11px] text-slate-400 line-clamp-2">
-                        {parts.creative_format ? `${parts.creative_format}` : ""}
-                        {parts.creative_format && parts.products_advertised ? " · " : ""}
-                        {parts.products_advertised || ""}
+                      <p className="truncate text-[11px] text-slate-400">
+                        {parts.start_date}
+                        {parts.end_date ? ` → ${parts.end_date}` : ""}
                       </p>
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${obj.color}`}>
+                    <span
+                      className={`inline-flex max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium ${obj.color}`}
+                    >
                       {obj.label}
                     </span>
                   </td>
-                  <td className="px-4 py-3 max-w-[160px]">
+                  <td className="px-4 py-3 min-w-0">
                     {parts.audience ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-slate-600">
-                        <Users size={10} className="shrink-0" />
-                        <span className="truncate">{parts.audience}</span>
-                      </span>
+                      <div className="flex min-w-0 items-start gap-1">
+                        <Users
+                          size={10}
+                          className="mt-0.5 shrink-0 text-slate-400"
+                        />
+                        <p
+                          className="min-w-0 truncate text-[11px] text-slate-600"
+                          title={parts.audience}
+                        >
+                          {parts.audience}
+                        </p>
+                      </div>
                     ) : (
                       <span className="text-[11px] text-slate-300">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 font-medium text-slate-700">
+                  <td className="px-4 py-3 font-medium tabular-nums text-slate-700 whitespace-nowrap">
                     {r.currency} {r.daily_budget.toFixed(2)}
                   </td>
                   <td className="px-4 py-3">
@@ -720,7 +922,13 @@ function CampaignsTable({
                       type="button"
                       disabled={!canToggle}
                       onClick={() => onToggleStatus(r)}
-                      title={canToggle ? (r.status === "active" ? "Pause" : "Activate") : undefined}
+                      title={
+                        canToggle
+                          ? r.status === "active"
+                            ? "Pause"
+                            : "Activate"
+                          : undefined
+                      }
                       className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
                         STATUS_BADGE[r.status] ?? ""
                       } ${canToggle ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
@@ -731,7 +939,15 @@ function CampaignsTable({
                     </button>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
+                    <div className="flex items-center justify-end gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => onView(r)}
+                        title="View details"
+                        className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-[#1877F2]"
+                      >
+                        <Eye size={13} />
+                      </button>
                       <button
                         type="button"
                         onClick={() => onEdit(r)}
@@ -1491,6 +1707,7 @@ export default function MetaAdsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [viewCampaign, setViewCampaign] = useState<MetaAdsCampaignDraft | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -1600,7 +1817,12 @@ export default function MetaAdsPage() {
     }
   }
 
-  const filtered = statusFilter === "all" ? rows : rows.filter((r) => r.status === statusFilter);
+  const filtered = (
+    statusFilter === "all" ? rows : rows.filter((r) => r.status === statusFilter)
+  ).slice().sort(
+    (a, b) =>
+      new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime(),
+  );
 
   if (loading) {
     return (
@@ -1708,6 +1930,7 @@ export default function MetaAdsPage() {
 
           <CampaignsTable
             rows={filtered}
+            onView={setViewCampaign}
             onEdit={openEdit}
             onDuplicate={handleDuplicate}
             onDelete={handleDelete}
@@ -1743,6 +1966,12 @@ export default function MetaAdsPage() {
           onClose={() => setAiOpen(false)}
         />
       )}
+
+      <CampaignDetailDrawer
+        campaign={viewCampaign}
+        onClose={() => setViewCampaign(null)}
+        onEdit={openEdit}
+      />
     </div>
   );
 }

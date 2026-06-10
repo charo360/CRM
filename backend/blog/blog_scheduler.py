@@ -1,6 +1,6 @@
 """
 Zilo Autoblogging — Daily Post Scheduler.
-Runs every day at 9 AM Nairobi time (6 AM UTC) and publishes one post per active client,
+Runs every day at 9 AM UTC and publishes one post per active client,
 respecting per-plan weekly post limits.
 """
 import logging
@@ -64,7 +64,7 @@ async def publish_daily_posts(db) -> None:
             post = await generate_blog_post(
                 business_name=business_name,
                 industry=blog.get("industry", "services"),
-                location=blog.get("location", "Nairobi"),
+                location=blog.get("location", ""),
                 topic=seo["topic"],
                 posts_count=posts_count,
                 focus_keyword=seo.get("focus_keyword", ""),
@@ -100,14 +100,14 @@ def start_blog_scheduler(db) -> None:
         logger.info("[blog-scheduler] Already running, skipping start")
         return
 
-    _blog_scheduler = AsyncIOScheduler(timezone="Africa/Nairobi")
+    _blog_scheduler = AsyncIOScheduler(timezone="UTC")
 
     _blog_scheduler.add_job(
         publish_daily_posts,
-        CronTrigger(hour=9, minute=0),  # 9 AM Nairobi (EAT = UTC+3 → 6 AM UTC)
+        CronTrigger(hour=6, minute=0),  # 6 AM UTC (reasonable morning hour globally)
         args=[db],
         id="autoblog_daily_publish",
-        name="Autoblog Daily Publish (9 AM EAT)",
+        name="Autoblog Daily Publish (6 AM UTC)",
         replace_existing=True,
     )
 

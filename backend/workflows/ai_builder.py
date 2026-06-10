@@ -112,6 +112,7 @@ def _build_system_prompt() -> str:
         f"  - {name}: {info['description']}"
         for name, info in TRIGGER_TYPES.items()
     )
+    allowed_actions = ", ".join(CAPABILITIES.keys())
     return f"""You are a workflow builder for a WhatsApp CRM system.
 
 Your job: convert a natural language automation description into a structured JSON workflow.
@@ -144,10 +145,10 @@ Return ONLY a valid JSON object with this exact structure:
 
 ## Rules:
 - Only use trigger types and action capabilities from the lists above
-- Use these EXACT action strings (copy verbatim): send_message, tag_contact, assign_owner, notify_owner, create_followup, move_pipeline_stage, escalate_to_human, wait, if_no_reply
+- Use these EXACT action strings (copy verbatim): {allowed_actions}
 - For delays, use "wait" action with param "hours" (e.g. 2.0 for 2 hours). Set delay_minutes = 0 for wait steps.
 - After a wait, use "if_no_reply" if you want to check if the customer replied
-- Use {{customer_name}} and {{business_name}} as placeholders in message text
+- Use placeholders like {{customer_name}}, {{business_name}}, {{first_name}}, {{phone}}, and any event fields or {{extracted_text}} for browser extractions in message texts or text parameters
 - For send_message, optional params "destination": "customer_whatsapp" (default, message to contact on WhatsApp) or "owner_push" (message as mobile push to the business owner only); optional "title" when using owner_push
 - Conditions for incoming_message: "always" or "message_contains('word')"
 - Conditions for intent_detected: "intent == 'order'" etc.

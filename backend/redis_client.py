@@ -32,6 +32,12 @@ QUEUE_RECEIPT     = "queue:receipt"
 
 _redis: Optional[aioredis.Redis] = None
 
+_KEY_PREFIX = os.environ.get("REDIS_KEY_PREFIX", "").rstrip(":")
+
+def _k(key: str) -> str:
+    """Namespace a Redis key with the environment prefix."""
+    return f"{_KEY_PREFIX}:{key}" if _KEY_PREFIX else key
+
 
 async def get_redis() -> Optional[aioredis.Redis]:
     """Return the shared Redis connection, or None if Redis is not configured."""
@@ -61,7 +67,7 @@ async def cache_get(key: str) -> Optional[Any]:
     if not r:
         return None
     try:
-        raw = await r.get(key)
+        raw = await r.get(_k(key))
         return json.loads(raw) if raw else None
     except Exception as e:
         logging.warning(f"[Redis] cache_get error {key}: {e}")
@@ -74,7 +80,7 @@ async def cache_set(key: str, value: Any, ttl: int = 300) -> None:
     if not r:
         return
     try:
-        await r.setex(key, ttl, json.dumps(value, default=str))
+        await r.setex(_k(key), ttl, json.dumps(value, default=str))
     except Exception as e:
         logging.warning(f"[Redis] cache_set error {key}: {e}")
 
@@ -85,7 +91,7 @@ async def cache_delete(key: str) -> None:
     if not r:
         return
     try:
-        await r.delete(key)
+        await r.delete(_k(key))
     except Exception as e:
         logging.warning(f"[Redis] cache_delete error {key}: {e}")
 
@@ -96,7 +102,7 @@ async def cache_delete_pattern(pattern: str) -> None:
     if not r:
         return
     try:
-        keys = await r.keys(pattern)
+        keys = await r.keys(_k(pattern))
         if keys:
             await r.delete(*keys)
     except Exception as e:
@@ -111,7 +117,7 @@ async def enqueue_job(queue: str, payload: dict) -> bool:
     if not r:
         return False
     try:
-        await r.rpush(queue, json.dumps(payload, default=str))
+        await r.rpush(_k(queue), json.dumps(payload, default=str))
         logging.info(f"[Queue] Enqueued job to {queue}: {payload.get('type', '?')}")
         return True
     except Exception as e:
@@ -128,7 +134,7 @@ async def dequeue_job(queue: str, timeout: int = 5) -> Optional[dict]:
     if not r:
         return None
     try:
-        result = await r.blpop(queue, timeout=timeout)
+        result = await r.blpop(_k(queue), timeout=timeout)
         if result:
             _, raw = result
             return json.loads(raw)
@@ -139,13 +145,43 @@ async def dequeue_job(queue: str, timeout: int = 5) -> Optional[dict]:
         return None
 
 
+async def dequeue_job_multi(queues: list, timeout: int = 60) -> Optional[tuple]:
+    """
+    Block-pop from multiple queues with a single Redis command.
+    Returns (queue_name, job_dict) or None on timeout / unavailable.
+    This is ~15× more efficient than polling each queue separately.
+    """
+    r = await get_redis()
+    if not r:
+        return None
+    try:
+        wrapped_queues = [_k(q) for q in queues]
+        result = await r.blpop(wrapped_queues, timeout=timeout)
+        if result:
+            queue_name, raw = result
+            # Un-prefix the returned queue_name if it starts with the prefix
+            if _KEY_PREFIX and queue_name.startswith(f"{_KEY_PREFIX}:"):
+                queue_name = queue_name[len(_KEY_PREFIX) + 1:]
+            return (queue_name, json.loads(raw))
+        return None
+    except Exception as e:
+        err_str = str(e).lower()
+        if "max requests limit exceeded" in err_str or "max_requests_limit" in err_str:
+            logging.warning(f"[Queue] Upstash rate limit hit — backing off 10 minutes")
+            await asyncio.sleep(600)
+        else:
+            logging.warning(f"[Queue] dequeue_job_multi error: {e}")
+            await asyncio.sleep(30)
+        return None
+
+
 async def queue_length(queue: str) -> int:
     """Return how many jobs are waiting in a queue."""
     r = await get_redis()
     if not r:
         return 0
     try:
-        return await r.llen(queue)
+        return await r.llen(_k(queue))
     except Exception:
         return 0
 

@@ -168,8 +168,9 @@ const COLOR_PRESETS_Q = [
 ];
 
 const DIAL_CODES_Q: Record<string, string> = {
-  KE:"+254",TZ:"+255",UG:"+256",RW:"+250",NG:"+234",GH:"+233",ZA:"+27",
-  EG:"+20", AE:"+971",SA:"+966",IN:"+91", US:"+1",CA:"+1",GB:"+44",
+  US:"+1",CA:"+1",GB:"+44",AU:"+61",DE:"+49",FR:"+33",FI:"+358",
+  SE:"+46",NO:"+47",NL:"+31",AE:"+971",IN:"+91",SG:"+65",
+  ZA:"+27",NG:"+234",KE:"+254",
 };
 function getDialCodeQ(): string {
   try {

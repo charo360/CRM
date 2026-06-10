@@ -142,7 +142,7 @@ async def generate_blog_post(
         messages=[
             {
                 "role": "user",
-                "content": f"""You are a skilled local content writer. Your job is to write a blog post that sounds like it was written by a real person who has worked in this industry for years — not by AI.
+                "content": f"""You are a senior local content writer with 10+ years of real-world experience in {industry}. You write articles that people actually read to the end — not AI summaries. Before writing, ask: what does someone searching this topic REALLY want to know? What's the angle that makes this worth reading?
 
 Business: {business_name}
 Industry: {industry}
@@ -154,27 +154,63 @@ Article style: {tpl['name']}
 Structure: {tpl['structure']}
 Writing guidance: {tpl['hint']}
 
-━━━ WRITING RULES — READ CAREFULLY ━━━
+━━━ MANDATORY — COMMIT TO YOUR OPENING BEFORE WRITING ━━━
 
-HUMAN VOICE — the most important rule:
-- Write like a local expert who has seen it all. Use "I've seen customers...", "In my experience...", "A lot of people in {location} make this mistake..."
-- Short sentences. Punchy. Then sometimes a longer one that explains the detail. Mix them up.
-- Use specific local detail: name actual neighbourhoods, markets, local price ranges, seasons, cultural references. Don't be vague.
-- Contractions: use them. "don't", "it's", "you'll", "we've". Formal writing sounds robotic.
-- One or two imperfect, conversational sentences are fine — that's what humans write.
+Your first sentence is the most important sentence in the article. Choose ONE of these six opening types and use it. Your opening must be the very first thing — no preamble, no "introduction", no context-setting paragraph before it.
 
-BANNED PHRASES — never use these:
-"dive into", "delve into", "game-changer", "game changer", "leverage", "seamlessly", "navigate",
-"unlock", "unlock potential", "revolutionize", "transformative", "landscape", "in today's world",
-"in today's fast-paced", "it's important to note", "it goes without saying", "at the end of the day",
-"comprehensive guide", "ultimate guide", "cutting-edge", "state-of-the-art", "harness the power"
+TYPE A — SCENE (a moment the reader has lived through):
+"You asked three [industry] businesses for a quote. You got three different prices. Nobody explained why."
+"The delivery arrived late. Again. The customer messaged at midnight. That's where most businesses lose it."
+
+TYPE B — COUNTER-INTUITIVE FACT (true but goes against what people assume):
+"The most expensive option in {location}'s {industry} market is rarely the best one."
+"Most businesses in {location} are losing customers at the exact moment they think they've won them."
+
+TYPE C — DIRECT QUESTION (the one already in the reader's head):
+"How do you know if the price you're paying for [service] is actually fair?"
+"What's the difference between a [service] that works and one that costs you twice as much to fix?"
+
+TYPE D — OBSERVATION FROM EXPERIENCE (someone who's been in the room):
+"I've worked with [industry] businesses across {location} for years. The ones that fail all make the same first mistake."
+"After seeing this play out dozens of times, the pattern is always the same."
+
+TYPE E — SPECIFIC NUMBER OR STAT:
+"In {location}, the average business spends 30% more on [aspect] than it needs to in year one."
+"Three out of four customers in {location} check online reviews before they ever make contact."
+
+TYPE F — BOLD POSITION (take a clear side):
+"Everyone says [common advice]. It's wrong for most {location} businesses, and here's the proof."
+"Stop [common but ineffective approach]. It's not saving you anything."
+
+━━━ HEADLINE ━━━
+Your H1 title must match the energy of your chosen opening.
+✓ "The [Topic] Mistake That's Costing {location} Businesses More Than They Realise"
+✓ "5 Things Nobody Tells You About [Topic] in {location}"
+✓ "Why [Common Belief] Is Wrong — And What Actually Works in {location}"
+✗ "A Guide to [Topic]" / "Understanding [Topic]" / "The Ultimate Guide to [Topic]"
+
+━━━ WRITING RULES ━━━
+- Write to ONE person, not a crowd. "You'll want to..." not "Businesses should..."
+- Short sentences. Punchy. Then a longer one when you need to explain something. Vary the rhythm constantly.
+- Contractions throughout: don't, it's, you'll, we've, I've. Formal tone = AI tone.
+- Specific over vague: name real areas in {location}, real price ranges, real scenarios your reader recognises.
+- Every paragraph must earn its place — if it doesn't teach something or move the story forward, cut it.
+- One concrete example always beats three abstract claims.
+
+INSTANT FAIL — if any of these appear, rewrite:
+✗ "In today's..." / "In this [fast-paced / digital / competitive] world..."
+✗ "In this article, we will explore..." / "Are you looking for..."
+✗ "[Topic] is an important/essential/crucial aspect of..."
+✗ "In conclusion" / "To summarize" / "As we have seen" / "To wrap up"
+✗ dive into · delve into · game-changer · leverage · seamlessly · unlock · revolutionize · transformative · landscape · cutting-edge · state-of-the-art · harness the power · it goes without saying · look no further · without further ado
 
 STRUCTURE & SEO:
-- 750-950 words of readable content
+- 850-1050 words of readable content
 - Use the location naturally (e.g. "in {location}", "across {location}")
 - The primary keyword must appear in: the title, the first paragraph, at least one H2, and the excerpt
-- Mention "{business_name}" and "Powered by Zilo" once each, naturally
-- No keyword stuffing — if a keyword doesn't fit, skip it
+- Mention "{business_name}" once naturally — as the local expert, not an advertisement
+- No keyword stuffing — if a keyword doesn't fit naturally, skip it
+- Call-to-action must be specific: say what happens when they contact, not just "contact us today"
 
 ━━━ GUTENBERG BLOCK FORMAT ━━━
 
@@ -238,11 +274,13 @@ WHATSAPP CTA BUTTON (use as the final element — green WhatsApp button):
 
 ━━━ OUTPUT FORMAT ━━━
 
+The "content" field must start with your chosen opening sentence — not "In today's world", not "In this article", not a definition. The opening type you chose is the FIRST thing in the article.
+
 Return ONLY valid JSON — no markdown fences, no explanation:
 {{
-  "title": "SEO title that includes the primary keyword — max 65 chars",
-  "content": "<!-- wp:paragraph -->...[complete Gutenberg block content]...",
-  "excerpt": "Meta description for Google — max 155 chars, includes primary keyword and {location}",
+  "title": "SEO title that includes the primary keyword — max 65 chars, headline energy not a label",
+  "content": "<!-- wp:paragraph -->...[complete Gutenberg block content starting with your opening sentence]...",
+  "excerpt": "Meta description for Google — max 155 chars, specific benefit + {location}, no fluff",
   "keywords": ["focus_keyword", "keyword2", "keyword3", "keyword4", "keyword5"]
 }}
 
@@ -259,6 +297,11 @@ The keywords array must use the provided SEO keywords (not made-up ones). If no 
     except json.JSONDecodeError as e:
         logger.error("[post_gen] JSON parse failed: %s\nRaw: %s", e, raw[:500])
         raise RuntimeError(f"Claude returned invalid JSON: {e}")
+
+    # Strip any markdown bold/italic markers the model accidentally left in the title
+    if "title" in post:
+        import re as _re
+        post["title"] = _re.sub(r"[*_`#]+", "", post["title"]).strip()
 
     # Always use real DataForSEO keywords — override anything Claude guessed
     if seo_keywords:

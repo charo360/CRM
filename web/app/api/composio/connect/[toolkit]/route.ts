@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildServerCrmApiUrl } from "@/lib/server-crm-api";
+import { buildInternalCrmApiUrl } from "@/lib/server-crm-api";
 
 /**
  * POST /api/composio/connect/[toolkit]
@@ -17,7 +17,8 @@ export async function POST(
   const { toolkit } = await params;
   try {
     const forward = await req.text();
-    const url = buildServerCrmApiUrl(req, `/composio/connect/${toolkit}`);
+    const url = buildInternalCrmApiUrl(`/composio/connect/${toolkit}`);
+    console.log(`[composio/connect] Forwarding to: ${url}`);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
     const res = await fetch(url, {
@@ -27,10 +28,13 @@ export async function POST(
       signal: controller.signal,
     });
     clearTimeout(timeout);
+    console.log(`[composio/connect] Backend responded: ${res.status}`);
     const data = await res.json().catch(() => ({}));
+    console.log(`[composio/connect] Response data:`, JSON.stringify(data));
     return NextResponse.json(data, { status: res.status });
   } catch (e) {
-    console.error("[api/composio/connect POST]", e);
-    return NextResponse.json({ error: "Request failed" }, { status: 502 });
+    console.error("[api/composio/connect POST] Error:", e);
+    console.error("[api/composio/connect POST] URL was:", buildInternalCrmApiUrl(`/composio/connect/${toolkit}`));
+    return NextResponse.json({ error: "Request failed", details: e instanceof Error ? e.message : String(e) }, { status: 502 });
   }
 }

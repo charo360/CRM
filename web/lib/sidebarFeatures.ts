@@ -8,6 +8,8 @@ export const SIDEBAR_FEATURE_DEFAULTS: Record<string, boolean> = {
   nav_customers: false,
   nav_contacts: false,
   nav_suppliers: false,
+  nav_investors: false,
+  nav_partners: false,
   nav_followups: false,
   nav_sales: false,
   nav_orders: false,
@@ -35,6 +37,12 @@ export const SIDEBAR_FEATURE_DEFAULTS: Record<string, boolean> = {
   nav_nps: false,
   nav_social_inbox: false,
   nav_email: false,
+  nav_email_marketing: false,
+  nav_sms_marketing: false,
+  nav_ai_scout: false,
+  nav_behavior_tracker: false,
+  nav_field_agents: false,
+  nav_smart_notes: false,
   nav_calendar: false,
   nav_shopify: false,
   nav_design_templates: false,
@@ -52,6 +60,8 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
   "/dashboard/customers": "nav_customers",
   "/dashboard/contacts": "nav_contacts",
   "/dashboard/suppliers": "nav_suppliers",
+  "/dashboard/investors": "nav_investors",
+  "/dashboard/partners": "nav_partners",
   "/dashboard/followups": "nav_followups",
   "/dashboard/sales": "nav_sales",
   "/dashboard/orders": "nav_orders",
@@ -81,6 +91,12 @@ export const HREF_TO_FEATURE_KEY: Record<string, string> = {
   "/dashboard/nps": "nav_nps",
   "/dashboard/social-inbox": "nav_social_inbox",
   "/dashboard/email": "nav_email",
+  "/dashboard/email-marketing": "nav_email_marketing",
+  "/dashboard/sms-marketing": "nav_sms_marketing",
+  "/dashboard/action-mode": "nav_ai_scout",
+  "/dashboard/marketing/behavior-discounts": "nav_behavior_tracker",
+  "/dashboard/field-agents": "nav_field_agents",
+  "/dashboard/smart-notes": "nav_smart_notes",
   "/dashboard/calendar": "nav_calendar",
   "/dashboard/shopify": "nav_shopify",
   "/dashboard/design-templates": "nav_design_templates",
@@ -129,6 +145,8 @@ export type FeatureToggleRow = {
   key: string;
   label: string;
   description: string;
+  /** Extra terms for search (e.g. sms, text) */
+  keywords?: string[];
 };
 
 export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }[] = [
@@ -139,6 +157,8 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_customers", label: "Customers / pipeline", description: "People & pipeline" },
       { key: "nav_contacts", label: "Contacts", description: "Contact records" },
       { key: "nav_suppliers", label: "Suppliers", description: "Vendor relationships" },
+      { key: "nav_investors", label: "Investors", description: "Funding pipeline and investor relationships" },
+      { key: "nav_partners", label: "Partners", description: "Strategic and channel partnerships" },
       { key: "nav_followups", label: "Follow-ups", description: "Reminders" },
     ],
   },
@@ -157,14 +177,17 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
   {
     title: "Sales & growth",
     items: [
-      { key: "nav_broadcast", label: "Broadcast", description: "Campaigns to your list — retention and promos" },
+      { key: "nav_broadcast", label: "Broadcast", description: "Campaigns to your list — retention and promos", keywords: ["whatsapp", "bulk", "promo", "campaign"] },
+      { key: "nav_sms_marketing", label: "SMS Marketing", description: "Zilo notifications + your own business SMS — set up under Setup", keywords: ["sms", "text", "message", "marketing", "sender", "notification"] },
+      { key: "nav_ai_scout", label: "AI Scout", description: "Autonomous agents — find leads, funding, social opportunities, and run tasks for you", keywords: ["scout", "ai", "agents", "action mode", "leads", "automation"] },
+      { key: "nav_behavior_tracker", label: "Behavior Tracker", description: "GA4-powered discount campaigns triggered by visitor behavior on your site", keywords: ["behavior", "discount", "ga4", "tracking", "conversion", "cart"] },
       { key: "nav_social_scheduler", label: "Social scheduler", description: "Plan posts across networks" },
       { key: "nav_meta_ads", label: "Meta Ads", description: "Facebook & Instagram campaign planning" },
       { key: "nav_google_ads", label: "Google Ads", description: "Search & Performance Max planning" },
       { key: "nav_x_ads", label: "X Ads", description: "Promoted posts & campaigns on X (Twitter)" },
       { key: "nav_google_business", label: "Google Business Profile", description: "Maps & local presence via Integrations" },
       { key: "nav_social_inbox", label: "Social Inbox", description: "Unified DMs from all your connected social platforms" },
-      { key: "nav_seo", label: "Website & SEO", description: "Coach, keywords, content, autoblog site, and audits — one workspace" },
+      { key: "nav_seo", label: "SEOhub", description: "Coach, keywords, content, autoblog site, and audits — one workspace" },
     ],
   },
   {
@@ -173,6 +196,8 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
       { key: "nav_analytics", label: "Analytics", description: "Dashboard metrics" },
       { key: "nav_team_analytics", label: "Team analytics", description: "Team performance" },
       { key: "nav_whatsapp", label: "WhatsApp", description: "WA tools" },
+      { key: "nav_field_agents", label: "Field Agents", description: "Assign and track field rep tasks — check-ins, routes, and activity", keywords: ["field", "agents", "reps", "tasks", "check-in", "routes", "mobile"] },
+      { key: "nav_smart_notes", label: "Zilo Notetaker", description: "AI meeting note-taker — auto-records and transcribes calendar meetings", keywords: ["notes", "meeting", "transcribe", "record", "notetaker", "ai"] },
       { key: "nav_team", label: "Team", description: "Members, roles, and team settings" },
       {
         key: "nav_collaboration",
@@ -189,7 +214,8 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
   {
     title: "Productivity",
     items: [
-      { key: "nav_email", label: "Email Inbox", description: "Gmail or Outlook inbox with AI draft & auto-reply" },
+      { key: "nav_email", label: "Email Inbox", description: "Gmail or Outlook inbox with AI draft & auto-reply", keywords: ["gmail", "outlook", "inbox"] },
+      { key: "nav_email_marketing", label: "Email Marketing", description: "Create and send email campaigns to your contacts", keywords: ["email", "newsletter", "campaign", "mail"] },
       { key: "nav_calendar", label: "Calendar", description: "Google or Outlook calendar with event management" },
       { key: "nav_shopify", label: "Shopify", description: "Orders, inventory, customers, abandoned carts & discounts" },
     { key: "nav_design_templates", label: "Design library", description: "Chat-generated graphics, PDFs, and decks plus optional manual template metadata" },
@@ -204,6 +230,39 @@ export const FEATURE_TOGGLE_GROUPS: { title: string; items: FeatureToggleRow[] }
     items: [{ key: "nav_kds", label: "KDS display", description: "Kitchen screen (F&B types)" }],
   },
 ];
+
+/** All toggle rows flat — useful for search / counts */
+export function getAllFeatureToggleRows(): (FeatureToggleRow & { group: string })[] {
+  return FEATURE_TOGGLE_GROUPS.flatMap((group) =>
+    group.items.map((row) => ({ ...row, group: group.title }))
+  );
+}
+
+/** Filter toggle groups by search query (label, description, group, keywords). */
+export function filterFeatureToggleGroups(
+  query: string,
+  groups: { title: string; items: FeatureToggleRow[] }[] = FEATURE_TOGGLE_GROUPS
+): { title: string; items: FeatureToggleRow[] }[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return groups;
+  const terms = q.split(/\s+/).filter(Boolean);
+  return groups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((row) => {
+        const haystack = [
+          row.label,
+          row.description,
+          group.title,
+          ...(row.keywords ?? []),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return terms.every((term) => haystack.includes(term));
+      }),
+    }))
+    .filter((g) => g.items.length > 0);
+}
 
 /** Business preset — sales, customers, invoices, analytics */
 export const PRESET_BUSINESS: Partial<Record<string, boolean>> = {

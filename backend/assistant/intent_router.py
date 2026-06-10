@@ -24,7 +24,7 @@ _LLM_ROUTE_CONFIDENCE_MIN = 0.75
 
 # Routed here only when the user clearly means the Shopify *store*, not generic catalog work.
 _SHOPIFY_AGENT_IDS = frozenset(
-    {"shopify", "shopify_orders", "shopify_products", "shopify_analytics"}
+    {"shopify", "shopify_orders", "shopify_products", "shopify_analytics", "shopify_customers"}
 )
 
 
@@ -110,6 +110,13 @@ def _is_text_document_intent(msg_lower: str) -> bool:
         "business document", "formal document", "write a", "draft a",
         "create a document", "brochure", "presentation", "powerpoint", "pptx",
         "slide deck",
+        # Presentation follow-up phrases — keep these in document, never route to creative
+        "the slide", "the slides", "the deck", "my slides", "my deck",
+        "make the slide", "make them look", "make it look",
+        "slide design", "deck design", "slide layout", "deck layout",
+        "slide style", "deck style", "visually appealing", "look appealing",
+        "make it appealing", "make them appealing", "look good for",
+        "slides look", "deck look", "slide look",
     )
     return any(m in msg_lower for m in markers)
 
@@ -131,6 +138,7 @@ _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS = frozenset(
         "shopify_products",
         "shopify_orders",
         "shopify_analytics",
+        "shopify_customers",
     }
 )
 
@@ -288,6 +296,15 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         # Note: do not use generic phrases like "adjust inventory" / "low stock" here —
         # those belong to CRM `inventory`; Shopify wins only when Shopify-specific terms match.
     ],
+    "shopify_customers": [
+        "shopify customer", "shopify buyer", "shopify client",
+        "tag customer", "tag shopify customer", "shopify vip",
+        "win-back", "win back customer", "lapsed customer",
+        "at-risk customer", "shopify segment", "customer segment shopify",
+        "shopify loyalty", "shopify ltv customer", "top shopify customer",
+        "abandoned cart customer", "message shopify customer",
+        "shopify customer tag", "customer lifetime value shopify",
+    ],
     "shopify_analytics": [
         "shopify revenue", "shopify sales", "shopify analytics",
         "shopify report", "shopify performance", "shopify conversion",
@@ -301,6 +318,8 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "connect shopify", "shopify sync", "shopify autopilot",
         "run shopify", "shopify discount", "create discount shopify",
         "abandoned cart", "cart recovery", "shopify win-back",
+        "create shopify", "create shop", "build shopify", "build store",
+        "create store", "create a shop", "create a store",
     ],
 
     # ── Payments ──────────────────────────────────────────────────────────────
@@ -338,13 +357,25 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
     ],
     "gmail": [
         "gmail", "google mail", "my email", "email inbox",
-        "send email", "email campaign", "email thread",
-        "gmail draft", "gmail label",
+        "send email", "email thread", "gmail draft", "gmail label",
+        # Inbox cleanup — disambiguates from broadcasts/email-marketing,
+        # which kept stealing requests like "delete my promotions"
+        "delete email", "delete emails", "trash email", "trash emails",
+        "clean inbox", "clean up inbox", "clean my inbox", "empty inbox",
+        "delete promotions", "delete promotional emails", "trash promotions",
+        "delete newsletters", "trash newsletters", "unsubscribe newsletter",
+        "remove emails from", "delete emails from", "bulk delete email",
+        "delete spam", "trash spam", "my gmail",
     ],
     "microsoft": [
         "microsoft", "outlook", "office 365", "microsoft teams",
         "onedrive", "sharepoint", "microsoft calendar",
         "outlook email", "outlook calendar", "ms teams",
+        # Outlook inbox cleanup (mirrors Gmail to keep parity)
+        "delete outlook email", "delete outlook emails", "trash outlook email",
+        "clean outlook inbox", "clean up outlook", "empty outlook inbox",
+        "delete outlook promotions", "delete outlook newsletters",
+        "my outlook", "outlook inbox", "ms 365 inbox",
     ],
     "google_calendar": [
         "google calendar", "calendar event", "my calendar",
@@ -408,6 +439,7 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "investment memo", "investor memo", "fundraising document",
         "press release", "write a press release",
         "meeting minutes", "write minutes", "draft minutes",
+        "meeting notes", "smart notes", "search notes", "recent meetings", "find notes from",
         "contract", "draft a contract", "service agreement", "write an agreement",
         "letter of intent", "loi", "write a letter of intent",
         "client onboarding", "onboarding letter", "welcome letter",
@@ -518,6 +550,23 @@ _KEYWORD_MAP: Dict[str, List[str]] = {
         "product seo", "e-commerce seo", "category seo",
         "blog post seo", "content optimization", "seo content",
     ],
+    "zilo_support": [
+        "zilo support", "zilo pricing", "zilo plans", "zilo features",
+        "zilo crm", "upgrade my plan", "how do i upgrade", "how much is zilo",
+        "zilo cost", "about zilo", "free plan", "growth plan", "zilo feature list",
+        "billing on zilo", "subscription plans", "billing info zilo", "tell me about zilo",
+    ],
+    "forms": [
+        "create a form", "make a form", "build a form", "new form",
+        "create form", "make form", "build form", "generate a form",
+        "booking form", "feedback form", "contact form", "survey form",
+        "registration form", "application form", "order form", "intake form",
+        "inquiry form", "appointment form", "lead form", "sign up form",
+        "collect information", "collect details", "gather information",
+        "send a form", "share a form", "form to collect",
+        "my forms", "list forms", "show my forms",
+        "edit form", "update form", "delete form",
+    ],
 
     # ── Spreadsheet / Workspace integrations ──────────────────────────────────
     "google_sheets": [
@@ -560,6 +609,11 @@ def _is_continuation_message(msg_lower: str) -> bool:
     """True for short, ambiguous follow-ups that are clearly continuing the same flow."""
     if _looks_like_agent_switch_request(msg_lower):
         return False
+    # Matches letter options like "A", "B", "A.", "B.", "A)", "B)"
+    if msg_lower.strip() in {"a", "b", "c", "d", "e"}:
+        return True
+    if re.match(r'^[a-e][\.\)\s]', msg_lower):
+        return True
     words = msg_lower.split()
     if len(words) > 6:
         return False
@@ -744,7 +798,7 @@ async def _llm_route_choice(
             "- customers: customer records, segments, VIPs, health scores, at-risk customers\n"
             "- contacts: leads, contact database, import contacts, contact records (not customers)\n"
             "- quotes: short pricing docs — quotes, estimates, scope-of-work for a specific customer\n"
-            "- document: long-form written docs — business plans, pitch decks, contracts, reports, press releases, proposals\n"
+            "- document: long-form written docs — business plans, pitch decks, contracts, reports, press releases, proposals, meeting minutes/notes, smart notes\n"
             "- meta_ads: Facebook/Instagram ad campaigns, budgets, ROAS, ad performance strategy\n"
             "- google_ads: Google Search/Display/Performance Max campaigns, quality score, adwords\n"
             "- creative: generating/refining VISUALS — graphics, flyers, ad images, social post images, carousels\n"
@@ -756,12 +810,14 @@ async def _llm_route_choice(
             "- follow_ups: follow-up reminders, overdue contacts, reconnect scheduling\n"
             "- bookings: appointments, reservations, scheduling services, availability\n"
             "- automations: workflow triggers, auto-reply rules, sequences, automation setup\n"
-            "- general: integrations/account status questions, cross-domain fallback\n\n"
+            "- forms: creating, managing, sharing, or previewing lead-capture/booking/feedback/survey forms conversationally\n"
+            "- zilo_support: questions about Zilo (features, CRM capabilities, help guides, subscription plans, and billing/upgrade prices)\n"
+            "- general: account status questions, cross-domain fallback\n\n"
             "DISAMBIGUATION RULES (apply in order):\n"
             "1. 'invoice' / 'create invoice' / 'unpaid invoice' / 'overdue invoice' → invoices (not finance, not stripe)\n"
             "2. 'expense' / 'cash flow' / 'P&L' / 'profit and loss' → finance (not invoices)\n"
             "3. 'stripe [anything]' → stripe; otherwise payment records → payments\n"
-            "4. 'business plan' / 'pitch deck' / 'contract' / 'press release' / 'write a report' → document\n"
+            "4. 'business plan' / 'pitch deck' / 'contract' / 'press release' / 'write a report' / 'meeting notes' / 'smart notes' → document\n"
             "5. 'quote' / 'estimate' / 'scope of work' for a specific customer → quotes (not document)\n"
             "6. 'design an ad' / 'ad graphic' / 'ad image' / 'make a flyer' → creative (not meta_ads)\n"
             "7. 'facebook ad campaign' / 'ad budget' / 'ROAS' / 'ad spend' / 'retargeting' → meta_ads (not creative)\n"
@@ -772,7 +828,8 @@ async def _llm_route_choice(
             "12. 'schedule post' / 'content calendar' / 'when to post' → social_scheduler (not creative)\n"
             "13. 'social DM' / 'social inbox' / 'reply to social message' → social_inbox (not messages — messages=WhatsApp)\n"
             "14. 'send to all customers' / 'bulk message' / 'mass message' → broadcasts (not messages)\n"
-            "15. 'how many social accounts' / 'connected integrations' → general\n\n"
+            "15. 'how many social accounts' / 'connected integrations' → general\n"
+            "16. 'form' / 'create a form' / 'survey' / 'feedback form' → forms\n\n"
             f"Available agents:\n{agent_menu}\n\n"
             f"Recent context:\n{recent}\n\n"
             f"User message: \"{message}\"\n\n"
@@ -785,7 +842,7 @@ async def _llm_route_choice(
         resp = await _chat_with_tools(
             messages=[{"role": "user", "content": prompt}],
             tools=[],
-            model_id=None,
+            model_id="deepseek-v4-flash",
             temperature=0.0,
             timeout=8.0,
         )
@@ -825,12 +882,13 @@ async def route_to_agent(
 ) -> str:
     """Return the best agent_id for this message.
 
-    Strategy (LLM-first):
+    Strategy (semantic-first):
       0.  Explicit agent from UI/API — user locked or picked a specialist.
       0a. Sticky creative — active multi-turn design flow (stateful, never interrupt).
-      1.  LLM routing — primary decision maker, runs before any keyword checks.
-      2.  Keyword scoring — last-resort fallback only if LLM fails or returns
-          low confidence.
+      1.  Semantic router — cosine similarity on pre-embedded phrases (~70 ms, no LLM).
+          Skips steps 2-3 when confidence ≥ 0.72 with margin ≥ 0.03.
+      2.  LLM routing — fallback when semantic confidence is low.
+      3.  Keyword scoring — last-resort if both LLM fails and returns low confidence.
     Always returns a valid agent_id that exists in agent_registry.
     """
     msg_lower = message.lower()
@@ -845,6 +903,14 @@ async def route_to_agent(
 
     _AGENT_ALIASES_LOCAL = {"design": "creative"}
     prev_agent_resolved = _AGENT_ALIASES_LOCAL.get(prev_agent or "", prev_agent or "")
+
+    # ── 0d. Sticky active agent for generic continuation replies ─────────────
+    # If the message is a short continuation/option reply (e.g. "yes", "option A", "go ahead"),
+    # do NOT switch agents — keep the active agent who prompted the user.
+    if prev_agent_resolved and prev_agent_resolved in agent_registry:
+        if _is_continuation_message(msg_lower):
+            logger.info("[IntentRouter] sticky → %s (generic continuation reply)", prev_agent_resolved)
+            return prev_agent_resolved
 
     # ── 0a. Sticky creative — only for active stateful design flows ───────────
     # Creative is heavily stateful (template / platform / staged image / render).
@@ -878,27 +944,45 @@ async def route_to_agent(
             logger.info("[IntentRouter] sticky → social_scheduler (mid-scheduling flow)")
             return "social_scheduler"
 
-    # ── 1. LLM route — PRIMARY decision maker ────────────────────────────────
+    # ── 0c. Explicit Telegram override ───────────────────────────────────────
+    # If the user is talking about Telegram bot/channels/messages, ensure Tom handles it.
+    if "telegram" in msg_lower and "telegram" in agent_registry:
+        _TG_PHRASES = ("telegram bot", "telegram channel", "telegram group", "connect telegram", "in telegram", "on telegram", "telegram status", "search telegram", "search in telegram")
+        if any(p in msg_lower for p in _TG_PHRASES):
+            logger.info("[IntentRouter] Telegram override → telegram (user specified Telegram context)")
+            return "telegram"
+
+    # ── 1. Semantic route — embedding cosine-similarity (no LLM call) ────────
+    # ~50-80 ms vs ~500 ms for LLM. Falls back to LLM when confidence is low.
+    try:
+        from .semantic_router import route as _sem_route
+        sem = await _sem_route(message, agent_registry)
+        if sem is not None:
+            sem_agent, sem_score = sem
+            # Apply the same creative/catalog safety overrides as the LLM path
+            if _design_or_creative_document_intent(msg_lower) and sem_agent in _CATALOG_STOCK_WITHOUT_DESIGN_TOOLS:
+                sem_agent = _prefer_creative_agent(msg_lower, agent_registry)
+                logger.info("[IntentRouter] Semantic override: creative intent; was catalog agent")
+            if sem_agent in agent_registry:
+                logger.info("[IntentRouter] Semantic → %s (score=%.3f)", sem_agent, sem_score)
+                return sem_agent
+    except Exception as _sem_exc:
+        logger.warning("[IntentRouter] Semantic router error: %s", _sem_exc)
+
+    # ── 2. LLM route — fallback when semantic confidence is low ──────────────
     # Runs before any keyword checks. LLM understands meaning, not just words.
     llm_choice = await _llm_route_choice(message, history, agent_registry, msg_lower)
     if llm_choice is not None:
         chosen, confidence = llm_choice
         if confidence >= _LLM_ROUTE_CONFIDENCE_MIN:
-            # Hard override: document intent must never land on general.
-            # general's old description said "documents" which caused the LLM to
-            # confidently pick it for presentation/proposal requests.
             if chosen == "general" and _is_text_document_intent(msg_lower) and "document" in agent_registry:
                 logger.info("[IntentRouter] LLM → document (override: text-doc intent mis-routed to general)")
                 return "document"
-            logger.info(
-                "[IntentRouter] LLM → %s (confidence=%.2f)", chosen, confidence
-            )
+            logger.info("[IntentRouter] LLM → %s (confidence=%.2f)", chosen, confidence)
             return chosen
-        logger.info(
-            "[IntentRouter] LLM low-confidence (%.2f); falling back to keywords", confidence
-        )
+        logger.info("[IntentRouter] LLM low-confidence (%.2f); falling back to keywords", confidence)
 
-    # ── 2. Keyword scoring fallback (word-count weighted) ─────────────────────
+    # ── 3. Keyword scoring fallback ───────────────────────────────────────────
     # Score = total word count of all matched phrases.
     # "shopify order" (2 words) beats "shopify" (1 word) automatically.
     scores: Dict[str, int] = {}

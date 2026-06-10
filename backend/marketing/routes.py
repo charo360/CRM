@@ -120,7 +120,14 @@ class ScheduledPostUpdate(BaseModel):
 
 def _serialize_post(row: Dict[str, Any]) -> Dict[str, Any]:
     def _dt(v):
-        return v.isoformat() if hasattr(v, "isoformat") else (v or "")
+        if not hasattr(v, "isoformat"):
+            return v or ""
+        iso = v.isoformat()
+        # MongoDB returns naive datetimes stored as UTC; append Z so browsers
+        # parse them as UTC instead of local time.
+        if "+" not in iso and not iso.endswith("Z"):
+            iso += "Z"
+        return iso
     return {
         "id": str(row["_id"]),
         "title": row.get("title") or "",
@@ -137,6 +144,45 @@ def _serialize_post(row: Dict[str, Any]) -> Dict[str, Any]:
         "link_url": row.get("link_url"),
         "assets": row.get("assets") or [],
         "image_url": row.get("image_url"),
+        "publish_error": row.get("publish_error") or None,
+        "zernio_post_id": row.get("external_post_id") or row.get("zernio_post_id") or None,
+        "external_post_id": row.get("external_post_id") or row.get("zernio_post_id") or None,
+        "publish_provider": row.get("publish_provider") or None,
+        "engagement_synced_at": _dt(row.get("engagement_synced_at")) if row.get("engagement_synced_at") else None,
+        "engagement": _serialize_engagement(row.get("engagement")),
+    }
+
+
+async def _push_post_if_needed(db, doc: Dict[str, Any], *, force: bool = False) -> Dict[str, Any] | None:
+    from social_publish_service import apply_publish_result, push_post, should_push_post
+
+    if not should_push_post(doc, force=force):
+        return None
+    external_id = doc.get("external_post_id") or doc.get("zernio_post_id")
+    if force and external_id:
+        await db.scheduled_posts.update_one(
+            {"_id": doc["_id"]},
+            {
+                "$unset": {"zernio_post_id": "", "external_post_id": ""},
+                "$set": {"updated_at": datetime.utcnow()},
+            },
+        )
+        doc = {**doc, "zernio_post_id": None, "external_post_id": None}
+    result = await push_post(db, doc)
+    await apply_publish_result(db, str(doc["_id"]), result)
+    return result
+
+
+def _serialize_engagement(eng: Any) -> Optional[Dict[str, int]]:
+    if not eng or not isinstance(eng, dict):
+        return None
+    return {
+        "likes": int(eng.get("likes", 0)),
+        "comments": int(eng.get("comments", 0)),
+        "shares": int(eng.get("shares", 0)),
+        "reach": int(eng.get("reach", 0)),
+        "clicks": int(eng.get("clicks", 0)),
+        "saves": int(eng.get("saves", 0)),
     }
 
 
@@ -294,7 +340,7 @@ def make_marketing_router(db, user_dep):
         q: Dict[str, Any] = {"user_id": uid}
         if status and status in ALLOWED_POST_STATUS:
             q["status"] = status
-        rows = await db.scheduled_posts.find(q).sort("scheduled_at", 1).to_list(500)
+        rows = await db.scheduled_posts.find(q).sort([("created_at", -1), ("scheduled_at", -1)]).to_list(500)
         return {"posts": [_serialize_post(r) for r in rows]}
 
     @router.post("/social-posts")
@@ -327,7 +373,12 @@ def make_marketing_router(db, user_dep):
             "image_url": body.image_url,
         }
         await db.scheduled_posts.insert_one(doc)
-        return {"post": _serialize_post(doc)}
+        publish = await _push_post_if_needed(db, doc)
+        row = await db.scheduled_posts.find_one({"_id": doc["_id"]})
+        out = {"post": _serialize_post(row or doc)}
+        if publish is not None:
+            out["publish"] = publish
+        return out
 
     @router.patch("/social-posts/{post_id}")
     async def update_social_post(post_id: str, body: ScheduledPostUpdate, user=user_dep):
@@ -371,7 +422,16 @@ def make_marketing_router(db, user_dep):
             updates["image_url"] = body.image_url
         await db.scheduled_posts.update_one({"_id": post_id, "user_id": uid}, {"$set": updates})
         row = await db.scheduled_posts.find_one({"_id": post_id, "user_id": uid})
-        return {"post": _serialize_post(row or existing)}
+        merged = {**(existing or {}), **(row or {}), "_id": post_id, "user_id": uid}
+        force_publish = (
+            body.status is not None and body.status.strip().lower() == "published"
+        )
+        publish = await _push_post_if_needed(db, merged, force=force_publish)
+        row = await db.scheduled_posts.find_one({"_id": post_id, "user_id": uid})
+        out = {"post": _serialize_post(row or merged)}
+        if publish is not None:
+            out["publish"] = publish
+        return out
 
     @router.delete("/social-posts/{post_id}")
     async def delete_social_post(post_id: str, user=user_dep):
@@ -445,13 +505,21 @@ def make_marketing_router(db, user_dep):
             ),
         }
 
+    @router.get("/social-posts/{post_id}")
+    async def get_social_post(post_id: str, user=user_dep):
+        uid = _tenant_id(user)
+        row = await db.scheduled_posts.find_one({"_id": post_id, "user_id": uid})
+        if not row:
+            raise HTTPException(404, "Post not found")
+        return {"post": _serialize_post(row)}
+
     @router.post("/social-post-draft")
     async def social_post_draft(body: SocialPostDraftBody, user=user_dep):
         """Generate title + caption for the social scheduler using the same AI stack as broadcasts."""
         from ai_service import get_drafter
 
         drafter = get_drafter()
-        if not drafter.clients:
+        if not drafter.client:
             raise HTTPException(
                 status_code=503,
                 detail="AI is not configured. Add OPENAI_API_KEY or another provider on the server.",

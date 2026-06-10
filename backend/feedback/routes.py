@@ -123,12 +123,71 @@ def make_feedback_router(db, user_dep):
 
     @router.post("/surveys")
     async def create_survey(payload: SurveyCreate, user=user_dep):
+        import re
         tid = _tid(user)
         now = datetime.utcnow()
-        doc = {
-            "_id": str(uuid.uuid4()),
+        survey_id = str(uuid.uuid4())
+        form_id = str(uuid.uuid4())
+
+        # Generate unique slug for public page access
+        slug = re.sub(r"[^a-z0-9]+", "-", payload.title.lower()).strip("-")
+        slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+
+        # Standard high-converting NPS fields
+        fields = [
+            {"id": str(uuid.uuid4())[:8], "type": "text", "label": "Full Name", "placeholder": "Your name", "required": True},
+            {"id": str(uuid.uuid4())[:8], "type": "phone", "label": "Phone Number", "placeholder": "+1...", "required": True},
+            {"id": str(uuid.uuid4())[:8], "type": "dropdown", "label": "Recommendation Score", "placeholder": "Select score (0 to 10)", "required": True, "options": [str(x) for x in range(11)]},
+            {"id": str(uuid.uuid4())[:8], "type": "textarea", "label": "Comments", "placeholder": "What can we do to improve?", "required": False}
+        ]
+
+        # Resolve primary color settings if possible
+        header_bg = "#0f172a"
+        button_bg = "#0f172a"
+        try:
+            brand_connections = await db.brand_settings.find_one({"user_id": tid})
+            if brand_connections and brand_connections.get("brand_primary_color"):
+                header_bg = brand_connections["brand_primary_color"]
+                button_bg = brand_connections["brand_primary_color"]
+        except Exception:
+            pass
+
+        # Create editable form record in main Forms collection
+        await db.forms.insert_one({
+            "_id": form_id,
             "user_id": tid,
-            **payload.model_dump(),
+            "title": payload.title,
+            "description": payload.description or "",
+            "slug": slug,
+            "fields": fields,
+            "settings": {
+                "success_message": "Thank you! We'll be in touch soon.",
+                "create_contact": True,
+                "auto_whatsapp": False,
+                "is_nps": True
+            },
+            "branding": {
+                "logo_url": "",
+                "header_bg": header_bg,
+                "header_text": "#ffffff",
+                "button_bg": button_bg,
+                "button_text": "#ffffff",
+                "page_bg": "#f8fafc"
+            },
+            "active": payload.active,
+            "response_count": 0,
+            "created_at": now
+        })
+
+        doc = {
+            "_id": survey_id,
+            "user_id": tid,
+            "form_id": form_id,
+            "slug": slug,
+            "title": payload.title,
+            "description": payload.description,
+            "questions": payload.questions,
+            "active": payload.active,
             "response_count": 0,
             "created_at": now, "updated_at": now,
         }
@@ -156,6 +215,16 @@ def make_feedback_router(db, user_dep):
     async def delete_survey(survey_id: str, user=user_dep):
         doc = await db.feedback_surveys.find_one({"_id": survey_id, "user_id": _tid(user)})
         if not doc: raise HTTPException(404, "Survey not found")
+        
+        # Clean up linked forms document & submissions
+        form_id = doc.get("form_id")
+        if form_id:
+            try:
+                await db.forms.delete_one({"_id": form_id, "user_id": _tid(user)})
+                await db.form_submissions.delete_many({"form_id": form_id, "user_id": _tid(user)})
+            except Exception as e:
+                logger.error("[delete_survey] Failed to delete linked forms data: %s", str(e))
+
         await db.feedback_surveys.delete_one({"_id": survey_id})
         await db.feedback_responses.delete_many({"survey_id": survey_id, "user_id": _tid(user)})
         return {"deleted": True}

@@ -232,6 +232,307 @@ CAPABILITIES: dict = {
         "permission": "shopify.write",
         "audit": True,
     },
+
+    # ── Browser Automation (Zilo Browser Operator Extension) ────────────────
+    "browser_navigate": {
+        "description": "Navigate your companion browser tab to a specific website/URL",
+        "params": {
+            "url": {
+                "type": "str",
+                "required": True,
+                "description": "Destination web address/URL (e.g. 'https://google.com')",
+            },
+        },
+        "permission": "browser.control",
+        "audit": True,
+    },
+
+    "browser_click": {
+        "description": "Click an element inside your companion browser tab",
+        "params": {
+            "selector": {
+                "type": "str",
+                "required": True,
+                "description": "Target CSS selector, XPath, or 'text=Label' pattern (e.g. 'button.submit' or 'text=Confirm')",
+            },
+        },
+        "permission": "browser.control",
+        "audit": True,
+    },
+
+    "browser_type": {
+        "description": "Type text into a form input inside your companion browser tab",
+        "params": {
+            "selector": {
+                "type": "str",
+                "required": True,
+                "description": "CSS selector or XPath of target input element",
+            },
+            "text": {
+                "type": "str",
+                "required": True,
+                "description": "The text characters or placeholders to type in",
+            },
+        },
+        "permission": "browser.control",
+        "audit": True,
+    },
+
+    "browser_scroll": {
+        "description": "Scroll a specific element or section into view on the webpage",
+        "params": {
+            "selector": {
+                "type": "str",
+                "required": True,
+                "description": "CSS selector or XPath targeting the element to scroll to",
+            },
+        },
+        "permission": "browser.control",
+        "audit": False,
+    },
+
+    "browser_extract": {
+        "description": "Extract text, values, or attributes from webpage elements into {extracted_text}",
+        "params": {
+            "selector": {
+                "type": "str",
+                "required": True,
+                "description": "CSS selector or XPath targeting the element to extract from",
+            },
+            "data_type": {
+                "type": "str",
+                "required": False,
+                "default": "text",
+                "description": "text | value | html | attribute",
+            },
+            "attribute_name": {
+                "type": "str",
+                "required": False,
+                "default": "",
+                "description": "The name of the attribute to extract (only if data_type is 'attribute', e.g. 'href')",
+            },
+        },
+        "permission": "browser.control",
+        "audit": True,
+    },
+
+    # ── Invoicing & Accounting ──────────────────────────────────────────────
+    "create_invoice_draft": {
+        "description": "Draft a professional client invoice and generate a dynamic public share link {invoice_url}",
+        "params": {
+            "currency": {
+                "type": "str",
+                "required": False,
+                "default": "KES",
+                "description": "KES | USD | EUR",
+            },
+            "items": {
+                "type": "list",
+                "required": True,
+                "description": "List of dicts representing invoice line items, e.g. [{'name': 'Consulting', 'rate': 150.0, 'qty': 2}]",
+            },
+        },
+        "permission": "billing.write",
+        "audit": True,
+    },
+
+    # ── Social Media Scheduling ─────────────────────────────────────────────
+    "social_publish_post": {
+        "description": "Automatically publish a media/text post to Facebook, Instagram, and LinkedIn social channels via Zernio",
+        "params": {
+            "message": {
+                "type": "str",
+                "required": True,
+                "description": "Text content of the social media post",
+            },
+            "image_url": {
+                "type": "str",
+                "required": False,
+                "default": "",
+                "description": "Public URL of an image asset to attach",
+            },
+            "platforms": {
+                "type": "list",
+                "required": False,
+                "description": "Optional subset of targets: ['facebook', 'instagram', 'linkedin']",
+            },
+        },
+        "permission": "social.write",
+        "audit": True,
+    },
+
+    "design_and_publish_post": {
+        "description": "Generate an elite AI design banner with Gemini and automatically publish it to social media channels",
+        "params": {
+            "headline": {
+                "type": "str",
+                "required": True,
+                "description": "Bold visual headline to render inside the image banner (e.g. 'Flash Sale KES 1000' or 'Welcome {customer_name}')",
+            },
+            "subtext": {
+                "type": "str",
+                "required": False,
+                "default": "",
+                "description": "Secondary sub-headline text",
+            },
+            "cta": {
+                "type": "str",
+                "required": False,
+                "default": "Shop Now",
+                "description": "Call to action button text label, e.g. 'Claim Offer'",
+            },
+            "brand_color": {
+                "type": "str",
+                "required": False,
+                "default": "",
+                "description": "Hex code (e.g. #4CD137) or color name to style the banner",
+            },
+            "style": {
+                "type": "str",
+                "required": False,
+                "default": "minimalist",
+                "description": "minimalist | split horizon | cinematic frame | bold typographic",
+            },
+            "product_description": {
+                "type": "str",
+                "required": False,
+                "default": "",
+                "description": "Details about the product/brand context to feed the AI generator",
+            },
+            "platforms": {
+                "type": "list",
+                "required": False,
+                "description": "Targets: ['facebook', 'instagram', 'linkedin']",
+            },
+        },
+        "permission": "social.write",
+        "audit": True,
+    },
+
+    # ── Autonomous AI Specialist Agents (Zilo Background swarm) ────────────
+    "run_ai_specialist_agent": {
+        "description": "Deploy an autonomous background specialist agent (e.g. Document, Social, Support) to execute a complex task and save result to {agent_result}",
+        "params": {
+            "agent_id": {
+                "type": "str",
+                "required": True,
+                "description": "The target specialist agent: document | social | booking | support | general",
+            },
+            "task_description": {
+                "type": "str",
+                "required": True,
+                "description": "Detailed task instructions. Supports placeholders, e.g., 'Draft a formal NDA between {business_name} and {customer_name}.'",
+            },
+        },
+        "permission": "ai.agents",
+        "audit": True,
+    },
+
+    # ── Email Communication ──────────────────────────────────────────────────
+    "gmail_send_email": {
+        "description": "Send a professional customized email dynamically to a customer or partner from your linked email settings",
+        "params": {
+            "to_email": {
+                "type": "str",
+                "required": True,
+                "description": "Recipient email address, e.g. '{customer_email}'",
+            },
+            "subject": {
+                "type": "str",
+                "required": True,
+                "description": "Email subject line",
+            },
+            "body_html": {
+                "type": "str",
+                "required": True,
+                "description": "HTML or text email content. Supports placeholders.",
+            },
+        },
+        "permission": "email.write",
+        "audit": True,
+    },
+
+    # ── Social Outreach ──────────────────────────────────────────────────────
+    "linkedin_send_outreach": {
+        "description": "Dispatches social network comment responses or direct messages to social lead opportunities",
+        "params": {
+            "url": {
+                "type": "str",
+                "required": True,
+                "description": "Target post or comment URL to reply to",
+            },
+            "message": {
+                "type": "str",
+                "required": True,
+                "description": "Text content of the social outreach message",
+            },
+        },
+        "permission": "social.write",
+        "audit": True,
+    },
+
+    # ── Paid Meta Advertising ───────────────────────────────────────────────
+    "meta_pause_campaign": {
+        "description": "Instantly pauses a Facebook or Instagram ad campaign in real-time to save budget",
+        "params": {
+            "campaign_id": {
+                "type": "str",
+                "required": True,
+                "description": "Meta campaign identifier",
+            },
+        },
+        "permission": "ads.write",
+        "audit": True,
+    },
+
+    # ── Sourcing & Grants Sourcing ──────────────────────────────────────────
+    "run_funding_scan": {
+        "description": "Executes an active web crawler searching for new business grants, funding opportunities, and returns bulleted list {funding_results}",
+        "params": {
+            "sector": {
+                "type": "str",
+                "required": False,
+                "default": "technology",
+                "description": "Sector or industry focus for the search, e.g., 'retail' or 'agriculture'",
+            },
+            "location": {
+                "type": "str",
+                "required": False,
+                "default": "global",
+                "description": "Geographical eligibility, e.g., 'Kenya' or 'East Africa'",
+            },
+        },
+        "permission": "scout.write",
+        "audit": True,
+    },
+
+    # ── Presentation Slide Generation ───────────────────────────────────────
+    "generate_presentation_deck": {
+        "description": "Compiles analytics or client proposals into a beautiful Microsoft PowerPoint (.pptx) deck and uploads it, saving link to {presentation_url}",
+        "params": {
+            "title": {
+                "type": "str",
+                "required": True,
+                "description": "Title page title",
+            },
+            "deck_style": {
+                "type": "str",
+                "required": False,
+                "default": "ribbon",
+                "description": "ribbon | minimal | magazine | split | spotlight",
+            },
+        },
+        "permission": "billing.write",
+        "audit": True,
+    },
+
+    # ── Daily Business Intelligence Analytics ────────────────────────────────
+    "generate_business_forecast": {
+        "description": "Triggers daily intelligence analyzers, compiling metrics and urgency follow-up scores for all clients into {forecast_summary}",
+        "params": {},
+        "permission": "analytics.read",
+        "audit": True,
+    },
 }
 
 
@@ -318,6 +619,47 @@ TRIGGER_TYPES: dict = {
     },
     "shopify_refund_created": {
         "description": "When a Shopify refund is issued on an order",
+        "condition_examples": [
+            "always",
+        ],
+    },
+
+    # ── Invoicing & Accounting Triggers ──────────────────────────────────────
+    "invoice_created": {
+        "description": "When an invoice draft or document is created in Zilo",
+        "condition_examples": [
+            "always",
+        ],
+    },
+    "invoice_paid": {
+        "description": "When a client invoice is marked as fully paid",
+        "condition_examples": [
+            "always",
+            "amount > 500",
+        ],
+    },
+
+    # ── Email Communication Triggers ─────────────────────────────────────────
+    "gmail_email_received": {
+        "description": "When a new unread email is received/synced from linked Gmail account",
+        "condition_examples": [
+            "always",
+        ],
+    },
+
+    # ── Social Lead Harvesting Triggers ──────────────────────────────────────
+    "social_lead_discovered": {
+        "description": "When ScrapeCreators, Facebook, or LinkedIn workers harvest a high-intent business lead",
+        "condition_examples": [
+            "always",
+            "platform == 'facebook'",
+            "platform == 'linkedin'",
+        ],
+    },
+
+    # ── Meta Advertising Triggers ───────────────────────────────────────────
+    "meta_ad_health_alert": {
+        "description": "When Meta Ad Health Monitor detects a spike in CPC, drop in CTR, or underperforming ads",
         "condition_examples": [
             "always",
         ],

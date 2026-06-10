@@ -6,7 +6,8 @@ import {
   Globe, Plus, RefreshCw, ExternalLink, ShoppingCart,
   Loader2, AlertCircle, CheckCircle2, Clock, Settings,
   Store, ClipboardList, BookOpen, Copy, Check, X,
-  ChevronRight, FileInput, ToggleLeft, ToggleRight,
+  ChevronRight, FileInput, MessageSquare, Mail, User,
+  Calendar, CornerDownRight, Send, Trash2, EyeOff, FileText, Phone, Save,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -15,6 +16,34 @@ interface SiteFeatures {
   shop: boolean;
   forms: boolean;
   blog: boolean;
+}
+
+interface Comment {
+  id: number;
+  post_id: number;
+  post_title: string;
+  post_link: string;
+  author: string;
+  email: string;
+  content: string;
+  date: string;
+  status: string;
+  parent: number;
+}
+
+interface WpPost {
+  id: number;
+  title: string;
+  status: string;
+  date: string;
+  link: string;
+}
+
+interface FormEntry {
+  id?: number | string;
+  fields?: Record<string, string>;
+  date?: string;
+  [key: string]: unknown;
 }
 
 interface ClientSite {
@@ -34,6 +63,8 @@ interface ClientSite {
   created_at: string;
   last_posted_at: string | null;
   last_synced?: string;
+  whatsapp_number?: string;
+  template_id?: string;
 }
 
 interface ListResponse {
@@ -53,6 +84,8 @@ function ActiveBadge({ active }: { active: boolean }) {
     </span>
   );
 }
+
+
 
 const FEATURE_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
   shop:  { icon: <Store size={12} />,       label: "Shop",  color: "bg-blue-50 text-blue-700 border-blue-200" },
@@ -88,13 +121,26 @@ export default function ClientSitesPage() {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [reseeding, setReseeding] = useState<string | null>(null); // "slug:products" | "slug:forms"
+  const [reseeding, setReseeding] = useState<string | null>(null);
+  const [recreating, setRecreating] = useState<string | null>(null);
+  const [activating, setActivating] = useState<string | null>(null);
+  const [engagementSlug, setEngagementSlug] = useState<string | null>(null);
+  const [engagementTab, setEngagementTab] = useState<"comments" | "contacts" | "posts">("comments");
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [formEntries, setFormEntries] = useState<FormEntry[]>([]);
+  const [wpPosts, setWpPosts] = useState<WpPost[]>([]);
+  const [engagementLoading, setEngagementLoading] = useState(false);
+  const [pendingCounts, setPendingCounts] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.get<ListResponse>("/blog/clients");
       setSites(data.sites);
+      // Fetch pending comment counts in background — non-fatal
+      api.get<{ counts: Record<string, number> }>("/blog/clients/pending-counts")
+        .then((r) => setPendingCounts(r.counts || {}))
+        .catch(() => {});
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load client sites");
     } finally {
@@ -150,6 +196,22 @@ export default function ClientSitesPage() {
     });
   }
 
+  async function recreatePages(slug: string) {
+    setRecreating(slug);
+    try {
+      await api.post(`/blog/clients/${slug}/recreate-pages`, {});
+    } catch { /* non-fatal */ }
+    finally { setRecreating(null); }
+  }
+
+  async function activatePlugins(slug: string) {
+    setActivating(slug);
+    try {
+      await api.post(`/blog/clients/${slug}/activate-plugins`, {});
+    } catch { /* non-fatal */ }
+    finally { setActivating(null); }
+  }
+
   async function reseedSite(slug: string, type: "products" | "forms") {
     const key = `${slug}:${type}`;
     setReseeding(key);
@@ -159,8 +221,32 @@ export default function ClientSitesPage() {
     finally { setReseeding(null); }
   }
 
+  async function openEngagement(slug: string, tab: "comments" | "contacts" | "posts") {
+    if (engagementSlug === slug && engagementTab === tab) {
+      setEngagementSlug(null);
+      return;
+    }
+    setEngagementSlug(slug);
+    setEngagementTab(tab);
+    setEngagementLoading(true);
+    setComments([]); setFormEntries([]); setWpPosts([]);
+    try {
+      if (tab === "comments") {
+        const data = await api.get<{ comments: Comment[] }>(`/blog/clients/${slug}/comments`);
+        setComments(data.comments || []);
+      } else if (tab === "posts") {
+        const data = await api.get<{ posts: WpPost[] }>(`/blog/clients/${slug}/posts`);
+        setWpPosts(data.posts || []);
+      } else {
+        const data = await api.get<{ entries: FormEntry[] }>(`/blog/clients/${slug}/form-entries`);
+        setFormEntries(data.entries || []);
+      }
+    } catch { /* non-fatal */ }
+    finally { setEngagementLoading(false); }
+  }
+
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -174,7 +260,7 @@ export default function ClientSitesPage() {
         </div>
         <button
           onClick={() => { setShowCreate(true); setCreateError(""); }}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand transition-colors"
         >
           <Plus size={15} /> New Client Site
         </button>
@@ -252,7 +338,7 @@ export default function ClientSitesPage() {
               <button
                 onClick={createSite}
                 disabled={creating || !form.business_name.trim() || !form.client_email.trim()}
-                className="flex items-center gap-2 px-5 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700 disabled:opacity-50"
+                className="flex items-center gap-2 px-5 py-2 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand disabled:opacity-50"
               >
                 {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                 Create Site
@@ -264,7 +350,7 @@ export default function ClientSitesPage() {
 
       {/* Site grid */}
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
           {[1, 2, 3].map((i) => <div key={i} className="bg-white rounded-xl border border-slate-200 p-5 animate-pulse h-52" />)}
         </div>
       ) : sites.length === 0 ? (
@@ -276,13 +362,13 @@ export default function ClientSitesPage() {
           </p>
           <button
             onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-700"
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-brand-dark text-white text-sm font-medium rounded-lg hover:bg-brand"
           >
             <Plus size={14} /> Create First Site
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
           {sites.map((site) => (
             <SiteCard
               key={site.wp_slug}
@@ -292,11 +378,23 @@ export default function ClientSitesPage() {
               expanded={expanded === site.wp_slug}
               reseedingProducts={reseeding === `${site.wp_slug}:products`}
               reseedingForms={reseeding === `${site.wp_slug}:forms`}
+              recreatingPages={recreating === site.wp_slug}
+              activatingPlugins={activating === site.wp_slug}
+              engagementOpen={engagementSlug === site.wp_slug}
+              engagementTab={engagementTab}
+              engagementLoading={engagementLoading && engagementSlug === site.wp_slug}
+              comments={engagementSlug === site.wp_slug ? comments : []}
+              formEntries={engagementSlug === site.wp_slug ? formEntries : []}
+              wpPosts={engagementSlug === site.wp_slug ? wpPosts : []}
+              pendingCount={pendingCounts[site.wp_slug] ?? 0}
               onSync={() => syncSite(site.wp_slug)}
               onCopy={() => site.blog_url && copyUrl(site.blog_url, site.wp_slug)}
               onToggleExpand={() => setExpanded((e) => (e === site.wp_slug ? null : site.wp_slug))}
               onReseedProducts={() => reseedSite(site.wp_slug, "products")}
               onReseedForms={() => reseedSite(site.wp_slug, "forms")}
+              onRecreatePages={() => recreatePages(site.wp_slug)}
+              onActivatePlugins={() => activatePlugins(site.wp_slug)}
+              onOpenEngagement={(tab) => openEngagement(site.wp_slug, tab)}
             />
           ))}
         </div>
@@ -314,14 +412,184 @@ interface SiteCardProps {
   expanded: boolean;
   reseedingProducts: boolean;
   reseedingForms: boolean;
+  recreatingPages: boolean;
+  activatingPlugins: boolean;
+  engagementOpen: boolean;
+  engagementTab: "comments" | "contacts" | "posts";
+  engagementLoading: boolean;
+  comments: Comment[];
+  formEntries: FormEntry[];
+  wpPosts: WpPost[];
+  pendingCount: number;
   onSync: () => void;
   onCopy: () => void;
   onToggleExpand: () => void;
   onReseedProducts: () => void;
   onReseedForms: () => void;
+  onRecreatePages: () => void;
+  onActivatePlugins: () => void;
+  onOpenEngagement: (tab: "comments" | "contacts" | "posts") => void;
 }
 
-function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms }: SiteCardProps) {
+function WhatsAppEditor({ wpSlug, initial }: { wpSlug: string; initial: string }) {
+  const [value, setValue] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setSaving(true); setSaved(false); setErr("");
+    try {
+      const res = await api.patch<{ whatsapp_number: string; wp_updated: boolean }>(
+        `/blog/clients/${wpSlug}/whatsapp`,
+        { whatsapp_number: value },
+      );
+      setValue(res.whatsapp_number);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-1.5 pt-1 border-t border-slate-200">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider pt-2 flex items-center gap-1.5">
+        <Phone size={11} /> WhatsApp Number
+      </p>
+      <p className="text-[10px] text-slate-400">
+        This number powers the &ldquo;Chat on WhatsApp&rdquo; button on the contact page.
+      </p>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs">+</span>
+          <input
+            type="tel"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); setSaved(false); }}
+            placeholder="254712345678"
+            className="w-full pl-5 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-200"
+          />
+        </div>
+        <button
+          onClick={save}
+          disabled={saving || !value.trim()}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors font-medium shrink-0"
+        >
+          {saving ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {saved && (
+        <p className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+          <Check size={10} /> Saved — contact page updated live
+        </p>
+      )}
+      {err && <p className="text-[10px] text-rose-500">{err}</p>}
+      {value && (
+        <a
+          href={`https://wa.me/${value.replace(/\D/g, "")}`}
+          target="_blank" rel="noopener noreferrer"
+          className="text-[10px] text-emerald-600 hover:underline flex items-center gap-1"
+        >
+          <ExternalLink size={9} /> Test link: wa.me/{value.replace(/\D/g, "")}
+        </a>
+      )}
+    </div>
+  );
+}
+
+interface NavItem { id?: number; title: string; url: string; }
+
+function NavEditor({ wpSlug, siteUrl }: { wpSlug: string; siteUrl: string }) {
+  const [items, setItems] = useState<NavItem[]>([]);
+  const [menuId, setMenuId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newUrl, setNewUrl] = useState("");
+
+  useEffect(() => {
+    api.get<{ menu_id: number | null; items: NavItem[] }>(`/blog/clients/${wpSlug}/menu`)
+      .then(d => { setItems(d.items); setMenuId(d.menu_id); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [wpSlug]);
+
+  async function save() {
+    setSaving(true); setSaved(false);
+    try {
+      await api.put(`/blog/clients/${wpSlug}/menu`, { menu_id: menuId, items });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch { /* ignore */ } finally { setSaving(false); }
+  }
+
+  function addItem() {
+    const t = newTitle.trim(); const u = newUrl.trim();
+    if (!t || !u) return;
+    const url = u.startsWith("http") ? u : `${siteUrl}/${u.replace(/^\//, "")}`;
+    setItems(prev => [...prev, { title: t, url }]);
+    setNewTitle(""); setNewUrl("");
+  }
+
+  function removeItem(i: number) { setItems(prev => prev.filter((_, idx) => idx !== i)); }
+  function renameItem(i: number, title: string) { setItems(prev => prev.map((item, idx) => idx === i ? { ...item, title } : item)); }
+
+  return (
+    <div className="space-y-2 pt-2 border-t border-slate-200">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+        <Globe size={11} /> Site Navigation
+      </p>
+      {loading ? (
+        <p className="text-[10px] text-slate-400">Loading…</p>
+      ) : (
+        <>
+          <div className="space-y-1">
+            {items.map((item, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  value={item.title}
+                  onChange={e => renameItem(i, e.target.value)}
+                  className="flex-1 px-2 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200"
+                />
+                <span className="text-[10px] text-slate-400 truncate max-w-[100px]">{item.url.replace(/^https?:\/\/[^/]+/, "")}</span>
+                <button onClick={() => removeItem(i)} className="text-slate-300 hover:text-rose-500 transition-colors">
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-1.5">
+            <input value={newTitle} onChange={e => setNewTitle(e.target.value)}
+              placeholder="Label" className="w-20 px-2 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200" />
+            <input value={newUrl} onChange={e => setNewUrl(e.target.value)}
+              placeholder="/page or full URL" onKeyDown={e => e.key === "Enter" && addItem()}
+              className="flex-1 px-2 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-200" />
+            <button onClick={addItem} disabled={!newTitle.trim() || !newUrl.trim()}
+              className="px-2 py-1 text-xs bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 disabled:opacity-40 transition-colors font-medium">
+              <Plus size={11} />
+            </button>
+          </div>
+
+          <button onClick={save} disabled={saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium">
+            {saving ? <Loader2 size={11} className="animate-spin" /> : saved ? <Check size={11} /> : <Save size={11} />}
+            {saving ? "Saving…" : saved ? "Saved!" : "Save Menu"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedingForms, recreatingPages, activatingPlugins,
+  engagementOpen, engagementTab, engagementLoading, comments, formEntries, wpPosts, pendingCount,
+  onSync, onCopy, onToggleExpand, onReseedProducts, onReseedForms, onRecreatePages, onActivatePlugins, onOpenEngagement }: SiteCardProps) {
   const enabledFeatures = Object.entries(site.features || { shop: true, forms: true, blog: true }).filter(([, v]) => v);
   const siteUrl = site.blog_url || "";
 
@@ -384,6 +652,35 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors disabled:opacity-50">
           <RefreshCw size={12} className={syncing ? "animate-spin" : ""} /> Sync
         </button>
+        <button onClick={() => onOpenEngagement("comments")}
+          className={`relative flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
+            engagementOpen && engagementTab === "comments"
+              ? "border-blue-300 bg-blue-50 text-blue-700"
+              : "border-slate-200 hover:bg-slate-50 text-slate-600"
+          }`}>
+          <MessageSquare size={12} /> Comments
+          {pendingCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 flex items-center justify-center bg-rose-500 text-white text-[9px] font-bold rounded-full px-1 leading-none">
+              {pendingCount > 99 ? "99+" : pendingCount}
+            </span>
+          )}
+        </button>
+        <button onClick={() => onOpenEngagement("contacts")}
+          className={`flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
+            engagementOpen && engagementTab === "contacts"
+              ? "border-purple-300 bg-purple-50 text-purple-700"
+              : "border-slate-200 hover:bg-slate-50 text-slate-600"
+          }`}>
+          <Mail size={12} /> Contacts
+        </button>
+        <button onClick={() => onOpenEngagement("posts")}
+          className={`flex items-center gap-1 px-2.5 py-1.5 text-xs border rounded-lg transition-colors ${
+            engagementOpen && engagementTab === "posts"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+              : "border-slate-200 hover:bg-slate-50 text-slate-600"
+          }`}>
+          <FileText size={12} /> Posts
+        </button>
         <button onClick={onToggleExpand}
           className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition-colors ml-auto">
           <Settings size={12} />
@@ -391,12 +688,73 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
         </button>
       </div>
 
+      {/* Engagement panel */}
+      {engagementOpen && (
+        <div className="border-t border-slate-100 bg-slate-50 rounded-b-xl">
+          {engagementLoading ? (
+            <div className="flex items-center justify-center py-10 gap-2 text-slate-400 text-sm">
+              <Loader2 size={16} className="animate-spin" /> Loading…
+            </div>
+          ) : engagementTab === "comments" ? (
+            <CommentsPanel comments={comments} wpSlug={site.wp_slug} />
+          ) : engagementTab === "posts" ? (
+            <PostsPanel posts={wpPosts} wpSlug={site.wp_slug} />
+          ) : (
+            <div className="px-4 py-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Get in Touch Submissions</p>
+              {formEntries.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-6">No submissions yet</p>
+              ) : formEntries.map((entry, i) => (
+                <div key={entry.id ?? i} className="bg-white rounded-lg border border-slate-200 p-3 space-y-1">
+                  {entry.date && (
+                    <span className="flex items-center gap-1 text-[10px] text-slate-400 mb-1">
+                      <Calendar size={10} /> {new Date(entry.date).toLocaleDateString()}
+                    </span>
+                  )}
+                  {entry.fields ? (
+                    Object.entries(entry.fields).map(([k, v]) => {
+                      const key = k.toLowerCase();
+                      const isPhone = key.includes("phone") || key.includes("whatsapp") || key.includes("mobile") || key.includes("number");
+                      const phone = isPhone ? String(v).replace(/[^\d+]/g, "") : "";
+                      return (
+                        <div key={k} className="flex gap-2 text-xs items-center">
+                          <span className="text-slate-400 min-w-[80px] shrink-0">{k}:</span>
+                          {isPhone && phone ? (
+                            <a
+                              href={`https://wa.me/${phone.replace(/^\+/, "")}`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="text-emerald-600 hover:text-emerald-800 font-medium hover:underline flex items-center gap-1"
+                            >
+                              {String(v)}
+                              <ExternalLink size={9} className="opacity-60" />
+                            </a>
+                          ) : (
+                            <span className="text-slate-700">{String(v)}</span>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <pre className="text-[10px] text-slate-500 whitespace-pre-wrap break-all">
+                      {JSON.stringify(entry, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Expanded quick-links */}
       {expanded && (
         <div className="border-t border-slate-100 px-5 py-4 bg-slate-50 rounded-b-xl space-y-3">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Quick Links</p>
           <div className="grid grid-cols-1 gap-2">
             <QuickLink href={`${siteUrl}/wp-admin`} icon={<Settings size={13} />} label="WP Admin" sub="Client's WordPress dashboard" />
+            {siteUrl && (
+              <QuickLink href={`${siteUrl}/contact`} icon={<Mail size={13} />} label="Contact Page" sub="Public contact page on the site" />
+            )}
             {site.features?.shop && (
               <QuickLink href={`${siteUrl}/wp-admin/admin.php?page=wc-admin`} icon={<ShoppingCart size={13} />} label="WooCommerce" sub="Orders, products, settings" />
             )}
@@ -429,8 +787,30 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
                 {reseedingForms ? <Loader2 size={11} className="animate-spin" /> : <FileInput size={11} />}
                 {reseedingForms ? "Generating…" : "AI Reseed Forms"}
               </button>
+              <button
+                onClick={onRecreatePages}
+                disabled={recreatingPages}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 disabled:opacity-50 transition-colors font-medium"
+                title="Creates missing Contact, Forms and Survey pages on this site"
+              >
+                {recreatingPages ? <Loader2 size={11} className="animate-spin" /> : <Globe size={11} />}
+                {recreatingPages ? "Creating…" : "Recreate Pages"}
+              </button>
+              <button
+                onClick={onActivatePlugins}
+                disabled={activatingPlugins}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-orange-50 text-orange-700 border border-orange-200 rounded-lg hover:bg-orange-100 disabled:opacity-50 transition-colors font-medium"
+                title="Activates WPForms + WooCommerce on this subsite — fixes forms showing as raw text"
+              >
+                {activatingPlugins ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
+                {activatingPlugins ? "Activating…" : "Activate Plugins"}
+              </button>
             </div>
           </div>
+
+          <WhatsAppEditor wpSlug={site.wp_slug} initial={site.whatsapp_number ?? ""} />
+          <NavEditor wpSlug={site.wp_slug} siteUrl={siteUrl} />
+          <TemplatePicker wpSlug={site.wp_slug} initialTemplateId={site.template_id ?? "minimal"} />
 
           <div className="text-xs text-slate-400 flex flex-wrap gap-3">
             <span>Email: <span className="text-slate-600">{site.client_email}</span></span>
@@ -439,6 +819,106 @@ function SiteCard({ site, syncing, copied, expanded, reseedingProducts, reseedin
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Template Picker ───────────────────────────────────────────────────────────
+
+const TEMPLATE_VISUALS: Record<string, { rows: string[]; color: string }> = {
+  minimal:   { rows: ["▬▬▬▬▬▬▬", "▬▬▬▬▬▬▬▬▬▬", "▭▭▭▭▭▭", "▭▭▭▭▭▭", "▬▬"], color: "blue" },
+  bold:      { rows: ["▬▬▬▬▬▬▬▬▬▬", "▬▬▬▬▬▬▬▬▬▬▬▬", "▭▭▭▭", "▬▬"], color: "violet" },
+  portrait:  { rows: ["▮▮ ▬▬▬▬", "▮▮ ▭▭▭▭", "▮▮ ▭▭▭", "▮▮ ▬▬"], color: "rose" },
+  editorial: { rows: ["  ▬▬▬▬  ", "▬▬▬▬▬▬▬▬", "▭▭▭▭▭▭", "  ▬▬  "], color: "emerald" },
+};
+
+const COLOR_MAP: Record<string, string> = {
+  blue:    "border-blue-400 bg-blue-50 text-blue-700",
+  violet:  "border-violet-400 bg-violet-50 text-violet-700",
+  rose:    "border-rose-400 bg-rose-50 text-rose-700",
+  emerald: "border-emerald-400 bg-emerald-50 text-emerald-700",
+};
+
+function TemplatePicker({ wpSlug, initialTemplateId }: { wpSlug: string; initialTemplateId: string }) {
+  const [selected, setSelected] = useState(initialTemplateId || "minimal");
+  const [applying, setApplying] = useState<string | null>(null);
+  const [applied, setApplied] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+
+  const templates = [
+    { id: "minimal",   name: "Minimal",   desc: "Title → Image (3:2) → Full text" },
+    { id: "bold",      name: "Bold",      desc: "Large title → Wide image → Excerpt" },
+    { id: "portrait",  name: "Portrait",  desc: "Tall image → Title → Excerpt" },
+    { id: "editorial", name: "Editorial", desc: "Centered title → Square image" },
+    { id: "random",    name: "Random",    desc: "Pick a different style per post" },
+  ];
+
+  async function apply(id: string) {
+    setApplying(id); setErr("");
+    try {
+      await api.put(`/blog/clients/${wpSlug}/template`, { template_id: id });
+      setSelected(id === "random" ? id : id);
+      setApplied(id);
+      setTimeout(() => setApplied(null), 3000);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to apply");
+    } finally {
+      setApplying(null);
+    }
+  }
+
+  return (
+    <div className="space-y-2 pt-2 border-t border-slate-200">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+        <BookOpen size={11} /> Blog Layout Template
+      </p>
+      <p className="text-[10px] text-slate-400">Choose how blog post cards look on the site. Changes go live instantly.</p>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {templates.map((t) => {
+          const isRandom = t.id === "random";
+          const isActive = selected === t.id;
+          const isLoading = applying === t.id;
+          const v = TEMPLATE_VISUALS[t.id];
+          const colorCls = v ? COLOR_MAP[v.color] : "border-slate-300 bg-slate-50 text-slate-600";
+          const activeCls = isActive
+            ? `ring-2 ring-offset-1 ring-slate-500 ${colorCls} border`
+            : "border border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50";
+
+          return (
+            <button
+              key={t.id}
+              onClick={() => apply(t.id)}
+              disabled={!!applying}
+              className={`relative text-left rounded-xl p-3 transition-all disabled:opacity-60 ${activeCls}`}
+            >
+              {isLoading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/70 rounded-xl">
+                  <Loader2 size={16} className="animate-spin text-slate-500" />
+                </div>
+              )}
+              {applied === t.id && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/80 rounded-xl">
+                  <Check size={16} className="text-emerald-600" />
+                </div>
+              )}
+
+              {isRandom ? (
+                <div className="h-10 flex items-center justify-center text-lg mb-1">🎲</div>
+              ) : v ? (
+                <div className="h-10 flex flex-col justify-center gap-0.5 mb-1 font-mono text-[7px] leading-tight text-slate-400">
+                  {v.rows.map((r, i) => <span key={i}>{r}</span>)}
+                </div>
+              ) : null}
+
+              <p className="text-[11px] font-semibold text-slate-700 leading-tight">{t.name}</p>
+              <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">{t.desc}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      {err && <p className="text-[10px] text-rose-500">{err}</p>}
     </div>
   );
 }
@@ -463,5 +943,335 @@ function QuickLink({ href, icon, label, sub }: { href: string; icon: React.React
       </div>
       <ExternalLink size={11} className="text-slate-300 group-hover:text-slate-500 shrink-0" />
     </a>
+  );
+}
+
+function PostsPanel({ posts, wpSlug }: { posts: WpPost[]; wpSlug: string }) {
+  const [items, setItems] = useState(posts);
+  useEffect(() => { setItems(posts); }, [posts]);
+
+  if (items.length === 0) {
+    return (
+      <div className="px-4 py-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Posts</p>
+        <p className="text-xs text-slate-400 text-center py-6">No posts yet</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Posts</p>
+      {items.map((post) => (
+        <PostRow key={post.id} post={post} wpSlug={wpSlug}
+          onRemove={(id) => setItems((prev) => prev.filter((p) => p.id !== id))}
+          onDraft={(id) => setItems((prev) => prev.map((p) => p.id === id ? { ...p, status: "draft" } : p))}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PostRow({ post, wpSlug, onRemove, onDraft }: {
+  post: WpPost;
+  wpSlug: string;
+  onRemove: (id: number) => void;
+  onDraft: (id: number) => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [unpublishing, setUnpublishing] = useState(false);
+  const [err, setErr] = useState("");
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  async function deletePost() {
+    setDeleting(true); setErr("");
+    try {
+      await api.delete(`/blog/clients/${wpSlug}/posts/${post.id}`);
+      onRemove(post.id);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Failed to delete"); }
+    finally { setDeleting(false); setConfirmDel(false); }
+  }
+
+  async function unpublishPost() {
+    setUnpublishing(true); setErr("");
+    try {
+      await api.post(`/blog/clients/${wpSlug}/posts/${post.id}/unpublish`, {});
+      onDraft(post.id);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Failed to unpublish"); }
+    finally { setUnpublishing(false); }
+  }
+
+  const isDraft = post.status === "draft";
+
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-slate-700 truncate"
+            dangerouslySetInnerHTML={{ __html: post.title || "Untitled" }} />
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className={`text-[9px] font-semibold rounded-full px-1.5 py-0.5 uppercase tracking-wide ${
+              isDraft ? "bg-slate-100 text-slate-500" : "bg-emerald-100 text-emerald-700"
+            }`}>{isDraft ? "Draft" : "Published"}</span>
+            <span className="text-[10px] text-slate-400 flex items-center gap-1">
+              <Calendar size={9} /> {new Date(post.date).toLocaleDateString()}
+            </span>
+          </div>
+        </div>
+        {post.link && !isDraft && (
+          <a href={post.link} target="_blank" rel="noopener noreferrer"
+            className="text-[10px] text-blue-500 hover:underline shrink-0 flex items-center gap-0.5 mt-0.5">
+            <ExternalLink size={9} /> View
+          </a>
+        )}
+      </div>
+      {err && <p className="text-[10px] text-rose-500">{err}</p>}
+      <div className="flex items-center gap-3 pt-0.5">
+        {!isDraft && (
+          <button onClick={unpublishPost} disabled={unpublishing}
+            className="flex items-center gap-1 text-[10px] text-amber-600 hover:text-amber-800 font-medium transition-colors disabled:opacity-50">
+            {unpublishing ? <Loader2 size={10} className="animate-spin" /> : <EyeOff size={10} />}
+            {unpublishing ? "Unpublishing…" : "Unpublish"}
+          </button>
+        )}
+        {!confirmDel ? (
+          <button onClick={() => setConfirmDel(true)}
+            className="flex items-center gap-1 text-[10px] text-rose-500 hover:text-rose-700 font-medium transition-colors">
+            <Trash2 size={10} /> Delete
+          </button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500">Permanently delete?</span>
+            <button onClick={deletePost} disabled={deleting}
+              className="text-[10px] font-semibold text-white bg-rose-500 hover:bg-rose-600 rounded px-1.5 py-0.5 disabled:opacity-50">
+              {deleting ? "Deleting…" : "Yes, delete"}
+            </button>
+            <button onClick={() => setConfirmDel(false)}
+              className="text-[10px] text-slate-400 hover:text-slate-600">Cancel</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommentsPanel({ comments, wpSlug }: { comments: Comment[]; wpSlug: string }) {
+  if (comments.length === 0) {
+    return (
+      <div className="px-4 py-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Blog Comments</p>
+        <p className="text-xs text-slate-400 text-center py-6">No comments yet</p>
+      </div>
+    );
+  }
+
+  // Group by post_id
+  const groups = new Map<number, { title: string; link: string; comments: Comment[] }>();
+  for (const c of comments) {
+    if (!groups.has(c.post_id)) {
+      groups.set(c.post_id, { title: c.post_title, link: c.post_link, comments: [] });
+    }
+    groups.get(c.post_id)!.comments.push(c);
+  }
+
+  const pending = comments.filter((c) => c.status === "hold" || c.status === "pending").length;
+
+  return (
+    <div className="px-4 py-3 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+          Blog Comments
+        </p>
+        {pending > 0 && (
+          <span className="text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200 rounded-full px-2 py-0.5">
+            {pending} awaiting moderation
+          </span>
+        )}
+      </div>
+      {Array.from(groups.entries()).map(([postId, group]) => (
+        <div key={postId} className="space-y-2">
+          {/* Post header */}
+          <div className="flex items-center gap-2">
+            <BookOpen size={11} className="text-slate-400 shrink-0" />
+            <span className="text-xs font-semibold text-slate-700 truncate flex-1"
+              dangerouslySetInnerHTML={{ __html: group.title }} />
+            {group.link && (
+              <a href={group.link} target="_blank" rel="noopener noreferrer"
+                className="text-[10px] text-blue-500 hover:underline shrink-0 flex items-center gap-0.5">
+                <ExternalLink size={9} /> View post
+              </a>
+            )}
+          </div>
+          {/* Comments under this post — only top-level (parent=0), replies indented */}
+          {group.comments.filter((c) => c.parent === 0).map((c) => (
+            <div key={c.id} className="space-y-1.5 pl-3 border-l-2 border-slate-200">
+              <CommentCard comment={c} wpSlug={wpSlug} />
+              {/* Replies to this comment */}
+              {group.comments.filter((r) => r.parent === c.id).map((reply) => (
+                <div key={reply.id} className="pl-3 border-l-2 border-blue-100">
+                  <CommentCard comment={reply} wpSlug={wpSlug} isReply />
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CommentCard({ comment, wpSlug, isReply = false, onDeleted }: {
+  comment: Comment; wpSlug: string; isReply?: boolean; onDeleted?: (id: number) => void;
+}) {
+  const [showReply, setShowReply] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState("");
+  const [approving, setApproving] = useState(false);
+  const [approved, setApproved] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleted, setDeleted] = useState(false);
+
+  async function sendReply() {
+    if (!replyText.trim()) return;
+    setSending(true);
+    setErr("");
+    try {
+      await api.post(`/blog/clients/${wpSlug}/comments/${comment.id}/reply`, { content: replyText });
+      setSent(true);
+      setReplyText("");
+      setShowReply(false);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to send reply");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function approveComment() {
+    setApproving(true);
+    try {
+      await api.post(`/blog/clients/${wpSlug}/comments/${comment.id}/approve`, {});
+      setApproved(true);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to approve");
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  async function deleteComment() {
+    setDeleting(true); setErr("");
+    try {
+      await api.delete(`/blog/clients/${wpSlug}/comments/${comment.id}`);
+      setDeleted(true);
+      onDeleted?.(comment.id);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Failed to delete");
+    } finally {
+      setDeleting(false); setConfirmDel(false);
+    }
+  }
+
+  if (deleted) return null;
+
+  const isPending = !approved && (comment.status === "hold" || comment.status === "pending");
+
+  return (
+    <div className={`bg-white rounded-lg border p-3 space-y-2 ${isPending ? "border-amber-200 bg-amber-50/40" : "border-slate-200"}`}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+          <User size={11} className="text-slate-400" /> {comment.author || "Anonymous"}
+        </span>
+        <div className="flex items-center gap-2">
+          {isPending && (
+            <span className="text-[9px] font-semibold bg-amber-100 text-amber-700 border border-amber-200 rounded-full px-1.5 py-0.5 uppercase tracking-wide">
+              Pending
+            </span>
+          )}
+          <span className="flex items-center gap-1 text-[10px] text-slate-400">
+            <Calendar size={10} /> {new Date(comment.date).toLocaleDateString()}
+          </span>
+        </div>
+      </div>
+      <p className="text-xs text-slate-600 leading-relaxed">
+        {comment.content.replace(/<[^>]*>/g, "")}
+      </p>
+      {comment.email && <p className="text-[10px] text-slate-400">{comment.email}</p>}
+
+      {sent && (
+        <p className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+          <Check size={10} /> Reply posted
+        </p>
+      )}
+
+      {err && !showReply && <p className="text-[10px] text-rose-500">{err}</p>}
+
+      {approved && (
+        <p className="flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+          <Check size={10} /> Approved — now visible on the blog
+        </p>
+      )}
+
+      {!sent && !isReply && (
+        <>
+          <div className="flex items-center gap-3 flex-wrap">
+            {isPending && (
+              <button
+                onClick={approveComment}
+                disabled={approving}
+                className="flex items-center gap-1 text-[10px] text-emerald-700 hover:text-emerald-900 font-medium transition-colors disabled:opacity-50"
+              >
+                {approving ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
+                {approving ? "Approving…" : "Approve"}
+              </button>
+            )}
+            <button
+              onClick={() => setShowReply((v) => !v)}
+              className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 font-medium transition-colors"
+            >
+              <CornerDownRight size={10} /> {showReply ? "Cancel" : "Reply"}
+            </button>
+            {!confirmDel ? (
+              <button onClick={() => setConfirmDel(true)}
+                className="flex items-center gap-1 text-[10px] text-rose-500 hover:text-rose-700 font-medium transition-colors ml-auto">
+                <Trash2 size={10} /> Delete
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="text-[10px] text-slate-500">Delete this comment?</span>
+                <button onClick={deleteComment} disabled={deleting}
+                  className="text-[10px] font-semibold text-white bg-rose-500 hover:bg-rose-600 rounded px-1.5 py-0.5 disabled:opacity-50">
+                  {deleting ? "Deleting…" : "Yes"}
+                </button>
+                <button onClick={() => setConfirmDel(false)} className="text-[10px] text-slate-400 hover:text-slate-600">No</button>
+              </div>
+            )}
+          </div>
+          {showReply && (
+            <div className="space-y-1.5 pt-1">
+              <textarea
+                rows={2}
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                placeholder="Write your reply…"
+                className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+              {err && <p className="text-[10px] text-rose-500">{err}</p>}
+              <button
+                onClick={sendReply}
+                disabled={sending || !replyText.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
+              >
+                {sending ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
+                {sending ? "Sending…" : "Send Reply"}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }

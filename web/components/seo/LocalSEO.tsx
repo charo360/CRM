@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { seoApi } from "@/lib/api";
 
 interface LocalListing {
-  platform: "google-business" | "yelp" | "apple-maps" | "bing-places";
+  id: string;
+  platform: string;
   name: string;
   address: string;
   phone: string;
@@ -10,16 +11,23 @@ interface LocalListing {
   rating?: number;
   reviews?: number;
   status: "verified" | "pending" | "not-listed";
+  created_at?: string;
+  updated_at?: string;
   lastUpdated?: string;
 }
 
 interface LocalKeyword {
   keyword: string;
   location: string;
-  position: number;
-  searchVolume: number;
+  position: number | null;
+  search_volume?: number;
+  searchVolume?: number;
   difficulty: "low" | "medium" | "high";
-  trend: "up" | "down" | "stable";
+  trend: "up" | "down" | "stable" | "new" | "untracked";
+  volume_trend?: "up" | "down" | "stable" | null;
+  content_idea?: string;
+  article_url?: string | null;
+  article_title?: string | null;
 }
 
 interface CompetitorListing {
@@ -45,23 +53,42 @@ export default function LocalSEO() {
     phone: "",
     website: ""
   });
+  const [editingListing, setEditingListing] = useState<LocalListing | null>(null);
+  const [editForm, setEditForm] = useState<Partial<LocalListing>>({});
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [trackingKeyword, setTrackingKeyword] = useState<string | null>(null);
+  const [trackDomain, setTrackDomain] = useState("");
+  const [showTrackModal, setShowTrackModal] = useState(false);
+  const [trackingInProgress, setTrackingInProgress] = useState<string | null>(null);
+  const [trackResult, setTrackResult] = useState<{ position: number | null; error?: string } | null>(null);
+  const [keywordsSource, setKeywordsSource] = useState<string>("");
+  const [trackArticleUrl, setTrackArticleUrl] = useState("");
+  const [trackArticleTitle, setTrackArticleTitle] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoadErr("");
       try {
-        const [listingsData, keywordsData, competitorsData, scoreData] = await Promise.all([
+        const [listingsData, keywordsData, competitorsData, scoreData, ctxData] = await Promise.all([
           seoApi.getLocalListings(),
           seoApi.getLocalKeywords(),
           seoApi.getLocalCompetitors(),
           seoApi.getLocalScore(),
+          seoApi.businessContext().catch(() => null),
         ]);
         if (cancelled) return;
         setListings((listingsData.listings || []) as unknown as LocalListing[]);
         setLocalKeywords((keywordsData.keywords || []) as unknown as LocalKeyword[]);
+        setKeywordsSource((keywordsData as Record<string, unknown>).source as string || "");
         setCompetitors((competitorsData.competitors || []) as unknown as CompetitorListing[]);
         setLocalScore(scoreData);
+        if (ctxData?.website_url) {
+          const raw = ctxData.website_url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+          setWebsiteUrl(raw);
+          setTrackDomain(raw);
+        }
       } catch (error) {
         console.error("Error fetching local SEO data:", error);
         if (!cancelled) {
@@ -81,6 +108,7 @@ export default function LocalSEO() {
       const result = await seoApi.addLocalListing(newListing);
       const stored = result.listing as Record<string, unknown>;
       const listing: LocalListing = {
+        id: String(stored._id ?? stored.id ?? crypto.randomUUID()),
         platform: stored.platform === "yelp" || stored.platform === "apple-maps" || stored.platform === "bing-places"
           ? stored.platform
           : "google-business",
@@ -110,6 +138,7 @@ export default function LocalSEO() {
       console.error("Error adding listing:", error);
       const listing: LocalListing = {
         ...newListing,
+        id: crypto.randomUUID(),
         status: "pending",
         lastUpdated: new Date().toISOString(),
       };
@@ -122,6 +151,74 @@ export default function LocalSEO() {
         phone: "",
         website: "",
       });
+    }
+  };
+
+  const openTrackModal = (keyword: string) => {
+    const kw = localKeywords.find(k => k.keyword === keyword);
+    setTrackingKeyword(keyword);
+    setTrackDomain(websiteUrl || "");
+    setTrackArticleUrl(kw?.article_url || "");
+    setTrackArticleTitle(kw?.article_title || "");
+    setTrackResult(null);
+    setShowTrackModal(true);
+  };
+
+  const closeTrackModal = () => {
+    setShowTrackModal(false);
+    setTrackResult(null);
+    setTrackingKeyword(null);
+    setTrackArticleUrl("");
+    setTrackArticleTitle("");
+  };
+
+  const handleTrackKeyword = async () => {
+    if (!trackingKeyword || !trackDomain.trim()) return;
+    const domain = trackDomain.trim().replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+    const articleUrl = trackArticleUrl.trim() || undefined;
+    const articleTitle = trackArticleTitle.trim() || undefined;
+    setTrackingInProgress(trackingKeyword);
+    setTrackResult(null);
+    try {
+      const result = await seoApi.checkRanking(trackingKeyword, domain, undefined, articleUrl, articleTitle);
+      const pos = result.position ?? null;
+      setTrackResult({ position: pos });
+      setLocalKeywords(prev => prev.map(k =>
+        k.keyword === trackingKeyword
+          ? { ...k, position: pos, trend: pos != null ? "new" : "untracked", article_url: articleUrl ?? k.article_url, article_title: articleTitle ?? k.article_title }
+          : k
+      ));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to check ranking. Is the backend running?";
+      setTrackResult({ position: null, error: msg });
+    } finally {
+      setTrackingInProgress(null);
+    }
+  };
+
+  const handleUpdateListing = async () => {
+    if (!editingListing?.id) return;
+    try {
+      await seoApi.updateLocalListing(editingListing.id, editForm);
+      setListings(prev => prev.map(l => l.id === editingListing.id ? { ...l, ...editForm } : l));
+    } catch (e) {
+      console.error("Error updating listing:", e);
+    } finally {
+      setEditingListing(null);
+      setEditForm({});
+    }
+  };
+
+  const handleDeleteListing = async (listing: LocalListing) => {
+    if (!listing.id) return;
+    setDeletingId(listing.id);
+    try {
+      await seoApi.deleteLocalListing(listing.id);
+      setListings(prev => prev.filter(l => l.id !== listing.id));
+    } catch (e) {
+      console.error("Error deleting listing:", e);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -162,11 +259,33 @@ export default function LocalSEO() {
     }
   };
 
-  const getTrendIcon = (trend: string) => {
+  const getTrendBadge = (trend: string, volumeTrend?: string | null) => {
+    // trend = position trend (from SERP history); volumeTrend = search volume trend from DataForSEO
     switch (trend) {
-      case "up": return "↑";
-      case "down": return "↓";
-      default: return "→";
+      case "up":
+        return <span className="inline-flex items-center gap-1 text-green-700 font-semibold text-xs" title="Position improving — your ranking moved up since last check">↑ Rising</span>;
+      case "down":
+        return <span className="inline-flex items-center gap-1 text-red-600 font-semibold text-xs" title="Position dropped since last check">↓ Falling</span>;
+      case "stable":
+        return <span className="inline-flex items-center gap-1 text-slate-500 text-xs" title="Position unchanged since last check">→ Stable</span>;
+      case "new":
+        return (
+          <span className="inline-flex items-center gap-1 text-xs" title="Position just tracked for the first time">
+            <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">New</span>
+            {volumeTrend === "up" && <span className="text-green-600" title="Search volume rising">▲</span>}
+            {volumeTrend === "down" && <span className="text-red-500" title="Search volume declining">▼</span>}
+          </span>
+        );
+      case "untracked":
+        return (
+          <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="Not yet tracked — click Track to check this keyword's ranking">
+            <span>–</span>
+            {volumeTrend === "up" && <span className="text-green-600 font-semibold" title="Search volume is rising — good keyword to target">▲ vol</span>}
+            {volumeTrend === "down" && <span className="text-red-400" title="Search volume declining">▼ vol</span>}
+          </span>
+        );
+      default:
+        return <span className="text-slate-400 text-xs">–</span>;
     }
   };
 
@@ -243,11 +362,18 @@ export default function LocalSEO() {
                 </div>
 
                 <div className="flex gap-2 ml-4">
-                  <button className="px-3 py-1.5 bg-blue-100 text-blue-700 text-xs rounded-lg hover:bg-blue-200 font-medium">
+                  <button
+                    onClick={() => { setEditingListing(listing); setEditForm({ name: listing.name, address: listing.address, phone: listing.phone, website: listing.website, status: listing.status, rating: listing.rating, reviews: listing.reviews }); }}
+                    className="px-3 py-1.5 bg-blue-100 text-blue-700 text-xs rounded-lg hover:bg-blue-200 font-medium"
+                  >
                     Edit
                   </button>
-                  <button className="px-3 py-1.5 bg-slate-100 text-slate-700 text-xs rounded-lg hover:bg-slate-200 font-medium">
-                    Sync
+                  <button
+                    onClick={() => handleDeleteListing(listing)}
+                    disabled={deletingId === listing.id}
+                    className="px-3 py-1.5 bg-red-50 text-red-600 text-xs rounded-lg hover:bg-red-100 font-medium disabled:opacity-50"
+                  >
+                    {deletingId === listing.id ? "…" : "Delete"}
                   </button>
                 </div>
               </div>
@@ -258,59 +384,93 @@ export default function LocalSEO() {
 
       {/* Local Keyword Rankings */}
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h3 className="text-lg font-semibold text-slate-800 mb-4">Local Keyword Rankings</h3>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-800">Keyword Opportunities</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Keywords people in your industry actually search for — sorted by monthly volume</p>
+          </div>
+          {keywordsSource === "dataforseo_seeds" && (
+            <span className="text-xs bg-green-50 text-green-700 border border-green-200 px-2 py-1 rounded-full font-medium">
+              Real search data
+            </span>
+          )}
+        </div>
         
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-100">
-                <th className="text-left py-3 px-2 font-medium text-slate-700">Keyword</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Location</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Position</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Search Volume</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Difficulty</th>
-                <th className="text-center py-3 px-2 font-medium text-slate-700">Trend</th>
-              </tr>
-            </thead>
-            <tbody>
-              {localKeywords.map((keyword, index) => (
-                <tr key={index} className="border-b border-slate-50 hover:bg-slate-50">
-                  <td className="py-3 px-2">
-                    <span className="font-medium text-slate-800">{keyword.keyword}</span>
-                  </td>
-                  <td className="text-center py-3">
-                    <span className="text-sm text-slate-600">{keyword.location}</span>
-                  </td>
-                  <td className="text-center py-3">
-                    <div className={`inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
-                      keyword.position <= 3 ? "bg-green-100 text-green-700" :
-                      keyword.position <= 10 ? "bg-yellow-100 text-yellow-700" :
-                      "bg-red-100 text-red-700"
-                    }`}>
-                      #{keyword.position}
-                    </div>
-                  </td>
-                  <td className="text-center py-3">
-                    <span className="font-medium text-slate-800">{keyword.searchVolume.toLocaleString()}</span>
-                  </td>
-                  <td className="text-center py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${getDifficultyColor(keyword.difficulty)}`}>
+        <div className="space-y-3">
+          {localKeywords.map((keyword, index) => {
+            const vol = keyword.search_volume ?? keyword.searchVolume ?? null;
+            const hasArticle = !!keyword.article_url;
+            return (
+              <div key={index} className="border border-slate-200 rounded-xl overflow-hidden">
+                {/* Keyword row */}
+                <div className="flex items-center justify-between px-4 py-3 bg-white">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-slate-800 text-sm">{keyword.keyword}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${getDifficultyColor(keyword.difficulty)}`}>
                       {keyword.difficulty}
                     </span>
-                  </td>
-                  <td className="text-center py-3">
-                    <span className={`font-medium ${
-                      keyword.trend === "up" ? "text-green-600" :
-                      keyword.trend === "down" ? "text-red-600" :
-                      "text-slate-500"
-                    }`}>
-                      {getTrendIcon(keyword.trend)}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                    {vol != null && vol > 0 ? (
+                      <span className="text-sm font-bold text-slate-800">
+                        {vol >= 1000 ? `${(vol / 1000).toFixed(vol >= 10000 ? 0 : 1)}k` : vol.toLocaleString()}
+                        <span className="text-xs font-normal text-slate-400">/mo</span>
+                        {keyword.volume_trend === "up" && <span className="ml-1 text-green-500 text-xs" title="Search volume rising">▲</span>}
+                        {keyword.volume_trend === "down" && <span className="ml-1 text-red-400 text-xs" title="Search volume declining">▼</span>}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">no data</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Article row */}
+                <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-t border-slate-100">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {hasArticle ? (
+                      <>
+                        <span className="text-slate-400 text-xs">📄</span>
+                        <span className="text-xs text-slate-600 truncate max-w-[240px]" title={keyword.article_url || ""}>
+                          {keyword.article_title || keyword.article_url}
+                        </span>
+                        {keyword.position != null ? (
+                          <span className={`inline-flex items-center text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
+                            keyword.position <= 3 ? "bg-green-100 text-green-700" :
+                            keyword.position <= 10 ? "bg-yellow-100 text-yellow-700" :
+                            "bg-red-100 text-red-700"
+                          }`}>
+                            #{keyword.position}
+                            {keyword.trend === "up" && <span className="ml-0.5">↑</span>}
+                            {keyword.trend === "down" && <span className="ml-0.5">↓</span>}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400 italic">not ranked yet</span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">No article linked yet</span>
+                    )}
+                  </div>
+                  <div className="flex-shrink-0 ml-2">
+                    {trackingInProgress === keyword.keyword ? (
+                      <span className="text-xs text-slate-400 italic">Checking…</span>
+                    ) : (
+                      <button
+                        onClick={() => openTrackModal(keyword.keyword)}
+                        className={`px-3 py-1 text-xs rounded-lg font-medium transition ${
+                          hasArticle
+                            ? "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                            : "bg-blue-600 text-white hover:bg-blue-700"
+                        }`}
+                      >
+                        {hasArticle ? "Update" : "Link Article"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -509,6 +669,185 @@ export default function LocalSEO() {
                 </button>
                 <button
                   onClick={() => setShowAddListing(false)}
+                  className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Link Article + Track Modal */}
+      {showTrackModal && trackingKeyword && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-base font-semibold text-slate-800">Link Article & Check Ranking</h3>
+              <button onClick={closeTrackModal} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
+            </div>
+            <p className="text-sm font-medium text-blue-700 mb-1 truncate">"{trackingKeyword}"</p>
+            <p className="text-xs text-slate-400 mb-4">Link the article you wrote for this keyword, then check its Google ranking.</p>
+
+            {/* Result feedback */}
+            {trackResult && !trackResult.error && (
+              <div className="mb-4 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-center">
+                {trackResult.position != null ? (
+                  <>
+                    <p className="text-2xl font-bold text-green-700">#{trackResult.position}</p>
+                    <p className="text-xs text-green-600 mt-1">
+                      {trackArticleUrl ? `Your article ranks #${trackResult.position} for this keyword.` : `Your site ranks #${trackResult.position} for this keyword.`}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-semibold text-slate-600">Not in top results yet</p>
+                    <p className="text-xs text-slate-400 mt-1">Not found in top 20. Keep building authority — it takes time.</p>
+                  </>
+                )}
+              </div>
+            )}
+            {trackResult?.error && (
+              <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+                {trackResult.error}
+              </div>
+            )}
+
+            {!trackResult && (
+              <>
+                <div className="mb-3">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Article URL <span className="text-slate-400 font-normal">(optional)</span></label>
+                  <input
+                    type="text"
+                    value={trackArticleUrl}
+                    onChange={(e) => setTrackArticleUrl(e.target.value)}
+                    placeholder="yoursite.com/blog/sick-leave-email"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!!trackingInProgress}
+                  />
+                </div>
+                <div className="mb-3">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Article title <span className="text-slate-400 font-normal">(optional)</span></label>
+                  <input
+                    type="text"
+                    value={trackArticleTitle}
+                    onChange={(e) => setTrackArticleTitle(e.target.value)}
+                    placeholder="How to Write a Sick Leave Email"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!!trackingInProgress}
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">Your website domain</label>
+                  <input
+                    type="text"
+                    value={trackDomain}
+                    onChange={(e) => setTrackDomain(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleTrackKeyword(); }}
+                    placeholder="yourdomain.com"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!!trackingInProgress}
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">Without http:// or www</p>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleTrackKeyword}
+                    disabled={!trackDomain.trim() || !!trackingInProgress}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+                  >
+                    {trackingInProgress === trackingKeyword ? "Checking…" : "Check Ranking"}
+                  </button>
+                  <button
+                    onClick={closeTrackModal}
+                    disabled={!!trackingInProgress}
+                    className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {trackResult && (
+              <button
+                onClick={closeTrackModal}
+                className="w-full mt-2 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
+              >
+                Close
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Edit Listing Modal */}
+      {editingListing && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-slate-800">Edit Listing</h3>
+              <button onClick={() => setEditingListing(null)} className="text-slate-400 hover:text-slate-600 text-xl">×</button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Business Name</label>
+                <input
+                  type="text"
+                  value={editForm.name ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Address</label>
+                <input
+                  type="text"
+                  value={editForm.address ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, address: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Phone</label>
+                <input
+                  type="tel"
+                  value={editForm.phone ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, phone: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Website</label>
+                <input
+                  type="url"
+                  value={editForm.website ?? ""}
+                  onChange={(e) => setEditForm(f => ({ ...f, website: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Status</label>
+                <select
+                  value={editForm.status ?? "pending"}
+                  onChange={(e) => setEditForm(f => ({ ...f, status: e.target.value as LocalListing["status"] }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="pending">Pending</option>
+                  <option value="verified">Verified</option>
+                  <option value="not-listed">Not Listed</option>
+                </select>
+              </div>
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={handleUpdateListing}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 font-medium"
+                >
+                  Save Changes
+                </button>
+                <button
+                  onClick={() => setEditingListing(null)}
                   className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 font-medium"
                 >
                   Cancel

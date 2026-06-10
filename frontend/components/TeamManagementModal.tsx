@@ -80,9 +80,10 @@ export default function TeamManagementModal({
             Alert.alert('Error', 'Please enter a name');
             return;
         }
-
         if (phone && phone.length < 8) {
             Alert.alert('Error', 'Please enter a valid phone number with country code (e.g. +254712345678)');
+        if (invitePhone.trim().length < 8) {
+            Alert.alert('Error', 'Please enter a valid phone number with country code (e.g. +15551234567)');
             return;
         }
 
@@ -233,7 +234,7 @@ export default function TeamManagementModal({
                                     style={styles.input}
                                     value={invitePhone}
                                     onChangeText={setInvitePhone}
-                                    placeholder="+254712345678"
+                                    placeholder="+15551234567"
                                     placeholderTextColor="#556"
                                     keyboardType="phone-pad"
                                     autoCapitalize="none"
@@ -358,17 +359,17 @@ export default function TeamManagementModal({
                                         {member.role !== 'owner' && isManager && (
                                             <View style={styles.memberActions}>
                                             <TouchableOpacity
-    style={styles.actionButton}
-    onPress={() => {
-        Alert.alert(
-            member.name,
-            `Email: ${member.email}\nPhone: ${member.phone_number || 'N/A'}\nRole: ${member.role}\nStatus: ${member.status}`
-        );
-    }}
->
-    <Ionicons name="eye-outline" size={18} color="#4A90D9" />
-    <Text style={styles.actionButtonText}>View</Text>
-</TouchableOpacity>
+                                                      style={styles.actionButton}
+                                                      onPress={() => {
+                                                          Alert.alert(
+                                                              member.name,
+                                                              `Email: ${member.email}\nPhone: ${member.phone_number || 'N/A'}\nRole: ${member.role}\nStatus: ${member.status}`
+                                                          );
+                                                      }}
+                                                  >
+                                                      <Ionicons name="eye-outline" size={18} color="#4A90D9" />
+                                                      <Text style={styles.actionButtonText}>View</Text>
+                                                  </TouchableOpacity>
                                                 {isOwner && (
                                                     <TouchableOpacity
                                                         style={styles.actionButton}

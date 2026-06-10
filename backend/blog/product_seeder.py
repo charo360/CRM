@@ -47,66 +47,64 @@ def _wc_configured() -> bool:
 # ── AI generation ──────────────────────────────────────────────────────────────
 
 INDUSTRY_PROMPT: Dict[str, str] = {
-    "tech": """Generate 8 realistic tech/electronics products for a Kenyan tech shop.
+    "tech": """Generate 8 realistic tech/electronics products.
 Mix: 2 laptops, 2 smartphones, 2 accessories (earbuds/charger), 1 tablet, 1 smart TV.
-For each product include realistic KES pricing (laptops: 45,000–120,000, phones: 15,000–80,000).
+Use realistic pricing in the local currency (laptops: mid-to-high range, phones: budget-to-premium).
 Each product MUST have a "attributes" list with technical specs:
   laptops: RAM, Storage, Processor, Display, Battery
   phones: RAM, Storage, Camera, Battery, Display
   accessories: Compatibility, Color, Warranty""",
 
-    "electronics": """Generate 8 electronics products for a Kenyan electronics store.
+    "electronics": """Generate 8 electronics products.
 Mix of: TVs, home appliances, audio equipment, gaming accessories.
-Include realistic KES pricing. Add technical attributes/specs for each.""",
+Use realistic local pricing. Add technical attributes/specs for each.""",
 
     "salon": """Generate 8 salon/beauty services as WooCommerce products (type: service).
-Mix: 3 hair services (braiding, relaxer, cut), 2 nail services, 2 skincare treatments, 1 package deal.
-Pricing in KES (200–5000). Include Duration and Who It's For as attributes.""",
+Mix: 3 hair services (cut, treatment, styling), 2 nail services, 2 skincare treatments, 1 package deal.
+Include Duration and Who It's For as attributes.""",
 
-    "beauty": """Generate 8 beauty products/services for a Kenyan beauty business.
-Mix of physical products (skincare, makeup) and services. Realistic KES pricing.""",
+    "beauty": """Generate 8 beauty products/services.
+Mix of physical products (skincare, makeup) and services. Realistic pricing.""",
 
     "restaurant": """Generate 8 food menu items as WooCommerce products.
 Mix: 3 main dishes, 2 sides, 1 combo meal, 1 drink/juice, 1 dessert.
-Kenyan cuisine (nyama choma, pilau, ugali, chapati, etc.) plus some continental.
-KES pricing (200–1500). Add Portion Size and Allergens as attributes.""",
+Use cuisine appropriate for the business location. Add Portion Size and Allergens as attributes.""",
 
-    "food": """Generate 8 food/beverage products for a Kenyan food business.
-Realistic KES pricing. Include relevant product attributes.""",
+    "food": """Generate 8 food/beverage products.
+Use realistic pricing. Include relevant product attributes.""",
 
-    "retail": """Generate 8 retail/fashion products for a Kenyan fashion shop.
+    "retail": """Generate 8 retail/fashion products.
 Mix: 3 tops/shirts, 2 trousers/skirts, 1 dress/suit, 1 shoes, 1 accessories.
-KES pricing (500–8000). Include Size, Color, Material as attributes.""",
+Include Size, Color, Material as attributes.""",
 
-    "fashion": """Generate 8 fashion items for a Kenyan clothing store.
+    "fashion": """Generate 8 fashion items.
 Include Size options, Color options, and Material attributes.""",
 
-    "health": """Generate 8 health & wellness products for a Kenyan health store.
-Mix of supplements, equipment, and service packages. KES pricing.""",
+    "health": """Generate 8 health & wellness products.
+Mix of supplements, equipment, and service packages.""",
 
     "fitness": """Generate 8 fitness products/memberships.
-Mix: equipment, supplements, training packages, memberships. KES pricing.""",
+Mix: equipment, supplements, training packages, memberships.""",
 
     "consulting": """Generate 6 consulting/professional service packages.
 Examples: Business Strategy Session, Marketing Audit, Website Setup Package, etc.
-KES pricing (5,000–50,000). Include Duration and Deliverables as attributes.""",
+Include Duration and Deliverables as attributes.""",
 
     "real estate": """Generate 6 real estate service packages/listings.
 Examples: Property Valuation, Tenant Search, Property Management (monthly), etc.
-KES pricing. Include Location, Type, Duration as attributes.""",
+Include Location, Type, Duration as attributes.""",
 
     "education": """Generate 8 educational courses/programs as products.
 Examples: digital skills courses, tutoring packages, certification programs.
-KES pricing (2,000–30,000). Include Duration, Level, Certificate as attributes.""",
+Include Duration, Level, Certificate as attributes.""",
 
     "hotel": """Generate 8 hotel room types and packages.
 Mix: room types (standard/deluxe/suite), meal packages, day conference packages.
-KES pricing per night (3,000–25,000). Include Capacity, Amenities, Meals as attributes.""",
+Include Capacity, Amenities, Meals as attributes.""",
 }
 
-DEFAULT_PROMPT = """Generate 8 general business products/services for a small Kenyan business.
-Mix of physical products and services relevant to the industry.
-Realistic KES pricing. Include relevant product attributes."""
+DEFAULT_PROMPT = """Generate 8 general business products/services relevant to the business industry and location.
+Mix of physical products and services. Use realistic local pricing. Include relevant product attributes."""
 
 
 def _build_prompt(business_name: str, industry: str, location: str) -> str:

@@ -32,9 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Keep pip cache so Docker layer cache works — only re-installs when requirements.txt changes
+RUN pip install -r requirements.txt
 
-RUN playwright install chromium
+RUN playwright install chromium --with-deps
 
 COPY . .
 

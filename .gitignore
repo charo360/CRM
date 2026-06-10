@@ -30,6 +30,9 @@ venv/
 *.env
 **/token.json
 **/credentials.json
+**/*credentials.json
+**/google-credentials.json
+backend/google-credentials.json
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
@@ -89,3 +92,5 @@ run_*.sh
 fix.py
 gen_token.py
 list_models.py
+_semantic_cache.json
+

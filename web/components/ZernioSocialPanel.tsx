@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { zernioApi } from "@/lib/api";
+import { useCallback, useState } from "react";
+import { useZernioAccounts } from "@/contexts/ZernioAccountsContext";
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { ZiloLogo } from "@/components/ZiloLogo";
 
@@ -248,44 +248,32 @@ interface Props {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Props) {
-  const [accounts, setAccounts] = useState<ZernioAccount[]>([]);
-  const [apiConnected, setApiConnected] = useState<boolean | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { accounts: rawAccounts, apiConnected, loading, refresh, connect: zernioConnect } = useZernioAccounts();
+  const accounts = rawAccounts as ZernioAccount[];
   const [refreshing, setRefreshing] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
 
   const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    else setRefreshing(true);
+    if (silent) setRefreshing(true);
     try {
-      const status = await zernioApi.status();
-      const isConnected = status.connected === true;
-      setApiConnected(isConnected);
-      if (isConnected) {
-        const list: ZernioAccount[] = (status.accounts as ZernioAccount[] | undefined) ?? [];
-        setAccounts(list);
-      }
-    } catch {
-      setApiConnected(false);
+      await refresh();
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [refresh]);
 
   const connectPlatform = useCallback(async (platformId: string) => {
     setConnecting(platformId);
     try {
-      const { authUrl } = await zernioApi.connect(platformId);
+      const { authUrl } = await zernioConnect(platformId);
       if (authUrl) window.open(authUrl, "_blank", "noopener,noreferrer");
     } catch (e) {
       console.error("Failed to get connect URL:", e);
     } finally {
       setConnecting(null);
+      await refresh();
     }
-  }, []);
-
-  useEffect(() => { void load(); }, [load]);
+  }, [zernioConnect, refresh]);
 
   const connectedPlatforms = new Set(accounts.map((a) => a.platform.toLowerCase()));
   const connectedCount = SOCIAL_PLATFORMS.filter((p) => connectedPlatforms.has(p.id)).length;

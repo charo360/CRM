@@ -1,5 +1,5 @@
-"""
-Zilo Autoblogging — FastAPI Routes.
+﻿"""
+Zilo Autoblogging ΓÇö FastAPI Routes.
 Prefix: /api/blog
 """
 import base64
@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from blog.blog_service import ZiloBlogService, wp_subsite_public_url
+from blog.blog_service import ZiloBlogService, wp_subsite_public_url, _wp_cli, BLOG_TEMPLATES, fix_blog_templates
 from blog.topic_generator import research_seo_topic
 from blog.post_generator import generate_blog_post
 from blog.blog_scheduler import publish_daily_posts
@@ -33,7 +33,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
     """
     Convert markdown to beautifully styled WordPress HTML.
     Hero banner, card lists, accent headings, lead paragraph, closing CTA.
-    All inline CSS — works with any WordPress theme.
+    All inline CSS ΓÇö works with any WordPress theme.
     """
     if keywords is None:
         keywords = []
@@ -42,7 +42,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
     content = re.sub(r"^#+\s+[^\n]*\n?", "", content, count=1).lstrip()
     lines = content.split("\n")
 
-    # ── Colour palette ────────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Colour palette ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     BLU   = "#2563eb"
     BLUDK = "#1e40af"
     BLULT = "#dbeafe"
@@ -53,7 +53,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
     BG    = "#f8fafc"
     WHT   = "#ffffff"
 
-    # ── Hero banner ───────────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Hero banner ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     wc        = len(content.split())
     read_min  = max(1, round(wc / 200))
     kw_chips  = "".join(
@@ -73,7 +73,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
         '<div style="position:relative;z-index:1;">'
         '<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);'
         'text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">'
-        '&#10022; Zilo AI &nbsp;&#183;&nbsp; Quality Article</div>'
+        '&#10022; Expert Guide</div>'
         '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">'
         '<span style="background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);'
         'font-size:12px;font-weight:500;padding:4px 14px;border-radius:20px;">'
@@ -86,7 +86,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
         + '</div></div>'
     )
 
-    # ── Build HTML ────────────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Build HTML ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     parts = [hero]
     i = 0
     first_para = True
@@ -194,6 +194,51 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
             parts.append('<hr style="border:none;border-top:2px solid ' + BDR + ';margin:36px 0;">')
             i += 1; continue
 
+        # Markdown table — lines starting with |
+        if s.startswith("|"):
+            tbl_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                tbl_lines.append(lines[i].strip())
+                i += 1
+            if len(tbl_lines) >= 2:
+                def _parse_row(row):
+                    return [c.strip() for c in row.split("|") if c.strip() not in ("", "-", "--", "---", "----", ":---", "---:")]
+                # Second line is the separator — skip it if it only contains dashes/colons
+                sep = tbl_lines[1] if len(tbl_lines) > 1 else ""
+                is_sep = bool(re.match(r"^[\|\s\-:]+$", sep))
+                header_cells = _parse_row(tbl_lines[0])
+                body_rows = [_parse_row(r) for r in (tbl_lines[2:] if is_sep else tbl_lines[1:])]
+                th_html = "".join(
+                    '<th style="padding:10px 14px;text-align:left;font-size:12px;font-weight:700;'
+                    'text-transform:uppercase;letter-spacing:0.8px;color:#fff;'
+                    'border-right:1px solid rgba(255,255,255,0.15);white-space:nowrap;">'
+                    + _inline_md(c) + "</th>"
+                    for c in header_cells
+                )
+                rows_html = ""
+                for ri, row in enumerate(body_rows):
+                    bg = WHT if ri % 2 == 0 else BG
+                    td_html = "".join(
+                        '<td style="padding:9px 14px;font-size:14px;color:' + TEXT + ';'
+                        'border-top:1px solid ' + BDR + ';border-right:1px solid ' + BDR + ';'
+                        'vertical-align:top;">' + _inline_md(c) + "</td>"
+                        for c in row
+                    )
+                    rows_html += (
+                        '<tr style="background:' + bg + ';">' + td_html + "</tr>"
+                    )
+                parts.append(
+                    '<div style="overflow-x:auto;margin:24px 0;border-radius:10px;'
+                    'border:1px solid ' + BDR + ';box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
+                    '<table style="width:100%;border-collapse:collapse;font-family:'
+                    '-apple-system,BlinkMacSystemFont,sans-serif;">'
+                    '<thead><tr style="background:linear-gradient(135deg,#0f172a 0%,' + BLU + ' 100%);">'
+                    + th_html + "</tr></thead>"
+                    "<tbody>" + rows_html + "</tbody>"
+                    "</table></div>"
+                )
+            continue
+
         # Paragraph — collect consecutive plain lines
         para_lines = []
         while (
@@ -203,6 +248,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
             and not re.match(r"^[*\-]\s+", lines[i].strip())
             and not re.match(r"^\d+\.\s+", lines[i].strip())
             and not lines[i].strip().startswith("> ")
+            and not lines[i].strip().startswith("|")
             and lines[i].strip() not in ("---", "***", "___")
         ):
             para_lines.append(_inline_md(lines[i]))
@@ -223,7 +269,7 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
                     'margin:0 0 18px;">' + t + '</p>'
                 )
 
-    # ── Closing CTA strip ─────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Closing CTA strip ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     parts.append(
         '<div style="background:linear-gradient(135deg,' + BLU + ' 0%,' + BLUDK + ' 100%);'
         'border-radius:14px;padding:28px 24px;margin-top:44px;text-align:center;">'
@@ -232,16 +278,17 @@ def markdown_to_wp_html(content: str, title: str = "", keywords: list = None) ->
         'Ready to get started?</p>'
         '<p style="color:#fff;font-size:20px;font-weight:800;margin:0 0 18px;line-height:1.4;">'
         "Let&#39;s build something great together</p>"
-        '<span style="display:inline-block;background:#fff;color:' + BLU + ';'
+        '<a href="/contact" style="display:inline-block;background:#fff;color:' + BLU + ';'
         'font-size:13px;font-weight:700;padding:11px 28px;border-radius:30px;'
-        'text-transform:uppercase;letter-spacing:1px;">Get in Touch &#8594;</span>'
+        'text-transform:uppercase;letter-spacing:1px;text-decoration:none;">'
+        'Get in Touch &#8594;</a>'
         '</div>'
     )
 
     wrapper = (
         '<div style="font-family:-apple-system,BlinkMacSystemFont,'
-        "'Segoe UI',Georgia,serif;color:#1e293b;line-height:1.8;max-width:100%;"
-        'box-sizing:border-box;">'
+        "'Segoe UI',Georgia,serif;color:#1e293b;line-height:1.8;"
+        'max-width:740px;width:100%;margin:0 auto;box-sizing:border-box;">'
     )
     return wrapper + "\n".join(parts) + "</div>"
 
@@ -296,6 +343,7 @@ class PublishFromSeoRequest(BaseModel):
     content: str
     keywords: list = []
     excerpt: str = ""
+    post_id: str = ""
 
 
 class KeywordTrackerEntry(BaseModel):
@@ -321,7 +369,7 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(status_code=403, detail="Not allowed")
         return uid
 
-    # ── Create / activate a client blog ───────────────────────────────────────
+    # ΓöÇΓöÇ Create / activate a client blog ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/create")
     async def create_blog(req: CreateBlogRequest, user=Depends(get_current_user)):
@@ -342,7 +390,7 @@ def make_blog_router(db, get_current_user):
             logger.error(f"[blog/create] {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ── Blog status for a client ───────────────────────────────────────────────
+    # ΓöÇΓöÇ Blog status for a client ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/status/{client_id}")
     async def get_blog_status(client_id: str, user=Depends(get_current_user)):
@@ -367,13 +415,13 @@ def make_blog_router(db, get_current_user):
             "active": blog.get("active", True),
         }
 
-    # ── Auto-provision blog from settings (idempotent) ────────────────────────
+    # ΓöÇΓöÇ Auto-provision blog from settings (idempotent) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/provision")
     async def provision_blog(req: ProvisionBlogRequest, user=Depends(get_current_user)):
         """
         Called automatically when the user saves Business Settings or completes onboarding.
-        Uses the user's own _id as client_id — idempotent, safe to call multiple times.
+        Uses the user's own _id as client_id ΓÇö idempotent, safe to call multiple times.
         If blog already exists, returns it without recreating.
         """
         user_id = str(user.get("_id") or user.get("id", ""))
@@ -410,7 +458,7 @@ def make_blog_router(db, get_current_user):
             logger.error(f"[blog/provision] {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ── My blog (current authenticated user) ──────────────────────────────────
+    # ΓöÇΓöÇ My blog (current authenticated user) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/my")
     async def get_my_blog(user=Depends(get_current_user)):
@@ -435,7 +483,7 @@ def make_blog_router(db, get_current_user):
             "active": blog.get("active", True),
         }
 
-    # ── Deactivate a blog ─────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Deactivate a blog ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.patch("/deactivate/{client_id}")
     async def deactivate_blog(client_id: str, user=Depends(get_current_user)):
@@ -449,7 +497,7 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(status_code=404, detail="Blog not found")
         return {"status": "deactivated"}
 
-    # ── Reactivate a blog ─────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Reactivate a blog ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.patch("/activate/{client_id}")
     async def activate_blog(client_id: str, user=Depends(get_current_user)):
@@ -463,7 +511,167 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(status_code=404, detail="Blog not found")
         return {"status": "activated"}
 
-    # ── Manually trigger a post for one client ─────────────────────────────────
+    # ΓöÇΓöÇ Seed forms for an existing blog ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/seed-forms")
+    async def seed_forms_for_my_blog(user=Depends(get_current_user)):
+        """
+        Seeds the 3 standard forms (contact, order, survey) for the current user's blog.
+        Safe to call multiple times ΓÇö creates new forms each call (use to refresh/add forms).
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="No blog found for this account")
+
+        from forms_routes import seed_blog_forms
+        business_name = blog.get("business_name", "My Business")
+        industry = blog.get("industry", "services")
+        slugs = await seed_blog_forms(db, user_id, business_name, industry)
+        logger.info(f"[blog/seed-forms] Seeded forms for user={user_id}: {slugs}")
+        return {"status": "ok", "forms": slugs}
+
+    # ΓöÇΓöÇ Patch WordPress pages with Zilo Form widgets ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/patch-pages")
+    async def patch_blog_pages(user=Depends(get_current_user)):
+        """
+        Embeds Zilo Form widgets into the Contact, Order Forms, and Survey
+        pages of the user's WordPress subsite. Safe to call multiple times.
+        """
+        import base64, httpx, os
+        user_id = str(user.get("_id") or user.get("id", ""))
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="No blog found for this account")
+
+        site_url = blog.get("blog_url", "")
+        if not site_url:
+            raise HTTPException(status_code=400, detail="Blog URL not set")
+
+        # Get the user's form slugs from the forms collection
+        forms = await db.forms.find(
+            {"user_id": user_id, "source": "blog_autoseed"}
+        ).to_list(10)
+
+        slugs = {"contact": "", "order": "", "survey": ""}
+        for f in forms:
+            title_l = f.get("title", "").lower()
+            if "contact" in title_l:
+                slugs["contact"] = f.get("slug", "")
+            elif any(k in title_l for k in ["order", "reservation", "inquiry", "booking"]):
+                slugs["order"] = f.get("slug", "")
+            elif any(k in title_l for k in ["survey", "feedback"]):
+                slugs["survey"] = f.get("slug", "")
+
+        if not any(slugs.values()):
+            raise HTTPException(
+                status_code=400,
+                detail="No auto-seeded forms found. Call POST /api/blog/seed-forms first."
+            )
+
+        api_base = os.getenv("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pass = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth = base64.b64encode(f"{wp_user}:{wp_pass}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+
+        def _widget_block(slug: str) -> str:
+            if not slug:
+                return ""
+            uid = f"zf-{slug[-10:].replace('-', '')}"
+            src = f"{api_base}/api/forms/widget.js"
+            call = f"ZiloForm.render('{uid}','{slug}')"
+            return (
+                "<!-- wp:html -->"
+                f'<div id="{uid}"></div>'
+                f'<script src="{src}" onload="{call}"></script>'
+                "<!-- /wp:html -->"
+            )
+
+        page_patches = {
+            "contact": (
+                "<!-- wp:paragraph --><p>WeΓÇÖd love to hear from you. "
+                "Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                "<!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} -->"
+                "<div class=\"wp-block-buttons\">"
+                "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+                "<div class=\"wp-block-button\">"
+                "<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+                "href=\"https://wa.me/?text=Hi%2C+I+found+you+on+Zilo\" target=\"_blank\" rel=\"noreferrer noopener\">"
+                "\U0001f4ac Chat on WhatsApp</a></div>"
+                "<!-- /wp:button --></div>"
+                "<!-- /wp:buttons -->"
+                + _widget_block(slugs["contact"])
+            ),
+            "forms": (
+                "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
+                "WeΓÇÖll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
+                + _widget_block(slugs["order"])
+            ),
+            "survey": (
+                "<!-- wp:paragraph --><p>We value your feedback! "
+                "Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
+                + _widget_block(slugs["survey"])
+            ),
+        }
+
+        results = {}
+        async with httpx.AsyncClient(timeout=20) as hc:
+            for page_slug, new_content in page_patches.items():
+                try:
+                    chk = await hc.get(
+                        f"{site_url}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
+                        headers=headers,
+                    )
+                    pages_found = chk.json() if chk.status_code == 200 else []
+                    if not pages_found:
+                        results[page_slug] = "page not found"
+                        continue
+                    pid = pages_found[0]["id"]
+                    patch = await hc.post(
+                        f"{site_url}/wp-json/wp/v2/pages/{pid}",
+                        headers=headers,
+                        json={"content": new_content, "status": "publish"},
+                    )
+                    results[page_slug] = "ok" if patch.status_code == 200 else f"error {patch.status_code}"
+                    logger.info(f"[blog/patch-pages] /{page_slug} ΓåÆ {results[page_slug]} for {site_url}")
+                except Exception as exc:
+                    results[page_slug] = f"error: {exc}"
+
+        return {"status": "done", "site_url": site_url, "slugs": slugs, "pages": results}
+
+    # ΓöÇΓöÇ Fix blog listing templates on all sites ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/fix-all-templates")
+    async def fix_all_templates(user=Depends(get_current_user)):
+        """
+        Applies the corrected index/home template (title before image, no Blog H1)
+        to every WordPress subsite in the database.
+        Admin convenience endpoint ΓÇö safe to call multiple times.
+        """
+        from blog.blog_service import fix_blog_templates, wp_subsite_public_url
+        blogs = await db.blogs.find({}, {"wp_slug": 1, "blog_url": 1}).to_list(None)
+        summary = {}
+        for b in blogs:
+            slug = b.get("wp_slug", "")
+            site_url = b.get("blog_url") or wp_subsite_public_url(slug)
+            if not site_url:
+                continue
+            try:
+                result = await fix_blog_templates(site_url)
+                summary[slug] = result
+            except Exception as exc:
+                summary[slug] = {"error": str(exc)}
+        return {"fixed": len(summary), "sites": summary}
+
+    # ΓöÇΓöÇ Manually trigger a post for one client ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/publish-now")
     async def publish_now(req: ManualPublishRequest, user=Depends(get_current_user)):
@@ -497,7 +705,7 @@ def make_blog_router(db, get_current_user):
             )
             return {
                 "status": "published",
-                "topic": topic,
+                "topic": seo["topic"],
                 "post_url": result["post_url"],
                 "post_id": result["post_id"],
                 "template_used": post.get("template_used", ""),
@@ -506,29 +714,29 @@ def make_blog_router(db, get_current_user):
             logger.error(f"[blog/publish-now] {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ── Publish a pre-written SEO post to user's blog ────────────────────────
+    # ΓöÇΓöÇ Publish a pre-written SEO post to user's blog ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/publish-from-seo")
     async def publish_from_seo(req: PublishFromSeoRequest, user=Depends(get_current_user)):
         """
         Takes a fully-written post from the SEO page (title, content, keywords)
         and publishes it directly to the authenticated user's WordPress subsite.
-        No topic generation needed — content already written.
+        No topic generation needed ΓÇö content already written.
         """
         user_id = str(user.get("_id") or user.get("id", ""))
         blog = await db.blogs.find_one({"client_id": user_id})
         if not blog:
             raise HTTPException(
                 status_code=404,
-                detail="No blog found. Go to Autoblog → Activate your blog first.",
+                detail="No blog found. Go to Autoblog ΓåÆ Activate your blog first.",
             )
         if not blog.get("active", True):
             raise HTTPException(status_code=400, detail="Blog is paused. Activate it first.")
 
         blog_url_out = await _blog_url_for_response(db, blog)
-        # Convert markdown → HTML and strip leading H1 (WP renders the title itself)
+        # Convert markdown ΓåÆ HTML and strip leading H1 (WP renders the title itself)
         html_content = markdown_to_wp_html(req.content, title=req.title, keywords=req.keywords)
-        excerpt = req.excerpt or (req.content[:155].replace("<", "").replace(">", "").strip() + "…")
+        excerpt = req.excerpt or (req.content[:155].replace("<", "").replace(">", "").strip() + "ΓÇª")
         try:
             result = await blog_service.publish_post(
                 wp_slug=blog["wp_slug"],
@@ -537,9 +745,21 @@ def make_blog_router(db, get_current_user):
                 excerpt=excerpt,
                 keywords=req.keywords,
             )
+            post_url = result["post_url"]
+            # Persist published state so the UI shows "View live" after reload
+            if req.post_id:
+                from datetime import datetime as _dt
+                await db.seo_blog_posts.update_one(
+                    {"_id": req.post_id, "user_id": user_id},
+                    {"$set": {
+                        "status": "published",
+                        "site_post_url": post_url,
+                        "updated_at": _dt.utcnow(),
+                    }},
+                )
             return {
                 "status": "published",
-                "post_url": result["post_url"],
+                "post_url": post_url,
                 "post_id": result["post_id"],
                 "blog_url": blog_url_out,
             }
@@ -547,7 +767,7 @@ def make_blog_router(db, get_current_user):
             logger.error(f"[blog/publish-from-seo] {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ── Admin: run the full daily job manually ─────────────────────────────────
+    # ΓöÇΓöÇ Admin: run the full daily job manually ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/run-daily-job")
     async def run_daily_job(user=Depends(get_current_user)):
@@ -559,7 +779,31 @@ def make_blog_router(db, get_current_user):
             logger.error(f"[blog/run-daily-job] {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ── Recent posts log for a client ─────────────────────────────────────────
+    # ─── Refresh favicon for the user's blog ────────────────────────────────────
+
+    @router.post("/refresh-favicon")
+    async def refresh_favicon(user=Depends(get_current_user)):
+        """Re-upload the Zilo logo as the site favicon for the user's active blog."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="Blog not found")
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(status_code=400, detail="Site URL unavailable")
+        try:
+            await blog_service._generate_and_set_favicon(
+                subsite_url=site_url,
+                slug=blog.get("wp_slug", ""),
+                business_name=blog.get("business_name", ""),
+                industry=blog.get("industry", ""),
+            )
+            return {"status": "ok", "site": site_url}
+        except Exception as e:
+            logger.error(f"[blog/refresh-favicon] {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # ΓöÇΓöÇ Recent posts log for a client ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/posts/{client_id}")
     async def get_posts(client_id: str, limit: int = 20, user=Depends(get_current_user)):
@@ -576,7 +820,7 @@ def make_blog_router(db, get_current_user):
 
         return {"posts": posts}
 
-    # ── Keyword tracker — save keywords with blog link ─────────────────────────
+    # ΓöÇΓöÇ Keyword tracker ΓÇö save keywords with blog link ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/keyword-tracker/save")
     async def save_keyword_entry(req: KeywordTrackerEntry, user=Depends(get_current_user)):
@@ -618,22 +862,130 @@ def make_blog_router(db, get_current_user):
 
     @router.get("/keyword-tracker")
     async def get_keyword_tracker(user=Depends(get_current_user)):
-        """Returns all tracked keywords with their linked blog posts."""
+        """Returns all tracked keywords with their linked blog posts and latest Google ranking position."""
         user_id = str(user.get("_id") or user.get("id", ""))
         entries = await db.keyword_tracker.find(
             {"user_id": user_id},
             {"_id": 0, "user_id": 0},
         ).sort("search_volume", -1).to_list(None)
 
+        # Build a position map from seo_serp_rankings (latest entry per keyword)
+        ranking_rows = await db.seo_serp_rankings.find(
+            {"user_id": user_id},
+        ).sort("checked_at", -1).to_list(2000)
+        # Deduplicate: keep latest per keyword (case-insensitive)
+        position_map: dict = {}
+        for r in ranking_rows:
+            kw = (r.get("keyword") or "").lower()
+            if kw not in position_map:
+                position_map[kw] = {
+                    "position": r.get("position"),
+                    "checked_at": r.get("checked_at").isoformat() if r.get("checked_at") else None,
+                    "domain": r.get("domain"),
+                }
+
         for e in entries:
             if isinstance(e.get("updated_at"), datetime):
                 e["updated_at"] = e["updated_at"].isoformat()
             if isinstance(e.get("created_at"), datetime):
                 e["created_at"] = e["created_at"].isoformat()
+            # Attach latest ranking data
+            rank_data = position_map.get((e.get("keyword") or "").lower(), {})
+            e["position"] = rank_data.get("position")
+            e["position_checked_at"] = rank_data.get("checked_at")
+            e["ranked_domain"] = rank_data.get("domain")
 
         return {"keywords": entries}
 
-    # ── Client Sites dashboard ─────────────────────────────────────────────────
+    @router.delete("/keyword-tracker/{keyword}")
+    async def delete_keyword_from_tracker(keyword: str, user=Depends(get_current_user)):
+        """Remove a keyword from the tracker permanently."""
+        from urllib.parse import unquote
+        user_id = str(user.get("_id") or user.get("id", ""))
+        kw = unquote(keyword)
+        result = await db.keyword_tracker.delete_one({"user_id": user_id, "keyword": kw})
+        if result.deleted_count:
+            return {"ok": True, "message": f"'{kw}' removed from tracker"}
+        raise HTTPException(404, f"Keyword '{kw}' not found in tracker")
+
+    @router.post("/keyword-tracker/enrich-volumes")
+    async def enrich_keyword_volumes(user=Depends(get_current_user)):
+        """Batch-fetch real search volumes from DataForSEO for tracker keywords missing volumes."""
+        from seo.dataforseo import dfs_enabled, fetch_search_volumes_batch, resolve_location_code, language_code_from_settings
+
+        user_id = str(user.get("_id") or user.get("id", ""))
+        if not dfs_enabled():
+            return {"ok": False, "message": "DataForSEO not configured", "updated": 0}
+
+        # Gather keywords with no/zero volume
+        entries = await db.keyword_tracker.find(
+            {"user_id": user_id},
+            {"keyword": 1, "search_volume": 1, "_id": 0},
+        ).to_list(None)
+
+        missing = [e["keyword"] for e in entries if not e.get("search_volume")]
+        if not missing:
+            return {"ok": True, "message": "All keywords already have volumes", "updated": 0}
+
+        settings = user.get("settings") or {}
+        lc = resolve_location_code(
+            str(settings.get("country") or ""),
+            str(settings.get("country_code") or user.get("country_code") or ""),
+        )
+        dlang = language_code_from_settings(str(settings.get("primary_language") or "English"))
+
+        volume_map = await fetch_search_volumes_batch(missing, location_code=lc, language_code=dlang)
+
+        updated = 0
+        for kw, vol in volume_map.items():
+            if vol > 0:
+                result = await db.keyword_tracker.update_one(
+                    {"user_id": user_id, "keyword": {"$regex": f"^{kw}$", "$options": "i"}},
+                    {"$set": {"search_volume": vol}},
+                )
+                if result.modified_count:
+                    updated += 1
+
+        return {"ok": True, "updated": updated, "checked": len(missing)}
+
+    # ΓöÇΓöÇ Blog listing template catalogue & picker ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.get("/templates")
+    async def list_blog_templates(_user=Depends(get_current_user)):
+        """Returns all available blog listing template options (no content, just metadata)."""
+        return [
+            {"id": t["id"], "name": t["name"], "description": t["description"]}
+            for t in BLOG_TEMPLATES.values()
+        ]
+
+    @router.put("/clients/{wp_slug}/template")
+    async def set_blog_template(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """
+        Applies a blog listing template to the site and persists the choice.
+        body: {"template_id": "minimal" | "bold" | "portrait" | "editorial" | "random"}
+        """
+        template_id = (body.get("template_id") or "minimal").strip()
+        if template_id not in BLOG_TEMPLATES and template_id != "random":
+            raise HTTPException(400, f"Unknown template_id: {template_id}. Choose from: {', '.join(BLOG_TEMPLATES)}, random")
+
+        blog = await db.blogs.find_one({"wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Blog not found")
+
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(400, "Site URL unavailable")
+
+        result = await fix_blog_templates(site_url, template_id)
+
+        # Resolve "random" to its actual picked value so we can store it
+        import random as _rng
+        stored_id = template_id if template_id != "random" else _rng.choice(list(BLOG_TEMPLATES.keys()))
+        await db.blogs.update_one({"wp_slug": wp_slug}, {"$set": {"template_id": stored_id}})
+
+        return {"applied": stored_id, "site": site_url, "result": result}
+
+    # ΓöÇΓöÇ Client Sites dashboard ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/clients")
     async def list_client_sites(user=Depends(get_current_user)):
@@ -653,8 +1005,48 @@ def make_blog_router(db, get_current_user):
             blog_url = await _blog_url_for_response(db, doc)
             doc["blog_url"] = blog_url
             doc.setdefault("features", {"shop": True, "forms": True, "blog": True})
+            doc.setdefault("template_id", "minimal")
             sites.append(doc)
         return {"sites": sites}
+
+    @router.get("/clients/pending-counts")
+    async def get_pending_comment_counts(user=Depends(get_current_user)):
+        """
+        Returns {counts: {wp_slug: N}} with the number of pending/hold
+        comments across all client sites for the current user.
+        One lightweight WP REST call per site (per_page=1 just to get total).
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        docs = await db.blogs.find({"client_id": user_id}, {"wp_slug": 1, "custom_domain": 1, "blog_subdomain": 1}).to_list(None)
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        counts: dict[str, int] = {}
+
+        async def _fetch_count(doc):
+            slug = doc.get("wp_slug", "")
+            site_base = await _blog_url_for_response(db, doc)
+            if not site_base:
+                counts[slug] = 0
+                return
+            try:
+                async with httpx.AsyncClient(timeout=8) as client:
+                    r = await client.get(
+                        f"{site_base}/wp-json/wp/v2/comments?status=hold&per_page=1",
+                        headers=headers,
+                    )
+                    if r.status_code == 200:
+                        total = int(r.headers.get("X-WP-Total", "0"))
+                        counts[slug] = total
+                    else:
+                        counts[slug] = 0
+            except Exception:
+                counts[slug] = 0
+
+        import asyncio
+        await asyncio.gather(*[_fetch_count(doc) for doc in docs])
+        return {"counts": counts}
 
     @router.patch("/clients/{wp_slug}/features")
     async def patch_site_features(
@@ -672,7 +1064,7 @@ def make_blog_router(db, get_current_user):
             raise HTTPException(404, "Site not found")
         return {"status": "updated"}
 
-    # ── WooCommerce orders for a client subsite ────────────────────────────────
+    # ΓöÇΓöÇ WooCommerce orders for a client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/clients/{wp_slug}/orders")
     async def get_client_orders(wp_slug: str, user=Depends(get_current_user)):
@@ -706,7 +1098,7 @@ def make_blog_router(db, get_current_user):
             logger.warning("[blog] WC orders fetch failed for %s: %s", wp_slug, exc)
             return {"orders": [], "reason": str(exc)}
 
-    # ── WooCommerce products for a client subsite ──────────────────────────────
+    # ΓöÇΓöÇ WooCommerce products for a client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/clients/{wp_slug}/products")
     async def get_client_products(wp_slug: str, user=Depends(get_current_user)):
@@ -740,7 +1132,7 @@ def make_blog_router(db, get_current_user):
             logger.warning("[blog] WC products fetch failed for %s: %s", wp_slug, exc)
             return {"products": [], "reason": str(exc)}
 
-    # ── WPForms submissions for a client subsite ───────────────────────────────
+    # ΓöÇΓöÇ WPForms submissions for a client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/clients/{wp_slug}/form-entries")
     async def get_client_form_entries(wp_slug: str, user=Depends(get_current_user)):
@@ -778,14 +1170,339 @@ def make_blog_router(db, get_current_user):
             logger.warning("[blog] WPForms entries fetch failed for %s: %s", wp_slug, exc)
             return {"entries": [], "reason": str(exc)}
 
-    # ── Re-seed AI products for a client site ─────────────────────────────────
+    # ΓöÇΓöÇ WordPress comments for a client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
-    @router.post("/clients/{wp_slug}/reseed-products")
-    async def reseed_products(wp_slug: str, user=Depends(get_current_user)):
+    @router.get("/clients/{wp_slug}/comments")
+    async def get_client_comments(wp_slug: str, user=Depends(get_current_user)):
+        """Fetch recent WordPress comments from a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            return {"comments": [], "reason": "Site URL unavailable"}
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        if not wp_user:
+            return {"comments": [], "reason": "WordPress credentials not configured"}
+
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                # Fetch all comments regardless of moderation status
+                r = await client.get(
+                    f"{site_base}/wp-json/wp/v2/comments"
+                    "?per_page=50&orderby=date&order=desc&status=any",
+                    headers=headers,
+                )
+                if r.status_code != 200:
+                    return {"comments": [], "reason": f"WP API {r.status_code}"}
+
+                raw = r.json()
+
+                # Resolve post titles for all unique post IDs in one batch
+                post_ids = list({c.get("post") for c in raw if c.get("post")})
+                post_titles: dict[int, str] = {}
+                post_links: dict[int, str] = {}
+                if post_ids:
+                    ids_param = ",".join(str(p) for p in post_ids)
+                    pr = await client.get(
+                        f"{site_base}/wp-json/wp/v2/posts?include={ids_param}&per_page=50",
+                        headers=headers,
+                    )
+                    if pr.status_code == 200:
+                        for p in pr.json():
+                            post_titles[p["id"]] = p.get("title", {}).get("rendered", f"Post {p['id']}")
+                            post_links[p["id"]] = p.get("link", "")
+
+                comments = [
+                    {
+                        "id": c.get("id"),
+                        "post_id": c.get("post"),
+                        "post_title": post_titles.get(c.get("post"), f"Post {c.get('post')}"),
+                        "post_link": post_links.get(c.get("post"), ""),
+                        "author": c.get("author_name"),
+                        "email": c.get("author_email"),
+                        "content": c.get("content", {}).get("rendered", ""),
+                        "date": c.get("date"),
+                        "status": c.get("status"),
+                        "parent": c.get("parent", 0),
+                    }
+                    for c in raw
+                ]
+                return {"comments": comments}
+        except Exception as exc:
+            logger.warning("[blog] Comments fetch failed for %s: %s", wp_slug, exc)
+            return {"comments": [], "reason": str(exc)}
+
+    # ΓöÇΓöÇ Approve a pending WordPress comment from the CRM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/clients/{wp_slug}/comments/{comment_id}/approve")
+    async def approve_comment(wp_slug: str, comment_id: int, user=Depends(get_current_user)):
+        """Approve a pending comment so it becomes visible on the blog post."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{site_base}/wp-json/wp/v2/comments/{comment_id}",
+                headers=headers,
+                json={"status": "approved"},
+            )
+            if r.status_code in (200, 201):
+                return {"status": "approved"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
+    # ΓöÇΓöÇ Delete a WordPress comment from the CRM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.delete("/clients/{wp_slug}/comments/{comment_id}")
+    async def delete_comment(wp_slug: str, comment_id: int, user=Depends(get_current_user)):
+        """Permanently delete a comment from a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.delete(
+                f"{site_base}/wp-json/wp/v2/comments/{comment_id}?force=true",
+                headers=headers,
+            )
+            if r.status_code in (200, 201):
+                return {"status": "deleted"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
+    # ΓöÇΓöÇ List posts for a client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.get("/clients/{wp_slug}/posts")
+    async def list_client_posts(wp_slug: str, user=Depends(get_current_user)):
+        """List all published and draft posts for a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            return {"posts": [], "reason": "Site URL unavailable"}
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(
+                    f"{site_base}/wp-json/wp/v2/posts?per_page=50&orderby=date&order=desc&status=publish,draft",
+                    headers=headers,
+                )
+                if r.status_code != 200:
+                    return {"posts": [], "reason": f"WP API {r.status_code}"}
+                posts = [
+                    {
+                        "id": p.get("id"),
+                        "title": p.get("title", {}).get("rendered", ""),
+                        "status": p.get("status"),
+                        "date": p.get("date"),
+                        "link": p.get("link", ""),
+                    }
+                    for p in r.json()
+                ]
+                return {"posts": posts}
+        except Exception as exc:
+            logger.warning("[blog] list posts failed for %s: %s", wp_slug, exc)
+            return {"posts": [], "reason": str(exc)}
+
+    # ΓöÇΓöÇ Delete a post from a client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.delete("/clients/{wp_slug}/posts/{post_id}")
+    async def delete_client_post(wp_slug: str, post_id: int, user=Depends(get_current_user)):
+        """Permanently delete a post from a client subsite."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.delete(
+                f"{site_base}/wp-json/wp/v2/posts/{post_id}?force=true",
+                headers=headers,
+            )
+            if r.status_code in (200, 201):
+                return {"status": "deleted"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
+    # ΓöÇΓöÇ Unpublish (draft) a post from a client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/clients/{wp_slug}/posts/{post_id}/unpublish")
+    async def unpublish_client_post(wp_slug: str, post_id: int, user=Depends(get_current_user)):
+        """Set a published post back to draft so it's hidden from the public."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{site_base}/wp-json/wp/v2/posts/{post_id}",
+                headers=headers,
+                json={"status": "draft"},
+            )
+            if r.status_code in (200, 201):
+                return {"status": "draft"}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
+    # ΓöÇΓöÇ Reply to a WordPress comment from the CRM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/clients/{wp_slug}/comments/{comment_id}/reply")
+    async def reply_to_comment(wp_slug: str, comment_id: int, body: dict, user=Depends(get_current_user)):
+        """Post a reply to a visitor comment on behalf of the site owner."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        reply_text = (body.get("content") or "").strip()
+        if not reply_text:
+            raise HTTPException(400, "Reply content is required")
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        # First fetch the parent comment to get its post_id
+        async with httpx.AsyncClient(timeout=15) as client:
+            parent = await client.get(
+                f"{site_base}/wp-json/wp/v2/comments/{comment_id}",
+                headers=headers,
+            )
+            if parent.status_code != 200:
+                raise HTTPException(404, "Parent comment not found")
+            post_id = parent.json().get("post", 0)
+
+            r = await client.post(
+                f"{site_base}/wp-json/wp/v2/comments",
+                headers=headers,
+                json={
+                    "post": post_id,
+                    "parent": comment_id,
+                    "content": reply_text,
+                    "author_name": blog.get("business_name", "Site Owner"),
+                    "status": "approved",
+                },
+            )
+            if r.status_code in (200, 201):
+                return {"status": "replied", "comment_id": r.json().get("id")}
+            raise HTTPException(r.status_code, f"WordPress error: {r.text[:200]}")
+
+    # ΓöÇΓöÇ Helper: find real WPForms form IDs on a subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    async def _find_all_wpforms_ids(site_base: str, auth_headers: dict) -> dict:
         """
-        Re-runs the AI product seeder for a client site.
-        Useful when changing industry or after a fresh site install.
-        Generates industry-specific products via Claude → pushes to WooCommerce REST.
+        Returns a dict {contact, order, survey} with the best matching WPForms
+        form ID for each page type.
+        - First tries WP REST API (works if WPForms Pro or CPT is REST-exposed)
+        - Falls back to WP-CLI wp post list (works with WPForms Lite)
+        """
+        from blog.blog_service import _wp_cli
+
+        result = {"contact": "", "order": "", "survey": ""}
+
+        def _assign(titles):
+            def _best(keywords):
+                for fid, t in titles:
+                    if any(k in t for k in keywords):
+                        return fid
+                return ""
+            result["contact"] = _best(["contact"]) or (titles[0][0] if titles else "")
+            result["order"]   = _best(["order", "inquiry", "booking", "reservation", "quote", "request"]) or (titles[1][0] if len(titles) > 1 else titles[0][0] if titles else "")
+            result["survey"]  = _best(["survey", "feedback", "customer", "satisfaction"]) or (titles[-1][0] if titles else "")
+
+        # 1. Try WP REST API
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"{site_base}/wp-json/wp/v2/wpforms?per_page=50&orderby=date&order=asc",
+                    headers=auth_headers,
+                )
+                if r.status_code == 200:
+                    forms = r.json()
+                    if forms:
+                        titles = [(str(f["id"]), (f.get("title", {}).get("rendered") or "").lower()) for f in forms]
+                        _assign(titles)
+                        return result
+        except Exception as exc:
+            logger.debug("[blog] _find_all_wpforms_ids REST failed: %s", exc)
+
+        # 2. Fall back to WP-CLI (WPForms Lite stores forms as wpforms CPT)
+        try:
+            import json as _json
+            r = await _wp_cli(
+                "post", "list",
+                "--post_type=wpforms",
+                "--post_status=publish",
+                "--fields=ID,post_title",
+                "--format=json",
+                url=site_base,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                rows = _json.loads(r.stdout.strip())
+                titles = [(str(row["ID"]), (row.get("post_title") or "").lower()) for row in rows]
+                if titles:
+                    _assign(titles)
+        except Exception as exc:
+            logger.debug("[blog] _find_all_wpforms_ids CLI fallback failed: %s", exc)
+
+        return result
+
+    async def _find_wpforms_id(site_base: str, auth_headers: dict) -> str:
+        ids = await _find_all_wpforms_ids(site_base, auth_headers)
+        return ids["contact"]
+
+    # ΓöÇΓöÇ Recreate standard pages for an existing client site ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/clients/{wp_slug}/recreate-pages")
+    async def recreate_pages(wp_slug: str, user=Depends(get_current_user)):
+        """
+        Creates or updates the standard Zilo pages (contact, forms, survey) for an existing site.
+        Safe to run on any site ΓÇö skips pages that already exist.
         """
         user_id = str(user.get("_id") or user.get("id", ""))
         blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
@@ -794,7 +1511,431 @@ def make_blog_router(db, get_current_user):
 
         site_base = await _blog_url_for_response(db, blog)
         if not site_base:
-            raise HTTPException(400, "Site URL unavailable — check WP_BASE_URL env var")
+            raise HTTPException(400, "Site URL unavailable")
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        if not wp_user:
+            raise HTTPException(500, "WordPress credentials not configured")
+
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        # Look up real WPForms form IDs for all page types
+        form_ids = await _find_all_wpforms_ids(site_base, headers)
+        contact_form_id = form_ids["contact"]
+        order_form_id   = form_ids["order"]
+        survey_form_id  = form_ids["survey"]
+        wa_number = blog.get("whatsapp_number", "")
+        wa_url = (
+            f"https://wa.me/{wa_number}?text=Hi%2C+I+found+you+on+Zilo"
+            if wa_number
+            else "https://wa.me/?text=Hi%2C+I+found+you+on+Zilo"
+        )
+        contact_intro = (
+            "We\u2019d love to hear from you. Reach us instantly on WhatsApp"
+            + (" or fill in the form below." if contact_form_id else ".")
+        )
+        contact_content = (
+            "<!-- wp:paragraph -->"
+            f"<p>{contact_intro}</p>"
+            "<!-- /wp:paragraph -->"
+            f"<!-- wp:buttons {{\"layout\":{{\"type\":\"flex\",\"justifyContent\":\"center\"}}}} -->"
+            "<div class=\"wp-block-buttons\">"
+            "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+            "<div class=\"wp-block-button\">"
+            f"<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+            f"href=\"{wa_url}\" target=\"_blank\" rel=\"noreferrer noopener\">"
+            "\U0001f4ac Chat on WhatsApp</a></div>"
+            "<!-- /wp:button --></div>"
+            "<!-- /wp:buttons -->"
+            + (
+                "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                f"<!-- wp:shortcode -->[wpforms id=\"{contact_form_id}\" title=\"false\"]<!-- /wp:shortcode -->"
+                if contact_form_id else ""
+            )
+        )
+
+        def _shortcode_block(fid: str) -> str:
+            if fid:
+                return (
+                    "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                    f"<!-- wp:shortcode -->[wpforms id=\"{fid}\" title=\"false\"]<!-- /wp:shortcode -->"
+                )
+            return ""
+
+        pages = [
+            {
+                "slug": "contact",
+                "title": "Contact Us",
+                "content": contact_content,
+            },
+            {
+                "slug": "forms",
+                "title": "Order Forms",
+                "content": (
+                    "<!-- wp:paragraph -->"
+                    "<p>Fill in the form below to place an order or make an inquiry.</p>"
+                    "<!-- /wp:paragraph -->"
+                    + _shortcode_block(order_form_id)
+                ),
+            },
+            {
+                "slug": "survey",
+                "title": "Customer Survey",
+                "content": (
+                    "<!-- wp:paragraph -->"
+                    "<p>We value your feedback! Take 2 minutes to help us serve you better.</p>"
+                    "<!-- /wp:paragraph -->"
+                    + _shortcode_block(survey_form_id)
+                ),
+            },
+        ]
+
+        created, updated = [], []
+        async with httpx.AsyncClient(timeout=20) as client:
+            for page in pages:
+                # Check if page already exists ΓÇö update it if so
+                chk = await client.get(
+                    f"{site_base}/wp-json/wp/v2/pages?slug={page['slug']}&status=any",
+                    headers=headers,
+                )
+                existing = chk.json() if chk.status_code == 200 else []
+                if existing:
+                    page_id = existing[0]["id"]
+                    r = await client.post(
+                        f"{site_base}/wp-json/wp/v2/pages/{page_id}",
+                        headers=headers,
+                        json={"title": page["title"], "slug": page["slug"],
+                              "status": "publish", "content": page["content"]},
+                    )
+                    if r.status_code in (200, 201):
+                        updated.append(page["slug"])
+                    else:
+                        logger.warning("[blog] recreate-pages update %s/%s ΓåÆ %s", wp_slug, page["slug"], r.status_code)
+                    continue
+                r = await client.post(
+                    f"{site_base}/wp-json/wp/v2/pages",
+                    headers=headers,
+                    json={"title": page["title"], "slug": page["slug"],
+                          "status": "publish", "content": page["content"]},
+                )
+                if r.status_code in (200, 201):
+                    created.append(page["slug"])
+                else:
+                    logger.warning("[blog] recreate-pages %s/%s ΓåÆ %s", wp_slug, page["slug"], r.status_code)
+
+        return {"created": created, "updated": updated}
+
+    # ΓöÇΓöÇ Activate plugins on an existing client subsite ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/clients/{wp_slug}/activate-plugins")
+    async def activate_plugins(wp_slug: str, user=Depends(get_current_user)):
+        """
+        Activates wpforms-lite (and woocommerce) on a subsite via WP-CLI.
+        Fixes the raw [wpforms ...] shortcode showing as text.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        results = {}
+        for plugin in ["wpforms-lite", "woocommerce"]:
+            r = await _wp_cli("plugin", "activate", plugin, url=site_base)
+            results[plugin] = "ok" if r.returncode == 0 else r.stderr[:120]
+            if r.returncode != 0:
+                logger.warning("[blog] activate %s on %s: %s", plugin, wp_slug, r.stderr[:150])
+            else:
+                logger.info("[blog] activated %s on %s", plugin, wp_slug)
+
+        return {"status": "done", "results": results}
+
+    # ΓöÇΓöÇ Reseed WPForms on an existing client site ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/clients/{wp_slug}/reseed-forms")
+    async def reseed_forms(wp_slug: str, user=Depends(get_current_user)):
+        """
+        Seeds Zilo Forms for a client site and patches the Contact, Order,
+        and Survey WordPress pages with the JS widget embed. Uses the Zilo
+        Forms system (stored in MongoDB, rendered client-side via widget.js).
+        """
+        import base64, os
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable")
+
+        industry = blog.get("industry", "services")
+        business_name = blog.get("business_name", "Business")
+
+        from forms_routes import seed_blog_forms
+        slugs = await seed_blog_forms(db, user_id, business_name, industry)
+        logger.info("[blog] reseed-forms (Zilo) %s -> %s", wp_slug, slugs)
+
+        # Patch WordPress pages with widget embeds
+        api_base = os.getenv("BACKEND_PUBLIC_URL", "https://crm-1-pnfo.onrender.com").rstrip("/")
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd  = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+
+        def _widget(slug):
+            if not slug:
+                return ""
+            uid = f"zf-{slug[-10:].replace('-', '')}"
+            src = f"{api_base}/api/forms/widget.js"
+            call = f"ZiloForm.render('{uid}','{slug}')"
+            return (
+                "<!-- wp:html -->"
+                f'<div id="{uid}"></div>'
+                f'<script src="{src}" onload="{call}"></script>'
+                "<!-- /wp:html -->"
+            )
+
+        wa_number = blog.get("whatsapp_number", "")
+        wa_url = (f"https://wa.me/{wa_number}?text=Hi%2C+I+found+you+on+Zilo"
+                  if wa_number else "https://wa.me/?text=Hi%2C+I+found+you+on+Zilo")
+
+        wa_btn = (
+            '<!-- wp:buttons {"layout":{"type":"flex","justifyContent":"center"}} -->'
+            '<div class="wp-block-buttons">'
+            '<!-- wp:button {"style":{"color":{"background":"#25d366"}},"textColor":"white"} -->'
+            '<div class="wp-block-button">'
+            f'<a class="wp-block-button__link has-white-color has-text-color has-background"'
+            f' href="{wa_url}" target="_blank" rel="noreferrer noopener">'
+            '≡ƒÆ¼ Chat on WhatsApp</a></div>'
+            '<!-- /wp:button --></div>'
+            '<!-- /wp:buttons -->'
+        )
+        page_patches = {
+            "contact": (
+                "<!-- wp:paragraph --><p>WeΓÇÖd love to hear from you. "
+                "Reach us instantly on WhatsApp or fill in the form below.</p><!-- /wp:paragraph -->"
+                + wa_btn
+                + _widget(slugs.get("contact", ""))
+            ),
+            "forms": (
+                "<!-- wp:paragraph --><p>Fill in the form below to place an order or make an inquiry. "
+                "We'll get back to you via WhatsApp within minutes.</p><!-- /wp:paragraph -->"
+                + _widget(slugs.get("order", ""))
+            ),
+            "survey": (
+                "<!-- wp:paragraph --><p>We value your feedback! "
+                "Take 2 minutes to help us serve you better.</p><!-- /wp:paragraph -->"
+                + _widget(slugs.get("survey", ""))
+            ),
+        }
+        patched = []
+        async with httpx.AsyncClient(timeout=20) as hc:
+            for page_slug, new_content in page_patches.items():
+                try:
+                    chk = await hc.get(
+                        f"{site_base}/wp-json/wp/v2/pages?slug={page_slug}&status=any",
+                        headers=headers,
+                    )
+                    pages_found = chk.json() if chk.status_code == 200 else []
+                    if pages_found:
+                        pid = pages_found[0]["id"]
+                        r = await hc.post(
+                            f"{site_base}/wp-json/wp/v2/pages/{pid}",
+                            headers=headers,
+                            json={"content": new_content, "status": "publish"},
+                        )
+                        if r.status_code in (200, 201):
+                            patched.append(page_slug)
+                        else:
+                            logger.warning("[blog] reseed-forms patch %s: %s", page_slug, r.status_code)
+                except Exception as exc:
+                    logger.warning("[blog] reseed-forms page patch error: %s", exc)
+
+        return {"status": "ok", "slugs": slugs, "pages_patched": patched}
+    # ΓöÇΓöÇ Navigation menu management ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.get("/clients/{wp_slug}/menu")
+    async def get_menu(wp_slug: str, user=Depends(get_current_user)):
+        """Returns the current nav menu items for a client site."""
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+
+        async with httpx.AsyncClient(timeout=15) as hc:
+            auth = _wp_headers()
+            # Find the main-menu
+            r = await hc.get(f"{site_base}/wp-json/wp/v2/menus", headers=auth)
+            menus = r.json() if r.status_code == 200 else []
+            menu = next((m for m in menus if m.get("slug") == "main-menu"), menus[0] if menus else None)
+            if not menu:
+                return {"menu_id": None, "items": []}
+            menu_id = menu["id"]
+            ri = await hc.get(f"{site_base}/wp-json/wp/v2/menu-items?menus={menu_id}&per_page=50", headers=auth)
+            items = ri.json() if ri.status_code == 200 else []
+            return {
+                "menu_id": menu_id,
+                "items": sorted([
+                    {"id": i["id"], "title": i["title"]["rendered"], "url": i["url"], "order": i["menu_order"]}
+                    for i in items
+                ], key=lambda x: x["order"])
+            }
+
+    @router.put("/clients/{wp_slug}/menu")
+    async def save_menu(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """
+        Saves the nav menu for a client site.
+        body: { items: [{title, url}], menu_id?: int }
+        Creates main-menu if it doesn't exist yet.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+        site_base = await _blog_url_for_response(db, blog)
+        new_items = body.get("items", [])
+        auth = _wp_headers()
+
+        async with httpx.AsyncClient(timeout=20) as hc:
+            menu_id = body.get("menu_id")
+
+            # Create menu if missing
+            if not menu_id:
+                r = await hc.post(f"{site_base}/wp-json/wp/v2/menus", headers=auth,
+                                  json={"name": "Main Menu", "slug": "main-menu"})
+                if r.status_code not in (200, 201):
+                    raise HTTPException(500, f"Could not create menu: {r.text[:100]}")
+                menu_id = r.json()["id"]
+
+            # Delete all existing items
+            ri = await hc.get(f"{site_base}/wp-json/wp/v2/menu-items?menus={menu_id}&per_page=50", headers=auth)
+            for item in (ri.json() if ri.status_code == 200 else []):
+                await hc.delete(f"{site_base}/wp-json/wp/v2/menu-items/{item['id']}?force=true", headers=auth)
+
+            # Add new items in order
+            for i, item in enumerate(new_items):
+                await hc.post(f"{site_base}/wp-json/wp/v2/menu-items", headers=auth,
+                              json={"title": item["title"], "url": item["url"],
+                                    "type": "custom", "menus": menu_id,
+                                    "menu_order": i + 1, "status": "publish"})
+
+            # Assign to primary location via WP-CLI
+            await _wp_cli("menu", "location", "assign", "main-menu", "primary", url=site_base)
+
+        return {"status": "ok", "menu_id": menu_id, "items_saved": len(new_items)}
+
+    # ΓöÇΓöÇ Save / update WhatsApp number for a client site ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.patch("/clients/{wp_slug}/whatsapp")
+    async def set_whatsapp_number(wp_slug: str, body: dict, user=Depends(get_current_user)):
+        """
+        Saves the client's WhatsApp number to MongoDB and immediately patches
+        the live WordPress contact page so the 'Chat on WhatsApp' button
+        uses the correct wa.me URL.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        number_raw = (body.get("whatsapp_number") or "").strip()
+        # Keep only digits and a leading + (supports any country code)
+        import re as _re
+        number = _re.sub(r"[^\d+]", "", number_raw)
+        # Strip leading + for wa.me URL (wa.me expects digits only)
+        number = number.lstrip("+")
+
+        # Persist to DB
+        await db.blogs.update_one(
+            {"client_id": user_id, "wp_slug": wp_slug},
+            {"$set": {"whatsapp_number": number}},
+        )
+
+        # Patch the live contact page on WordPress
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            return {"status": "saved", "wp_updated": False, "whatsapp_number": number}
+
+        wp_user = os.getenv("WP_ADMIN_USER", "")
+        wp_pwd  = os.getenv("WP_ADMIN_APP_PASSWORD", "")
+        auth_header = base64.b64encode(f"{wp_user}:{wp_pwd}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/json"}
+
+        from urllib.parse import quote
+        business = blog.get("business_name", "")
+        wa_url = (
+            f"https://wa.me/{number}?text={quote(f'Hi, I found {business} on Zilo')}"
+            if business
+            else f"https://wa.me/{number}?text=Hi%2C+I+found+you+on+Zilo"
+        )
+
+        form_id = await _find_wpforms_id(site_base, headers)
+        contact_intro = (
+            "We\u2019d love to hear from you. Reach us instantly on WhatsApp"
+            + (" or fill in the form below." if form_id else ".")
+        )
+        contact_content = (
+            "<!-- wp:paragraph -->"
+            f"<p>{contact_intro}</p>"
+            "<!-- /wp:paragraph -->"
+            f"<!-- wp:buttons {{\"layout\":{{\"type\":\"flex\",\"justifyContent\":\"center\"}}}} -->"
+            "<div class=\"wp-block-buttons\">"
+            "<!-- wp:button {\"style\":{\"color\":{\"background\":\"#25d366\"}},\"textColor\":\"white\"} -->"
+            "<div class=\"wp-block-button\">"
+            f"<a class=\"wp-block-button__link has-white-color has-text-color has-background\" "
+            f"href=\"{wa_url}\" target=\"_blank\" rel=\"noreferrer noopener\">"
+            "\U0001f4ac Chat on WhatsApp</a></div>"
+            "<!-- /wp:button --></div>"
+            "<!-- /wp:buttons -->"
+            + (
+                "<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->"
+                f"<!-- wp:shortcode -->[wpforms id=\"{form_id}\" title=\"false\"]<!-- /wp:shortcode -->"
+                if form_id else ""
+            )
+        )
+
+        wp_updated = False
+        async with httpx.AsyncClient(timeout=15) as client:
+            chk = await client.get(
+                f"{site_base}/wp-json/wp/v2/pages?slug=contact&status=any",
+                headers=headers,
+            )
+            pages_found = chk.json() if chk.status_code == 200 else []
+            if pages_found:
+                page_id = pages_found[0]["id"]
+                r = await client.post(
+                    f"{site_base}/wp-json/wp/v2/pages/{page_id}",
+                    headers=headers,
+                    json={"content": contact_content, "status": "publish"},
+                )
+                wp_updated = r.status_code in (200, 201)
+
+        return {"status": "saved", "wp_updated": wp_updated, "whatsapp_number": number}
+
+    # ΓöÇΓöÇ Re-seed AI products for a client site ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    @router.post("/clients/{wp_slug}/reseed-products")
+    async def reseed_products(wp_slug: str, user=Depends(get_current_user)):
+        """
+        Re-runs the AI product seeder for a client site.
+        Useful when changing industry or after a fresh site install.
+        Generates industry-specific products via Claude ΓåÆ pushes to WooCommerce REST.
+        """
+        user_id = str(user.get("_id") or user.get("id", ""))
+        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
+        if not blog:
+            raise HTTPException(404, "Site not found")
+
+        site_base = await _blog_url_for_response(db, blog)
+        if not site_base:
+            raise HTTPException(400, "Site URL unavailable ΓÇö check WP_BASE_URL env var")
 
         try:
             from blog.product_seeder import seed_products
@@ -802,43 +1943,15 @@ def make_blog_router(db, get_current_user):
                 site_url=site_base,
                 business_name=blog.get("business_name", "Business"),
                 industry=blog.get("industry", "General"),
-                location=blog.get("location", "Nairobi"),
+                location=blog.get("location", ""),
             )
             return {"status": "ok", "products_pushed": result.get("pushed", 0), "detail": result}
         except Exception as exc:
             logger.error("[blog] reseed_products error: %s", exc)
             raise HTTPException(500, str(exc))
 
-    # ── Re-seed AI forms for a client site ────────────────────────────────────
 
-    @router.post("/clients/{wp_slug}/reseed-forms")
-    async def reseed_forms(wp_slug: str, user=Depends(get_current_user)):
-        """
-        Re-runs the AI form seeder for a client site.
-        Creates industry-specific WPForms (booking, inquiry, support, etc.).
-        """
-        user_id = str(user.get("_id") or user.get("id", ""))
-        blog = await db.blogs.find_one({"client_id": user_id, "wp_slug": wp_slug})
-        if not blog:
-            raise HTTPException(404, "Site not found")
-
-        site_base = await _blog_url_for_response(db, blog)
-        if not site_base:
-            raise HTTPException(400, "Site URL unavailable — check WP_BASE_URL env var")
-
-        try:
-            from blog.form_seeder import seed_forms
-            result = await seed_forms(
-                site_url=site_base,
-                business_name=blog.get("business_name", "Business"),
-                industry=blog.get("industry", "General"),
-            )
-            return {"status": "ok", "forms_pushed": result.get("pushed", 0), "detail": result}
-        except Exception as exc:
-            logger.error("[blog] reseed_forms error: %s", exc)
-            raise HTTPException(500, str(exc))
-
-    # ── Create a WooCommerce product ───────────────────────────────────────────
+    # ΓöÇΓöÇ Create a WooCommerce product ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/clients/{wp_slug}/products")
     async def create_client_product(wp_slug: str, body: dict, user=Depends(get_current_user)):
@@ -869,7 +1982,7 @@ def make_blog_router(db, get_current_user):
         except Exception as exc:
             raise HTTPException(500, str(exc))
 
-    # ── Delete a WooCommerce product ───────────────────────────────────────────
+    # ΓöÇΓöÇ Delete a WooCommerce product ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.delete("/clients/{wp_slug}/products/{product_id}")
     async def delete_client_product(wp_slug: str, product_id: int, user=Depends(get_current_user)):
@@ -899,7 +2012,7 @@ def make_blog_router(db, get_current_user):
         except Exception as exc:
             raise HTTPException(500, str(exc))
 
-    # ── Get site customisation settings ────────────────────────────────────────
+    # ΓöÇΓöÇ Get site customisation settings ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.get("/clients/{wp_slug}/site-settings")
     async def get_site_settings(wp_slug: str, user=Depends(get_current_user)):
@@ -944,7 +2057,7 @@ def make_blog_router(db, get_current_user):
                 pass
         return result
 
-    # ── Update site customisation settings ─────────────────────────────────────
+    # ΓöÇΓöÇ Update site customisation settings ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.patch("/clients/{wp_slug}/site-settings")
     async def update_site_settings(wp_slug: str, body: dict, user=Depends(get_current_user)):
@@ -989,7 +2102,7 @@ def make_blog_router(db, get_current_user):
             except Exception as exc:
                 errors.append(f"WP settings: {exc}")
 
-        # 2. Accent/button colours → Astra settings option
+        # 2. Accent/button colours ΓåÆ Astra settings option
         accent = body.get("accent_color", "")
         button = body.get("button_color", accent)
         if accent:
@@ -1036,7 +2149,7 @@ def make_blog_router(db, get_current_user):
             except Exception as exc:
                 errors.append(f"Front page setting: {exc}")
 
-        # 4. Social links → Astra settings option
+        # 4. Social links ΓåÆ Astra settings option
         social_map = {"facebook": "facebook-link", "instagram": "instagram-link",
                       "twitter": "twitter-link", "tiktok": "tiktok-link"}
         social_updates = {v: body[k] for k, v in social_map.items() if k in body and body[k]}
@@ -1064,7 +2177,7 @@ def make_blog_router(db, get_current_user):
             )
         return {"status": "ok", "errors": errors}
 
-    # ── Sync stats for a client site ───────────────────────────────────────────
+    # ΓöÇΓöÇ Sync stats for a client site ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     @router.post("/clients/{wp_slug}/sync")
     async def sync_client_stats(wp_slug: str, user=Depends(get_current_user)):
@@ -1126,5 +2239,122 @@ def make_blog_router(db, get_current_user):
             )
 
         return {"status": "ok", "stats": stats, "errors": errors}
+
+    # ── GA4 Tracking Management ────────────────────────────────────────────────
+
+    @router.post("/ga4/activate")
+    async def activate_ga4_tracking(user=Depends(get_current_user)):
+        """
+        Activates GA4 tracking for the user's WordPress subsite.
+        Reads ga4_measurement_id from user settings and injects tracking code.
+        """
+        from blog.ga4_injector import inject_ga4_tracking
+        
+        user_id = _user_id(user)
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+        
+        # Get user's GA4 measurement ID from settings
+        settings = user.get("settings", {})
+        measurement_id = settings.get("ga4_measurement_id", "").strip()
+        
+        if not measurement_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No GA4 Measurement ID found. Please add your GA4 ID in Settings first."
+            )
+        
+        # Get user's blog
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(
+                status_code=404,
+                detail="No blog found. Please activate your blog first."
+            )
+        
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(status_code=500, detail="Could not determine blog URL")
+        
+        # Inject GA4 tracking
+        result = await inject_ga4_tracking(site_url, measurement_id)
+        
+        if result.get("success"):
+            # Update blog record with GA4 status
+            await db.blogs.update_one(
+                {"client_id": user_id},
+                {"$set": {
+                    "ga4_measurement_id": measurement_id,
+                    "ga4_activated_at": datetime.utcnow(),
+                }}
+            )
+        
+        return result
+
+    @router.post("/ga4/deactivate")
+    async def deactivate_ga4_tracking(user=Depends(get_current_user)):
+        """
+        Removes GA4 tracking from the user's WordPress subsite.
+        """
+        from blog.ga4_injector import remove_ga4_tracking
+        
+        user_id = _user_id(user)
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+        
+        blog = await db.blogs.find_one({"client_id": user_id})
+        if not blog:
+            raise HTTPException(status_code=404, detail="No blog found")
+        
+        site_url = await _blog_url_for_response(db, blog)
+        if not site_url:
+            raise HTTPException(status_code=500, detail="Could not determine blog URL")
+        
+        result = await remove_ga4_tracking(site_url)
+        
+        if result.get("success"):
+            await db.blogs.update_one(
+                {"client_id": user_id},
+                {"$unset": {"ga4_measurement_id": "", "ga4_activated_at": ""}}
+            )
+        
+        return result
+
+    @router.get("/ga4/status")
+    async def get_ga4_status(user=Depends(get_current_user)):
+        """
+        Returns GA4 tracking status for the user's blog.
+        """
+        user_id = _user_id(user)
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Cannot identify user")
+        
+        # Get GA4 ID from user settings
+        settings = user.get("settings", {})
+        measurement_id = settings.get("ga4_measurement_id", "").strip()
+        
+        # Get blog GA4 status
+        blog = await db.blogs.find_one({"client_id": user_id})
+        
+        if not blog:
+            return {
+                "blog_exists": False,
+                "ga4_configured": bool(measurement_id),
+                "ga4_active": False,
+                "measurement_id": measurement_id if measurement_id else None,
+            }
+        
+        blog_ga4_id = blog.get("ga4_measurement_id", "")
+        ga4_activated_at = blog.get("ga4_activated_at")
+        
+        return {
+            "blog_exists": True,
+            "ga4_configured": bool(measurement_id),
+            "ga4_active": bool(blog_ga4_id),
+            "measurement_id": measurement_id if measurement_id else None,
+            "blog_measurement_id": blog_ga4_id if blog_ga4_id else None,
+            "activated_at": ga4_activated_at.isoformat() if ga4_activated_at else None,
+            "needs_update": measurement_id != blog_ga4_id if (measurement_id and blog_ga4_id) else False,
+        }
 
     return router
