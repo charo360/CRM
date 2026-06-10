@@ -302,6 +302,13 @@ class ProjectCreate(BaseModel):
 class ParseInputRequest(BaseModel):
     text: str
 
+class TaskEdit(BaseModel):
+    """Partial update for a task. Any field left None is unchanged."""
+    title: Optional[str] = None
+    due_date: Optional[str] = None
+    context: Optional[str] = None
+    # Allow explicitly clearing the due date by sending due_date="" (handled in route).
+
 async def sync_calendar_events_to_workplan(db: Any, user: dict) -> None:
     uid = _uid(user)
     if not _use_live_db(db):
@@ -814,8 +821,138 @@ def init_workplan_routes(get_current_user, db: Any | None = None) -> APIRouter:
             if not found:
                 raise HTTPException(status_code=404, detail="Task not found")
             _IN_MEMORY_TASKS[uid] = tasks
-            
+
         return {"ok": True}
+
+    @router.patch("/tasks/{task_id}")
+    async def edit_task(task_id: str, body: TaskEdit, user=Depends(get_current_user)):
+        """Edit a task's title, context, or due date. Lets the founder set a
+        due date on a task that was created without one. Send due_date="" to
+        clear it."""
+        uid = _uid(user)
+        updates: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if body.title is not None and body.title.strip():
+            updates["title"] = body.title.strip()
+        if body.context is not None:
+            updates["context"] = body.context
+        if body.due_date is not None:
+            # Empty string explicitly clears the due date.
+            updates["due_date"] = body.due_date or None
+
+        if _use_live_db(db):
+            res = await db.workplan_tasks.update_one(_id_filter(task_id, uid), {"$set": updates})
+            if res.matched_count == 0:
+                raise HTTPException(status_code=404, detail="Task not found")
+            task = await db.workplan_tasks.find_one(_id_filter(task_id, uid))
+            return {**task, "id": str(task["_id"]), "_id": str(task["_id"])}
+        else:
+            tasks = _IN_MEMORY_TASKS.get(uid, get_demo_tasks())
+            for t in tasks:
+                if t["id"] == task_id:
+                    t.update(updates)
+                    _IN_MEMORY_TASKS[uid] = tasks
+                    return t
+            raise HTTPException(status_code=404, detail="Task not found")
+
+    @router.post("/tasks/{task_id}/run")
+    async def run_task(task_id: str, user=Depends(get_current_user)):
+        """Actually execute a Zilo task via the Delegate agent engine: create
+        (or reuse) a delegation from the task title, run it in the background,
+        and link it to the task so its real drafts/results can be reviewed."""
+        uid = _uid(user)
+        if not _use_live_db(db):
+            return {
+                "started": False,
+                "demo": True,
+                "message": "Task execution needs a live workspace; not available in demo mode.",
+            }
+
+        task = await db.workplan_tasks.find_one(_id_filter(task_id, uid))
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        try:
+            from delegate.bridge import run_task_as_delegation
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[workplan-run] delegate bridge unavailable: %s", exc)
+            raise HTTPException(status_code=503, detail="Execution engine unavailable")
+
+        delegation_id = await run_task_as_delegation(
+            db, user, task_title=task.get("title", ""),
+            existing_delegation_id=task.get("delegation_id"),
+        )
+        await db.workplan_tasks.update_one(
+            _id_filter(task_id, uid),
+            {"$set": {
+                "delegation_id": delegation_id,
+                "owner": "zilo",
+                "zilo_status": "running",
+                "status": "in_progress",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        return {"started": True, "delegation_id": delegation_id}
+
+    @router.get("/tasks/{task_id}/work")
+    async def get_task_work(task_id: str, user=Depends(get_current_user)):
+        """Return the real work produced for a task: the linked delegation's
+        live status, summary, and drafts (replacing the old mock content)."""
+        uid = _uid(user)
+        if not _use_live_db(db):
+            return {"status": "not_run", "demo": True, "drafts": []}
+
+        task = await db.workplan_tasks.find_one(_id_filter(task_id, uid))
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        delegation_id = task.get("delegation_id")
+        if not delegation_id:
+            return {"status": "not_run", "drafts": []}
+
+        try:
+            from delegate.bridge import get_delegation_work
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[workplan-work] delegate bridge unavailable: %s", exc)
+            return {"status": "unavailable", "drafts": []}
+
+        work = await get_delegation_work(db, user, delegation_id)
+        # Mirror the delegation's terminal state back onto the task.
+        deleg_status = work.get("status")
+        if deleg_status in ("completed", "done") and task.get("zilo_status") == "running":
+            await db.workplan_tasks.update_one(
+                _id_filter(task_id, uid),
+                {"$set": {"zilo_status": "waiting", "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+        return work
+
+    @router.post("/tasks/{task_id}/approve-work")
+    async def approve_task_work(task_id: str, user=Depends(get_current_user)):
+        """Approve and send all real drafts for a task, then mark it done."""
+        uid = _uid(user)
+        if not _use_live_db(db):
+            raise HTTPException(status_code=400, detail="Not available in demo mode")
+
+        task = await db.workplan_tasks.find_one(_id_filter(task_id, uid))
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        delegation_id = task.get("delegation_id")
+        if not delegation_id:
+            raise HTTPException(status_code=400, detail="This task has no work to approve yet")
+
+        from delegate.bridge import approve_delegation_work
+        result = await approve_delegation_work(db, user, delegation_id)
+
+        now = datetime.now(timezone.utc).isoformat()
+        await db.workplan_tasks.update_one(
+            _id_filter(task_id, uid),
+            {"$set": {
+                "status": "done",
+                "zilo_status": "done",
+                "result": result.get("result_summary") or "Work approved and sent.",
+                "completed_at": now,
+                "updated_at": now,
+            }},
+        )
+        return {"ok": True, **result}
 
     @router.post("/tasks/{task_id}/log")
     async def log_task_update(

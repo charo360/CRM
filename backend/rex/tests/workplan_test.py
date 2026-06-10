@@ -265,6 +265,48 @@ class TestWorkPlanRoutes:
                    if "review q3 budget" in t["title"].lower()]
         assert len(matches) == 1
 
+    def test_edit_task_sets_and_clears_due_date(self, test_client):
+        """A task created without a due date can be given one, then cleared."""
+        r = test_client.post("/workplan/tasks", json={"title": "Email the accountant", "owner": "founder"})
+        task_id = r.json()["id"]
+        assert r.json().get("due_date") in (None, "")
+
+        # Set a due date + edit context.
+        e1 = test_client.patch(f"/workplan/tasks/{task_id}", json={
+            "due_date": "2026-06-20T09:00:00Z",
+            "context": "Quarter close is coming up",
+        })
+        assert e1.status_code == 200
+        assert e1.json()["due_date"] == "2026-06-20T09:00:00Z"
+        assert e1.json()["context"] == "Quarter close is coming up"
+
+        # Clearing with empty string removes it.
+        e2 = test_client.patch(f"/workplan/tasks/{task_id}", json={"due_date": ""})
+        assert e2.status_code == 200
+        assert e2.json()["due_date"] is None
+
+    def test_edit_task_not_found(self, test_client):
+        res = test_client.patch("/workplan/tasks/does-not-exist", json={"due_date": "2026-06-20T09:00:00Z"})
+        assert res.status_code == 404
+
+    def test_run_and_work_demo_mode(self, test_client):
+        """In demo/in-memory mode execution is unavailable but must not error."""
+        data = test_client.get("/workplan").json()
+        zilo_task = next(t for t in data["tasks"] if t["owner"] == "zilo")
+
+        run = test_client.post(f"/workplan/tasks/{zilo_task['id']}/run")
+        assert run.status_code == 200
+        assert run.json()["started"] is False
+        assert run.json()["demo"] is True
+
+        work = test_client.get(f"/workplan/tasks/{zilo_task['id']}/work")
+        assert work.status_code == 200
+        assert work.json()["status"] == "not_run"
+        assert work.json()["drafts"] == []
+
+        approve = test_client.post(f"/workplan/tasks/{zilo_task['id']}/approve-work")
+        assert approve.status_code == 400
+
     def test_parse_input_ignores_completion_without_signal(self, test_client, monkeypatch):
         """Re-pasting a task description (no completion words) must NOT mark it done."""
         r = test_client.post("/workplan/tasks", json={"title": "Fix duplicate call bug", "owner": "founder"})
@@ -289,6 +331,50 @@ class TestWorkPlanRoutes:
         })
         task2 = next(t for t in test_client.get("/workplan").json()["tasks"] if t["id"] == tid)
         assert task2["status"] == "done"
+
+    def test_get_delegation_work_shapes_drafts(self):
+        """The bridge reshapes a delegation's subtasks into review-ready drafts."""
+        import delegate.bridge as bridge
+
+        class _FakeColl:
+            def __init__(self, doc):
+                self._doc = doc
+
+            async def find_one(self, q):
+                if (self._doc and self._doc.get("_id") == q.get("_id")
+                        and self._doc.get("user_id") == q.get("user_id")):
+                    return self._doc
+                return None
+
+        class _FakeDB:
+            def __init__(self, doc):
+                self._coll = _FakeColl(doc)
+
+            def __getitem__(self, name):
+                return self._coll
+
+        doc = {
+            "_id": "d1", "user_id": "u1", "status": "completed",
+            "result_summary": "2 drafts ready for your review.",
+            "staged_count": 2,
+            "subtasks": [
+                {"id": "s1", "label": "Ken", "draft": "Hi Ken", "detail": "Follow up",
+                 "approval": "pending", "source": "email"},
+                {"id": "s2", "label": "Elsa", "draft": "Hi Elsa", "detail": "Follow up",
+                 "approval": "pending", "reply_channel": "whatsapp"},
+            ],
+        }
+        res = run_async(bridge.get_delegation_work(_FakeDB(doc), {"_id": "u1"}, "d1"))
+        assert res["status"] == "completed"
+        assert res["pending"] == 2
+        assert len(res["drafts"]) == 2
+        assert res["drafts"][0]["draft"] == "Hi Ken"
+        assert res["drafts"][1]["channel"] == "whatsapp"
+
+        # Unknown delegation id -> not_run, no drafts.
+        missing = run_async(bridge.get_delegation_work(_FakeDB(doc), {"_id": "u1"}, "nope"))
+        assert missing["status"] == "not_run"
+        assert missing["drafts"] == []
 
     def test_sync_calendar_events_to_workplan(self):
         """Test that sync_calendar_events_to_workplan fetches calendar, resolves CRM context, offsets prep due, and inserts tasks."""
