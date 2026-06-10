@@ -1,13 +1,19 @@
+
 import os
 import sys
 import secrets
 import string
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Load env before ANY other imports
+# Load env before ANY other imports (dotenv is optional in some runtime images)
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT_DIR / ".env", override=True)
+except ModuleNotFoundError:
+    # No python-dotenv installed (common in locked-down environments / containers)
+    # App will still run using existing environment variables.
+    pass
 # Ensure backend package modules can be imported as top-level modules
 sys.path.insert(0, str(ROOT_DIR))
 
@@ -383,7 +389,10 @@ if os.environ.get('TUNNEL_MODE') == 'true':
     client = AsyncMongoHTTPClient(api_url, api_key, cluster, db_name)
     db = client[db_name]
 else:
-    mongo_url = os.environ['MONGO_URL']
+    mongo_url = os.environ.get('MONGO_URL')
+    if not mongo_url:
+        print("[CRITICAL] MONGO_URL not set in environment. Set MONGO_URL to your MongoDB connection string.")
+        sys.exit(1)
     client = AsyncIOMotorClient(
         mongo_url,
         maxPoolSize=50,

@@ -468,6 +468,11 @@ export const feedbackAPI = {
     return response.data;
   },
 
+  getSurvey: async (surveyId: string) => {
+    const response = await apiClient.get(`/feedback/surveys/${surveyId}`);
+    return response.data;
+  },
+
   submitResponse: async (payload: {
     survey_id: string;
     customer_id?: string;

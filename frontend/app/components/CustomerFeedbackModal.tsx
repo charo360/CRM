@@ -20,11 +20,41 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
   const [logRating, setLogRating] = useState('');
   const [logComment, setLogComment] = useState('');
   const [logging, setLogging] = useState(false);
+  const [surveyDetails, setSurveyDetails] = useState<any | null>(null);
+  const [logAnswers, setLogAnswers] = useState<Record<string, any>>({});
+  const [extraFields, setExtraFields] = useState<Array<{ id: string; label: string; value: string }>>([]);
 
   useEffect(() => {
     if (!visible) return;
     load();
   }, [visible]);
+
+  useEffect(() => {
+    // when logging a specific survey, fetch its full details
+    let mounted = true;
+    if (!loggingSurveyId) {
+      setSurveyDetails(null);
+      setLogAnswers({});
+      setExtraFields([]);
+      return;
+    }
+    (async () => {
+      try {
+        const s = await feedbackAPI.getSurvey(loggingSurveyId);
+        if (!mounted) return;
+        setSurveyDetails(s || null);
+        const a: Record<string, any> = {};
+        (s?.questions || []).forEach((q: any) => {
+          const qid = q.id || q._id || q.question_id || q.key || String(Math.random());
+          a[qid] = '';
+        });
+        setLogAnswers(a);
+      } catch (e) {
+        console.error('Failed to fetch survey details', e);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [loggingSurveyId]);
 
   const load = async () => {
     setLoading(true);
@@ -88,35 +118,51 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
   };
 
   const onLogResponse = async (surveyId: string) => {
-    const rating = Number(logRating);
-    if (!surveyId || (!rating && logComment.trim() === '')) {
-      Alert && Alert.alert && Alert.alert('Invalid', 'Enter rating or comment');
-      return;
-    }
+    // dynamic submission supporting survey questions and extra fields
+    if (!surveyId) return;
     setLogging(true);
     try {
       const payload: any = {
         survey_id: surveyId,
         customer_id: customerId,
-        comment: logComment || undefined,
+        customer_name: undefined,
+        customer_phone: undefined,
         answers: [],
       };
-      if (!Number.isNaN(rating) && rating) payload.nps_score = rating;
+      // include answers from structured questions
+      if (surveyDetails?.questions && Array.isArray(surveyDetails.questions)) {
+        for (const q of surveyDetails.questions) {
+          const qid = q.id || q._id || q.question_id || q.key || String(Math.random());
+          const a = logAnswers[qid];
+          if (a !== undefined && a !== '') payload.answers.push({ question_id: qid, answer: a });
+          // if question is NPS and numeric, set nps_score for convenience
+          if ((q.type === 'nps' || q.type === 'rating') && typeof a === 'number') payload.nps_score = a;
+        }
+      }
+      // include extras
+      for (const f of extraFields) {
+        if (f.value && f.value.trim() !== '') payload.answers.push({ question_id: f.id, answer: { label: f.label, value: f.value } });
+      }
+      // fallback comment/rating for backward compatibility
       if (logComment && logComment.trim() !== '') payload.comment = logComment;
-      if (!Number.isNaN(rating) && rating) payload.answers.push({ question_id: 'rating', answer: rating });
-      if (logComment && logComment.trim() !== '') payload.answers.push({ question_id: 'comment', answer: logComment });
+      if (logRating) {
+        const nr = Number(logRating);
+        if (!Number.isNaN(nr)) payload.nps_score = nr;
+      }
 
       const res = await feedbackAPI.submitResponse(payload);
       const url = res?.url || res?.share_url || (res?.id ? `${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/feedback/response/${res.id}` : null);
       setLastLink(url || null);
       if (url) Alert.alert('Saved', 'Response saved — link available');
-      // refresh responses
       const r = await feedbackAPI.getCustomerResponses(customerId);
       setResponses(Array.isArray(r) ? r : []);
-      // reset logger
+      // reset logger state
       setLoggingSurveyId(null);
       setLogRating('');
       setLogComment('');
+      setSurveyDetails(null);
+      setLogAnswers({});
+      setExtraFields([]);
     } catch (err) {
       console.error('Log response error', err);
       const msg = (err as any)?.response?.data?.detail || (err as any)?.message || 'Failed to save response';
@@ -175,29 +221,87 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
                 </View>
                 {loggingSurveyId === (item.id || item._id) && (
                   <View style={styles.logForm}>
-                    <TextInput
-                      value={logRating}
-                      onChangeText={setLogRating}
-                      placeholder="Rating (0-10)"
-                      placeholderTextColor="#8696A0"
-                      keyboardType="numeric"
-                      style={styles.logInput}
-                    />
-                    <TextInput
-                      value={logComment}
-                      onChangeText={setLogComment}
-                      placeholder="Comment"
-                      placeholderTextColor="#8696A0"
-                      style={[styles.logInput, { marginTop: 8 }]}
-                    />
-                    <View style={{ flexDirection: 'row', marginTop: 8 }}>
-                      <TouchableOpacity style={styles.sendButton} onPress={() => onLogResponse(item.id || item._id)} disabled={logging}>
-                        <Text style={styles.sendButtonText}>{logging ? 'Saving...' : 'Save'}</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#8696A0', marginLeft: 8 }]} onPress={() => { setLoggingSurveyId(null); setLogRating(''); setLogComment(''); }}>
-                        <Text style={styles.sendButtonText}>Cancel</Text>
-                      </TouchableOpacity>
-                    </View>
+                    {surveyDetails ? (
+                      <>
+                        {(surveyDetails.questions || []).map((q: any) => {
+                          const qid = q.id || q._id || q.question_id || q.key || String(Math.random());
+                          const val = logAnswers[qid] ?? '';
+                          return (
+                            <View key={qid} style={{ marginBottom: 8 }}>
+                              <Text style={{ color: '#E9EDEF', marginBottom: 6 }}>{q.text || q.title || 'Question'}</Text>
+                              {q.type === 'text' && (
+                                <TextInput value={val} onChangeText={(t) => setLogAnswers(prev => ({ ...prev, [qid]: t }))} placeholder="Answer" placeholderTextColor="#8696A0" style={styles.logInput} />
+                              )}
+                              {q.type === 'nps' && (
+                                <TextInput value={String(val || '')} onChangeText={(t) => setLogAnswers(prev => ({ ...prev, [qid]: Number(t) }))} placeholder="0-10" placeholderTextColor="#8696A0" keyboardType="numeric" style={styles.logInput} />
+                              )}
+                              {q.type === 'rating' && (
+                                <TextInput value={String(val || '')} onChangeText={(t) => setLogAnswers(prev => ({ ...prev, [qid]: Number(t) }))} placeholder="1-5" placeholderTextColor="#8696A0" keyboardType="numeric" style={styles.logInput} />
+                              )}
+                              {q.type === 'choice' && (
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                                  {(q.options || []).map((opt: string, oi: number) => (
+                                    <TouchableOpacity key={oi} onPress={() => setLogAnswers(prev => ({ ...prev, [qid]: opt }))} style={[styles.sendButton, { backgroundColor: val === opt ? '#00A884' : '#102027', marginRight: 8, marginBottom: 8 }]}>
+                                      <Text style={styles.sendButtonText}>{opt}</Text>
+                                    </TouchableOpacity>
+                                  ))}
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })}
+
+                        {/* extras */}
+                        {extraFields.map(f => (
+                          <View key={f.id} style={{ marginBottom: 8 }}>
+                            <TextInput value={f.label} onChangeText={(t) => setExtraFields(prev => prev.map(x => x.id === f.id ? { ...x, label: t } : x))} placeholder="Field label" placeholderTextColor="#8696A0" style={styles.logInput} />
+                            <TextInput value={f.value} onChangeText={(t) => setExtraFields(prev => prev.map(x => x.id === f.id ? { ...x, value: t } : x))} placeholder="Value" placeholderTextColor="#8696A0" style={[styles.logInput, { marginTop: 6 }]} />
+                            <TouchableOpacity onPress={() => setExtraFields(prev => prev.filter(x => x.id !== f.id))} style={[styles.sendButton, { backgroundColor: '#8696A0', marginTop: 6 }]}>
+                              <Text style={styles.sendButtonText}>Remove field</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+
+                        <TouchableOpacity onPress={() => setExtraFields(prev => [...prev, { id: `custom_${Date.now()}`, label: 'Custom field', value: '' }])} style={[styles.sendButton, { backgroundColor: '#102027' }]}>
+                          <Text style={styles.sendButtonText}>Add field</Text>
+                        </TouchableOpacity>
+
+                        <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                          <TouchableOpacity style={styles.sendButton} onPress={() => onLogResponse(item.id || item._id)} disabled={logging}>
+                            <Text style={styles.sendButtonText}>{logging ? 'Saving...' : 'Save'}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#8696A0', marginLeft: 8 }]} onPress={() => { setLoggingSurveyId(null); setLogRating(''); setLogComment(''); setSurveyDetails(null); setLogAnswers({}); setExtraFields([]); }}>
+                            <Text style={styles.sendButtonText}>Cancel</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </>
+                    ) : (
+                      <>
+                        <TextInput
+                          value={logRating}
+                          onChangeText={setLogRating}
+                          placeholder="Rating (0-10)"
+                          placeholderTextColor="#8696A0"
+                          keyboardType="numeric"
+                          style={styles.logInput}
+                        />
+                        <TextInput
+                          value={logComment}
+                          onChangeText={setLogComment}
+                          placeholder="Comment"
+                          placeholderTextColor="#8696A0"
+                          style={[styles.logInput, { marginTop: 8 }]}
+                        />
+                        <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                          <TouchableOpacity style={styles.sendButton} onPress={() => onLogResponse(item.id || item._id)} disabled={logging}>
+                            <Text style={styles.sendButtonText}>{logging ? 'Saving...' : 'Save'}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#8696A0', marginLeft: 8 }]} onPress={() => { setLoggingSurveyId(null); setLogRating(''); setLogComment(''); }}>
+                            <Text style={styles.sendButtonText}>Cancel</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </>
+                    )}
                   </View>
                 )}
               </>
