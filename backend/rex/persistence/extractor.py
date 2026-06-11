@@ -154,6 +154,18 @@ async def extract_and_populate_notebook(db: Any, user_id: str, orch: Orchestrato
     if user_doc and user_doc.get("email"):
         user_emails.add(user_doc["email"].lower().strip())
 
+    from personal_profile import format_email_closing, personal_profile_from_user
+
+    doc_style: dict = {}
+    try:
+        from saved_designs import get_document_style
+
+        doc_style = await get_document_style(db, str(user_id))
+    except Exception:
+        pass
+    personal_profile = personal_profile_from_user(user_doc, document_style=doc_style)
+    email_closing = format_email_closing(personal_profile)
+
     # 2. Fetch customers
     customers = []
     try:
@@ -430,7 +442,7 @@ async def extract_and_populate_notebook(db: Any, user_id: str, orch: Orchestrato
                     f"Hi {primary_first_name},\n\n"
                     f"Following up on our thread about \u201c{t_subject}\u201d \u2014 just wanted to check where things stand on your end.\n\n"
                     f"Happy to jump on a quick call this week if that helps move things forward.\n\n"
-                    f"Best,\n[Your Name]"
+                    f"{email_closing}"
                 ),
                 "context": (
                     f"Replying to: \u201c{t_subject}\u201d"
@@ -448,7 +460,7 @@ async def extract_and_populate_notebook(db: Any, user_id: str, orch: Orchestrato
                         f"Hi {primary_first_name},\n\n"
                         f"I wanted to circle back on our conversation about \u201c{t_subject}\u201d. "
                         f"Let me know if you\u2019d like to pick this up \u2014 happy to share an update.\n\n"
-                        f"Best,\n[Your Name]"
+                        f"{email_closing}"
                     ),
                     "context": f"Re-engagement \u2014 last thread: \u201c{t_subject}\u201d",
                 }
@@ -458,7 +470,7 @@ async def extract_and_populate_notebook(db: Any, user_id: str, orch: Orchestrato
                     "body": (
                         f"Hi {primary_first_name},\n\n"
                         f"Hope you\u2019re well. I wanted to reach out and see if there\u2019s anything we can help with.\n\n"
-                        f"Best,\n[Your Name]"
+                        f"{email_closing}"
                     ),
                     "context": "No recent threads \u2014 initial outreach draft",
                 }

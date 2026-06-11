@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState, useMemo } from "react";
-import { api } from "@/lib/api";
+import { api, settingsApi, type BusinessSettings } from "@/lib/api";
+import {
+  applyPersonalSignature,
+  formatEmailClosing,
+  personalProfileFromSettings,
+  type PersonalProfile,
+} from "@/lib/emailSignature";
 import { 
   Loader2, 
   Search, 
@@ -218,7 +224,12 @@ interface ContactProfile {
   };
 }
 
-const parseContactProfile = (person: Entry, companies: any[]): ContactProfile => {
+const parseContactProfile = (
+  person: Entry,
+  companies: any[],
+  personalProfile: PersonalProfile,
+  appendIfMissing = true
+): ContactProfile => {
   const name = person.subject || "Unknown Contact";
   
   // Find associated company
@@ -294,12 +305,17 @@ const parseContactProfile = (person: Entry, companies: any[]): ContactProfile =>
     "Mentioned she reports to a CFO."
   ];
 
+  const fallbackBody = `Hi ${name.split(" ")[0]},\n\nI wanted to follow up on our recent conversation. Are you available for a quick call this week to discuss next steps?\n\n${formatEmailClosing(personalProfile)}`;
   const recommendedAction = {
     summary: company?.suggested_reply?.context
       ? `Zilo suggests: ${company.suggested_reply.context}`
       : `Send a follow-up to ${name.split(" ")[0]} referencing the most recent thread. Lead with timeline, not price. Keep it under 3 sentences.`,
     draftSubject: company?.suggested_reply?.subject || `Re: Recent thread — ${companyName}`,
-    draftBody: company?.suggested_reply?.body || `Hi ${name.split(" ")[0]},\n\nI wanted to follow up on our recent conversation. Are you available for a quick call this week to discuss next steps?\n\nBest,\n[Your Name]`
+    draftBody: applyPersonalSignature(
+      company?.suggested_reply?.body || fallbackBody,
+      personalProfile,
+      { appendIfMissing }
+    ),
   };
 
   return {
@@ -348,7 +364,11 @@ interface CompanyProfile {
   };
 }
 
-const parseCompanyProfile = (comp: CompanyEntry): CompanyProfile => {
+const parseCompanyProfile = (
+  comp: CompanyEntry,
+  personalProfile: PersonalProfile,
+  appendIfMissing = true
+): CompanyProfile => {
   const convCount = comp.conversations_count || 1;
   const bestDay = comp.comm_best_day || "Tuesday";
 
@@ -368,9 +388,14 @@ const parseCompanyProfile = (comp: CompanyEntry): CompanyProfile => {
   const realReply = comp.suggested_reply;
   const activeThread = comp.active_threads && comp.active_threads.length > 0 ? comp.active_threads[0] : null;
   const draftSubject = realReply?.subject || (activeThread ? `Re: ${activeThread.subject}` : `Follow-up — ${comp.name}`);
-  const draftBody = realReply?.body || (activeThread
-    ? `Hi Team,\n\nFollowing up on "${activeThread.subject}". Please let us know where things stand on your end.\n\nBest,\n[Your Name]`
-    : `Hi Team,\n\nI wanted to reach out regarding next steps with ${comp.name}.\n\nBest,\n[Your Name]`);
+  const fallbackBody = activeThread
+    ? `Hi Team,\n\nFollowing up on "${activeThread.subject}". Please let us know where things stand on your end.\n\n${formatEmailClosing(personalProfile)}`
+    : `Hi Team,\n\nI wanted to reach out regarding next steps with ${comp.name}.\n\n${formatEmailClosing(personalProfile)}`;
+  const draftBody = applyPersonalSignature(
+    realReply?.body || fallbackBody,
+    personalProfile,
+    { appendIfMissing }
+  );
   const draftContext = realReply?.context || "";
 
   const recommendedAction = {
@@ -423,6 +448,12 @@ export default function ZiloNotebookPage() {
   const [reviewingDraft, setReviewingDraft] = useState<{ subject: string; body: string } | null>(null);
   const [editedDraftSubject, setEditedDraftSubject] = useState("");
   const [editedDraftBody, setEditedDraftBody] = useState("");
+  const [personalProfile, setPersonalProfile] = useState<PersonalProfile>({
+    name: "",
+    title: "",
+    company: "",
+  });
+  const [appendSignatureToDrafts, setAppendSignatureToDrafts] = useState(true);
 
   const openReviewDraft = (subject: string, body: string) => {
     setEditedDraftSubject(subject);
@@ -435,12 +466,15 @@ export default function ZiloNotebookPage() {
     setLoading(true);
     setError(null);
     try {
-      const [notebookRes, standingsRes] = await Promise.all([
+      const [notebookRes, standingsRes, settingsRes] = await Promise.all([
         api.get<NotebookPayload>("/rex/notebook"),
-        api.get<{ standings: Standing[] }>("/rex/standings")
+        api.get<{ standings: Standing[] }>("/rex/standings"),
+        settingsApi.get().catch(() => ({} as BusinessSettings)),
       ]);
       setData(notebookRes);
       setStandings(standingsRes.standings || []);
+      setPersonalProfile(personalProfileFromSettings(settingsRes));
+      setAppendSignatureToDrafts(settingsRes.append_signature_to_drafts !== false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load notebook data");
     } finally {
@@ -1536,7 +1570,12 @@ export default function ZiloNotebookPage() {
 
                         {/* Detail Pane (Right Column) */}
                         {selectedPerson ? (() => {
-                            const profile = parseContactProfile(selectedPerson, data?.companies || []);
+                            const profile = parseContactProfile(
+                              selectedPerson,
+                              data?.companies || [],
+                              personalProfile,
+                              appendSignatureToDrafts
+                            );
                             return (
                               <div className="flex flex-col h-full overflow-hidden font-sans">
                                 {/* Header */}
@@ -1942,7 +1981,11 @@ export default function ZiloNotebookPage() {
 
                         {/* Detail Pane (Right Column) */}
                         {selectedCompany ? (() => {
-                          const profile = parseCompanyProfile(selectedCompany);
+                          const profile = parseCompanyProfile(
+                            selectedCompany,
+                            personalProfile,
+                            appendSignatureToDrafts
+                          );
                           return (
                             <div className="flex-1 flex flex-col h-full overflow-hidden font-sans">
                               {/* Header */}

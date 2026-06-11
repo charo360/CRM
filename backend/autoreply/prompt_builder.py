@@ -2818,6 +2818,7 @@ def build_system_prompt(
     products: list,
     services: list,
     mini_state: dict,
+    reply_channel: str = "",
 ) -> str:
     bc = business_config
     btype = bc.get("type", "retail")
@@ -2832,7 +2833,25 @@ def build_system_prompt(
 
     # ── Identity ──
     name = bc.get("name") or "this business"
-    parts.append(f"You are the WhatsApp assistant for *{name}*.")
+    owner = (bc.get("owner_name") or "").strip()
+    owner_title = (bc.get("owner_title") or "").strip()
+    if owner:
+        who = f"{owner}" + (f", {owner_title}" if owner_title else "")
+        parts.append(f"You reply on behalf of *{name}* as {who}.")
+    else:
+        parts.append(f"You are the assistant for *{name}*.")
+
+    channel = (reply_channel or bc.get("reply_channel") or "").strip()
+    if channel:
+        try:
+            from personal_profile import social_tone_hint
+
+            hint = social_tone_hint(channel)
+            if hint:
+                parts.append(hint)
+        except Exception:
+            pass
+
     if bc.get("about"):
         parts.append(f"About: {_cap(bc['about'], 200)}")
     # Only show free-text products_services description when there's no structured catalog.

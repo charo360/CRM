@@ -16,14 +16,21 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { toolkit } = await params;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
   try {
     const url = buildInternalCrmApiUrl(`/composio/connections/${toolkit}`);
-    const res = await fetch(url, { headers: { Authorization: auth } });
+    const res = await fetch(url, {
+      headers: { Authorization: auth },
+      signal: controller.signal,
+    });
     const data = await res.json().catch(() => ({ connected: false }));
     return NextResponse.json(data, { status: res.status });
   } catch (e) {
     console.error("[api/composio/connections GET]", e);
     return NextResponse.json({ connected: false }, { status: 502 });
+  } finally {
+    clearTimeout(timer);
   }
 }
 

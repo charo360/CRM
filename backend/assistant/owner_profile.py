@@ -54,6 +54,7 @@ def merge_tenant_settings(user: Dict[str, Any]) -> Dict[str, Any]:
         "business_type": _clean(s.get("business_type") or user.get("business_type")),
         "business_name": _clean(user.get("business_name") or s.get("business_name")),
         "owner_name": _clean(user.get("owner_name") or s.get("owner_name") or user.get("name")),
+        "owner_title": _clean(user.get("owner_title") or s.get("owner_title")),
     })
 
 
@@ -117,6 +118,9 @@ def build_owner_profile(
     business_type = _clean(settings.get("business_type") or bk.get("business_type") or user.get("business_type"))
     business_name = _clean(user.get("business_name") or settings.get("business_name"))
     owner_name = _clean(user.get("owner_name") or settings.get("owner_name") or user.get("name"))
+    owner_title = _clean(
+        user.get("owner_title") or settings.get("owner_title") or doc_style.get("signature_title")
+    )
     phone_number = _clean(
         user.get("phone_number") or settings.get("phone_number") or (user.get("whatsapp") or {}).get("number")
     )
@@ -146,6 +150,7 @@ def build_owner_profile(
     return {
         # ── Flat fields (legacy tool consumers) ──
         "owner_name": owner_name,
+        "owner_title": owner_title,
         "business_name": business_name,
         "phone_number": phone_number,
         "email": email,

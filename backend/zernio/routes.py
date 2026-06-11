@@ -1,4 +1,4 @@
-"""Zernio — unified social inbox: per-user profiles, OAuth connect, posts, DMs."""
+"""Social API routes (legacy /zernio/* paths) — Composio posting/inbox + Unipile LinkedIn DMs."""
 from __future__ import annotations
 import json
 import logging, os
@@ -112,6 +112,9 @@ class CreateConversationBody(BaseModel):
     platform: str
     recipient: str
     message: str
+    subject: Optional[str] = None
+    linkedin_api: Optional[str] = None
+    inmail: Optional[bool] = None
 
 class ReplyCommentBody(BaseModel):
     account_id: str
@@ -156,6 +159,16 @@ class FacebookHeadlessCompleteBody(BaseModel):
 META_APP_ID     = os.getenv("META_APP_ID", "")
 META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 GRAPH_BASE      = "https://graph.facebook.com/v19.0"
+
+_COMPOSIO_PLATFORM_TOOLKITS = {
+    "facebook": "facebook",
+    "instagram": "instagram",
+    "youtube": "youtube",
+    "linkedin": "linkedin",
+    "twitter": "twitter",
+    "x": "twitter",
+    "tiktok": "tiktok",
+}
 
 
 async def _capture_facebook_page_token(db, user_id: str, page_id: str, user_access_token: str) -> None:
@@ -210,8 +223,9 @@ async def _capture_facebook_page_token(db, user_id: str, page_id: str, user_acce
         logger.warning(f"[zernio] _capture_facebook_page_token failed: {exc}")
 
 
-def make_zernio_router(db, user_dep):
-    router = APIRouter(prefix="/zernio", tags=["zernio"])
+def make_composio_social_router(db, user_dep, *, prefix: str = "/composio/social"):
+    """Social inbox, posts, comments — Composio + Unipile (legacy path: /zernio)."""
+    router = APIRouter(prefix=prefix, tags=["composio-social"])
 
     async def _need(user, platform: Optional[str], level: str) -> None:
         await require_social_channel_level(db, user, platform, level)
@@ -281,48 +295,36 @@ def make_zernio_router(db, user_dep):
     # ── key ping (public debug — no auth required) ────────────────────────────
 
     @router.get("/ping")
-    async def zernio_ping():
-        """Test the API key — no auth needed, safe to call from anywhere."""
-        key = os.getenv("ZERNIO_API_KEY", "").strip()
-        if not key:
-            return {"ok": False, "error": "ZERNIO_API_KEY env var is not set on this server"}
-        try:
-            body = await _get("/profiles")
-            return {"ok": True, "status": 200, "body": body}
-        except httpx.HTTPStatusError as e:
-            try:
-                resp_body = e.response.json()
-            except Exception:
-                resp_body = e.response.text
-            return {"ok": False, "status": e.response.status_code, "body": resp_body}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+    async def social_ping():
+        """Health check — social stack uses Composio + Unipile."""
+        from composio_service import is_configured as composio_ok
+        from unipile_service import is_configured as unipile_ok
+        return {
+            "ok": True,
+            "provider": "composio+unipile",
+            "composio_configured": composio_ok(),
+            "unipile_configured": unipile_ok(),
+        }
 
     # ── status & profile ───────────────────────────────────────────────────────
 
     @router.get("/status")
     async def zernio_status(user=user_dep):
-        """Check API connectivity and return the user's profile + connected accounts."""
+        """Return connected social accounts (Composio + Unipile)."""
         await _need(user, None, "read")
         try:
-            user_id = user["_id"]
-            profile_id = await _get_or_create_profile(user_id)
-            accounts_data = await _get("/accounts", {"profileId": profile_id})
-            raw_accounts = accounts_data.get("accounts") or accounts_data.get("data") or []
-            accounts = [_normalize_account(a) for a in raw_accounts if isinstance(a, dict)]
+            from social_accounts_service import has_social_connection, list_connected_accounts
+
+            accounts = await list_connected_accounts(db, user)
+            connected = await has_social_connection(db, user)
             return {
-                "connected": True,
-                "profile_id": profile_id,
+                "connected": connected,
+                "profile_id": str(user.get("business_id") or user["_id"]),
                 "accounts": accounts,
             }
-        except HTTPException as e:
-            return {"connected": False, "error": e.detail}
-        except httpx.HTTPStatusError as e:
-            logger.error(f"[zernio] status HTTP error {e.response.status_code}: {e.response.text[:200]}")
-            return {"connected": False, "error": f"Zernio API error {e.response.status_code}"}
         except Exception as e:
-            logger.error(f"[zernio] status error: {e}")
-            return {"connected": False, "error": str(e)}
+            logger.error("[social] status error: %s", e)
+            return {"connected": False, "error": str(e), "accounts": []}
 
     # ── connect (OAuth flow) ───────────────────────────────────────────────────
 
@@ -333,171 +335,114 @@ def make_zernio_router(db, user_dep):
         headless: bool = False,
         user=user_dep
     ):
-        """Return an OAuth URL so the user can connect a social platform."""
+        """Return Composio OAuth URL for supported posting platforms."""
         await _need(user, platform, "admin")
+        del headless
+        plat = (platform or "").strip().lower()
+        toolkit = _COMPOSIO_PLATFORM_TOOLKITS.get(plat)
+        if not toolkit:
+            raise HTTPException(
+                410,
+                detail=f"Platform '{platform}' is not available. Connect supported channels in Integrations.",
+            )
         try:
-            profile_id = await _get_or_create_profile(user["_id"])
+            from composio_service import get_connect_url as composio_connect_url
+
             frontend = os.getenv("FRONTEND_URL", "").rstrip("/")
-            params: Dict[str, Any] = {"profileId": profile_id}
             target_redirect = (redirect_url or "").strip()
             if not target_redirect and frontend:
-                target_redirect = f"{frontend}/dashboard/integrations?connected={platform}"
-            if target_redirect:
-                # Zernio docs use redirect_url. Keep redirectUrl too for backward compatibility.
-                params["redirect_url"] = target_redirect
-                params["redirectUrl"] = target_redirect
-            if headless:
-                params["headless"] = "true"
-            data = await _get(f"/connect/{platform}", params)
-            auth_url = (
-                data.get("authUrl") or data.get("url") or
-                data.get("auth_url") or data.get("redirectUrl")
-            )
-            return {"authUrl": auth_url, "platform": platform}
-        except HTTPException as e:
-            raise HTTPException(e.status_code, detail=e.detail)
-        except httpx.HTTPStatusError as e:
-            body = e.response.text[:400]
-            logger.error(f"[zernio] connect/{platform} HTTP {e.response.status_code}: {body}")
-            raise HTTPException(502, detail=f"Zernio returned {e.response.status_code}: {body}")
+                target_redirect = f"{frontend}/dashboard/integrations?connected={plat}"
+            business_id = str(user.get("business_id") or user["_id"])
+            result = await composio_connect_url(business_id, toolkit, target_redirect)
+            if result.get("error"):
+                raise HTTPException(502, detail=result["error"])
+            auth_url = result.get("redirect_url") or result.get("authUrl") or result.get("url")
+            return {"authUrl": auth_url, "platform": plat}
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"[zernio] connect/{platform} error: {e}")
+            logger.error("[social] connect/%s error: %s", platform, e)
             raise HTTPException(502, detail=str(e))
 
     @router.post("/connect/facebook/headless/pages")
     async def list_facebook_headless_pages(payload: FacebookHeadlessListBody, user=user_dep):
-        """List Facebook pages for headless OAuth flow using connect token."""
+        """Deprecated — connect Facebook via Composio OAuth on Integrations."""
         await _need(user, "facebook", "admin")
-        try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            data = await _get(
-                "/connect/facebook/select-page",
-                {"profileId": profile_id, "tempToken": payload.temp_token},
-                extra_headers={"X-Connect-Token": payload.connect_token},
-            )
-            pages = data.get("pages") or data.get("data") or []
-            return {"pages": pages}
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            body = e.response.text[:400]
-            logger.error(f"[zernio] facebook headless pages HTTP {e.response.status_code}: {body}")
-            raise HTTPException(e.response.status_code, detail=body)
-        except Exception as e:
-            logger.error(f"[zernio] facebook headless pages error: {e}")
-            raise HTTPException(502, detail=str(e))
+        raise HTTPException(
+            410,
+            detail="Headless Facebook connect via Zernio is removed. Connect Facebook in Integrations (Composio OAuth).",
+        )
 
     @router.post("/connect/facebook/headless/complete")
     async def complete_facebook_headless_connect(payload: FacebookHeadlessCompleteBody, user=user_dep):
-        """Complete Facebook headless OAuth selection and save selected page."""
+        """Deprecated — connect Facebook via Composio OAuth on Integrations."""
         await _need(user, "facebook", "admin")
-        try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            frontend = os.getenv("FRONTEND_URL", "").rstrip("/")
-            final_redirect = (
-                (payload.redirect_url or "").strip()
-                or (f"{frontend}/dashboard/integrations?connected=facebook" if frontend else None)
-            )
-            body: Dict[str, Any] = {
-                "profileId": profile_id,
-                "pageId": payload.page_id,
-                "tempToken": payload.temp_token,
-                "userProfile": payload.user_profile,
-            }
-            if final_redirect:
-                body["redirect_url"] = final_redirect
-            data = await _post(
-                "/connect/facebook/select-page",
-                body,
-                extra_headers={"X-Connect-Token": payload.connect_token},
-            )
-            account = data.get("account") or {}
-
-            # Capture page access token for direct Graph API calls (audience insights, etc.)
-            # Run in background — don't block the connect response if this fails.
-            import asyncio as _asyncio
-            _asyncio.ensure_future(
-                _capture_facebook_page_token(
-                    db=db,
-                    user_id=user.get("business_id", user["_id"]),
-                    page_id=payload.page_id,
-                    user_access_token=payload.temp_token,
-                )
-            )
-
-            return {
-                "connected": True,
-                "account": account,
-                "redirect_url": data.get("redirect_url"),
-            }
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            body = e.response.text[:500]
-            logger.error(f"[zernio] facebook headless complete HTTP {e.response.status_code}: {body}")
-            raise HTTPException(e.response.status_code, detail=body)
-        except Exception as e:
-            logger.error(f"[zernio] facebook headless complete error: {e}")
-            raise HTTPException(502, detail=str(e))
+        raise HTTPException(
+            410,
+            detail="Headless Facebook connect via Zernio is removed. Connect Facebook in Integrations (Composio OAuth).",
+        )
 
     @router.delete("/accounts/{account_id}")
     async def disconnect_account(account_id: str, user=user_dep):
-        """Disconnect a social account."""
+        """Disconnect a Composio or Unipile social account."""
         await _need(user, None, "admin")
         if not account_id or account_id in ("undefined", "null"):
             raise HTTPException(400, "Invalid account id")
-        try:
-            data = await _delete(f"/accounts/{account_id}")
-            return data
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+
+        from composio_service import disconnect as composio_disconnect
+        from unipile_service import clear_linkedin_account, is_unipile_account_id
+
+        business_id = str(user.get("business_id") or user["_id"])
+        aid = str(account_id)
+
+        if is_unipile_account_id(aid):
+            await clear_linkedin_account(db, user["_id"])
+            return {"ok": True, "disconnected": aid, "provider": "unipile"}
+
+        from social_accounts_service import list_connected_accounts
+        accounts = await list_connected_accounts(db, user)
+        match = next((a for a in accounts if str(a.get("id")) == aid), None)
+        platform = str((match or {}).get("platform") or "").lower()
+        toolkit = _COMPOSIO_PLATFORM_TOOLKITS.get(platform)
+        if toolkit:
+            result = await composio_disconnect(business_id, toolkit)
+            if result.get("error"):
+                raise HTTPException(502, result["error"])
+            return {"ok": True, "disconnected": aid, "provider": "composio", "toolkit": toolkit}
+
+        raise HTTPException(404, "Account not found or not disconnectable")
 
     # ── accounts ───────────────────────────────────────────────────────────────
 
     @router.get("/accounts")
     async def list_accounts(user=user_dep):
-        """List connected social accounts for this user's profile."""
+        """List connected social accounts (Composio + Unipile)."""
         await _need(user, None, "read")
-        try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            data = await _get("/accounts", {"profileId": profile_id})
-            raw_accounts = data.get("accounts") or data.get("data") or []
-            accounts = [_normalize_account(a) for a in raw_accounts if isinstance(a, dict)]
-            return {"accounts": accounts}
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        from social_accounts_service import list_connected_accounts
+
+        accounts = await list_connected_accounts(db, user)
+        return {"accounts": accounts}
 
     # ── inbox ──────────────────────────────────────────────────────────────────
 
     @router.get("/inbox")
     async def list_inbox(platform: Optional[str] = None, limit: int = 50, user=user_dep):
-        """Get DM conversations for this user's profile."""
+        """Unified inbox — Composio (FB/IG) + Unipile (LinkedIn)."""
         await _need(user, platform, "read")
+        from social_inbox_service import list_conversations
+
+        business_id = str(user.get("business_id") or user["_id"])
         try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            params: Dict[str, Any] = {"profileId": profile_id, "limit": limit}
-            if platform:
-                params["platform"] = platform
-            # Current Zernio inbox endpoint (docs): /v1/inbox/conversations
-            data = await _get("/inbox/conversations", params)
-            return data
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 403:
-                import composio_inbox
-                logger.info(f"[composio-inbox] Zernio inbox returned 403, falling back to Composio for user {user['_id']}")
-                try:
-                    convs = await composio_inbox.list_conversations(user["_id"], platform)
-                    return {"conversations": convs, "data": convs, "messages": []}
-                except Exception as exc:
-                    logger.error(f"[composio-inbox] Composio inbox fallback failed: {exc}", exc_info=True)
-                    return {"conversations": [], "data": [], "messages": []}
-            if e.response.status_code == 404:
-                return {"conversations": [], "data": [], "messages": []}
-            raise HTTPException(e.response.status_code, e.response.text)
+            convs = await list_conversations(
+                db,
+                user,
+                platform=platform,
+                limit=limit,
+            )
+            return {"conversations": convs, "data": convs, "messages": []}
+        except Exception as exc:
+            logger.error("[social-inbox] list failed for %s: %s", business_id, exc, exc_info=True)
+            return {"conversations": [], "data": [], "messages": []}
 
     @router.get("/inbox/{conversation_id}")
     async def get_conversation(
@@ -508,248 +453,152 @@ def make_zernio_router(db, user_dep):
     ):
         """Get messages for a specific conversation."""
         await _need(user, platform, "read")
-        try:
-            # New API requires accountId for conversation-scoped reads.
-            if account_id and not str(account_id).startswith("ca_"):
-                data = await _get(
-                    f"/inbox/conversations/{conversation_id}/messages",
-                    {"accountId": account_id, "limit": 100, "sortOrder": "asc"},
-                )
-            else:
-                # If account_id starts with ca_ (Composio), force fallback immediately
-                if account_id and str(account_id).startswith("ca_"):
-                    raise httpx.HTTPStatusError("Composio Connection", request=None, response=httpx.Response(403))
-                # Backward compatibility fallback (older clients without account id).
-                data = await _get(f"/inbox/conversations/{conversation_id}", {})
-            return data
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 403:
-                import composio_inbox
-                logger.info(f"[composio-inbox] Zernio conversation returned 403, falling back to Composio for user {user['_id']}")
+
+        from unipile_service import is_unipile_account_id
+        plat = (platform or "").strip().lower()
+        if is_unipile_account_id(account_id) or plat == "linkedin":
+            import unipile_inbox
+            if unipile_inbox.is_available():
+                business_id = str(user.get("business_id") or user["_id"])
                 try:
-                    conn_id = account_id or ""
-                    msgs = await composio_inbox.get_conversation_messages(user["_id"], conversation_id, conn_id)
+                    msgs = await unipile_inbox.get_conversation_messages(
+                        db,
+                        user["_id"],
+                        business_id,
+                        conversation_id,
+                        account_id or "",
+                    )
                     return {"messages": msgs, "data": msgs}
                 except Exception as exc:
-                    logger.error(f"[composio-inbox] Composio get_conversation fallback failed: {exc}", exc_info=True)
-                    return {"messages": [], "data": []}
-            if e.response.status_code == 404:
-                return {"messages": [], "data": []}
-            raise HTTPException(e.response.status_code, e.response.text)
+                    logger.error("[unipile-inbox] conversation failed: %s", exc, exc_info=True)
+                    if plat == "linkedin" or is_unipile_account_id(account_id):
+                        return {"messages": [], "data": []}
+
+        import composio_inbox
+        business_id = str(user.get("business_id") or user["_id"])
+        conn_id = account_id or ""
+        try:
+            msgs = await composio_inbox.get_conversation_messages(
+                business_id,
+                conversation_id,
+                conn_id,
+            )
+            return {"messages": msgs, "data": msgs}
+        except Exception as exc:
+            logger.error("[composio-inbox] conversation failed: %s", exc, exc_info=True)
+            return {"messages": [], "data": []}
 
     @router.post("/inbox/send")
     async def send_message(payload: SendMessageBody, user=user_dep):
         """Reply to a conversation."""
         await _need(user, payload.platform, "reply")
         
-        # Check if account_id is a Composio connection ID
+        business_id = str(user.get("business_id") or user["_id"])
         if payload.account_id and str(payload.account_id).startswith("ca_"):
             import composio_inbox
-            logger.info(f"[composio-inbox] Sending message via Composio for user {user['_id']}")
+            logger.info("[composio-inbox] Sending message via Composio for user %s", user["_id"])
             res = await composio_inbox.send_message(
-                user["_id"],
+                business_id,
                 payload.conversation_id,
                 payload.account_id,
-                payload.message
+                payload.message,
             )
             if res.get("success"):
                 return {"status": "sent", "data": res.get("data")}
             raise HTTPException(400, detail=res.get("error") or "Failed to send message via Composio")
+
+        from unipile_service import is_unipile_account_id
+        plat = (payload.platform or "").strip().lower()
+        if is_unipile_account_id(payload.account_id) or plat == "linkedin":
+            import unipile_inbox
+            if unipile_inbox.is_available():
+                business_id = str(user.get("business_id") or user["_id"])
+                logger.info("[unipile-inbox] Sending LinkedIn message for user %s", user["_id"])
+                res = await unipile_inbox.send_message(
+                    db,
+                    user["_id"],
+                    business_id,
+                    payload.conversation_id,
+                    payload.account_id or "",
+                    payload.message,
+                )
+                if res.get("success"):
+                    return {"status": "sent", "data": res.get("data")}
+                raise HTTPException(400, detail=res.get("error") or "Failed to send message via Unipile")
             
-        try:
-            def _with_meta_fields(base: Dict[str, Any]) -> Dict[str, Any]:
-                out = dict(base)
-                if payload.messaging_type:
-                    out["messagingType"] = payload.messaging_type
-                if payload.message_tag:
-                    # Meta deprecated these tags on 2026-04-27; force safe fallback.
-                    if payload.message_tag in DEPRECATED_MESSAGE_TAGS:
-                        logger.warning(
-                            f"[zernio] deprecated message_tag={payload.message_tag} remapped to HUMAN_AGENT"
-                        )
-                        out["messageTag"] = "HUMAN_AGENT"
-                    else:
-                        out["messageTag"] = payload.message_tag
-                return out
-
-            async def _send_with_fallbacks(conversation_id: str, account_id: str):
-                attempts = [
-                    _with_meta_fields({"accountId": account_id, "message": payload.message}),
-                    _with_meta_fields({"accountId": account_id, "text": payload.message}),
-                    _with_meta_fields({"accountId": account_id, "message": {"text": payload.message}}),
-                ]
-                last_exc: Optional[httpx.HTTPStatusError] = None
-                for body in attempts:
-                    try:
-                        return await _post(
-                            f"/inbox/conversations/{conversation_id}/messages",
-                            body,
-                        )
-                    except httpx.HTTPStatusError as e:
-                        last_exc = e
-                        if e.response.status_code != 400:
-                            raise
-                if last_exc:
-                    raise last_exc
-                raise HTTPException(500, "Failed to send inbox message")
-
-            if payload.account_id:
-                return await _send_with_fallbacks(payload.conversation_id, payload.account_id)
-
-            # Backward-compat fallback for older payloads without account id.
-            profile_id = await _get_or_create_profile(user["_id"])
-            conversations = await _get("/inbox/conversations", {"profileId": profile_id, "limit": 100})
-            rows = conversations.get("data") if isinstance(conversations, dict) else []
-            if not isinstance(rows, list):
-                rows = []
-            match = next(
-                (
-                    r for r in rows
-                    if isinstance(r, dict) and str(r.get("id") or "") == payload.conversation_id
-                ),
-                None,
-            )
-            account_id = str((match or {}).get("accountId") or "")
-            if account_id:
-                if account_id.startswith("ca_"):
-                    # Composio connection resolved, use it
-                    import composio_inbox
-                    res = await composio_inbox.send_message(
-                        user["_id"],
-                        payload.conversation_id,
-                        account_id,
-                        payload.message
-                    )
-                    if res.get("success"):
-                        return {"status": "sent", "data": res.get("data")}
-                    raise HTTPException(400, detail=res.get("error") or "Failed to send message via Composio")
-                return await _send_with_fallbacks(payload.conversation_id, account_id)
+        import composio_inbox
+        business_id = str(user.get("business_id") or user["_id"])
+        conn_id = payload.account_id or ""
+        if not conn_id:
+            try:
+                convs = await composio_inbox.list_conversations(business_id, payload.platform)
+                for conv in convs:
+                    if str(conv.get("id") or "") == payload.conversation_id:
+                        conn_id = str(conv.get("accountId") or conv.get("account_id") or "")
+                        break
+            except Exception:
+                pass
+        if not conn_id:
             raise HTTPException(400, "Missing account_id for inbox send")
-        except httpx.HTTPStatusError as e:
-            body = e.response.text[:500] if e.response else "No response details"
-            logger.warning(
-                f"[zernio] inbox send HTTP {e.response.status_code if e.response else 'N/A'} for conv={payload.conversation_id}: {body}"
-            )
-            
-            # Fallback to Composio if Zernio failed with 403
-            if e.response and e.response.status_code == 403:
-                import composio_inbox
-                conn_id = payload.account_id or ""
-                if not conn_id.startswith("ca_"):
-                    try:
-                        convs = await composio_inbox.list_conversations(user["_id"])
-                        for c in convs:
-                            if c["id"] == payload.conversation_id:
-                                conn_id = c["accountId"]
-                                break
-                    except Exception:
-                        pass
-                if conn_id.startswith("ca_"):
-                    logger.info(f"[composio-inbox] Zernio send returned 403, falling back to Composio send for user {user['_id']}")
-                    res = await composio_inbox.send_message(
-                        user["_id"],
-                        payload.conversation_id,
-                        conn_id,
-                        payload.message
-                    )
-                    if res.get("success"):
-                        return {"status": "sent", "data": res.get("data")}
-                    raise HTTPException(400, detail=res.get("error") or "Failed to send message via Composio")
-                    
-            msg = _extract_error_message(body)
-            raise HTTPException(e.response.status_code if e.response else 500, f"Zernio {e.response.status_code if e.response else 500}: {msg}")
+        res = await composio_inbox.send_message(
+            business_id,
+            payload.conversation_id,
+            conn_id,
+            payload.message,
+        )
+        if res.get("success"):
+            return {"status": "sent", "data": res.get("data")}
+        raise HTTPException(400, detail=res.get("error") or "Failed to send message via Composio")
 
     @router.post("/inbox/new")
     async def new_conversation(payload: CreateConversationBody, user=user_dep):
-        """Start a new DM conversation."""
-        await _need(user, payload.platform, "reply")
-        try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            return await _post("/messages/create-inbox-conversation", {
-                "platform": payload.platform,
-                "recipient": payload.recipient,
-                "message": payload.message,
-                "profileId": profile_id,
-            })
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        """Start a new LinkedIn conversation (InMail / Sales Navigator) via Unipile."""
+        plat = (payload.platform or "").strip().lower()
+        await _need(user, plat, "reply")
+        if plat not in ("linkedin", "linkedin_messaging"):
+            raise HTTPException(
+                410,
+                detail="Starting new conversations is only supported for LinkedIn via this API.",
+            )
+        import unipile_inbox
+        if not unipile_inbox.is_available():
+            raise HTTPException(503, "LinkedIn messaging (Unipile) is not configured on the server.")
+        business_id = str(user.get("business_id") or user["_id"])
+        inmail = payload.inmail if payload.inmail is not None else True
+        res = await unipile_inbox.send_inmail(
+            db,
+            user["_id"],
+            business_id,
+            recipient_id=payload.recipient.strip(),
+            message=payload.message.strip(),
+            subject=(payload.subject or "").strip(),
+            linkedin_api=payload.linkedin_api,
+            inmail=inmail,
+        )
+        if res.get("error"):
+            raise HTTPException(400, detail=res["error"])
+        return {
+            "status": "sent",
+            "conversation_id": res.get("chat_id"),
+            "chat_id": res.get("chat_id"),
+            "message_id": res.get("message_id"),
+        }
 
     # ── posts ──────────────────────────────────────────────────────────────────
 
     @router.get("/posts")
     async def list_posts(platform: Optional[str] = None, limit: int = 20, user=user_dep):
-        """List published posts. Falls back to per-account fetch when bulk endpoint returns empty."""
+        """List live posts from connected accounts via Composio."""
         await _need(user, platform, "read")
-        try:
-            import asyncio as _asyncio
-            profile_id = await _get_or_create_profile(user["_id"])
-            params: Dict[str, Any] = {"profileId": profile_id, "limit": limit}
-            if platform:
-                params["platform"] = platform
-            data = await _get("/posts", params)
+        from social_composio_engagement import list_posts as composio_list_posts
 
-            posts = data.get("posts") or data.get("data") or []
-
-            # Bulk endpoint returns empty for some profiles — fall back to per-account fetch
-            if not posts:
-                accounts_data = await _get("/accounts", {"profileId": profile_id})
-                accounts = accounts_data.get("accounts") or accounts_data.get("data") or []
-                tasks = []
-                metas = []
-                for acc in accounts:
-                    if not isinstance(acc, dict):
-                        continue
-                    plat = str(acc.get("platform") or "").lower()
-                    if platform and plat != platform.lower():
-                        continue
-                    aid = str(acc.get("_id") or acc.get("id") or "")
-                    if not aid:
-                        continue
-                    tasks.append(_get(f"/accounts/{aid}/posts", {}))
-                    metas.append({"platform": plat, "account_id": aid,
-                                  "displayName": acc.get("displayName") or acc.get("username") or ""})
-
-                if tasks:
-                    results = await _asyncio.gather(*tasks, return_exceptions=True)
-                    merged: List[Dict[str, Any]] = []
-                    seen: set = set()
-                    for meta, res in zip(metas, results):
-                        if isinstance(res, Exception) or not isinstance(res, dict):
-                            continue
-                        for post in (res.get("posts") or res.get("data") or []):
-                            if not isinstance(post, dict):
-                                continue
-                            post.setdefault("platform", meta["platform"])
-                            post.setdefault("accountId", meta["account_id"])
-                            pid = str(post.get("id") or post.get("_id") or "")
-                            if pid and pid not in seen:
-                                seen.add(pid)
-                                merged.append(post)
-                    if merged:
-                        return {"posts": merged[:limit], "pagination": {"total": len(merged)}}
-
-            return data
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        return await composio_list_posts(db, user, platform=platform, limit=limit)
 
     @router.post("/posts")
     async def create_post(body: Dict[str, Any], user=user_dep):
-        """Schedule or publish a post."""
+        """Use CRM Marketing → Social Posts to schedule and publish."""
         await _need(user, (body or {}).get("platform"), "reply")
-        try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            body["profileId"] = profile_id
-            return await _post("/posts", body)
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        raise HTTPException(410, detail="Use CRM scheduled posts (Marketing → Social Posts) to publish.")
 
     @router.get("/analytics")
     async def get_post_analytics(
@@ -763,32 +612,18 @@ def make_zernio_router(db, user_dep):
         to_date: Optional[str] = None,
         user=user_dep,
     ):
-        """Fetch post analytics (likes/comments/shares/etc.) for the user's profile."""
+        """Post engagement metrics via Composio."""
         await _need(user, platform, "read")
-        try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            params: Dict[str, Any] = {
-                "profileId": profile_id,
-                "limit": max(1, min(limit, 100)),
-                "page": max(1, int(page)),
-            }
-            if platform:
-                params["platform"] = platform
-            if account_id:
-                params["accountId"] = account_id
-            if post_id:
-                params["postId"] = post_id
-            if metrics:
-                params["metrics"] = metrics
-            if from_date:
-                params["fromDate"] = from_date
-            if to_date:
-                params["toDate"] = to_date
-            return await _get("/analytics", params)
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        del metrics, page, from_date, to_date
+        from social_composio_engagement import get_analytics, get_single_post_analytics
+
+        if post_id:
+            return await get_single_post_analytics(
+                db, user, post_id, platform=platform, account_id=account_id,
+            )
+        return await get_analytics(
+            db, user, platform=platform, account_id=account_id, limit=limit,
+        )
 
     @router.get("/analytics/{post_id}")
     async def get_single_post_analytics(
@@ -799,24 +634,14 @@ def make_zernio_router(db, user_dep):
         metrics: Optional[str] = None,
         user=user_dep,
     ):
-        """Fetch analytics for one post via bulk analytics query params."""
+        """Single-post analytics via Composio."""
         await _need(user, platform, "read")
-        try:
-            resolved_profile_id = profile_id or await _get_or_create_profile(user["_id"])
-            params: Dict[str, Any] = {"postId": post_id}
-            if platform:
-                params["platform"] = platform
-            if account_id:
-                params["accountId"] = account_id
-            if resolved_profile_id:
-                params["profileId"] = resolved_profile_id
-            if metrics:
-                params["metrics"] = metrics
-            return await _get("/analytics", params)
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        del profile_id, metrics
+        from social_composio_engagement import get_single_post_analytics as composio_post_analytics
+
+        return await composio_post_analytics(
+            db, user, post_id, platform=platform, account_id=account_id,
+        )
 
     # ── comments ───────────────────────────────────────────────────────────────
 
@@ -828,22 +653,18 @@ def make_zernio_router(db, user_dep):
         limit: int = 50,
         user=user_dep,
     ):
-        """List posts that have comments (aggregated across connected accounts)."""
+        """Posts with comments via Composio."""
         await _need(user, platform, "read")
-        try:
-            profile_id = await _get_or_create_profile(user["_id"])
-            params: Dict[str, Any] = {"profileId": profile_id, "limit": max(1, min(limit, 100))}
-            if platform:
-                params["platform"] = platform
-            if account_id:
-                params["accountId"] = account_id
-            if min_comments is not None:
-                params["minComments"] = max(0, int(min_comments))
-            return await _get("/inbox/comments", params)
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        from social_composio_engagement import list_commented_posts as composio_commented
+
+        return await composio_commented(
+            db,
+            user,
+            platform=platform,
+            account_id=account_id,
+            min_comments=min_comments,
+            limit=limit,
+        )
 
     @router.get("/comments/{post_id}")
     async def get_post_comments(
@@ -853,39 +674,43 @@ def make_zernio_router(db, user_dep):
         limit: int = 100,
         user=user_dep,
     ):
-        """Fetch comments for a specific post. account_id is required by Zernio."""
+        """Fetch comments on a post via Composio."""
         await _need(user, platform, "read")
-        try:
-            params: Dict[str, Any] = {"accountId": account_id, "limit": max(1, min(limit, 100))}
-            return await _get(f"/inbox/comments/{post_id}", params)
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        from social_composio_engagement import get_post_comments as composio_comments
+
+        return await composio_comments(
+            db, user, post_id, account_id, platform=platform, limit=limit,
+        )
 
     @router.post("/comments/{post_id}/reply")
     async def reply_to_comment(post_id: str, payload: ReplyCommentBody, platform: Optional[str] = None, user=user_dep):
-        """Reply to a specific comment on a post."""
+        """Reply to a comment via Composio."""
         await _need(user, platform, "reply")
-        try:
-            return await _post(
-                f"/inbox/comments/{post_id}",
-                {
-                    "accountId": payload.account_id,
-                    "commentId": payload.comment_id,
-                    "message": payload.message,
-                },
-            )
-        except HTTPException:
-            raise
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, e.response.text)
+        from social_composio_engagement import reply_to_comment as composio_reply
+
+        result = await composio_reply(
+            db,
+            user,
+            post_id,
+            payload.account_id,
+            payload.comment_id,
+            payload.message,
+            platform=platform,
+        )
+        if result.get("error"):
+            raise HTTPException(400, detail=result["error"])
+        return result
 
     @router.get("/comments/autoreply/settings")
     async def get_comment_autoreply_settings(user=user_dep):
         """Get Social Inbox comment auto-reply settings."""
-        user_doc = await db.users.find_one({"_id": user["_id"]}, {"settings.zernio_comment_autoreply": 1})
-        saved = ((user_doc or {}).get("settings") or {}).get("zernio_comment_autoreply") or {}
+        from social_comment_settings import read_comment_autoreply_settings
+
+        user_doc = await db.users.find_one(
+            {"_id": user["_id"]},
+            {"settings.social_comment_autoreply": 1, "settings.zernio_comment_autoreply": 1},
+        )
+        saved = read_comment_autoreply_settings((user_doc or {}).get("settings"))
         chain_steps = []
         for step in (saved.get("chain_steps") or []):
             if not isinstance(step, dict):
@@ -971,11 +796,18 @@ def make_zernio_router(db, user_dep):
             "chain_steps": cleaned_steps[:12],
             "reply_only_unreplied": bool(payload.reply_only_unreplied),
         }
+        from social_comment_settings import comment_autoreply_mongo_set
+
         await db.users.update_one(
             {"_id": user["_id"]},
-            {"$set": {"settings.zernio_comment_autoreply": settings}},
+            {"$set": comment_autoreply_mongo_set(settings)},
             upsert=False,
         )
         return settings
 
     return router
+
+
+def make_zernio_router(db, user_dep):
+    """Deprecated alias — same handlers at /zernio for backward compatibility."""
+    return make_composio_social_router(db, user_dep, prefix="/zernio")

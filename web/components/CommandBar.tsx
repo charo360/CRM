@@ -23,6 +23,7 @@ import {
   Zap,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 // ─── Quick-action suggestions ────────────────────────────────────────────────
 const QUICK_ACTIONS = [
@@ -37,6 +38,7 @@ const QUICK_ACTIONS = [
   { icon: "⭐", label: "Top customers", prompt: "Who are my top customers this month?" },
   { icon: "📈", label: "Engagement stats", prompt: "Show me my social media engagement stats" },
   { icon: "🧠", label: "Smart follow-up", prompt: "Draft a personalized follow-up to my recent customers" },
+  { icon: "⚖️", label: "Spar on a decision", prompt: "spar on: " },
 ];
 
 const LS_RECENT_KEY = "zilo.cmdbar.recent";
@@ -84,8 +86,30 @@ function toolLabel(name: string) {
   return TOOL_LABELS[name] ?? name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) + "…";
 }
 
+function parseDecisionSparQuery(raw: string): string | null {
+  const trimmed = raw.trim();
+  const patterns = [
+    /^\s*spar\s+on\s*:\s*(.+)$/i,
+    /^\s*decision\s*:\s*(.+)$/i,
+    /^\s*pressure[- ]?test\s*:\s*(.+)$/i,
+  ];
+  for (const re of patterns) {
+    const m = trimmed.match(re);
+    if (m?.[1] && m[1].trim().length >= 8) return m[1].trim();
+  }
+  return null;
+}
+
+/** "delegate: follow up with cold leads" → opens the Delegate form pre-filled. */
+function parseDelegateQuery(raw: string): string | null {
+  const m = raw.trim().match(/^\s*delegate\s*:\s*(.+)$/i);
+  if (m?.[1] && m[1].trim().length >= 3) return m[1].trim();
+  return null;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function CommandBar() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [phase, setPhase] = useState<"idle" | "streaming" | "done" | "error">("idle");
@@ -178,6 +202,22 @@ export default function CommandBar() {
       const trimmed = msg.trim();
       if (!trimmed || phase === "streaming") return;
 
+      const sparQuestion = parseDecisionSparQuery(trimmed);
+      if (sparQuestion) {
+        saveRecent(trimmed);
+        closeBar();
+        router.push(`/dashboard/rex/decisions?spar=${encodeURIComponent(sparQuestion)}`);
+        return;
+      }
+
+      const delegateTask = parseDelegateQuery(trimmed);
+      if (delegateTask) {
+        saveRecent(trimmed);
+        closeBar();
+        router.push(`/dashboard/delegate?task=${encodeURIComponent(delegateTask)}`);
+        return;
+      }
+
       saveRecent(trimmed);
       setPhase("streaming");
       setStreamText("");
@@ -240,7 +280,7 @@ export default function CommandBar() {
         setPhase("error");
       }
     },
-    [phase, convId],
+    [phase, convId, closeBar, router],
   );
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -289,7 +329,7 @@ export default function CommandBar() {
               onKeyDown={(e) => {
                 if (e.key === "Escape") { e.stopPropagation(); closeBar(); }
               }}
-              placeholder={phase === "streaming" ? "Zilo is working…" : "Ask Zilo anything…"}
+              placeholder={phase === "streaming" ? "Zilo is working…" : "Ask Zilo anything… or spar on: your decision"}
               disabled={phase === "streaming"}
               className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-800 placeholder:text-slate-400 outline-none disabled:opacity-60"
               autoComplete="off"

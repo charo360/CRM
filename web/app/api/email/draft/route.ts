@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveUserId } from "@/lib/nango-proxy";
+import { applyPersonalSignature, personalProfileFromSettings } from "@/lib/emailSignature";
+import type { BusinessSettings } from "@/lib/api";
 
 const BACKEND = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
@@ -30,6 +32,24 @@ export async function POST(req: NextRequest) {
     "Write ONLY the reply body (no greeting header, no signature). Keep it under 150 words unless detail is clearly needed.",
   ].filter(Boolean).join("\n");
 
+  let profile = personalProfileFromSettings(undefined);
+  let appendIfMissing = true;
+  try {
+    const settingsRes = await fetch(`${BACKEND}/settings`, {
+      headers: auth ? { Authorization: auth } : {},
+    });
+    if (settingsRes.ok) {
+      const settings = (await settingsRes.json()) as BusinessSettings;
+      profile = personalProfileFromSettings(settings);
+      appendIfMissing = settings.append_signature_to_drafts !== false;
+    }
+  } catch {
+    /* non-fatal */
+  }
+
+  const withSignature = (body: string) =>
+    applyPersonalSignature(body, profile, { appendIfMissing });
+
   try {
     // Use the backend's assistant AI for the draft
     const res = await fetch(`${BACKEND}/assistant/ai-draft`, {
@@ -44,16 +64,16 @@ export async function POST(req: NextRequest) {
     if (!res.ok) {
       // Fallback: simple template draft
       return NextResponse.json({
-        draft: `Thank you for your email. I will look into this and get back to you shortly.\n\nBest regards`,
+        draft: withSignature("Thank you for your email. I will look into this and get back to you shortly."),
       });
     }
 
     const data = await res.json() as { reply?: string; draft?: string; text?: string };
     const draft = data.reply ?? data.draft ?? data.text ?? "";
-    return NextResponse.json({ draft });
+    return NextResponse.json({ draft: withSignature(draft) });
   } catch {
     return NextResponse.json({
-      draft: `Thank you for reaching out. I will review your message and respond as soon as possible.\n\nBest regards`,
+      draft: withSignature("Thank you for reaching out. I will review your message and respond as soon as possible."),
     });
   }
 }

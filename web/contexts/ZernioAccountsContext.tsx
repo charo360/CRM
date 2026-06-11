@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { zernioApi } from "@/lib/api";
+import { socialInboxApi } from "@/lib/api";
 
 export interface ZernioAccount {
   id: string;
@@ -30,7 +30,7 @@ export function ZernioAccountsProvider({ children }: { children: React.ReactNode
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const status = await zernioApi.status();
+      const status = await socialInboxApi.status();
       const isConnected = status.connected === true;
       setApiConnected(isConnected);
       const raw = (status.accounts as any[]) ?? [];
@@ -53,14 +53,14 @@ export function ZernioAccountsProvider({ children }: { children: React.ReactNode
 
   const connect = useCallback(
     async (platform: string, redirectUrl?: string, headless?: boolean) => {
-      const data = await zernioApi.connect(platform, redirectUrl, headless);
+      const data = await socialInboxApi.connect(platform, redirectUrl);
       return data as { authUrl?: string };
     },
     []
   );
 
   const disconnect = useCallback(async (accountId: string) => {
-    await zernioApi.disconnect(accountId);
+    await socialInboxApi.disconnect(accountId);
     setAccounts(prev => prev.filter(a => a.id !== accountId));
   }, []);
 

@@ -130,6 +130,7 @@ _KIND_LABELS: dict[JournalEventKind, str] = {
     JournalEventKind.MILESTONE: "Milestone",
     JournalEventKind.DAILY_ANCHOR: "Daily",
     JournalEventKind.RETURNED: "Returned",
+    JournalEventKind.STRATEGIC_DECISION: "Strategic decision",
 }
 
 
@@ -314,7 +315,11 @@ def _enforce_promotion_arc(
     return filtered
 
 
-async def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
+async def serialize_journal(
+    orch: Orchestrator,
+    *,
+    extra_entries: list[JournalEntry] | None = None,
+) -> dict[str, Any]:
     day = getattr(orch, "_relationship_day", 1)
 
     # Snapshot prev_day BEFORE updating visit state — milestone detection needs it.
@@ -376,8 +381,13 @@ async def serialize_journal(orch: Orchestrator) -> dict[str, Any]:
     if not has_real_today and not synthetic and day > 1:
         synthetic.append(synthesize_daily_anchor(relationship_day=day))
 
-    combined = real_entries + synthetic
-    ordered = sorted(combined, key=lambda e: e.relationship_day, reverse=True)
+    extras = list(extra_entries or [])
+    combined = real_entries + synthetic + extras
+    ordered = sorted(
+        combined,
+        key=lambda e: (e.relationship_day, e.created_at),
+        reverse=True,
+    )
 
     by_kind = Counter(e.kind.value for e in ordered)
     by_category = Counter(e.category for e in ordered)

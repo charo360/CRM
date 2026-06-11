@@ -61,6 +61,7 @@ import {
   NotebookPen,
   Landmark,
   Handshake,
+  Scale,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import { useRouter } from "next/navigation";
@@ -70,6 +71,7 @@ import { isSidebarHrefEnabled } from "@/lib/sidebarFeatures";
 const ZILO_NAV = [
   { href: "/dashboard", label: "Zilo Briefing", icon: Sun, exact: true as const },
   { href: "/dashboard/assistant", label: "Zilo Chat", icon: Sparkles },
+  { href: "/dashboard/rex/decisions", label: "Decision Room", icon: Scale },
   { href: "/dashboard/rex/journal", label: "Journal", icon: BookOpen },
   { href: "/dashboard/rex/notebook", label: "Notebook", icon: NotebookPen },
 ] as const;
@@ -83,7 +85,8 @@ const ZILO_UTILITY_NAV = [
 /** Workspace links (Overview replaced by Zilo Briefing above). */
 function coreNavItems() {
   return [
-    { href: "/dashboard/workflows", label: "Automations", icon: Workflow },
+    { href: "/dashboard/delegate", label: "Delegate", icon: Workflow },
+    { href: "/dashboard/workplan", label: "Work Plan", icon: ClipboardList },
     { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
     { href: "/dashboard/features", label: "Features", icon: Layers },
     { href: "/dashboard/settings", label: "Settings", icon: Settings },

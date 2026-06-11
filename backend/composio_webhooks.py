@@ -99,6 +99,19 @@ def _extract_user_hint(event: Dict[str, Any], body: Dict[str, Any]) -> str:
     ).strip()
 
 
+SLACK_INBOUND_TRIGGERS = frozenset({
+    "SLACK_DIRECT_MESSAGE_RECEIVED",
+    "SLACK_CHANNEL_MESSAGE_RECEIVED",
+    "SLACK_RECEIVE_DIRECT_MESSAGE",
+    "SLACK_RECEIVE_MESSAGE",
+})
+
+SLACK_TRIGGER_UPSERT_SLUGS = (
+    "SLACK_DIRECT_MESSAGE_RECEIVED",
+    "SLACK_CHANNEL_MESSAGE_RECEIVED",
+)
+
+
 async def _resolve_user_for_event(
     db: Any,
     connected_account_id: str,
@@ -114,6 +127,8 @@ async def _resolve_user_for_event(
                 {"composio_connections.gmail.connectedAccountId": connected_account_id},
                 {"composio_connections.google_mail.connected_account_id": connected_account_id},
                 {"composio_connections.google_mail.connectedAccountId": connected_account_id},
+                {"composio_connections.slack.connected_account_id": connected_account_id},
+                {"composio_connections.slack.connectedAccountId": connected_account_id},
             ]
         })
         if user:
@@ -210,6 +225,50 @@ async def process_gmail_trigger(event: Dict[str, Any], db: Any) -> Dict[str, Any
         return {"error": str(e)}
 
 
+async def process_slack_trigger(event: Dict[str, Any], db: Any) -> Dict[str, Any]:
+    """Process Composio Slack inbound message triggers."""
+    try:
+        trigger_name = _extract_trigger_name(event).upper()
+        if trigger_name not in SLACK_INBOUND_TRIGGERS:
+            logger.warning("Unexpected Slack trigger type: %s", trigger_name)
+            return {"error": "Unsupported Slack trigger type"}
+
+        payload = event.get("payload", {}) if isinstance(event.get("payload"), dict) else {}
+        connected_account_id = _extract_connected_account_id(event, payload)
+        user_hint = _extract_user_hint(event, payload)
+
+        user = await _resolve_user_for_event(db, connected_account_id, user_hint)
+        if not user:
+            logger.warning(
+                "User not found for Slack webhook (connected_account_id=%s, user_hint=%s)",
+                connected_account_id,
+                user_hint,
+            )
+            return {"error": "User not found"}
+
+        composio_entity_id = str(user.get("business_id") or user.get("composio_entity_id") or user_hint or "")
+        if not composio_entity_id:
+            return {"error": "Missing Composio entity id"}
+
+        from slack_service import process_inbound_slack_message
+
+        logger.info(
+            "💬 Slack trigger %s from user %s in channel %s",
+            trigger_name,
+            payload.get("user"),
+            payload.get("channel"),
+        )
+        return await process_inbound_slack_message(
+            db,
+            user,
+            payload,
+            composio_entity_id=composio_entity_id,
+        )
+    except Exception as e:
+        logger.error("Error processing Slack trigger: %s", e, exc_info=True)
+        return {"error": str(e)}
+
+
 async def handle_composio_webhook(payload: Dict[str, Any], db: Any) -> Dict[str, Any]:
     """
     Main webhook handler for all Composio events.
@@ -221,9 +280,10 @@ async def handle_composio_webhook(payload: Dict[str, Any], db: Any) -> Dict[str,
 
     if trigger_name == "GMAIL_NEW_GMAIL_MESSAGE":
         return await process_gmail_trigger(event, db)
-    else:
-        logger.warning(f"Unhandled trigger type: {trigger_name}")
-        return {"error": f"Unhandled trigger: {trigger_name}"}
+    if trigger_name in SLACK_INBOUND_TRIGGERS:
+        return await process_slack_trigger(event, db)
+    logger.warning("Unhandled trigger type: %s", trigger_name)
+    return {"error": f"Unhandled trigger: {trigger_name}"}
 
 
 async def register_gmail_webhook_for_user(user_id: str, db: Any) -> None:
@@ -292,4 +352,95 @@ async def register_gmail_webhook_for_user(user_id: str, db: Any) -> None:
                 logger.error("[gmail_webhook_setup] Failed to register trigger: %d %s", resp.status_code, resp.text)
     except Exception as e:
         logger.exception("[gmail_webhook_setup] Exception in auto-registration: %s", e)
+
+
+async def register_slack_webhook_for_user(user_id: str, db: Any) -> None:
+    """
+    Register Composio Slack inbound triggers and cache workspace metadata.
+    Uses the existing COMPOSIO_WEBHOOK_URL subscription (same as Gmail).
+    """
+    from composio_service import get_connection_status, _get_key
+    import httpx
+
+    api_key = _get_key()
+    if not api_key:
+        logger.warning("[slack_webhook_setup] COMPOSIO_API_KEY not configured, skipping")
+        return
+
+    try:
+        status_res = await get_connection_status(user_id, "slack")
+        if not status_res.get("connected") or not status_res.get("connection_id"):
+            logger.info("[slack_webhook_setup] Slack not connected for user %s, skipping", user_id)
+            return
+
+        connected_account_id = status_res["connection_id"]
+
+        from bson import ObjectId
+
+        try:
+            flt = {"_id": ObjectId(user_id)}
+        except Exception:
+            flt = {"_id": user_id}
+
+        user = await db.users.find_one(flt)
+        if not user:
+            try:
+                user = await db.users.find_one({"business_id": user_id})
+            except Exception:
+                user = None
+        if not user:
+            logger.warning("[slack_webhook_setup] No MongoDB user for composio user %s", user_id)
+            return
+
+        existing = (user.get("composio_connections") or {}).get("slack", {})
+        if existing.get("connected_account_id") == connected_account_id and existing.get("triggers_registered"):
+            return
+
+        from slack_service import register_slack_workspace
+
+        await register_slack_workspace(db, user["_id"], user_id)
+
+        logger.info(
+            "[slack_webhook_setup] Registering Slack triggers for user %s (account=%s)",
+            user_id,
+            connected_account_id,
+        )
+
+        ok_slugs: list[str] = []
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for slug in SLACK_TRIGGER_UPSERT_SLUGS:
+                resp = await client.post(
+                    f"https://backend.composio.dev/api/v3.1/trigger_instances/{slug}/upsert",
+                    headers={
+                        "X-API-Key": api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "connected_account_id": connected_account_id,
+                        "trigger_config": {},
+                    },
+                )
+                if resp.status_code in (200, 201, 204):
+                    ok_slugs.append(slug)
+                    logger.info("[slack_webhook_setup] Registered %s", slug)
+                else:
+                    logger.error(
+                        "[slack_webhook_setup] Failed %s: %d %s",
+                        slug,
+                        resp.status_code,
+                        resp.text[:300],
+                    )
+
+        if ok_slugs:
+            await db.users.update_one(
+                {"_id": user["_id"]},
+                {
+                    "$set": {
+                        "composio_connections.slack.connected_account_id": connected_account_id,
+                        "composio_connections.slack.triggers_registered": ok_slugs,
+                    }
+                },
+            )
+    except Exception as e:
+        logger.exception("[slack_webhook_setup] Exception in auto-registration: %s", e)
 

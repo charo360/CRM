@@ -552,9 +552,11 @@ def make_marketing_router(db, user_dep):
         days: int = Query(30, ge=1, le=365),
         user=user_dep,
     ):
-        """Fetch live campaigns from Zernio Ads API."""
-        from zernio_ads_service import list_campaigns
-        result = await list_campaigns(platform=platform, status=status, days=days)
+        """Fetch live campaigns from Meta Marketing API."""
+        from meta_ads_service import list_campaigns_with_metrics
+        result = await list_campaigns_with_metrics(
+            platform=platform, status=status, days=days, user_id=_tenant_id(user),
+        )
         return result
 
     @router.get("/meta-ads/insights")
@@ -563,10 +565,10 @@ def make_marketing_router(db, user_dep):
         days: int = Query(30, ge=1, le=365),
         user=user_dep,
     ):
-        """Fetch aggregated insights (spend, impressions, clicks, CTR) from Zernio Ads API."""
-        from zernio_ads_service import list_campaigns
+        """Fetch aggregated insights (spend, impressions, clicks, CTR) from Meta Marketing API."""
+        from meta_ads_service import list_campaigns_with_metrics
 
-        result = await list_campaigns(platform=platform, days=days)
+        result = await list_campaigns_with_metrics(platform=platform, days=days, user_id=_tenant_id(user))
         campaigns = result.get("campaigns") or result.get("data") or []
 
         total_spend = 0.0
@@ -608,14 +610,16 @@ def make_marketing_router(db, user_dep):
         body: Dict[str, Any],
         user=user_dep,
     ):
-        """Pause or activate a live campaign via Zernio Ads API."""
-        from zernio_ads_service import update_campaign_status
+        """Pause or activate a live campaign via Meta Marketing API."""
+        from meta_ads_service import update_campaign_status
 
         status = body.get("status", "").strip().lower()
         if status not in ("active", "paused"):
             raise HTTPException(400, "status must be 'active' or 'paused'")
         platform = body.get("platform")
-        result = await update_campaign_status(campaign_id, status=status, platform=platform)
+        result = await update_campaign_status(
+            campaign_id, status=status, platform=platform, user_id=_tenant_id(user),
+        )
         if result.get("error"):
             raise HTTPException(502, result["error"])
         return result
@@ -626,15 +630,16 @@ def make_marketing_router(db, user_dep):
         body: Dict[str, Any],
         user=user_dep,
     ):
-        """Update budget or bid strategy for a live campaign via Zernio Ads API."""
-        from zernio_ads_service import update_campaign_budget
+        """Update budget for a live campaign via Meta Marketing API."""
+        from meta_ads_service import update_campaign_budget_compat
 
-        result = await update_campaign_budget(
+        result = await update_campaign_budget_compat(
             campaign_id,
             daily_budget=body.get("daily_budget"),
             lifetime_budget=body.get("lifetime_budget"),
             bid_strategy=body.get("bid_strategy"),
             platform=body.get("platform"),
+            user_id=_tenant_id(user),
         )
         if result.get("error"):
             raise HTTPException(502, result["error"])
@@ -642,14 +647,14 @@ def make_marketing_router(db, user_dep):
 
     @router.get("/meta-ads/accounts")
     async def live_ad_accounts(user=user_dep):
-        """List connected ad accounts from Zernio."""
-        from zernio_ads_service import list_ad_accounts
-        return await list_ad_accounts()
+        """List connected ad accounts from Meta Marketing API."""
+        from meta_ads_service import list_ad_accounts
+        return await list_ad_accounts(user_id=_tenant_id(user))
 
     @router.post("/meta-ads/boost")
     async def boost_post(body: Dict[str, Any], user=user_dep):
-        """Boost an existing social post as a paid ad via Zernio."""
-        from zernio_ads_service import boost_post as _boost
+        """Boost an existing social post as a paid ad (Meta Ads Manager required)."""
+        from meta_ads_service import boost_post as _boost
 
         required = ["post_id", "platform", "daily_budget", "duration_days"]
         for f in required:
@@ -662,6 +667,7 @@ def make_marketing_router(db, user_dep):
             duration_days=int(body["duration_days"]),
             objective=body.get("objective"),
             audience=body.get("audience"),
+            user_id=_tenant_id(user),
         )
         if result.get("error"):
             raise HTTPException(502, result["error"])
@@ -669,8 +675,8 @@ def make_marketing_router(db, user_dep):
 
     @router.post("/meta-ads/ctwa")
     async def create_ctwa(body: Dict[str, Any], user=user_dep):
-        """Create a Click-to-WhatsApp ad via Zernio."""
-        from zernio_ads_service import create_ctwa_ad
+        """Create a Click-to-WhatsApp ad (Meta Ads Manager required)."""
+        from meta_ads_service import create_ctwa_ad
 
         required = ["platform", "whatsapp_number", "creative", "daily_budget", "duration_days"]
         for f in required:
@@ -683,6 +689,7 @@ def make_marketing_router(db, user_dep):
             daily_budget=float(body["daily_budget"]),
             duration_days=int(body["duration_days"]),
             audience=body.get("audience"),
+            user_id=_tenant_id(user),
         )
         if result.get("error"):
             raise HTTPException(502, result["error"])
@@ -697,13 +704,13 @@ def make_marketing_router(db, user_dep):
         user=user_dep,
     ):
         """Current health scores for all live campaigns."""
-        from zernio_ads_service import list_campaigns
+        from meta_ads_service import list_campaigns_with_metrics
         from ad_health_monitor import score_campaign, ensure_default_rules
 
         uid = _tenant_id(user)
         await ensure_default_rules(db, uid)
 
-        result = await list_campaigns(days=days)
+        result = await list_campaigns_with_metrics(days=days, user_id=_tenant_id(user))
         campaigns = result.get("campaigns") or result.get("data") or []
 
         scored = []

@@ -37,6 +37,25 @@ FALLBACK_REPLY = "Sorry, I'm having a little trouble right now. Please send your
 MAX_RETRIES = 2
 
 
+def _infer_reply_channel(customer: Optional[dict], from_number: str) -> str:
+    """Detect social channel for tone (Instagram vs LinkedIn vs WhatsApp)."""
+    ch = ((customer or {}).get("channel") or (customer or {}).get("source") or "").strip().lower()
+    if ch:
+        return ch
+    fn = (from_number or "").strip().lower()
+    if "instagram" in fn:
+        return "instagram"
+    if "linkedin" in fn:
+        return "linkedin"
+    if "facebook" in fn or "messenger" in fn:
+        return "facebook"
+    if fn.startswith("meta_"):
+        parts = fn.split("_")
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]
+    return "whatsapp"
+
+
 async def _send_push_notification(db, user_id, title: str, body: str, data: dict = None) -> None:
     """Send Expo push notification to all devices registered for this user."""
     import httpx
@@ -101,11 +120,13 @@ async def process_message(
         ctx = await load_context(db, user_id, customer_id, user, message=message)
 
         # 2. Build system prompt
+        reply_channel = _infer_reply_channel(customer, from_number)
         system_prompt = build_system_prompt(
             business_config=ctx["business_config"],
             products=ctx["products"],
             services=ctx["services"],
             mini_state=ctx["mini_state"],
+            reply_channel=reply_channel,
         )
 
         # 3. Build conversation messages

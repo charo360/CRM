@@ -159,6 +159,9 @@ export interface Customer {
   name: string;
   phone_number: string;
   email?: string;
+  /** Inbound channel hint from CRM (whatsapp, slack, instagram, …). */
+  source?: string | null;
+  channel?: string | null;
   status?: string;
   stage?: string;
   total_spent: number;
@@ -437,6 +440,10 @@ export interface WhatsAppConnection {
 export interface BusinessSettings {
   business_name?: string;
   owner_name?: string;
+  /** Job title / role used in email sign-offs (e.g. Founder & CEO). */
+  owner_title?: string;
+  /** When false, only replace [Your Name] placeholders — don't append sign-off (Gmail sig users). */
+  append_signature_to_drafts?: boolean;
   business_type?: string;
   country?: string;
   country_code?: string;
@@ -455,6 +462,8 @@ export interface BusinessSettings {
   auto_reply_audience?: string;
   /** AI auto-reply for Instagram DMs (Composio social inbox). */
   social_dm_autoreply_enabled?: boolean;
+  /** AI auto-reply for LinkedIn DMs + company-page inbox (Unipile). */
+  linkedin_dm_autoreply_enabled?: boolean;
   ai_model?: string;
   notification_enabled?: boolean;
   notification_time?: string;
@@ -512,6 +521,23 @@ export interface DraftResponse {
   message: string;
   confidence: number;
   reason: string;
+}
+
+export interface SocialDraftRequest {
+  platform?: string;
+  channel?: "comment" | "dm";
+  recipient_name?: string;
+  their_message?: string;
+  post_caption?: string;
+  customer_id?: string;
+  participant_id?: string;
+  conversation_history?: Array<{ role?: string; direction?: string; content?: string; text?: string }>;
+  custom_instructions?: string;
+  regenerate_count?: number;
+}
+
+export interface SocialDraftResponse extends DraftResponse {
+  source?: "ai" | "template";
 }
 
 // ── API helpers ──────────────────────────────────────────────────────────────
@@ -1020,6 +1046,19 @@ export const telegramApi = {
     ),
   disconnect: () =>
     api.delete<{ status: string; connected: boolean }>("/telegram/connect"),
+};
+
+export interface BrowserOperatorStatus {
+  connected: boolean;
+  user_id?: string;
+  session_id?: string;
+  connected_at?: string;
+  last_command_at?: string;
+}
+
+export const browserApi = {
+  /** Whether the user's Browser Operator extension currently has a live session. */
+  status: () => api.get<BrowserOperatorStatus>("/browser/status"),
 };
 
 export interface PaystackConnection {
@@ -1778,11 +1817,141 @@ export interface ComposioFacebookPage {
   instagram_user_id?: string | null;
 }
 
+export interface ComposioLinkedInAuthor {
+  urn: string;
+  name: string;
+  type: "person" | "organization" | string;
+  provider?: string;
+  org_id?: string;
+}
+
 export interface ComposioSocialSettings {
   facebook: { connected: boolean; page_id?: string | null; page_name?: string | null };
-  instagram: { connected: boolean; user_id?: string | null };
+  instagram: {
+    connected: boolean;
+    user_id?: string | null;
+    username?: string | null;
+    name?: string | null;
+    profile_picture_url?: string | null;
+    followers_count?: number | null;
+  };
   youtube: { connected: boolean };
+  linkedin?: {
+    connected: boolean;
+    author_urn?: string | null;
+    author_name?: string | null;
+    author_provider?: string | null;
+    author_org_id?: string | null;
+    messaging_connected?: boolean;
+    messaging_account_id?: string | null;
+    contract_id?: string | null;
+    contract_name?: string | null;
+    contract_product?: string | null;
+    inmail_balance?: {
+      premium?: number | null;
+      recruiter?: number | null;
+      sales_navigator?: number | null;
+    } | null;
+  };
+  linkedin_premium?: {
+    connected: boolean;
+    account_id?: string | null;
+    name?: string | null;
+    contract_id?: string | null;
+    contract_name?: string | null;
+    contract_product?: string | null;
+    inmail_balance?: {
+      premium?: number | null;
+      recruiter?: number | null;
+      sales_navigator?: number | null;
+    } | null;
+    posting?: boolean;
+  };
+  twitter?: { connected: boolean };
+  tiktok?: { connected: boolean };
 }
+
+export type UnipileCheckpointResponse = {
+  checkpoint: true;
+  account_id: string;
+  checkpoint_type: string;
+  message: string;
+};
+
+export type UnipileLinkedInContract = {
+  id: string;
+  name: string;
+  product: "recruiter" | "sales_navigator" | string;
+  selected?: boolean;
+  description?: string;
+};
+
+export const unipileApi = {
+  status: () =>
+    api.get<{
+      connected: boolean;
+      configured?: boolean;
+      account_id?: string | null;
+      name?: string;
+      contract_id?: string | null;
+      contract_name?: string | null;
+      contract_product?: string | null;
+      inmail_balance?: {
+        premium?: number | null;
+        recruiter?: number | null;
+        sales_navigator?: number | null;
+      } | null;
+    }>("/unipile/status"),
+  connectLinkedInCookie: (li_at: string, user_agent?: string) =>
+    api.post<{ success?: boolean; connected?: boolean; account_id?: string } & Partial<UnipileCheckpointResponse>>(
+      "/unipile/connect/linkedin/cookie",
+      { li_at, ...(user_agent ? { user_agent } : {}) },
+    ),
+  connectLinkedInCredentials: (username: string, password: string, country?: string) =>
+    api.post<{ success?: boolean; connected?: boolean; account_id?: string } & Partial<UnipileCheckpointResponse>>(
+      "/unipile/connect/linkedin/credentials",
+      { username, password, ...(country ? { country } : {}) },
+    ),
+  solveLinkedInCheckpoint: (account_id: string, code: string) =>
+    api.post<{ success?: boolean; connected?: boolean; account_id?: string } & Partial<UnipileCheckpointResponse>>(
+      "/unipile/connect/linkedin/checkpoint",
+      { account_id, code },
+    ),
+  pollLinkedInAccount: (account_id: string) =>
+    api.post<{ success?: boolean; connected?: boolean; account_id?: string; pending?: boolean; status?: string }>(
+      "/unipile/connect/linkedin/poll",
+      { account_id },
+    ),
+  connectLinkedIn: (redirectBase?: string) =>
+    api.post<{ authUrl: string; platform: string }>("/unipile/connect/linkedin", {
+      redirect_base: redirectBase || (typeof window !== "undefined" ? window.location.origin : ""),
+    }),
+  disconnectLinkedIn: () => api.delete<{ ok: boolean }>("/unipile/connections/linkedin"),
+  linkedinContracts: () =>
+    api.get<{ contracts: UnipileLinkedInContract[]; selected_contract_id?: string | null }>(
+      "/unipile/linkedin/contracts",
+    ),
+  selectLinkedInContract: (contract_id: string, opts?: { name?: string; product?: string }) =>
+    api.post<{ ok: boolean; contract_id: string; contract_name?: string; contract_product?: string }>(
+      "/unipile/linkedin/contracts/select",
+      { contract_id, ...opts },
+    ),
+  linkedinInmailBalance: () =>
+    api.get<{ premium?: number | null; recruiter?: number | null; sales_navigator?: number | null }>(
+      "/unipile/linkedin/inmail-balance",
+    ),
+  sendLinkedInInmail: (body: {
+    recipient: string;
+    message: string;
+    subject?: string;
+    linkedin_api?: string;
+    inmail?: boolean;
+  }) =>
+    api.post<{ status: string; conversation_id?: string; chat_id?: string; message_id?: string }>(
+      "/unipile/linkedin/inmail",
+      body,
+    ),
+};
 
 export const composioSocialApi = {
   settings: () => api.get<ComposioSocialSettings>("/composio/social/settings"),
@@ -1791,6 +1960,26 @@ export const composioSocialApi = {
     api.post<{ ok: boolean; page_id: string; page_name: string; instagram_user_id?: string | null }>(
       "/composio/social/facebook/page",
       { page_id, page_name, instagram_user_id },
+    ),
+  linkedinAuthors: () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25_000);
+    return api
+      .get<{ authors: ComposioLinkedInAuthor[]; error?: string }>(
+        "/composio/social/linkedin/authors",
+        { signal: controller.signal },
+      )
+      .finally(() => clearTimeout(timer));
+  },
+  selectLinkedInAuthor: (
+    author_urn: string,
+    author_name?: string,
+    provider?: string,
+    org_id?: string,
+  ) =>
+    api.post<{ ok: boolean; author_urn: string; author_name: string; provider?: string; org_id?: string }>(
+      "/composio/social/linkedin/author",
+      { author_urn, author_name, provider, org_id },
     ),
 };
 
@@ -1920,6 +2109,8 @@ export const uploadApi = {
 
 export const aiApi = {
   draftMessage: (request: DraftRequest) => api.post<DraftResponse>("/ai/draft-message", request),
+  draftSocialReply: (request: SocialDraftRequest) =>
+    api.post<SocialDraftResponse>("/ai/draft-social-reply", request),
   /** Same as mobile `POST /ai/generate-broadcast-message`. */
   generateBroadcastMessage: (body: { prompt: string; business_type?: string }) =>
     api.post<{ message: string }>("/ai/generate-broadcast-message", body),
@@ -2201,32 +2392,24 @@ export interface ZernioCommentAutoReplySettings {
   reply_only_unreplied: boolean;
 }
 
-// ── Zernio Social Inbox ───────────────────────────────────────────────────────
-export const zernioApi = {
-  status: () => api.get<{ connected: boolean; profile_id?: string; accounts?: unknown[] }>("/zernio/status"),
-  accounts: () => api.get<{ accounts: unknown[] }>("/zernio/accounts"),
-  connect: (platform: string, redirectUrl?: string, headless?: boolean) => {
-    const q = [
-      redirectUrl ? `redirect_url=${encodeURIComponent(redirectUrl)}` : "",
-      headless ? "headless=true" : "",
-    ].filter(Boolean).join("&");
-    return api.get<{ authUrl: string; platform: string }>(
-      `/zernio/connect/${platform}${q ? `?${q}` : ""}`
-    );
+export type SocialCommentAutoReplyRule = ZernioCommentAutoReplyRule;
+export type SocialCommentAutoReplyStep = ZernioCommentAutoReplyStep;
+export type SocialCommentAutoReplySettings = ZernioCommentAutoReplySettings;
+
+const SOCIAL_INBOX_BASE = "/composio/social";
+
+// ── Composio Social Inbox (FB/IG via Composio, LinkedIn DMs via Unipile) ─────
+export const socialInboxApi = {
+  status: () => api.get<{ connected: boolean; profile_id?: string; accounts?: unknown[] }>(`${SOCIAL_INBOX_BASE}/status`),
+  accounts: () => api.get<{ accounts: unknown[] }>(`${SOCIAL_INBOX_BASE}/accounts`),
+  connect: (platform: string, redirectUrl?: string) => {
+    const q = redirectUrl ? `?redirect_url=${encodeURIComponent(redirectUrl)}` : "";
+    return api.get<{ authUrl: string; platform: string }>(`${SOCIAL_INBOX_BASE}/connect/${platform}${q}`);
   },
-  facebookHeadlessPages: (body: { temp_token: string; connect_token: string }) =>
-    api.post<{ pages: Array<Record<string, unknown>> }>("/zernio/connect/facebook/headless/pages", body),
-  facebookHeadlessComplete: (body: {
-    temp_token: string;
-    connect_token: string;
-    page_id: string;
-    user_profile: Record<string, unknown>;
-    redirect_url?: string;
-  }) => api.post<{ connected: boolean; account?: Record<string, unknown> }>("/zernio/connect/facebook/headless/complete", body),
-  disconnect: (accountId: string) => api.delete<Record<string, unknown>>(`/zernio/accounts/${accountId}`),
-  inbox: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/inbox${platform ? `?platform=${platform}` : ""}`),
+  disconnect: (accountId: string) => api.delete<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/accounts/${accountId}`),
+  inbox: (platform?: string) => api.get<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/inbox${platform ? `?platform=${platform}` : ""}`),
   conversation: (id: string, accountId?: string) =>
-    api.get<Record<string, unknown>>(`/zernio/inbox/${id}${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`),
+    api.get<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/inbox/${id}${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`),
   send: (
     conversation_id: string,
     message: string,
@@ -2235,7 +2418,7 @@ export const zernioApi = {
     messaging_type?: "RESPONSE" | "UPDATE" | "MESSAGE_TAG",
     message_tag?: "HUMAN_AGENT"
   ) =>
-    api.post<Record<string, unknown>>("/zernio/inbox/send", {
+    api.post<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/inbox/send`, {
       conversation_id,
       message,
       ...(account_id ? { account_id } : {}),
@@ -2243,8 +2426,21 @@ export const zernioApi = {
       ...(messaging_type ? { messaging_type } : {}),
       ...(message_tag ? { message_tag } : {}),
     }),
-  newConversation: (platform: string, recipient: string, message: string) => api.post<Record<string, unknown>>("/zernio/inbox/new", { platform, recipient, message }),
-  posts: (platform?: string) => api.get<Record<string, unknown>>(`/zernio/posts${platform ? `?platform=${platform}` : ""}`),
+  newConversation: (
+    platform: string,
+    recipient: string,
+    message: string,
+    opts?: { subject?: string; linkedin_api?: string; inmail?: boolean },
+  ) =>
+    api.post<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/inbox/new`, {
+      platform,
+      recipient,
+      message,
+      ...(opts?.subject ? { subject: opts.subject } : {}),
+      ...(opts?.linkedin_api ? { linkedin_api: opts.linkedin_api } : {}),
+      ...(opts?.inmail !== undefined ? { inmail: opts.inmail } : {}),
+    }),
+  posts: (platform?: string) => api.get<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/posts${platform ? `?platform=${platform}` : ""}`),
   analytics: (opts?: {
     platform?: string;
     account_id?: string;
@@ -2264,7 +2460,7 @@ export const zernioApi = {
     if (typeof opts?.page === "number") q.set("page", String(opts.page));
     if (opts?.from_date) q.set("from_date", opts.from_date);
     if (opts?.to_date) q.set("to_date", opts.to_date);
-    return api.get<Record<string, unknown>>(`/zernio/analytics${q.toString() ? `?${q.toString()}` : ""}`);
+    return api.get<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/analytics${q.toString() ? `?${q.toString()}` : ""}`);
   },
   analyticsByPostId: (post_id: string, opts?: { platform?: string; account_id?: string; profile_id?: string; metrics?: string }) => {
     const q = new URLSearchParams();
@@ -2272,7 +2468,7 @@ export const zernioApi = {
     if (opts?.account_id) q.set("account_id", opts.account_id);
     if (opts?.profile_id) q.set("profile_id", opts.profile_id);
     if (opts?.metrics) q.set("metrics", opts.metrics);
-    return api.get<Record<string, unknown>>(`/zernio/analytics/${encodeURIComponent(post_id)}${q.toString() ? `?${q.toString()}` : ""}`);
+    return api.get<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/analytics/${encodeURIComponent(post_id)}${q.toString() ? `?${q.toString()}` : ""}`);
   },
   commentedPosts: (opts?: { platform?: string; account_id?: string; min_comments?: number; limit?: number }) => {
     const q = new URLSearchParams();
@@ -2280,21 +2476,27 @@ export const zernioApi = {
     if (opts?.account_id) q.set("account_id", opts.account_id);
     if (typeof opts?.min_comments === "number") q.set("min_comments", String(opts.min_comments));
     if (typeof opts?.limit === "number") q.set("limit", String(opts.limit));
-    return api.get<Record<string, unknown>>(`/zernio/comments${q.toString() ? `?${q.toString()}` : ""}`);
+    return api.get<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/comments${q.toString() ? `?${q.toString()}` : ""}`);
   },
   postComments: (post_id: string, account_id: string, opts?: { platform?: string; limit?: number }) => {
     const q = new URLSearchParams({ account_id });
     if (opts?.platform) q.set("platform", opts.platform);
     if (typeof opts?.limit === "number") q.set("limit", String(opts.limit));
-    return api.get<Record<string, unknown>>(`/zernio/comments/${encodeURIComponent(post_id)}?${q.toString()}`);
+    return api.get<Record<string, unknown>>(`${SOCIAL_INBOX_BASE}/comments/${encodeURIComponent(post_id)}?${q.toString()}`);
   },
-  replyToComment: (post_id: string, body: { account_id: string; comment_id: string; message: string }) =>
-    api.post<Record<string, unknown>>(`/zernio/comments/${encodeURIComponent(post_id)}/reply`, body),
+  replyToComment: (post_id: string, body: { account_id: string; comment_id: string; message: string; platform?: string }) =>
+    api.post<Record<string, unknown>>(
+      `${SOCIAL_INBOX_BASE}/comments/${encodeURIComponent(post_id)}/reply${body.platform ? `?platform=${encodeURIComponent(body.platform)}` : ""}`,
+      body,
+    ),
   getCommentAutoReplySettings: () =>
-    api.get<ZernioCommentAutoReplySettings>("/zernio/comments/autoreply/settings"),
-  updateCommentAutoReplySettings: (body: Partial<ZernioCommentAutoReplySettings>) =>
-    api.put<ZernioCommentAutoReplySettings>("/zernio/comments/autoreply/settings", body),
+    api.get<SocialCommentAutoReplySettings>(`${SOCIAL_INBOX_BASE}/comments/autoreply/settings`),
+  updateCommentAutoReplySettings: (body: Partial<SocialCommentAutoReplySettings>) =>
+    api.put<SocialCommentAutoReplySettings>(`${SOCIAL_INBOX_BASE}/comments/autoreply/settings`, body),
 };
+
+/** @deprecated Use socialInboxApi — Zernio paths are legacy aliases only. */
+export const zernioApi = socialInboxApi;
 
 // ── SEO + Auto-Blogging ───────────────────────────────────────────────────────
 

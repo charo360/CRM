@@ -332,6 +332,8 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
     return {
         "type":               business_type,
         "name":               _sanitize(user.get("business_name", "")),
+        "owner_name":         _sanitize(user.get("owner_name") or (user.get("settings") or {}).get("owner_name") or user.get("name", "")),
+        "owner_title":        _sanitize(user.get("owner_title") or (user.get("settings") or {}).get("owner_title", "")),
         "currency":           currency,
         "payment_methods":    payment_methods,
         "business_hours":     _sanitize(bk.get("business_hours", "")),

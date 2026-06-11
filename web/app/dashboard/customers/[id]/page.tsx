@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { api, Customer, Message, Sale, Order, FollowUp } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import { formatCurrency, formatDate, formatDateTime, timeAgo } from "@/lib/utils";
+import { toast } from "sonner";
 import {
   ArrowLeft,
   MessageSquare,
@@ -91,6 +92,7 @@ interface EmailThread {
 export default function CustomerProfilePage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
@@ -117,6 +119,13 @@ export default function CustomerProfilePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "emails" || tab === "messages" || tab === "timeline" || tab === "sales" || tab === "orders" || tab === "followups") {
+      setActiveTab(tab);
+    }
+  }, [searchParams]);
+
   async function load() {
     setLoading(true);
     try {
@@ -141,6 +150,9 @@ export default function CustomerProfilePage() {
         stage: cust.stage || "lead",
         tags: (cust.tags || []).join(", "),
       });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't load contact");
+      router.push("/dashboard/customers");
     } finally {
       setLoading(false);
     }

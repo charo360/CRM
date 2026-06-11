@@ -195,6 +195,22 @@ async def light_briefing_refresh(
 
     await sync_from_crm(db, user, orch, skip_heavy_staging=True)
 
+    try:
+        from rex.decisions.bridge import (
+            sync_open_decisions_to_briefing,
+            sync_outcome_reports_to_briefing,
+        )
+        from rex.decisions.outcomes import process_due_outcomes
+
+        report["outcomes_processed"] = len(await process_due_outcomes(db, user))
+        report["decisions_staged"] = await sync_open_decisions_to_briefing(db, user, orch)
+        report["outcomes_staged"] = await sync_outcome_reports_to_briefing(db, user, orch)
+    except Exception as e:
+        logger.warning("[zilo] decision briefing sync: %s", e)
+        report["decisions_staged"] = 0
+        report["outcomes_staged"] = 0
+        report["outcomes_processed"] = 0
+
     # Batch-fetch customer email addresses for fast whitelist lookup
     whitelist: set[str] = set()
     try:

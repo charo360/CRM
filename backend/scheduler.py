@@ -613,6 +613,32 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         coalesce=True,
     )
 
+    # Comment auto-reply poller — every 90s (Composio FB/IG; no webhook required).
+    from social_comment_autoreply import run_comment_autoreply_poll
+    scheduler.add_job(
+        run_comment_autoreply_poll,
+        IntervalTrigger(seconds=90),
+        args=[db],
+        id="social_comment_autoreply",
+        name="Social Comment Auto-Reply (every 90s)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Delegate scheduled runs — every 5 min (time-based automations).
+    from delegate.service import run_due_scheduled_delegations
+    scheduler.add_job(
+        run_due_scheduled_delegations,
+        IntervalTrigger(minutes=5),
+        args=[db],
+        id="delegate_scheduled_runs",
+        name="Delegate Scheduled Runs (every 5 min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Start the scheduler
     scheduler.start()
     logger.info("Scheduler started: Digests at 8 AM & 3 PM UTC, Motivation on Monday + 2 random days")

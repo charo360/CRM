@@ -537,15 +537,15 @@ async def _execute_capability(
                 "text": message,
                 "image_url": image_url,
                 "status": "published",
-                "platforms": params.get("platforms") or ["facebook", "instagram", "linkedin"],
+                "channels": params.get("channels") or params.get("platforms") or ["facebook", "instagram", "linkedin"],
                 "created_at": now,
                 "updated_at": now,
             }
             await db.social_posts.insert_one(post)
             try:
-                from social_publish_service import push_post_to_zernio
-                await push_post_to_zernio(db, post)
-                logger.info(f"[WorkflowEngine] social_publish_post successfully published via Zernio")
+                from social_publish_service import push_post
+                await push_post(db, post)
+                logger.info("[WorkflowEngine] social_publish_post published via Composio")
             except Exception as e:
                 logger.error(f"[WorkflowEngine] social_publish_post failed: {e}")
             return True
@@ -584,14 +584,14 @@ async def _execute_capability(
                         "text": f"{headline}\n{subtext}".strip(),
                         "image_url": generated_img,
                         "status": "published",
-                        "platforms": platforms,
+                        "channels": platforms,
                         "created_at": now,
                         "updated_at": now,
                     }
                     await db.social_posts.insert_one(post)
                     
-                    from social_publish_service import push_post_to_zernio
-                    pub_res = await push_post_to_zernio(db, post)
+                    from social_publish_service import push_post
+                    pub_res = await push_post(db, post)
                     logger.info(f"[WorkflowEngine] Social publish results: {pub_res}")
                 else:
                     logger.error(f"[WorkflowEngine] Design generation failed: {design_res.get('error', 'Unknown error')}")
@@ -682,7 +682,7 @@ async def _execute_capability(
             
             logger.info(f"[WorkflowEngine] Automated trigger: Pausing Meta Campaign {campaign_id} due to health alerts")
             try:
-                from zernio_ads_service import update_campaign_status
+                from meta_ads_service import update_campaign_status
                 res = await update_campaign_status(campaign_id, "PAUSED", platform="facebook")
                 logger.info(f"[WorkflowEngine] Meta pause response: {res}")
             except Exception as e:

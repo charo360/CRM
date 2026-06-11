@@ -2,7 +2,7 @@
 Deal Alerts — when someone asks for a service you sell:
   1. Push notification + in-app queue with link
   2. Draft reply ready to approve
-  3. On approve (or auto mode): reply via Zernio when IDs are available
+  3. On approve (or auto mode): reply via Composio when IDs are available
 """
 from __future__ import annotations
 
@@ -94,35 +94,50 @@ async def _send_push(db, user_id: str, title: str, body: str, data: Optional[Dic
         logger.warning("[deal_alerts] push failed user=%s: %s", user_id, e)
 
 
+async def reply_composio_comment(
+    db,
+    user_id: str,
+    post_id: str,
+    account_id: str,
+    comment_id: str,
+    message: str,
+    *,
+    platform: str = "",
+) -> bool:
+    if not (post_id and account_id and comment_id and message):
+        return False
+    user = await db.users.find_one({"_id": user_id})
+    if not user:
+        return False
+    try:
+        from social_composio_engagement import reply_to_comment
+
+        result = await reply_to_comment(
+            db,
+            user,
+            post_id,
+            account_id,
+            comment_id,
+            message[:900],
+            platform=platform,
+        )
+        if result.get("error"):
+            logger.warning("[deal_alerts] composio reply: %s", result["error"])
+            return False
+        return bool(result.get("success"))
+    except Exception as e:
+        logger.warning("[deal_alerts] composio reply error: %s", e)
+    return False
+
+
 async def reply_zernio_comment(
     post_id: str,
     account_id: str,
     comment_id: str,
     message: str,
 ) -> bool:
-    key = os.environ.get("ZERNIO_API_KEY", "").strip()
-    if not key or not (post_id and account_id and comment_id and message):
-        return False
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(
-                f"https://zernio.com/api/v1/inbox/comments/{post_id}",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json={
-                    "accountId": account_id,
-                    "commentId": comment_id,
-                    "message": message[:900],
-                },
-            )
-            if resp.status_code in (200, 201):
-                return True
-            logger.warning("[deal_alerts] zernio reply %s: %s", resp.status_code, resp.text[:200])
-    except Exception as e:
-        logger.warning("[deal_alerts] zernio reply error: %s", e)
+    """Deprecated — Zernio comment replies removed."""
+    logger.warning("[deal_alerts] reply_zernio_comment is deprecated")
     return False
 
 
@@ -228,8 +243,9 @@ async def queue_deal_alert(
         "created_at": datetime.utcnow(),
     })
 
+    opp_id = str(uuid.uuid4())
     await db.action_mode_opportunities.insert_one({
-        "_id": str(uuid.uuid4()),
+        "_id": opp_id,
         "user_id": user_id,
         "kind": "social",
         "agent": "deal_alert",
@@ -241,6 +257,22 @@ async def queue_deal_alert(
         "queue_id": item_id,
         "created_at": datetime.utcnow(),
     })
+
+    try:
+        from delegate.service import notify_opportunity_created
+        import asyncio
+        opp_doc = {
+            "_id": opp_id,
+            "user_id": user_id,
+            "url": url,
+            "snippet": text[:300],
+            "title": f"{author} needs {matched_kw}",
+            "agent": "deal_alert",
+            "created_at": datetime.utcnow(),
+        }
+        asyncio.create_task(notify_opportunity_created(db, user_id, opp_doc))
+    except Exception as e:
+        logger.warning(f"[deal_alerts] delegate opportunity hook failed: {e}")
 
     await db.action_mode_activity.insert_one({
         "_id": str(uuid.uuid4()),
@@ -270,7 +302,15 @@ async def queue_deal_alert(
         )
 
     if auto_send:
-        ok = await reply_zernio_comment(post_id, account_id, comment_id, draft)
+        ok = await reply_composio_comment(
+            db,
+            user_id,
+            post_id,
+            account_id,
+            comment_id,
+            draft,
+            platform=platform,
+        )
         await db.action_mode_queue.update_one(
             {"_id": item_id},
             {"$set": {"posted": ok, "status": "approved" if ok else "pending"}},

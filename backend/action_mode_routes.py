@@ -3176,10 +3176,10 @@ Search results:
 {results_text}
 
 Generate 3-5 SPECIFIC actionable items. Each must have:
-- A real URL from the search results (or the most likely real URL for this opportunity)
-- The contact person or company name
-- Their contact details (email / phone / social handle) if discoverable
-- A full ready-to-send message or action
+- contact_name: person or company name
+- contact_info: email address, phone number, or @handle when outreach is direct (preferred when available)
+- url: ONLY a real external link from search results (Reddit thread, listing, profile, forum post) — REQUIRED for web/post_comment actions, omit (empty string) for send_email/send_whatsapp when you have contact_info
+- draft_content: full ready-to-send message
 
 Return a JSON array ONLY (no markdown, no explanation):
 [
@@ -3188,15 +3188,17 @@ Return a JSON array ONLY (no markdown, no explanation):
     "kind": "funding" | "group" | "social" | "custom",
     "title": "What this action achieves — be specific (max 75 chars)",
     "contact_name": "Person or company name",
-    "contact_info": "email address, phone number, or @handle — real if found in results, plausible if not",
-    "url": "Direct URL to the opportunity, profile, post, or listing — from search results or best-guess",
+    "contact_info": "email address, phone number, or @handle — real if found in results",
+    "url": "Direct URL to the opportunity/post/listing — empty string if outreach is email/WhatsApp only",
     "snippet": "One sentence describing the specific opportunity (max 120 chars)",
     "draft_content": "Complete ready-to-send message written in first person as {biz_name}. For emails: Subject line first, then body. For messages: full text. For applications: opening paragraph. NO placeholders — write real names and specifics."
   }}
 ]
 
 Rules:
-- Every item must have a url and contact_name — infer from context if not in results.
+- Every item must have contact_name.
+- If contact_info is an email or phone, set url to "" unless there is also a separate public post to reference.
+- NEVER use {biz_name}'s own website, zilo.pro, zilo.app, or placeholder domains as url.
 - draft_content must be complete and specific to this exact query: "{query}"
 - Make it feel like a human assistant spent an hour researching and writing this."""
 
@@ -3249,6 +3251,14 @@ Rules:
 
         now   = datetime.utcnow()
         saved = 0
+        biz_doc = await db.users.find_one({"_id": uid}) or {}
+        from delegate.service import (
+            _contacts_from_opportunity,
+            _owner_website_from_user,
+            _sanitize_lead_source_url,
+        )
+        owner_site = _owner_website_from_user(biz_doc)
+
         for item in parsed[:5]:
             if not isinstance(item, dict):
                 continue
@@ -3258,11 +3268,25 @@ Rules:
             if not title or not draft_content:
                 continue
 
-            url          = str(item.get("url", ""))[:500]
+            url          = str(item.get("url", ""))[:500].strip()
             contact_name = str(item.get("contact_name", ""))[:120]
             contact_info = str(item.get("contact_info", ""))[:120]
             snippet      = str(item.get("snippet", ""))[:200]
             kind         = str(item.get("kind", "custom"))
+
+            opp_stub = {
+                "url": url,
+                "contact_info": contact_info,
+                "snippet": snippet,
+            }
+            email, phone = _contacts_from_opportunity(opp_stub)
+            url = _sanitize_lead_source_url(
+                url, email=email, phone=phone, owner_website=owner_site
+            )
+            if not contact_name.strip():
+                continue
+            if not url and not email and not phone:
+                continue
 
             item_id = str(uuid.uuid4())
 
@@ -3278,9 +3302,11 @@ Rules:
                     "query":        query[:120],
                     "url":          url,
                     "snippet":      snippet,
-                    "contact_name": contact_name,
-                    "contact_info": contact_info,
-                    "kind":         kind,
+                "contact_name": contact_name,
+                "contact_info": contact_info,
+                "email": email or None,
+                "phone": phone or None,
+                "kind":         kind,
                 },
                 "status":        "pending",
                 "created_at":    now,
@@ -3299,6 +3325,8 @@ Rules:
                 "score":      0.75,
                 "contact_name": contact_name,
                 "contact_info": contact_info,
+                "email": email or None,
+                "phone": phone or None,
                 "queue_id":   item_id,
                 "created_at": now,
             })

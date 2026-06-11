@@ -132,7 +132,7 @@ import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from passlib.context import CryptContext
-from typing import List, Optional, Any
+from typing import Any, Dict, List, Optional
 import uuid
 from datetime import datetime, timedelta
 import jwt
@@ -927,6 +927,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     if not user:
         raise HTTPException(status_code=401, detail="User not found", headers={"X-Account-Deleted": "true"})
     return user
+
+
+async def _composio_user_id(user: dict) -> str:
+    from composio_service import resolve_composio_user_id
+    return await resolve_composio_user_id(user)
+
 
 def generate_simple_reason(customer: dict, days_since_contact: int) -> str:
     """Generate a simple follow-up reason without AI calls for performance"""
@@ -1844,6 +1850,24 @@ class DraftMessageResponse(BaseModel):
     confidence: float
     reason: str
 
+class SocialDraftRequest(BaseModel):
+    platform: str = ""
+    channel: str = "comment"  # comment | dm
+    recipient_name: str = ""
+    their_message: str = ""
+    post_caption: str = ""
+    customer_id: Optional[str] = None
+    participant_id: Optional[str] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None
+    custom_instructions: Optional[str] = None
+    regenerate_count: Optional[int] = 0
+
+class SocialDraftResponse(BaseModel):
+    message: str
+    confidence: float
+    reason: str
+    source: str = "ai"
+
 class SendAutoMessageRequest(BaseModel):
     customer_id: str
     message: str
@@ -1869,6 +1893,7 @@ class UserSettingsUpdate(BaseModel):
     ai_model: Optional[str] = None  # standard, premium, claude-4.7, grok, etc.
     auto_reply_audience: Optional[str] = None  # 'everyone', 'customers_only', 'new_contacts_only'
     social_dm_autoreply_enabled: Optional[bool] = None  # AI auto-reply for Instagram DMs (Composio inbox)
+    linkedin_dm_autoreply_enabled: Optional[bool] = None  # AI auto-reply for LinkedIn DMs + page inbox (Unipile)
     ga4_measurement_id: Optional[str] = None  # Google Analytics 4 Measurement ID (G-XXXXXXXXXX)
     behavior_discounts_enabled: Optional[bool] = None  # Enable/disable behavior-triggered discount campaigns
 
@@ -2562,6 +2587,10 @@ async def get_settings(user = Depends(get_current_user)):
         "country": s.get("country", ""),
         "business_name": user.get("business_name", ""),
         "owner_name": user.get("owner_name", ""),
+        "owner_title": user.get("owner_title", ""),
+        # When false, AI only fills [Your Name] placeholders — no auto-append after "Best,".
+        # Use this if Gmail/Outlook already adds your signature when you send.
+        "append_signature_to_drafts": s.get("append_signature_to_drafts", True),
         "restaurant_has_reservations": s.get("restaurant_has_reservations", False),
         "features": s.get("features"),
         "account_mode": s.get("account_mode", "business"),
@@ -2580,7 +2609,7 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
     top_level_fields = {}
     settings_fields = {}
     for k, v in body.items():
-        if k in ("currency", "country_code", "payment_methods", "business_name", "owner_name"):
+        if k in ("currency", "country_code", "payment_methods", "business_name", "owner_name", "owner_title"):
             top_level_fields[k] = v
         else:
             settings_fields[f"settings.{k}"] = v
@@ -4407,22 +4436,39 @@ async def get_customer(customer_id: str, user = Depends(get_current_user)):
     customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
-    
+
+    unread = await db.messages.count_documents({
+        "customer_id": customer_id,
+        "user_id": business_id,
+        "direction": "incoming",
+        "read": {"$ne": True},
+    })
+    created = _parse_dt(customer.get("created_at"), required=True) or datetime.utcnow()
+    raw_tags = customer.get("tags")
+    tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else ([str(raw_tags)] if raw_tags else [])
+
     return CustomerResponse(
-        id=customer["_id"],
-        user_id=customer["user_id"],
-        name=customer["name"],
-        phone_number=customer["phone_number"],
+        id=str(customer["_id"]),
+        user_id=str(customer.get("user_id") or business_id),
+        name=(customer.get("name") or "Unknown").strip() or "Unknown",
+        phone_number=customer.get("phone_number") or customer.get("phone") or "",
+        email=customer.get("email"),
         notes=customer.get("notes"),
-        tags=customer.get("tags", []),
+        tags=tags,
+        stage=customer.get("stage", "lead"),
+        source=customer.get("source"),
+        purchase_count=_safe_int(customer.get("purchase_count"), 0),
+        total_spent=_safe_float(customer.get("total_spent"), 0.0),
         last_message=customer.get("last_message"),
-        last_contacted=customer.get("last_contacted"),
+        last_contacted=_parse_dt(customer.get("last_contacted"), required=False),
         profile_picture=customer.get("profile_picture"),
-        # None means "inherit global auto-reply settings"
+        unread_count=unread,
         auto_reply=customer.get("auto_reply"),
         sms_opt_in=customer.get("sms_opt_in"),
         is_personal=customer.get("is_personal", False),
-        created_at=customer["created_at"]
+        created_at=created,
+        email_thread_ids=customer.get("email_thread_ids", []),
+        email_classification=customer.get("email_classification"),
     )
 
 @api_router.post("/customers/{customer_id}/promote")
@@ -8943,14 +8989,27 @@ async def outlook_webhook(request: Request, background_tasks: BackgroundTasks, v
 
 @api_router.get("/browser/status")
 async def browser_control_status(user = Depends(get_current_user)):
-    """
-    Check if the authenticated user has an active Zilo Browser Control session connected.
-    """
-    from browser_control.websocket import is_browser_connected
-    user_id = str(user.get("business_id") or user["_id"])
+    """Check if the authenticated user has an active Browser Operator session."""
+    from browser_control.auth import resolve_browser_user_id
+    from browser_control.websocket import browser_status_payload
+
+    user_id = resolve_browser_user_id(user)
+    return browser_status_payload(user_id)
+
+
+@api_router.get("/browser/ws-token")
+async def browser_ws_token(user = Depends(get_current_user)):
+    """Issue a short-lived JWT for the Browser Operator extension WebSocket."""
+    from browser_control.auth import create_browser_ws_token, resolve_browser_user_id
+
+    user_id = resolve_browser_user_id(user)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User id missing")
+    backend = os.environ.get("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
     return {
-        "connected": is_browser_connected(user_id),
-        "user_id": user_id
+        "user_id": user_id,
+        "ws_token": create_browser_ws_token(user_id),
+        "ws_url": backend,
     }
 
 
@@ -9398,6 +9457,7 @@ async def evolution_webhook(request: Request):
                     "content": body,
                     "message_type": parsed.get("message_type", "text"),
                     "from_number": from_number,
+                    "channel": "whatsapp" if not from_me else "whatsapp",
                     "created_at": datetime.utcnow(),
                 }
 
@@ -9417,6 +9477,25 @@ async def evolution_webhook(request: Request):
                 if remote_jid:
                     msg_doc["remote_jid"] = remote_jid
                 await db.messages.insert_one(msg_doc)
+
+                # Delegate automations — all inbound client messages
+                if not from_me and customer_id and body:
+                    async def _delegate_inbound(uid, cid, msg_body, msg_id):
+                        try:
+                            cust = await db.customers.find_one({"_id": cid, "user_id": uid})
+                            if not cust:
+                                return
+                            from delegate.inbound_hooks import notify_delegate_inbound
+
+                            await notify_delegate_inbound(
+                                db, uid, cust, msg_body, message_id=msg_id or None
+                            )
+                        except Exception as e:
+                            logging.debug(f"[delegate] inbound hook failed: {e}")
+
+                    asyncio.create_task(
+                        _delegate_inbound(user["_id"], customer_id, body, evo_msg_id or message_id)
+                    )
 
                 native_update = {"last_message": body[:200] if body else ""}
                 if from_me:
@@ -11135,6 +11214,38 @@ Message:"""
         logging.error(f"Error in draft_ai_message: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@api_router.post("/ai/draft-social-reply", response_model=SocialDraftResponse)
+async def draft_social_reply_endpoint(request: SocialDraftRequest, user = Depends(get_current_user)):
+    """Generate a contextual social comment or DM reply tailored to the recipient."""
+    try:
+        from social_draft_service import draft_social_reply
+
+        ch = (request.channel or "comment").strip().lower()
+        if ch not in ("comment", "dm"):
+            ch = "comment"
+
+        result = await draft_social_reply(
+            db,
+            user,
+            platform=request.platform or "",
+            channel=ch,
+            recipient_name=request.recipient_name or "",
+            their_message=request.their_message or "",
+            post_caption=request.post_caption or "",
+            customer_id=request.customer_id,
+            participant_id=request.participant_id or "",
+            conversation_history=request.conversation_history,
+            custom_instructions=request.custom_instructions or "",
+            regenerate_count=request.regenerate_count or 0,
+        )
+        return SocialDraftResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logging.error(f"Error in draft_social_reply: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.post("/ai/send-auto-message")
 async def send_auto_message(request: SendAutoMessageRequest, user = Depends(get_current_user)):
     """Send an auto-drafted message via WhatsApp"""
@@ -11658,6 +11769,7 @@ async def get_user_settings(user = Depends(get_current_user)):
         "auto_reply_enabled": settings.get('auto_reply_enabled', False),
         "auto_reply_audience": settings.get('auto_reply_audience', 'everyone'),
         "social_dm_autoreply_enabled": settings.get('social_dm_autoreply_enabled', False),
+        "linkedin_dm_autoreply_enabled": settings.get('linkedin_dm_autoreply_enabled', False),
         "notification_enabled": settings.get('notification_enabled', True),
         "notification_time": settings.get('notification_time', '08:00'),
         "daily_alert_count": settings.get('daily_alert_count', 5),
@@ -11689,6 +11801,9 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
 
     if settings.social_dm_autoreply_enabled is not None:
         update_data['settings.social_dm_autoreply_enabled'] = settings.social_dm_autoreply_enabled
+
+    if settings.linkedin_dm_autoreply_enabled is not None:
+        update_data['settings.linkedin_dm_autoreply_enabled'] = settings.linkedin_dm_autoreply_enabled
 
     if settings.notification_enabled is not None:
         update_data['settings.notification_enabled'] = settings.notification_enabled
@@ -14154,16 +14269,15 @@ async def health_check():
 
 @api_router.get("/extension/download")
 async def download_extension():
-    """Serve the Zilo Chrome extension as a ZIP file for easy installation."""
+    """Serve the Zilo Social Monitor Chrome extension as a ZIP."""
     import io
     import os
     import zipfile
     from fastapi.responses import StreamingResponse
 
-    # Always resolve to absolute path regardless of how the server was invoked
     backend_dir = os.path.dirname(os.path.abspath(__file__))
-    crm_dir     = os.path.dirname(backend_dir)
-    ext_dir     = os.path.join(crm_dir, "extension")
+    crm_dir = os.path.dirname(backend_dir)
+    ext_dir = os.path.join(crm_dir, "extension")
 
     if not os.path.isdir(ext_dir):
         from fastapi.responses import JSONResponse
@@ -14173,18 +14287,56 @@ async def download_extension():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, _dirs, files in os.walk(ext_dir):
+            rel_root = os.path.relpath(root, ext_dir)
+            if rel_root == "browser-operator" or rel_root.startswith("browser-operator" + os.sep):
+                continue
             for filename in sorted(files):
                 if filename.endswith(".pyc") or "__pycache__" in root:
                     continue
                 full_path = os.path.join(root, filename)
-                arcname   = os.path.relpath(full_path, ext_dir)
+                arcname = os.path.relpath(full_path, ext_dir)
                 zf.write(full_path, arcname)
     buf.seek(0)
 
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=zilo-extension.zip"},
+        headers={"Content-Disposition": "attachment; filename=zilo-social-monitor.zip"},
+    )
+
+
+@api_router.get("/extension/download/browser-operator")
+async def download_browser_operator_extension():
+    """Serve the Zilo Browser Operator Chrome extension as a separate ZIP."""
+    import io
+    import os
+    import zipfile
+    from fastapi.responses import StreamingResponse
+
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    crm_dir = os.path.dirname(backend_dir)
+    ext_dir = os.path.join(crm_dir, "extension", "browser-operator")
+
+    if not os.path.isdir(ext_dir):
+        from fastapi.responses import JSONResponse
+        logging.error("[extension/download/browser-operator] folder not found at: %s", ext_dir)
+        return JSONResponse({"error": "Browser Operator extension folder not found"}, status_code=404)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(ext_dir):
+            for filename in sorted(files):
+                if filename.endswith(".pyc") or "__pycache__" in root:
+                    continue
+                full_path = os.path.join(root, filename)
+                arcname = os.path.relpath(full_path, ext_dir)
+                zf.write(full_path, arcname)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=zilo-browser-operator.zip"},
     )
 
 
@@ -14226,6 +14378,13 @@ async def startup_tasks():
         logging.info("[startup] composio_service DB injected")
     except Exception as _e:
         logging.warning(f"[startup] composio_service.set_db failed: {_e}")
+
+    try:
+        from browser_control.websocket import init_browser_control
+        init_browser_control(db)
+        logging.info("[startup] browser_control session manager initialized")
+    except Exception as _e:
+        logging.warning(f"[startup] browser_control init failed: {_e}")
 
     # ---- P1: Ensure database indexes ----
     try:
@@ -15223,7 +15382,12 @@ async def composio_connect(toolkit: str, request: Request, user=Depends(get_curr
     """Start Composio OAuth for a toolkit. Returns redirect_url for the OAuth popup/tab."""
     print(f"[composio_connect] toolkit={toolkit} user={user.get('email') or user.get('_id')}", flush=True)
     from composio_service import get_connect_url
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
+    if user_id:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"composio_entity_id": user_id}},
+        )
     client_origin: Optional[str] = None
     extra_data: dict = {}
     try:
@@ -15247,19 +15411,14 @@ async def composio_connect(toolkit: str, request: Request, user=Depends(get_curr
     return result
 
 
-@api_router.get("/composio/connections")
-async def composio_connections(user=Depends(get_current_user)):
-    """Return connection status for all Composio-managed toolkits.
+async def _persist_composio_connection_statuses(
+    user_oid: Any,
+    user_id: str,
+    statuses: Dict[str, bool],
+) -> None:
+    """Write merged toolkit flags to Mongo and run Gmail side-effects without blocking HTTP."""
+    import asyncio
 
-    Queries Composio with the user's unique ID and verifies each returned
-    account belongs to this user. Writes confirmed connections to MongoDB
-    so status is also readable from DB without hitting Composio every time.
-    """
-    from composio_service import get_all_connection_statuses
-    user_id = str(user.get("business_id") or user["_id"])
-    statuses = await get_all_connection_statuses(user_id)
-
-    # Persist confirmed connections in the user doc for reliable per-user isolation
     connected_set = [k for k, v in statuses.items() if v]
     disconnected_set = [k for k, v in statuses.items() if not v]
     update: dict = {}
@@ -15268,29 +15427,103 @@ async def composio_connections(user=Depends(get_current_user)):
     for k in disconnected_set:
         update[f"composio_integrations.{k}"] = False
     if update:
-        await db.users.update_one({"_id": user["_id"]}, {"$set": update})
+        await db.users.update_one({"_id": user_oid}, {"$set": update})
 
     if statuses.get("gmail"):
-        import asyncio
         from composio_webhooks import register_gmail_webhook_for_user
+
         asyncio.create_task(register_gmail_webhook_for_user(user_id, db))
-        # Mark gmail in composio_connected_apps so _email_sync_runner picks up this user
         await db.users.update_one(
-            {"_id": user["_id"]},
+            {"_id": user_oid},
             {"$addToSet": {"composio_connected_apps": "gmail"}},
         )
-        # Immediately kick off email sync + notebook bootstrap for new account
         asyncio.create_task(_bootstrap_new_account(user_id, db))
+    if statuses.get("linkedin"):
+        asyncio.create_task(_refresh_linkedin_authors_cache(user_oid, user_id))
+    if statuses.get("slack"):
+        from composio_webhooks import register_slack_webhook_for_user
 
-    return {"connected": statuses}
+        asyncio.create_task(register_slack_webhook_for_user(user_id, db))
+
+
+async def _refresh_composio_connections_background(
+    user_oid: Any,
+    user_id: str,
+    cached: Dict[str, bool],
+) -> None:
+    """Full live Composio sync — runs after a fast cached HTTP response."""
+    import logging
+
+    from composio_service import get_all_connection_statuses
+
+    _log = logging.getLogger(__name__)
+    try:
+        live = await get_all_connection_statuses(user_id)
+        all_keys = set(cached) | set(live)
+        statuses = {k: bool(live.get(k) or cached.get(k)) for k in all_keys}
+        await _persist_composio_connection_statuses(user_oid, user_id, statuses)
+    except Exception as exc:
+        _log.warning("[composio] background connections refresh failed for %s: %s", user_id, exc)
+
+
+@api_router.get("/composio/connections")
+async def composio_connections(
+    user=Depends(get_current_user),
+    cached: bool = False,
+):
+    """Return connection status for all Composio-managed toolkits.
+
+    ?cached=1 returns MongoDB flags instantly (no Composio round-trip).
+    Default: merge live Composio with cache (short timeout), refresh in background if slow.
+    """
+    import asyncio
+    import logging
+
+    from composio_service import get_all_connection_statuses, statuses_from_cached_integrations
+
+    _log = logging.getLogger(__name__)
+    user_id = await _composio_user_id(user)
+    if user_id and str(user.get("composio_entity_id") or "") != user_id:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"composio_entity_id": user_id}},
+        )
+    cached_map = statuses_from_cached_integrations(user.get("composio_integrations"))
+    statuses = dict(cached_map)
+
+    if cached:
+        return {"connected": statuses, "source": "cache"}
+
+    source = "cache"
+    try:
+        live = await asyncio.wait_for(get_all_connection_statuses(user_id), timeout=2.5)
+        all_keys = set(cached_map) | set(live)
+        statuses = {k: bool(live.get(k) or cached_map.get(k)) for k in all_keys}
+        source = "live"
+        asyncio.create_task(
+            _persist_composio_connection_statuses(user["_id"], user_id, statuses)
+        )
+    except asyncio.TimeoutError:
+        _log.warning("[composio] connections status timed out for user %s — returning cache", user_id)
+        asyncio.create_task(
+            _refresh_composio_connections_background(user["_id"], user_id, cached_map)
+        )
+    except Exception as exc:
+        _log.warning("[composio] connections status failed for user %s: %s", user_id, exc)
+
+    return {"connected": statuses, "source": source}
 
 
 @api_router.get("/composio/connections/{toolkit}")
 async def composio_connection_status(toolkit: str, user=Depends(get_current_user)):
     """Check connection status for a specific toolkit."""
     from composio_service import get_connection_status
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     result = await get_connection_status(user_id, toolkit)
+    if toolkit.lower() == "slack" and result.get("connected"):
+        from composio_webhooks import register_slack_webhook_for_user
+
+        asyncio.create_task(register_slack_webhook_for_user(user_id, db))
     return result
 
 
@@ -15328,10 +15561,16 @@ async def nango_remove_connection(body: dict, user=Depends(get_current_user)):
 async def composio_disconnect(toolkit: str, user=Depends(get_current_user)):
     """Disconnect (revoke) a Composio toolkit connection for this user."""
     from composio_service import disconnect
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     result = await disconnect(user_id, toolkit)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
+    # Clear the cached MongoDB flag so the OR-merge in the status endpoint
+    # doesn't resurrect the connection on the next refresh.
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {f"composio_integrations.{toolkit.lower()}": False}},
+    )
     if toolkit.lower() == "facebook":
         await db.users.update_one(
             {"_id": user["_id"]},
@@ -15347,33 +15586,100 @@ async def composio_disconnect(toolkit: str, user=Depends(get_current_user)):
             {"_id": user["_id"]},
             {"$unset": {"composio_social.instagram_user_id": ""}},
         )
+    if toolkit.lower() == "linkedin":
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$unset": {"composio_social.linkedin_author_urn": ""}},
+        )
+    if toolkit.lower() == "slack":
+        from slack_service import unregister_slack_workspace
+
+        await unregister_slack_workspace(db, user["_id"])
     return result
 
 
 @api_router.get("/composio/social/settings")
 async def composio_social_settings(user=Depends(get_current_user)):
     """Return Composio social connection details (Facebook page, Instagram account)."""
-    from composio_service import get_connection_status, TOOLKIT_FACEBOOK, TOOLKIT_INSTAGRAM, TOOLKIT_YOUTUBE
-    from social_composio_publish import get_social_settings, resolve_instagram_user_id
+    import asyncio
 
-    user_id = str(user.get("business_id") or user["_id"])
+    from composio_service import (
+        get_all_connection_statuses,
+        statuses_from_cached_integrations,
+    )
+    from social_composio_publish import (
+        get_instagram_profile,
+        get_social_settings,
+        resolve_instagram_user_id,
+    )
+    from unipile_service import get_connection_status as unipile_linkedin_status
+
+    user_id = await _composio_user_id(user)
     settings = await get_social_settings(db, user_id)
-    fb = await get_connection_status(user_id, TOOLKIT_FACEBOOK)
-    ig = await get_connection_status(user_id, TOOLKIT_INSTAGRAM)
-    yt = await get_connection_status(user_id, TOOLKIT_YOUTUBE)
+    cached_map = statuses_from_cached_integrations(user.get("composio_integrations"))
+    merged = dict(cached_map)
+    try:
+        live = await asyncio.wait_for(get_all_connection_statuses(user_id), timeout=2.0)
+        all_keys = set(cached_map) | set(live)
+        merged = {k: bool(live.get(k) or cached_map.get(k)) for k in all_keys}
+    except Exception:
+        pass
     ig_user_id = await resolve_instagram_user_id(db, user_id, settings)
+    ig_profile: dict = {}
+    if merged.get("instagram"):
+        try:
+            ig_profile = await asyncio.wait_for(
+                get_instagram_profile(db, user_id, settings), timeout=4.0
+            )
+        except Exception:
+            ig_profile = {}
+    li_messaging = await unipile_linkedin_status(db, user["_id"], user_id)
+    li_premium_connected = bool(li_messaging.get("connected"))
     return {
         "facebook": {
-            "connected": bool(fb.get("connected")),
+            "connected": bool(merged.get("facebook")),
             "page_id": settings.get("facebook_page_id"),
             "page_name": settings.get("facebook_page_name"),
         },
         "instagram": {
-            "connected": bool(ig.get("connected")),
+            "connected": bool(merged.get("instagram")),
             "user_id": ig_user_id,
+            "username": ig_profile.get("username"),
+            "name": ig_profile.get("name"),
+            "profile_picture_url": ig_profile.get("profile_picture_url"),
+            "followers_count": ig_profile.get("followers_count"),
         },
         "youtube": {
-            "connected": bool(yt.get("connected")),
+            "connected": bool(merged.get("youtube")),
+        },
+        "linkedin": {
+            "connected": bool(merged.get("linkedin")),
+            "author_urn": settings.get("linkedin_author_urn"),
+            "author_name": settings.get("linkedin_author_name"),
+            "author_provider": settings.get("linkedin_author_provider"),
+            "author_org_id": settings.get("linkedin_author_org_id"),
+            "messaging_connected": li_premium_connected,
+            "messaging_account_id": li_messaging.get("account_id"),
+            "contract_id": li_messaging.get("contract_id"),
+            "contract_name": li_messaging.get("contract_name"),
+            "contract_product": li_messaging.get("contract_product"),
+            "inmail_balance": li_messaging.get("inmail_balance"),
+        },
+        "linkedin_premium": {
+            "connected": li_premium_connected,
+            "account_id": li_messaging.get("account_id"),
+            "name": li_messaging.get("name"),
+            "contract_id": li_messaging.get("contract_id"),
+            "contract_name": li_messaging.get("contract_name"),
+            "contract_product": li_messaging.get("contract_product"),
+            "inmail_balance": li_messaging.get("inmail_balance"),
+            "posting": li_premium_connected,
+        },
+        "twitter": {
+            "connected": bool(merged.get("twitter")),
+        },
+        "tiktok": {
+            "connected": bool(merged.get("tiktok")),
         },
     }
 
@@ -15383,7 +15689,7 @@ async def composio_facebook_pages(user=Depends(get_current_user)):
     """List Facebook Pages the user manages (via Composio)."""
     from social_composio_publish import list_facebook_pages
 
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     result = await list_facebook_pages(user_id)
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
@@ -15404,7 +15710,7 @@ async def composio_facebook_select_page(body: dict, user=Depends(get_current_use
 
     if not page_name:
         # Fallback to list pages if not provided by client
-        user_id = str(user.get("business_id") or user["_id"])
+        user_id = await _composio_user_id(user)
         pages_res = await list_facebook_pages(user_id)
         if pages_res.get("error"):
             raise HTTPException(status_code=400, detail=pages_res["error"])
@@ -15430,11 +15736,128 @@ async def composio_facebook_select_page(body: dict, user=Depends(get_current_use
     }
 
 
+async def _refresh_linkedin_authors_cache(user_oid: Any, composio_uid: str) -> None:
+    """Best-effort background refresh — never blocks the HTTP response."""
+    import asyncio
+    import logging
+
+    from social_composio_publish import list_linkedin_authors
+
+    _log = logging.getLogger(__name__)
+    try:
+        await asyncio.wait_for(
+            list_linkedin_authors(composio_uid, db=db, user_oid=user_oid),
+            timeout=25.0,
+        )
+    except Exception as exc:
+        _log.debug("[composio] linkedin authors cache refresh failed for %s: %s", composio_uid, exc)
+
+
+@api_router.get("/composio/social/linkedin/authors")
+async def composio_linkedin_authors(user=Depends(get_current_user)):
+    """List LinkedIn posting identities (personal profile + company pages)."""
+    import asyncio
+    import logging
+    import traceback
+
+    from social_composio_publish import linkedin_authors_from_user, list_linkedin_authors
+
+    _log = logging.getLogger(__name__)
+
+    # NOTE: do not gate on the cached composio_integrations flag here. That Mongo flag
+    # is only written by the background connection sync, so it lags a fresh OAuth connect
+    # and would wrongly report "not connected" while the picker is being opened. The live
+    # list_linkedin_authors() below performs its own get_connection_status() check.
+    cached_authors = linkedin_authors_from_user(user)
+    fallback_id = str(user.get("composio_entity_id") or user.get("business_id") or user["_id"])
+    user_id = fallback_id
+
+    if cached_authors:
+        asyncio.create_task(_refresh_linkedin_authors_cache(user["_id"], user_id))
+        return {"authors": cached_authors}
+
+    try:
+        try:
+            user_id = await asyncio.wait_for(_composio_user_id(user), timeout=3.0)
+        except asyncio.TimeoutError:
+            _log.warning("[composio] linkedin authors uid resolve timed out for %s", fallback_id)
+            user_id = fallback_id
+        if user_id and str(user.get("composio_entity_id") or "") != user_id:
+            await db.users.update_one(
+                {"_id": user["_id"]},
+                {"$set": {"composio_entity_id": user_id}},
+            )
+        result = await asyncio.wait_for(
+            list_linkedin_authors(user_id, db=db, user_oid=user["_id"]),
+            timeout=18.0,
+        )
+    except asyncio.TimeoutError:
+        _log.warning("[composio] linkedin authors timed out for %s", user_id)
+        return {
+            "authors": [],
+            "error": "LinkedIn is taking too long to respond. Please try again in a moment.",
+        }
+    except Exception as exc:
+        _log.error(
+            "[composio] linkedin authors failed for %s: %s\n%s",
+            user_id, exc, traceback.format_exc(),
+        )
+        return {
+            "authors": [],
+            "error": "Could not load LinkedIn identities right now. Please try again in a moment.",
+        }
+    authors = result.get("authors") or []
+    if not authors:
+        return {
+            "authors": [],
+            "error": result.get("error")
+            or "Could not load LinkedIn posting identities. Try disconnecting and reconnecting LinkedIn.",
+        }
+    return {"authors": authors}
+
+
+@api_router.post("/composio/social/linkedin/author")
+async def composio_linkedin_select_author(body: dict, user=Depends(get_current_user)):
+    """Save which LinkedIn identity (person or company) to post as."""
+    from social_composio_publish import list_linkedin_authors, save_linkedin_author
+
+    author_urn = str(body.get("author_urn") or body.get("urn") or "").strip()
+    if not author_urn.startswith("urn:li:"):
+        raise HTTPException(status_code=400, detail="author_urn must be a LinkedIn URN.")
+
+    author_name = str(body.get("author_name") or body.get("name") or "").strip()
+    provider = str(body.get("provider") or "").strip()
+    org_id = str(body.get("org_id") or "").strip()
+
+    # Fill any missing field from the live identity list (includes Unipile pages).
+    if not author_name or not provider:
+        user_id = await _composio_user_id(user)
+        authors_res = await list_linkedin_authors(user_id, db=db, user_oid=user["_id"])
+        selected = next((a for a in (authors_res.get("authors") or []) if a.get("urn") == author_urn), None)
+        if selected:
+            author_name = author_name or str(selected.get("name") or "")
+            provider = provider or str(selected.get("provider") or "")
+            org_id = org_id or str(selected.get("org_id") or "")
+
+    if not author_name:
+        author_name = author_urn
+    if not provider:
+        provider = "unipile" if (":fsd_company:" in author_urn or ":organization:" in author_urn) else "composio"
+    if provider == "unipile" and not org_id:
+        org_id = author_urn.split(":")[-1]
+
+    await save_linkedin_author(
+        db, user["_id"],
+        author_urn=author_urn, author_name=author_name, provider=provider, org_id=org_id,
+    )
+    return {"ok": True, "author_urn": author_urn, "author_name": author_name, "provider": provider, "org_id": org_id}
+
+
 @api_router.post("/composio/connections/{toolkit}/cleanup")
 async def composio_cleanup_pending(toolkit: str, user=Depends(get_current_user)):
     """Remove stale in-progress OAuth sessions when the user cancels or closes the popup."""
     from composio_service import cleanup_pending_connection
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     result = await cleanup_pending_connection(user_id, toolkit)
     if result.get("error"):
         raise HTTPException(status_code=502, detail=result["error"])
@@ -15468,7 +15891,7 @@ async def composio_http_proxy(request: Request, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="params must be an object")
     if json_body is not None and not isinstance(json_body, dict):
         raise HTTPException(status_code=400, detail="json must be an object")
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     try:
         tmo = float(payload.get("timeout") or 30)
     except (TypeError, ValueError):
@@ -15508,7 +15931,7 @@ async def composio_gmail_threads(
 ):
     """List Gmail threads using Composio execute_action (handles token refresh)."""
     from composio_service import execute_action, ACTION_GMAIL_FETCH
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     params: dict[str, Any] = {"max_results": min(limit, 50)}
     if q:
         params["query"] = q
@@ -15564,7 +15987,7 @@ async def composio_gmail_threads(
 async def composio_gmail_get_thread(thread_id: str, user=Depends(get_current_user)):
     """Get all messages in a Gmail thread using Composio execute_action."""
     from composio_service import execute_action, ACTION_GMAIL_FETCH
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     # Composio doesn't support thread: query filter — fetch recent inbox and find by threadId/messageId
     result = await execute_action(user_id, ACTION_GMAIL_FETCH, {"max_results": 50})
     if "error" in result:
@@ -15600,7 +16023,7 @@ async def composio_gmail_get_thread(thread_id: str, user=Depends(get_current_use
 async def composio_gmail_send(request: Request, user=Depends(get_current_user)):
     """Send a Gmail message via Composio execute_action."""
     from composio_service import execute_action, ACTION_GMAIL_SEND
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     body = await request.json()
     result = await execute_action(user_id, ACTION_GMAIL_SEND, {
         "recipient_email": body.get("to", ""),
@@ -15628,7 +16051,7 @@ async def composio_calendar_list_events(
 ):
     """List Google Calendar or Outlook events via Composio execute_action."""
     from composio_calendar import list_calendar_events as _list
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     try:
         return await _list(user_id, time_min=timeMin, time_max=timeMax, provider=provider or None)
     except RuntimeError as e:
@@ -15638,7 +16061,7 @@ async def composio_calendar_list_events(
 @api_router.post("/composio/calendar/events")
 async def composio_calendar_create_event(request: Request, user=Depends(get_current_user)):
     from composio_calendar import create_calendar_event as _create
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     try:
         body = await request.json()
     except Exception:
@@ -15654,7 +16077,7 @@ async def composio_calendar_create_event(request: Request, user=Depends(get_curr
 @api_router.patch("/composio/calendar/events")
 async def composio_calendar_update_event(request: Request, user=Depends(get_current_user)):
     from composio_calendar import update_calendar_event as _update
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     try:
         body = await request.json()
     except Exception:
@@ -15676,7 +16099,7 @@ async def composio_calendar_delete_event(
     user=Depends(get_current_user),
 ):
     from composio_calendar import delete_calendar_event as _delete
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     if not eventId:
         raise HTTPException(status_code=400, detail="eventId required")
     try:
@@ -15698,7 +16121,7 @@ async def email_db_sync(user=Depends(get_current_user)):
     2. Kicks off a full historical deep sync in the background (month by month).
     """
     from email_sync import sync_emails_for_user, deep_sync_user, ensure_indexes
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     await ensure_indexes(db)
 
     # Quick sync — get latest emails from Gmail + Outlook
@@ -15715,7 +16138,7 @@ async def email_db_sync(user=Depends(get_current_user)):
 @api_router.get("/email-db/sync-status")
 async def email_db_sync_status(user=Depends(get_current_user)):
     """Check the status of the background deep sync."""
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     status = await db.email_sync_status.find_one({"user_id": user_id})
     if not status:
         return {"status": "never_synced"}
@@ -15735,7 +16158,7 @@ async def register_outlook_webhook(user = Depends(get_current_user)):
     Manually register or re-register a Microsoft Graph push notification subscription
     for Outlook Inbox changes.
     """
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     from outlook_webhook_service import create_outlook_subscription
     res = await create_outlook_subscription(user_id, db)
     if "error" in res:
@@ -15752,7 +16175,7 @@ async def email_db_list_threads(
 ):
     """List email threads from MongoDB — instant, no Gmail round-trip."""
     from email_sync import get_threads_from_db
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     threads = await get_threads_from_db(user_id, db, q=q, limit=min(limit, 100), offset=offset)
     return {"threads": threads, "source": "db"}
 
@@ -15761,7 +16184,7 @@ async def email_db_list_threads(
 async def email_db_get_messages(thread_id: str, user=Depends(get_current_user)):
     """Get all messages for a thread from MongoDB."""
     from email_sync import get_messages_from_db
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     messages = await get_messages_from_db(user_id, thread_id, db)
     return {"messages": messages, "thread_id": thread_id}
 
@@ -15770,7 +16193,7 @@ async def email_db_get_messages(thread_id: str, user=Depends(get_current_user)):
 async def email_db_mark_read(thread_id: str, user=Depends(get_current_user)):
     """Mark all messages in a thread as read."""
     from email_sync import mark_thread_read
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     await mark_thread_read(user_id, thread_id, db)
     return {"ok": True}
 
@@ -15782,7 +16205,7 @@ async def email_db_import(request: Request, user=Depends(get_current_user)):
     Accepts: { messages: [...], provider: "microsoft" }
     """
     from email_sync import _store_messages, _shape_outlook_message, ensure_indexes
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     await ensure_indexes(db)
     body = await request.json()
     raw_msgs  = body.get("messages", [])
@@ -15798,7 +16221,7 @@ async def email_db_import(request: Request, user=Depends(get_current_user)):
 async def email_db_save_sent(request: Request, user=Depends(get_current_user)):
     """Save a sent email to DB immediately so it appears in the thread."""
     from email_sync import save_sent_message
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     body = await request.json()
     # Derive user's email from their account
     user_doc = await db.users.find_one({"_id": user_id}) or {}
@@ -15827,7 +16250,7 @@ async def email_db_classify(user=Depends(get_current_user)):
     investors, customers, or partners.
     """
     from email_classifier import get_email_classifier
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     classifier = get_email_classifier(db)
     result = await classifier.classify_new_emails(user_id)
     return result
@@ -15837,7 +16260,7 @@ async def email_db_classify(user=Depends(get_current_user)):
 async def email_db_reclassify(user=Depends(get_current_user)):
     """Force reclassify ALL email contacts (resets and re-runs)."""
     from email_classifier import get_email_classifier
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     classifier = get_email_classifier(db)
     result = await classifier.reclassify_all(user_id)
     return result
@@ -15850,7 +16273,7 @@ async def email_db_classifications(
     user=Depends(get_current_user),
 ):
     """List pending email contact classifications for owner review."""
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     flt: dict = {"user_id": user_id}
     if status != "all":
         flt["status"] = status
@@ -15887,7 +16310,7 @@ async def email_db_approve_classification(
     Body: { "action": "approve" | "reject" | "override", "override_type": "investor" | "customer" | "partner" }
     """
     from bson import ObjectId
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     body = await request.json()
     action = body.get("action", "approve")
 
@@ -15976,7 +16399,7 @@ async def email_db_approve_classification(
 async def email_db_contact_threads(customer_id: str, user=Depends(get_current_user)):
     """Get all email threads linked to a specific contact."""
     from email_sync import get_threads_from_db
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
 
     # Get the contact to find linked thread IDs
     contact = await db.customers.find_one({"_id": customer_id, "user_id": user_id})
@@ -16008,7 +16431,7 @@ async def email_db_contact_threads(customer_id: str, user=Depends(get_current_us
 async def email_db_classify_thread(thread_id: str, user=Depends(get_current_user)):
     """Classify a single email thread's sender."""
     from email_classifier import get_email_classifier
-    user_id = str(user.get("business_id") or user["_id"])
+    user_id = await _composio_user_id(user)
     classifier = get_email_classifier(db)
     result = await classifier.classify_thread(user_id, thread_id)
     if not result:
@@ -17551,6 +17974,15 @@ try:
 except Exception as _wf_e:
     logging.error(f"[workflows] failed to mount routes: {_wf_e}")
 
+# ── Delegate (assign tasks to Zilo — once or scheduled) ──
+try:
+    from delegate.routes import make_delegate_router as _mk_delegate_router
+    _delegate_router = _mk_delegate_router(db, Depends(get_current_user))
+    api_router.include_router(_delegate_router)
+    logging.info("[delegate] routes mounted at /api/delegate/*")
+except Exception as _delegate_e:
+    logging.error(f"[delegate] failed to mount routes: {_delegate_e}")
+
 try:
     from invoices.routes import make_invoices_router as _mk_inv_router
     api_router.include_router(_mk_inv_router(db, Depends(get_current_user)))
@@ -17608,11 +18040,19 @@ except Exception as _e:
     logging.error(f"[feedback] failed to mount routes: {_e}")
 
 try:
-    from zernio.routes import make_zernio_router as _mk_zernio_router
-    api_router.include_router(_mk_zernio_router(db, Depends(get_current_user)))
-    logging.info("[zernio] routes mounted")
+    from zernio.routes import make_composio_social_router, make_zernio_router
+    api_router.include_router(make_composio_social_router(db, Depends(get_current_user)))
+    api_router.include_router(make_zernio_router(db, Depends(get_current_user)))
+    logging.info("[composio-social] routes mounted at /api/composio/social/* (+ legacy /api/zernio/*)")
 except Exception as _e:
-    logging.error(f"[zernio] failed to mount routes: {_e}")
+    logging.error(f"[composio-social] failed to mount routes: {_e}")
+
+try:
+    from unipile_routes import make_unipile_router as _mk_unipile_router
+    api_router.include_router(_mk_unipile_router(db, Depends(get_current_user)))
+    logging.info("[unipile] routes mounted")
+except Exception as _e:
+    logging.error(f"[unipile] failed to mount routes: {_e}")
 
 try:
     from collaboration.routes import make_collaboration_router as _mk_collab_router
@@ -17960,6 +18400,21 @@ async def telegram_webhook(bot_token: str, request: Request):
     await save_telegram_message(db, user_id, customer["_id"], chat_id, text, "incoming", message_id)
 
     async def _process():
+        try:
+            from delegate.inbound_hooks import notify_delegate_inbound
+
+            fresh = await db.customers.find_one({"_id": customer["_id"], "user_id": user_id})
+            if fresh:
+                await notify_delegate_inbound(
+                    db,
+                    user_id,
+                    fresh,
+                    text,
+                    message_id=str(message_id) if message_id else None,
+                )
+        except Exception as exc:
+            logging.debug("[Telegram] delegate inbound hook failed: %s", exc)
+
         from autoreply.engine import process_message as ar_process
 
         class _TelegramSender:
@@ -18016,6 +18471,15 @@ async def _process_meta_message(
     from autoreply.engine import process_message as ar_process
 
     user_id = user["_id"]
+
+    try:
+        from delegate.inbound_hooks import notify_delegate_inbound
+
+        fresh = await db.customers.find_one({"_id": customer["_id"], "user_id": user_id})
+        if fresh:
+            await notify_delegate_inbound(db, user_id, fresh, text)
+    except Exception as exc:
+        logging.debug("[Meta] delegate inbound hook failed: %s", exc)
 
     class _MetaSender:
         """Thin wrapper so AutoReplyV2 can call send_message() without knowing the channel."""
@@ -18102,6 +18566,13 @@ async def messenger_webhook(request: Request):
 
             # Process async so webhook returns fast
             asyncio.create_task(_process_meta_message(user, customer, text, sender_id, "messenger", token))
+
+        # Page feed comments (when Meta webhook field `feed` is subscribed)
+        try:
+            from meta_comment_webhook import process_meta_page_comment_webhook
+            await process_meta_page_comment_webhook(db, {"object": "page", "entry": [entry]})
+        except Exception as _comment_exc:
+            logging.debug("[Meta] page comment webhook: %s", _comment_exc)
 
     return {"status": "ok"}
 
@@ -18199,6 +18670,15 @@ async def _process_bird_message(
     identifier_key = bird_contact.get("identifierKey", "")
     identifier_value = bird_contact.get("identifierValue") or bird_contact.get("platformAddress", "")
     channel_id = customer.get("bird_channel_id", "")
+
+    try:
+        from delegate.inbound_hooks import notify_delegate_inbound
+
+        fresh = await db.customers.find_one({"_id": customer["_id"], "user_id": user_id})
+        if fresh:
+            await notify_delegate_inbound(db, user_id, fresh, text)
+    except Exception as exc:
+        logging.debug("[Bird] delegate inbound hook failed: %s", exc)
 
     class _BirdSender:
         async def send_message(self, user_id, to_number, message, customer_name="", send_context="auto_reply", media_url=None, media_type="image", **kwargs):
@@ -18419,145 +18899,34 @@ def _extract_zernio_comment_event(payload: dict) -> Optional[dict]:
         ).strip(),
         "reply_count": max(0, reply_count),
         "platform": str(_zernio_get(payload, "platform", "data.platform", default="unknown")).strip() or "unknown",
+        "post_caption": str(
+            _zernio_get(
+                payload,
+                "postCaption",
+                "post_caption",
+                "caption",
+                "postText",
+                "post_text",
+                "data.caption",
+                "data.postCaption",
+                default="",
+            )
+        ).strip(),
         "event_name": event_name,
     }
 
-def _pick_comment_autoreply_message(settings: dict, comment_text: str, author_name: str = "") -> str:
-    text = (comment_text or "").lower()
-    chosen = ""
-    for rule in (settings.get("keyword_rules") or []):
-        if not isinstance(rule, dict):
-            continue
-        keyword = str(rule.get("keyword") or "").strip().lower()
-        message = str(rule.get("message") or "").strip()
-        if keyword and message and keyword in text:
-            chosen = message
-            break
-    if not chosen:
-        chosen = str(settings.get("default_message") or "").strip()
-    if not chosen:
-        return ""
-    first = (author_name or "").strip().split(" ")[0]
-    return chosen.replace("{name}", first or "there")
-
-def _build_native_comment_reply(comment_text: str, author_name: str = "") -> str:
-    first = (author_name or "there").split(" ")[0] or "there"
-    text = (comment_text or "").lower()
-    if "?" in text:
-        return f"Hi {first}, thanks for your question. Please share a bit more detail and we will assist right away."
-    if "price" in text or "how much" in text or "cost" in text:
-        return f"Hi {first}, thanks for checking in. Please DM us the item you want and we will share the latest price and options."
-    if "thank" in text:
-        return f"You are welcome {first}. We appreciate your support."
-    return f"Hi {first}, thanks for your comment. We have seen it and we will follow up shortly."
-
-def _pick_comment_steps(settings: dict, comment_event: dict) -> list:
-    mode = str(settings.get("engine_mode") or "hybrid").strip().lower()
-    if mode not in {"native_ai_all_posts", "manychat_per_post", "hybrid"}:
-        mode = "hybrid"
-    post_id = str(comment_event.get("post_id") or "").strip()
-    manychat_posts = {str(x).strip() for x in (settings.get("manychat_post_ids") or []) if str(x).strip()}
-    manychat_for_post = (not manychat_posts) or (post_id in manychat_posts)
-    use_manychat = mode == "manychat_per_post" or (mode == "hybrid" and manychat_for_post)
-
-    if use_manychat:
-        chain = settings.get("chain_steps") or []
-        valid = []
-        for step in chain:
-            if not isinstance(step, dict):
-                continue
-            stype = str(step.get("type") or "text").strip().lower()
-            if stype not in {"text", "image", "video", "file"}:
-                stype = "text"
-            msg = str(step.get("message") or "").strip()
-            media_url = str(step.get("media_url") or "").strip()
-            delay_seconds = int(step.get("delay_seconds") or 0)
-            if stype == "text" and not msg:
-                continue
-            if stype != "text" and not media_url:
-                continue
-            valid.append(
-                {
-                    "type": stype,
-                    "message": msg,
-                    "media_url": media_url,
-                    "delay_seconds": max(0, min(delay_seconds, 120)),
-                }
-            )
-        if valid:
-            return valid
-        msg = _pick_comment_autoreply_message(
-            settings=settings,
-            comment_text=str(comment_event.get("comment_text") or ""),
-            author_name=str(comment_event.get("author_name") or ""),
-        )
-        if msg:
-            return [{"type": "text", "message": msg, "delay_seconds": 0}]
-        return []
-
-    msg = _build_native_comment_reply(
-        comment_text=str(comment_event.get("comment_text") or ""),
-        author_name=str(comment_event.get("author_name") or ""),
-    )
-    return [{"type": "text", "message": msg, "delay_seconds": 0}] if msg else []
+from social_comment_autoreply import (
+    build_native_comment_reply as _build_native_comment_reply,
+    handle_comment_event,
+    pick_comment_autoreply_message as _pick_comment_autoreply_message,
+    pick_comment_steps as _pick_comment_steps,
+    send_composio_comment_reply as _send_composio_comment_reply,
+)
 
 async def _send_zernio_comment_reply(post_id: str, account_id: str, comment_id: str, message: str, step: Optional[dict] = None) -> bool:
-    key = os.environ.get("ZERNIO_API_KEY", "").strip()
-    if not key:
-        logging.warning("[Zernio] comment auto-reply skipped: missing ZERNIO_API_KEY")
-        return False
-    if not (post_id and account_id and comment_id):
-        return False
-    step = step or {"type": "text", "message": message}
-    stype = str(step.get("type") or "text").strip().lower()
-    text = str(step.get("message") or message or "").strip()
-    media_url = str(step.get("media_url") or "").strip()
-    if stype == "text" and not text:
-        return False
-    if stype != "text" and not media_url and not text:
-        return False
-    try:
-        payloads = []
-        if stype == "text":
-            payloads.append({"accountId": account_id, "commentId": comment_id, "message": text[:900]})
-        else:
-            payloads.append(
-                {
-                    "accountId": account_id,
-                    "commentId": comment_id,
-                    "message": text[:900] if text else "",
-                    "mediaUrl": media_url,
-                    "mediaType": stype,
-                }
-            )
-            payloads.append(
-                {
-                    "accountId": account_id,
-                    "commentId": comment_id,
-                    "message": text[:900] if text else "",
-                    "attachment": {"type": stype, "url": media_url},
-                }
-            )
-            if text:
-                payloads.append({"accountId": account_id, "commentId": comment_id, "message": text[:900]})
-        async with httpx.AsyncClient(timeout=20) as client:
-            for body in payloads:
-                resp = await client.post(
-                    "https://zernio.com/api/v1/inbox/comments/" + post_id,
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    json=body,
-                )
-                if resp.status_code in (200, 201):
-                    return True
-                logging.warning(f"[Zernio] comment auto-reply failed {resp.status_code}: {resp.text[:300]}")
-        return False
-    except Exception as exc:
-        logging.warning(f"[Zernio] comment auto-reply error: {exc}")
-        return False
+    """Deprecated — kept for callers without user/db context."""
+    logging.warning("[Zernio] _send_zernio_comment_reply is deprecated; use send_composio_comment_reply")
+    return False
 
 @app.post("/webhook/zernio")
 async def zernio_webhook(request: Request):
@@ -18601,9 +18970,9 @@ async def zernio_webhook(request: Request):
         except Exception as _deal_exc:
             logging.warning("[Zernio] deal alert: %s", _deal_exc)
 
-        settings = ((user.get("settings") or {}).get("zernio_comment_autoreply") or {}
-                    if isinstance(user.get("settings"), dict)
-                    else {})
+        from social_comment_settings import read_comment_autoreply_settings
+
+        settings = read_comment_autoreply_settings(user.get("settings") if isinstance(user.get("settings"), dict) else {})
         if not bool(settings.get("enabled", False)):
             return {"status": "ok"}
         post_id = comment_event["post_id"]
@@ -18616,23 +18985,12 @@ async def zernio_webhook(request: Request):
         dedup_key = f"zernio:comment:{profile_id}:{comment_event['comment_id']}"
         if not await _dedup_check_and_set(dedup_key, 6 * 60 * 60):
             return {"status": "ok"}
-        steps = _pick_comment_steps(settings, comment_event)
-        if not steps:
-            return {"status": "ok"}
-        for step in steps:
-            _delay = int(step.get("delay_seconds") or 0)
-            if _delay > 0:
-                await asyncio.sleep(max(0, min(_delay, 120)))
-            await _send_zernio_comment_reply(
-                post_id=post_id,
-                account_id=comment_event["account_id"],
-                comment_id=comment_event["comment_id"],
-                message=str(step.get("message") or ""),
-                step=step,
+        sent = await handle_comment_event(db, user, comment_event)
+        if sent:
+            logging.info(
+                "[Zernio] comment auto-replied user=%s post=%s comment=%s",
+                user.get("_id"), post_id, comment_event["comment_id"],
             )
-        logging.info(
-            f"[Zernio] comment auto-replied user={user.get('_id')} post={post_id} comment={comment_event['comment_id']} steps={len(steps)}"
-        )
         return {"status": "ok"}
 
     platform = payload.get("platform", "unknown")
@@ -19047,7 +19405,7 @@ except Exception as _gfe:
 try:
     from rex_routes import init_rex_routes
     app.include_router(init_rex_routes(get_current_user, db))
-    logging.info("[rex] routes mounted at /api/rex/*")
+    logging.info("[rex] routes mounted at /rex/*")
 except Exception as _rxe:
     logging.error("[rex] failed to mount routes: %s", _rxe)
 

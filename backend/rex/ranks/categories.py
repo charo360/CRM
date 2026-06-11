@@ -49,6 +49,8 @@ _CATALOG: tuple[_CategoryDef, ...] = (
     _CategoryDef("slack", "Slack", Tier.CORE),
     _CategoryDef("follow_ups", "follow-ups", Tier.CORE),
     _CategoryDef("meeting_follow_through", "meeting follow-through", Tier.CORE),
+    # Strategy sparring — never promotes above Drafter (Decision Room pillar 3)
+    _CategoryDef("strategy", "strategy", Tier.CORE),
 
     # Tier 2 — Operations
     _CategoryDef("quotes", "quotes & proposals", Tier.OPERATIONS),
