@@ -246,7 +246,7 @@ export function LandingPage() {
               href="/login"
               className="inline-flex items-center gap-1.5 rounded-xl border border-[#007a2e] bg-[#009B3A] px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-[#4CD137] hover:text-[#0a2614]"
             >
-              Get started
+              Free trial
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
@@ -291,7 +291,7 @@ export function LandingPage() {
                   className="mt-2 rounded-xl border border-[#007a2e] bg-[#009B3A] px-3 py-3 text-center text-sm font-semibold text-white shadow-md transition hover:bg-[#4CD137] hover:text-[#0a2614]"
                   onClick={() => setOpen(false)}
                 >
-                  Get started
+                  Free trial
                 </Link>
               </nav>
             </div>
@@ -320,7 +320,7 @@ export function LandingPage() {
                   href="/login"
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[#007a2e] bg-[#009B3A] px-8 py-3.5 text-base font-semibold text-white shadow-lg transition hover:bg-[#4CD137] hover:text-[#0a2614] sm:w-auto"
                 >
-                  Get Started
+                  Free trial
                   <ArrowRight className="h-5 w-5" />
                 </Link>
                 <a
@@ -1006,7 +1006,7 @@ export function LandingPage() {
             <p className="mt-4 text-center text-xs text-slate-500">USD shown as reference; regional pricing applies at checkout.</p>
             <div className="mt-10 flex justify-center">
               <Link
-                href="/login"
+                href="/plans"
                 className="inline-flex items-center gap-2 rounded-xl border border-[#007a2e] bg-[#009B3A] px-8 py-3 text-sm font-semibold text-white shadow-md transition hover:bg-[#4CD137] hover:text-[#0a2614]"
               >
                 View all plans
@@ -1056,7 +1056,7 @@ export function LandingPage() {
                 href="/login"
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-white/30 bg-white px-8 py-3.5 text-base font-semibold text-[#0a2614] shadow-lg transition hover:bg-[#f0fdf4] sm:w-auto"
               >
-                Get Started Free
+                Start free trial
                 <ArrowRight className="h-5 w-5 shrink-0" />
               </Link>
               <a

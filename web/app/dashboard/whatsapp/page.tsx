@@ -8,6 +8,17 @@ import {
   Users, Download, QrCode, CheckCircle2, Loader2,
 } from "lucide-react";
 
+function formatOutboundCapLine(sent: number, cap: number) {
+  const s = (sent ?? 0).toLocaleString();
+  if (cap > 0) return `${s} / ${cap.toLocaleString()}`;
+  return `${s} / —`;
+}
+
+function formatOutboundRemaining(cap: number, remaining: number) {
+  if (cap > 0) return (remaining ?? 0).toLocaleString();
+  return "—";
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function WhatsAppPage() {
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
@@ -105,7 +116,9 @@ export default function WhatsAppPage() {
               </div>
               <div className="rounded-lg bg-slate-50 p-3">
                 <p className="text-slate-500 text-xs">Monthly</p>
-                <p className="font-bold text-slate-900 mt-0.5">{status.messages_sent || 0} / {status.messages_limit || "∞"}</p>
+                <p className="font-bold text-slate-900 mt-0.5">
+                  {formatOutboundCapLine(status.messages_sent, status.messages_limit)}
+                </p>
               </div>
             </div>
             <div className="flex gap-2 pt-1">
@@ -181,7 +194,9 @@ export default function WhatsAppPage() {
               <p className="text-sm text-slate-500">Messages Today</p>
             </div>
             <div className="text-center p-4 bg-slate-50 rounded-lg">
-              <p className="text-2xl font-bold text-slate-900">{status.messages_remaining || "∞"}</p>
+              <p className="text-2xl font-bold text-slate-900">
+                {formatOutboundRemaining(status.messages_limit, status.messages_remaining)}
+              </p>
               <p className="text-sm text-slate-500">Remaining This Month</p>
             </div>
             <div className="text-center p-4 bg-slate-50 rounded-lg">

@@ -138,6 +138,7 @@ qdrant-client==1.12.1
 duckduckgo-search>=6.0,<7.0
 composio-core==0.7.20
 python-slugify==8.0.4
+qrcode[pil]==7.4.2
 # LangChain / LangGraph — pinned to a verified-compatible set
 langchain-core==0.3.65
 langsmith==0.3.45

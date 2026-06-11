@@ -173,9 +173,10 @@ export default function CommandBar() {
   }, [open, openBar, closeBar]);
 
   // ── Real-time business context via direct API ─────────────────────────────
+
   useEffect(() => {
     if (!open) return;
-    let intervalId: NodeJS.Timeout;
+    let intervalId: ReturnType<typeof setInterval>;
     const fetchContext = async () => {
       try {
         const data = await getBusinessContext();

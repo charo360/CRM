@@ -4,6 +4,7 @@ Handles instance lifecycle, message sending, contact sync, and webhook parsing.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -19,13 +20,27 @@ logger = logging.getLogger(__name__)
 EVOLUTION_API_URL: str = os.environ.get("EVOLUTION_API_URL", "http://localhost:8080")
 EVOLUTION_API_KEY: str = os.environ.get("EVOLUTION_API_KEY", "")
 
-# Daily/monthly message limits per plan
-_PLAN_LIMITS: Dict[str, Dict] = {
-    "free":       {"daily": 50,   "monthly": 500},
-    "starter":    {"daily": 500,  "monthly": 5000},
-    "growth":     {"daily": 2000, "monthly": 20000},
-    "enterprise": {"daily": 10000, "monthly": 100000},
+# Daily send throttle (monthly caps enforced via entitlements)
+_DAILY_SEND_LIMITS: Dict[str, int] = {
+    "free": 50,
+    "trial": 500,
+    "starter": 500,
+    "standard": 2000,
+    "pro": 5000,
 }
+
+
+def whatsapp_owner_id(user: dict) -> str:
+    """Business (tenant) id used for Evolution instance naming and WhatsApp state."""
+    raw = user.get("business_id") or user.get("_id") or user.get("id") or ""
+    return str(raw) if raw is not None else ""
+
+
+def evolution_config_error() -> Optional[str]:
+    """Human-readable message when Evolution API is not configured; None if OK."""
+    if not EVOLUTION_API_KEY.strip():
+        return "WhatsApp linking is not configured on this server. Please contact support."
+    return None
 
 
 def _jid_to_phone(jid: str) -> str:
@@ -209,9 +224,10 @@ class WhatsAppService:
                 state = (
                     data.get("state")
                     or (data.get("instance") or {}).get("state")
+                    or (data.get("instance") or {}).get("status")
                     or ""
-                )
-                connected = state == "open"
+                ).lower()
+                connected = state in ("open", "connected")
                 number = (
                     data.get("number")
                     or (data.get("instance") or {}).get("wuid", "").split(":")[0].split("@")[0]
@@ -222,54 +238,202 @@ class WhatsAppService:
             logger.warning(f"[get_instance_status] {user_id}: {e}")
             return {"connected": False, "status": "error"}
 
+    async def _force_delete_instance(self, client: httpx.AsyncClient, instance_name: str) -> None:
+        """Best-effort logout + delete for one Evolution instance name."""
+        for path in ("logout", "delete"):
+            try:
+                await client.delete(
+                    f"{self.base_url}/instance/{path}/{instance_name}",
+                    headers=self._headers(),
+                )
+            except Exception as e:
+                logger.debug(f"[force_delete] {path}/{instance_name}: {e}")
+
+    async def _delete_all_user_instances(self, client: httpx.AsyncClient, user_id: str) -> None:
+        """
+        Remove Evolution instances for this tenant (canonical name + any duplicates).
+        Used before QR / pairing flows so stale instances do not block create.
+        """
+        canonical = self._instance_name(user_id)
+        names: set[str] = {canonical}
+
+        try:
+            list_resp = await client.get(
+                f"{self.base_url}/instance/fetchInstances",
+                headers=self._headers(),
+            )
+            if list_resp.status_code == 200:
+                payload = list_resp.json()
+                raw = payload if isinstance(payload, list) else (
+                    payload.get("instances")
+                    or payload.get("response")
+                    or payload.get("data")
+                    or []
+                )
+                for item in raw:
+                    if isinstance(item, str):
+                        n = item
+                    elif isinstance(item, dict):
+                        n = (
+                            item.get("instanceName")
+                            or item.get("name")
+                            or (item.get("instance") or {}).get("instanceName")
+                        )
+                    else:
+                        n = None
+                    if n and (n == canonical or n.startswith(canonical)):
+                        names.add(n)
+        except Exception as e:
+            logger.warning(f"[_delete_all_user_instances] fetchInstances: {e}")
+
+        for name in names:
+            await self._force_delete_instance(client, name)
+
+    @staticmethod
+    def _create_conflict_response(text: str) -> bool:
+        err = (text or "").lower()
+        return any(
+            token in err
+            for token in ("already", "in use", "exists", "forbidden", "duplicate")
+        )
+
+    async def _instance_exists(self, client: httpx.AsyncClient, instance_name: str) -> bool:
+        try:
+            resp = await client.get(
+                f"{self.base_url}/instance/fetchInstances",
+                headers=self._headers(),
+            )
+            if resp.status_code != 200:
+                return False
+            payload = resp.json()
+            raw = payload if isinstance(payload, list) else (
+                payload.get("instances")
+                or payload.get("response")
+                or payload.get("data")
+                or []
+            )
+            for item in raw:
+                if isinstance(item, str):
+                    n = item
+                elif isinstance(item, dict):
+                    n = item.get("instanceName") or item.get("name")
+                else:
+                    n = None
+                if n == instance_name:
+                    return True
+        except Exception as e:
+            logger.warning(f"[_instance_exists] {instance_name}: {e}")
+        return False
+
+    async def recreate_instance_for_qr(
+        self,
+        client: httpx.AsyncClient,
+        user_id: str,
+        *,
+        extra_instance_names: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Delete stale Evolution instances for this tenant and create a fresh one for QR linking.
+        Retries create when Evolution reports the name is still in use (eventual consistency).
+        """
+        instance_name = self._instance_name(user_id)
+        extra = {n for n in (extra_instance_names or []) if n}
+        extra.add(instance_name)
+
+        await self._delete_all_user_instances(client, user_id)
+        for name in extra:
+            await self._force_delete_instance(client, name)
+        await asyncio.sleep(1)
+
+        last_body = ""
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(min(2 + attempt * 2, 8))
+
+            create_resp = await client.post(
+                f"{self.base_url}/instance/create",
+                headers=self._headers(),
+                json={
+                    "instanceName": instance_name,
+                    "token": str(uuid.uuid4()),
+                    "qrcode": True,
+                    "integration": "WHATSAPP-BAILEYS",
+                    "reject_call": False,
+                    "groupsIgnore": True,
+                },
+            )
+            last_body = create_resp.text[:500]
+            logger.info(
+                "[recreate_instance_for_qr] attempt=%s status=%s body=%s",
+                attempt + 1,
+                create_resp.status_code,
+                last_body[:300],
+            )
+
+            if create_resp.status_code in (200, 201):
+                return instance_name
+
+            if self._create_conflict_response(last_body):
+                if await self._instance_exists(client, instance_name):
+                    return instance_name
+                await self._force_delete_instance(client, instance_name)
+                await asyncio.sleep(3)
+                continue
+
+        raise RuntimeError(last_body or "Evolution instance create failed")
+
     async def disconnect_instance(self, user_id: str) -> dict:
         """Logout and delete the Evolution API instance."""
         instance_name = self._instance_name(user_id)
         results: dict = {}
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                logout = await client.delete(
-                    f"{self.base_url}/instance/logout/{instance_name}",
-                    headers=self._headers(),
-                )
-                results["logout"] = logout.status_code
-
-                delete = await client.delete(
-                    f"{self.base_url}/instance/delete/{instance_name}",
-                    headers=self._headers(),
-                )
-                results["delete"] = delete.status_code
+                await self._force_delete_instance(client, instance_name)
+                results["delete"] = "attempted"
         except Exception as e:
             results["error"] = str(e)
 
         await self.db.users.update_one(
             {"_id": user_id},
-            {"$unset": {"whatsapp.instance_name": ""}},
+            {"$unset": {"whatsapp.instance_name": "", "whatsapp.status": ""}},
         )
         return results
 
     # ── Message sending ──────────────────────────────────────────────────────
 
     async def check_message_limit(self, user_id: str) -> dict:
-        """Return daily and monthly message usage for the user."""
+        """Return daily and monthly message usage for the business (owner billing)."""
         try:
-            user = await self.db.users.find_one({"_id": user_id}, {"subscription": 1, "plan": 1})
-            plan = (user or {}).get("plan", "free") if user else "free"
-            limits = _PLAN_LIMITS.get(plan, _PLAN_LIMITS["free"])
+            from entitlements import build_entitlements, load_billing_record
+
+            user = await self.db.users.find_one({"_id": user_id})
+            record = await load_billing_record(self.db, user or {"_id": user_id})
+            ent = await build_entitlements(self.db, record)
+            business_id = ent["owner_id"]
+            plan = ent.get("effective_plan", "free")
+            daily_cap = _DAILY_SEND_LIMITS.get(plan, _DAILY_SEND_LIMITS["free"])
 
             today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             daily_sent = await self.db.messages.count_documents({
-                "user_id": user_id,
+                "user_id": business_id,
                 "direction": "outgoing",
                 "created_at": {"$gte": today},
             })
+            usage = ent.get("usage") or {}
+            monthly_sent = usage.get("outbound_messages_month", 0)
+            monthly_cap = usage.get("outbound_messages_cap", 0)
+            monthly_remaining = usage.get("outbound_messages_remaining", 0)
             return {
                 "sent": daily_sent,
-                "limit": limits["daily"],
-                "remaining": max(0, limits["daily"] - daily_sent),
+                "limit": daily_cap,
+                "remaining": max(0, daily_cap - daily_sent),
                 "daily_sent": daily_sent,
-                "daily_limit": limits["daily"],
+                "daily_limit": daily_cap,
+                "monthly_sent": monthly_sent,
+                "monthly_limit": monthly_cap,
+                "monthly_remaining": monthly_remaining,
                 "plan": plan,
+                "dashboard_access": ent.get("dashboard_access"),
             }
         except Exception as e:
             logger.warning(f"[check_message_limit] {user_id}: {e}")
@@ -294,6 +458,16 @@ class WhatsAppService:
         try:
             # Rate limit check
             limits = await self.check_message_limit(user_id)
+            if not limits.get("dashboard_access"):
+                return {
+                    "status": "limit_reached",
+                    "message": "Subscribe or start a free trial to send WhatsApp messages.",
+                }
+            if limits.get("monthly_remaining", 0) <= 0 and limits.get("monthly_limit", 0) > 0:
+                return {
+                    "status": "limit_reached",
+                    "message": f"Monthly limit of {limits['monthly_limit']:,} messages reached. Upgrade your plan.",
+                }
             if limits["remaining"] <= 0:
                 return {
                     "status": "limit_reached",
@@ -705,14 +879,15 @@ class WhatsAppService:
 
             update: dict = {"whatsapp.connection_state": state}
 
-            if state == "open":
+            state_norm = (state or "").lower()
+            if state_norm in ("open", "connected"):
                 update["whatsapp.connected"] = True
                 self._conn_throttle.pop(instance_name, None)  # reset throttle on successful connect
                 # Extract phone number if provided
                 wuid = (data.get("instance") or {}).get("wuid", "")
                 if wuid:
                     update["whatsapp.phone_number"] = _jid_to_phone(wuid)
-            elif state in ("close", "connecting"):
+            elif state_norm in ("close", "connecting"):
                 update["whatsapp.connected"] = False
 
             await self.db.users.update_one(

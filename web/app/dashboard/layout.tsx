@@ -13,12 +13,11 @@ import AssistantLauncher from "@/components/AssistantLauncher";
 import CommandBar from "@/components/CommandBar";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 import MeetingOverlay from "@/components/MeetingOverlay";
+import { EntitlementBanner } from "@/components/billing/EntitlementBanner";
 
 /**
  * Auth uses localStorage, which is absent on the server. Without a client-only gate,
  * the server renders `null` while the client renders the shell — a hydration mismatch.
- * Browser extensions that inject nodes into the layout can also trigger warnings; we
- * set suppressHydrationWarning on the shell for that case.
  */
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -63,7 +62,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               />
             )}
 
-            {/* Sidebar */}
             {!mounted ? (
               <aside
                 className="hidden w-56 shrink-0 flex-col overflow-y-auto border-r border-brand-dark/20 bg-[#071a10] text-slate-100 min-h-screen lg:flex"
@@ -72,10 +70,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             ) : (
               <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
             )}
-            
-            {/* Right side - Navbar and Main Content */}
+
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              {/* Sticky Navbar */}
               {mounted && (
                 <Navbar
                   onMenuClick={() => setMobileNavOpen(true)}
@@ -86,8 +82,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   }
                 />
               )}
-              
-              {/* Main Content */}
+              {mounted && <EntitlementBanner />}
+
               <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50 text-slate-900">{children}</main>
             </div>
           </div>
