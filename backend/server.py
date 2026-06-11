@@ -2625,20 +2625,25 @@ async def register_web(req: WebRegisterRequest):
 
     await provision_signup_trial(db, user_id)
 
-    team_member = {
-        "_id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "name": owner_name or business_name,
-        "email": email,
-        "phone_number": phone,
-        "role": TeamMemberRole.OWNER,
+    existing_member = await db.team_members.find_one({
         "business_id": user_id,
-        "status": "active",
-        "invited_by": user_id,
-        "created_at": now,
-        "last_active": now,
-    }
-    await db.team_members.insert_one(team_member)
+        "phone_number": phone
+    })
+    if not existing_member:
+        team_member = {
+            "_id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "name": owner_name or business_name,
+            "email": email,
+            "phone_number": phone,
+            "role": TeamMemberRole.OWNER,
+            "business_id": user_id,
+            "status": "active",
+            "invited_by": user_id,
+            "created_at": now,
+            "last_active": now,
+        }
+        await db.team_members.insert_one(team_member)
 
     token = create_token(user_id, phone)
     user = await db.users.find_one({"_id": user_id})
@@ -2737,21 +2742,26 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
         }}
     )
 
-    # Create team member entry for the owner
-    team_member = {
-        "_id": str(uuid.uuid4()),
-        "user_id": user["_id"],
-        "name": user_data.owner_name or user_data.business_name,
-        "email": "",  # Optional for owner
-        "phone_number": user["phone_number"],
-        "role": TeamMemberRole.OWNER,
+    # Create team member entry for the owner if it doesn't already exist
+    existing_member = await db.team_members.find_one({
         "business_id": user["_id"],
-        "status": "active",
-        "invited_by": user["_id"],
-        "created_at": datetime.utcnow(),
-        "last_active": datetime.utcnow()
-    }
-    await db.team_members.insert_one(team_member)
+        "phone_number": user["phone_number"]
+    })
+    if not existing_member:
+        team_member = {
+            "_id": str(uuid.uuid4()),
+            "user_id": user["_id"],
+            "name": user_data.owner_name or user_data.business_name,
+            "email": "",  # Optional for owner
+            "phone_number": user["phone_number"],
+            "role": TeamMemberRole.OWNER,
+            "business_id": user["_id"],
+            "status": "active",
+            "invited_by": user["_id"],
+            "created_at": datetime.utcnow(),
+            "last_active": datetime.utcnow()
+        }
+        await db.team_members.insert_one(team_member)
 
     return serialize_doc({
         "status": "success",
