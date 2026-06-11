@@ -2522,6 +2522,81 @@ async def verify_otp(request: OTPVerify):
     # OTP is valid! Delete it so it cannot be reused
     await db.otp_codes.delete_one({"_id": phone})
 
+    # ── TEAM MEMBER LOGIN ────────────────────────────────────────────────────
+    # If this phone number was pre-added as a team member, log them into the
+    # owner's business directly (the OTP already proved phone ownership).
+    # Mirrors the team fast-login in /auth/whatsapp-start.
+    team_member = await db.team_members.find_one({
+        "phone_number": phone,
+        "status": {"$in": ["invited", "active"]}
+    })
+    if team_member:
+        business_id = team_member["business_id"]
+        # Ignore stale records whose business owner was deleted
+        owner_exists = await db.users.find_one({"_id": business_id}, {"_id": 1})
+        if not owner_exists:
+            await db.team_members.delete_many({"business_id": business_id})
+            team_member = None
+
+    if team_member:
+        business_id = team_member["business_id"]
+        emp_user = await db.users.find_one({"phone_number": phone})
+        if not emp_user:
+            emp_user_id = str(uuid.uuid4())
+            await db.users.insert_one({
+                "_id": emp_user_id,
+                "phone_number": phone,
+                "business_name": "",
+                "owner_name": team_member["name"],
+                "role": team_member["role"],
+                "business_id": business_id,
+                "subscription_active": True,  # Inherits from business
+                "setup_complete": True,
+                "auth_provider": "phone_otp",
+                "created_at": datetime.utcnow(),
+            })
+        else:
+            emp_user_id = emp_user["_id"]
+            await db.users.update_one(
+                {"_id": emp_user_id},
+                {"$set": {
+                    "role": team_member["role"],
+                    "business_id": business_id,
+                    "setup_complete": True,
+                }}
+            )
+
+        await db.team_members.update_one(
+            {"_id": team_member["_id"]},
+            {"$set": {
+                "status": "active",
+                "user_id": emp_user_id,
+                "last_active": datetime.utcnow(),
+            }}
+        )
+
+        token = create_token(emp_user_id, phone)
+        logging.info(f"Team member {phone} logged in via OTP")
+        return serialize_doc({
+            "status": "success",
+            "token": token,
+            "access_token": token,
+            "is_new_user": False,
+            "is_team_member": True,
+            "user": {
+                "id": emp_user_id,
+                "phone_number": phone,
+                "business_name": "",
+                "owner_name": team_member["name"],
+                "subscription_active": True,
+                "business_id": business_id,
+                "role": team_member["role"],
+                "settings": {},
+                "auth_provider": "phone_otp",
+            }
+        })
+    # ── END TEAM MEMBER LOGIN ────────────────────────────────────────────────
+
     # Check if user already exists
     user = await db.users.find_one({"phone_number": phone})
     is_new_user = user is None
