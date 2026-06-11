@@ -19,6 +19,7 @@ import { apiClient, settingsAPI, whatsappAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
 import CreditBundleModal from '../../components/CreditBundleModal';
 import SubscriptionModal from '../../components/SubscriptionModal';
+import TeamManagementModal from '../../components/TeamManagementModal';
 
 interface SubscriptionPlan {
   id: string;
@@ -52,6 +53,7 @@ export default function AccountScreen() {
   const [subscribing, setSubscribing] = useState(false);
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
+  const [showTeamModal, setShowTeamModal] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
 
   // WhatsApp connection state
@@ -397,7 +399,7 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Settings</Text>
           <View style={styles.settingsCard}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.settingItem}
               onPress={() => router.push('../analytics' as any)}
             >
@@ -405,6 +407,16 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Follow-up Analytics</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            {(user?.role === 'owner' || user?.role === 'manager' || !user?.role) && (
+              <TouchableOpacity
+                style={styles.settingItem}
+                onPress={() => setShowTeamModal(true)}
+              >
+                <Ionicons name="people-outline" size={24} color="#25D366" />
+                <Text style={styles.settingText}>Team Management</Text>
+                <Ionicons name="chevron-forward" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>
@@ -465,6 +477,12 @@ export default function AccountScreen() {
           refreshUser();
         }}
         currentPlan={user?.subscription_plan}
+      />
+      <TeamManagementModal
+        visible={showTeamModal}
+        onClose={() => setShowTeamModal(false)}
+        userRole={user?.role || 'owner'}
+        userId={user?.id || ''}
       />
     </SafeAreaView>
   );
