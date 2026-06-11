@@ -8241,10 +8241,12 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
     if request.plan_id not in PLAN_FEATURES:
         raise HTTPException(status_code=400, detail="Invalid plan")
 
-    # Prevent duplicate token usage
-    existing_txn = await db.transactions.find_one({"purchase_token": request.purchase_token, "status": "success"})
-    if existing_txn:
-        raise HTTPException(status_code=400, detail="This purchase has already been redeemed")
+    # Prevent duplicate token usage (skip when the client couldn't extract a
+    # token — an empty string would falsely match earlier empty-token records)
+    if request.purchase_token:
+        existing_txn = await db.transactions.find_one({"purchase_token": request.purchase_token, "status": "success"})
+        if existing_txn:
+            raise HTTPException(status_code=400, detail="This purchase has already been redeemed")
 
     # Server-side receipt verification
     if request.platform == "android":
@@ -8377,10 +8379,13 @@ async def add_credits(request: CreditTopUpRequest, user = Depends(get_current_us
     if not bundle:
         raise HTTPException(status_code=400, detail="Invalid bundle")
 
-    # Prevent duplicate token usage
-    existing = await db.transactions.find_one({"purchase_token": request.purchase_token, "status": "success"})
-    if existing:
-        raise HTTPException(status_code=400, detail="This purchase has already been redeemed")
+    # Prevent duplicate token usage. Empty tokens (RevenueCat didn't return one)
+    # must be skipped — otherwise the first empty-token purchase permanently
+    # blocks every later top-up with "already redeemed".
+    if request.purchase_token:
+        existing = await db.transactions.find_one({"purchase_token": request.purchase_token, "status": "success"})
+        if existing:
+            raise HTTPException(status_code=400, detail="This purchase has already been redeemed")
 
     # Server-side receipt verification using the bundle_id directly as the product_id
     if request.platform == "android":
