@@ -8027,7 +8027,7 @@ REGIONAL_PRICING = {
     "JPY": (800, 1700, 2900),       # Japan
     "KRW": (7200, 15500, 26000),    # South Korea
     # Americas
-    "USD": (49, 79, 200),            # USA/Canada (Tier 1)
+    "USD": (10, 18, 28),            # USA/Canada (Tier 1)
     "BRL": (30, 65, 108),           # Brazil
     "MXN": (100, 215, 360),         # Mexico
     "COP": (22000, 47000, 78000),   # Colombia

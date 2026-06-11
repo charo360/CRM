@@ -30,14 +30,30 @@ interface Plan {
   features: string[];
 }
 
+interface StorePrice {
+  price: number;
+  priceString: string;
+  currencyCode: string;
+}
+
+function formatPrice(amount: number, currencyCode: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: currencyCode }).format(amount);
+  } catch {
+    return `${currencyCode} ${Math.round(amount).toLocaleString()}`;
+  }
+}
+
 export default function SubscriptionModal({ visible, onClose, onSuccess, currentPlan }: SubscriptionModalProps) {
   const [plans, setPlans] = useState<Plan[]>([]);
+  const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
 
   useEffect(() => {
     if (visible) {
       loadPlans();
+      loadStorePrices();
     }
   }, [visible]);
 
@@ -51,6 +67,38 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       Alert.alert('Error', 'Failed to load subscription plans');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // The store (Google Play / App Store) is the source of truth for what users
+  // are actually charged. Show its localized prices when available; the
+  // backend amounts are only a fallback for builds without IAP (e.g. Expo Go).
+  const loadStorePrices = async () => {
+    if (Constants.appOwnership === 'expo') return;
+    try {
+      const Purchases = require('react-native-purchases').default;
+      const offerings = await Purchases.getOfferings();
+      const allPackages = [
+        ...(offerings.current?.availablePackages || []),
+        ...Object.values(offerings.all || {}).flatMap((o: any) => o.availablePackages || []),
+      ];
+      const map: Record<string, StorePrice> = {};
+      for (const planId of ['starter', 'standard', 'pro']) {
+        const pkg = allPackages.find(
+          (p: any) =>
+            p.product?.identifier?.includes(planId) || p.identifier?.includes(planId)
+        );
+        if (pkg?.product?.priceString) {
+          map[planId] = {
+            price: pkg.product.price,
+            priceString: pkg.product.priceString,
+            currencyCode: pkg.product.currencyCode || '',
+          };
+        }
+      }
+      setStorePrices(map);
+    } catch (error) {
+      console.warn('Store prices unavailable, using backend display prices:', error);
     }
   };
 
@@ -190,6 +238,13 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
               <View style={styles.packages}>
                 {plans.map((plan, index) => {
                   const isCurrentPlan = currentPlan === plan.id;
+                  const store = storePrices[plan.id];
+                  const fullPrice = store
+                    ? store.priceString
+                    : `${plan.currency} ${plan.amount.toLocaleString()}`;
+                  const introPrice = store
+                    ? formatPrice(store.price / 2, store.currencyCode)
+                    : `${plan.currency} ${Math.round(plan.amount * 0.5).toLocaleString()}`;
                   return (
                     <TouchableOpacity
                       key={plan.id}
@@ -216,15 +271,15 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
 
                       <View style={styles.priceContainer}>
                         <Text style={styles.packagePriceStrike}>
-                          {plan.currency} {plan.amount.toLocaleString()}
+                          {fullPrice}
                         </Text>
                         <Text style={styles.packagePrice}>
-                          {plan.currency} {Math.round(plan.amount * 0.5).toLocaleString()}
+                          {introPrice}
                         </Text>
                         <Text style={styles.priceInterval}>/mo · first 3 months</Text>
                       </View>
                       <Text style={styles.afterIntro}>
-                        then {plan.currency} {plan.amount.toLocaleString()}/month
+                        then {fullPrice}/month
                       </Text>
 
                       <View style={styles.featuresContainer}>
