@@ -7,7 +7,8 @@ event facts go in; voice-shaped prose comes out — never raw URLs or
 
 Cached per (orchestrator instance, day) so reloads don't rebill. Past
 days are immutable, so once a reflection is written it sticks for the
-lifetime of the in-memory orchestrator.
+lifetime of the in-memory orchestrator. The current day is cached against
+a fingerprint of its event ids and regenerates when new events land.
 
 Falls back to the template synthesizer in synthesis.py whenever:
   - AI is disabled (no API key configured).
@@ -493,7 +494,7 @@ def _has_double_verdict(body: str) -> bool:
     return False
 
 
-def _get_cache(orch) -> dict[int, str]:
+def _get_cache(orch) -> dict[int, dict]:
     """Cache is keyed by (day) but invalidated whenever PROMPT_VERSION changes.
     A version mismatch wipes the entire cache so all days regenerate with the
     new prompt."""
@@ -524,14 +525,25 @@ async def generate_daily_reflection_entry(
     phase = cal.phase
 
     cache = _get_cache(orch)
+    current_day = getattr(orch, "_relationship_day", relationship_day)
+    fingerprint = "|".join(sorted(e.id for e in events))
     cached = cache.get(relationship_day)
     if cached:
-        return _entry_from_body(
-            relationship_day=relationship_day,
-            phase=phase,
-            body=cached,
-            events=events,
-        )
+        if isinstance(cached, dict):
+            cached_body, cached_fp = cached.get("body"), cached.get("fp")
+        else:  # legacy plain-string value from an older running process
+            cached_body, cached_fp = cached, None
+        # Past days are immutable — serve the cache unconditionally. The
+        # current day must regenerate whenever new events land on it,
+        # otherwise the entry written at the first load of the day freezes
+        # and the rest of the day's activity never shows up.
+        if cached_body and (relationship_day < current_day or cached_fp == fingerprint):
+            return _entry_from_body(
+                relationship_day=relationship_day,
+                phase=phase,
+                body=cached_body,
+                events=events,
+            )
 
     # DAY 1 HARD GUARD: always use the canonical template on Day 1.
     # The AI has nothing honest to say — no history exists yet.
@@ -587,7 +599,7 @@ async def generate_daily_reflection_entry(
 
     if ai_body:
         full = f"Day {relationship_day}.\n{ai_body}"
-        cache[relationship_day] = full
+        cache[relationship_day] = {"body": full, "fp": fingerprint}
         return _entry_from_body(
             relationship_day=relationship_day,
             phase=phase,

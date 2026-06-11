@@ -351,6 +351,10 @@ class ZiloSessionStore:
                 "another writer saved first; in-memory state may be stale.",
                 user_id,
             )
+            # Drop the stale cached orchestrator so the next load() re-reads
+            # the winning writer's state — otherwise every subsequent save
+            # from this process keeps colliding on the same stale timestamp.
+            self._cache.pop(user_id, None)
             raise OptimisticLockError(
                 f"Optimistic lock collision: session for user_id={user_id} was modified concurrently."
             )

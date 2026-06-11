@@ -798,7 +798,12 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
                 db, _uid(user), relationship_day=day
             )
         payload = await serialize_journal(orch, extra_entries=extra_entries)
-        await _persist(user, db, orch)
+        try:
+            await _persist(user, db, orch)
+        except OptimisticLockError:
+            # Visit-streak save lost the race against a background refresh —
+            # the journal read itself is still valid, don't 500 it.
+            logger.warning("[zilo] journal visit-state persist lost lock race")
         return payload
 
     @router.post("/journal/clear-day-override")

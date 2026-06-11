@@ -290,7 +290,7 @@ async def _sweep_one_user(
         user_doc = await db.users.find_one({"_id": uid}) or {"_id": uid}
         depth = await _sweep_depth(db, user_doc)
 
-        orch = await store.load(uid)
+        orch = await store.load(uid, business_id=bid)
         if orch is None:
             summary["skipped"] += 1
             return
