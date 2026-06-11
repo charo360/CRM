@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import {
@@ -303,11 +303,21 @@ export default function WorkPlanPage() {
     setFormattedDate(`${wd} ${ms}`);
   }, []);
 
+  const notesRefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const loadData = useCallback(async () => {
     try {
-      const data = await api.get<{ tasks: Task[]; projects: Project[] }>("/rex/workplan");
+      const data = await api.get<{ tasks: Task[]; projects: Project[]; ingesting_notes?: boolean }>("/rex/workplan");
       setTasks(data.tasks);
       setProjects(data.projects);
+      // Meeting notes are being parsed in the background — pick up the new
+      // tasks once without requiring a manual refresh.
+      if (data.ingesting_notes && !notesRefetchTimer.current) {
+        notesRefetchTimer.current = setTimeout(() => {
+          notesRefetchTimer.current = null;
+          void loadData();
+        }, 8000);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load work plan");
     } finally {

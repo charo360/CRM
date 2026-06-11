@@ -15629,7 +15629,7 @@ async def _refresh_composio_connections_background(
 
     _log = logging.getLogger(__name__)
     try:
-        live = await get_all_connection_statuses(user_id)
+        live = await get_all_connection_statuses(user_id, force_refresh=True)
         all_keys = set(cached) | set(live)
         statuses = {k: bool(live.get(k) or cached.get(k)) for k in all_keys}
         await _persist_composio_connection_statuses(user_oid, user_id, statuses)
@@ -15667,7 +15667,7 @@ async def composio_connections(
 
     source = "cache"
     try:
-        live = await asyncio.wait_for(get_all_connection_statuses(user_id), timeout=2.5)
+        live = await asyncio.wait_for(get_all_connection_statuses(user_id, force_refresh=True), timeout=2.5)
         all_keys = set(cached_map) | set(live)
         statuses = {k: bool(live.get(k) or cached_map.get(k)) for k in all_keys}
         source = "live"
@@ -15690,7 +15690,7 @@ async def composio_connection_status(toolkit: str, user=Depends(get_current_user
     """Check connection status for a specific toolkit."""
     from composio_service import get_connection_status
     user_id = await _composio_user_id(user)
-    result = await get_connection_status(user_id, toolkit)
+    result = await get_connection_status(user_id, toolkit, force_refresh=True)
     if toolkit.lower() == "slack" and result.get("connected"):
         from composio_webhooks import register_slack_webhook_for_user
 
@@ -15790,7 +15790,7 @@ async def composio_social_settings(user=Depends(get_current_user)):
     cached_map = statuses_from_cached_integrations(user.get("composio_integrations"))
     merged = dict(cached_map)
     try:
-        live = await asyncio.wait_for(get_all_connection_statuses(user_id), timeout=2.0)
+        live = await asyncio.wait_for(get_all_connection_statuses(user_id, force_refresh=True), timeout=2.0)
         all_keys = set(cached_map) | set(live)
         merged = {k: bool(live.get(k) or cached_map.get(k)) for k in all_keys}
     except Exception:

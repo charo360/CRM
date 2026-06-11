@@ -279,5 +279,8 @@ Respond ONLY with valid JSON."""
             "completed_task_ids": completed,
             "new_tasks": [],
             "notebook_entries": [],
+            # Lets callers retry later / surface an honest error instead of
+            # silently treating "LLM down" as "notes contained nothing".
+            "llm_unavailable": True,
         }
     return res

@@ -5,6 +5,7 @@ Tracks tasks for founder and Zilo, and projects with sub-steps.
 from __future__ import annotations
 import logging
 import uuid
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -507,7 +508,38 @@ async def sync_calendar_events_to_workplan(db: Any, user: dict) -> None:
 
 
 _NOTES_INGEST_LOOKBACK_DAYS = 7
-_NOTES_INGEST_BATCH = 5  # cap LLM calls per page load
+_NOTES_INGEST_BATCH = 5  # cap LLM calls per ingestion run
+_NOTES_INGEST_MAX_ATTEMPTS = 3  # retries when the LLM was unavailable
+
+
+def _llm_provider_available() -> bool:
+    return bool(
+        os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+    )
+
+
+def _pending_notes_query(uid: str, tenant: str) -> Dict[str, Any]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_NOTES_INGEST_LOOKBACK_DAYS)
+    return {
+        "user_id": {"$in": list({uid, tenant})},
+        "workplan_ingested_at": {"$exists": False},
+        "workplan_ingest_attempts": {"$not": {"$gte": _NOTES_INGEST_MAX_ATTEMPTS}},
+        "created_at": {"$gte": cutoff},
+    }
+
+
+async def count_pending_smart_notes(db: Any, user: dict) -> int:
+    """Cheap pre-check so GET /workplan can report ingestion is in flight."""
+    if not _use_live_db(db) or not _llm_provider_available():
+        return 0
+    uid = _uid(user)
+    tenant = str(user.get("business_id") or uid)
+    try:
+        return await db.smart_notes.count_documents(_pending_notes_query(uid, tenant))
+    except Exception as e:
+        logger.warning("[workplan-notes-ingest] pending count failed: %s", e)
+        return 0
 
 
 def _smart_note_to_text(note: Dict[str, Any]) -> str:
@@ -556,17 +588,14 @@ async def ingest_smart_notes_to_workplan(db: Any, user: dict) -> None:
     customer facts go to the notebook. Notes are claimed atomically via
     workplan_ingested_at so concurrent page loads can't double-process.
     """
-    if not _use_live_db(db):
+    if not _use_live_db(db) or not _llm_provider_available():
         return
     uid = _uid(user)
     tenant = str(user.get("business_id") or uid)  # smart_notes keys by business_id or _id
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_NOTES_INGEST_LOOKBACK_DAYS)
     try:
-        notes = await db.smart_notes.find({
-            "user_id": {"$in": list({uid, tenant})},
-            "workplan_ingested_at": {"$exists": False},
-            "created_at": {"$gte": cutoff},
-        }).sort("created_at", 1).to_list(_NOTES_INGEST_BATCH)
+        notes = await db.smart_notes.find(
+            _pending_notes_query(uid, tenant)
+        ).sort("created_at", 1).to_list(_NOTES_INGEST_BATCH)
     except Exception as e:
         logger.warning("[workplan-notes-ingest] query failed: %s", e)
         return
@@ -574,6 +603,20 @@ async def ingest_smart_notes_to_workplan(db: Any, user: dict) -> None:
         return
 
     from rex.workplan.service import parse_notes_and_create_tasks
+
+    async def _release_claim(note_id: Any) -> None:
+        """Un-claim a note whose parse failed so a later load retries it
+        (bounded by workplan_ingest_attempts)."""
+        try:
+            await db.smart_notes.update_one(
+                {"_id": note_id},
+                {
+                    "$unset": {"workplan_ingested_at": ""},
+                    "$inc": {"workplan_ingest_attempts": 1},
+                },
+            )
+        except Exception as e:
+            logger.warning("[workplan-notes-ingest] claim release failed: %s", e)
 
     for note in notes:
         claim = await db.smart_notes.update_one(
@@ -585,7 +628,7 @@ async def ingest_smart_notes_to_workplan(db: Any, user: dict) -> None:
 
         notes_text = _smart_note_to_text(note)
         if len(notes_text) < 30:
-            continue  # nothing substantive recorded
+            continue  # nothing substantive recorded — keep claimed, no retry needed
 
         try:
             raw_tasks = await db.workplan_tasks.find({"user_id": uid}).to_list(100)
@@ -593,6 +636,13 @@ async def ingest_smart_notes_to_workplan(db: Any, user: dict) -> None:
             result = await parse_notes_and_create_tasks(notes_text, tasks_list)
         except Exception as e:
             logger.warning("[workplan-notes-ingest] parse failed for note %s: %s", note.get("_id"), e)
+            await _release_claim(note["_id"])
+            continue
+
+        if result.get("llm_unavailable"):
+            # Don't burn the note on an outage — release it for a bounded retry.
+            logger.warning("[workplan-notes-ingest] LLM unavailable for note %s — will retry", note.get("_id"))
+            await _release_claim(note["_id"])
             continue
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -720,13 +770,18 @@ def init_workplan_routes(get_current_user, db: Any | None = None) -> APIRouter:
             await sync_calendar_events_to_workplan(db, user)
         except Exception as e:
             logger.warning("[workplan-calendar-sync] Failed: %s", e)
+        # Meeting-notes ingestion runs in the background (up to 5 LLM calls —
+        # too slow to block page load). ingesting_notes tells the UI to refetch.
+        ingesting = False
         try:
-            await ingest_smart_notes_to_workplan(db, user)
+            if await count_pending_smart_notes(db, user) > 0:
+                ingesting = True
+                asyncio.create_task(ingest_smart_notes_to_workplan(db, user))
         except Exception as e:
-            logger.warning("[workplan-notes-ingest] Failed: %s", e)
+            logger.warning("[workplan-notes-ingest] Failed to start: %s", e)
         tasks = await get_tasks(uid)
         projects = await get_projects(uid)
-        return {"tasks": tasks, "projects": projects}
+        return {"tasks": tasks, "projects": projects, "ingesting_notes": ingesting}
 
     @router.post("/tasks")
     async def create_task(body: TaskCreate, user=Depends(get_current_user)):
@@ -1370,10 +1425,16 @@ def init_workplan_routes(get_current_user, db: Any | None = None) -> APIRouter:
         from rex.workplan.service import parse_notes_and_create_tasks
         
         tasks_list = await get_tasks(uid)
-        
+
         # Call LLM helper
         result = await parse_notes_and_create_tasks(body.text, tasks_list)
-        
+        if result.get("llm_unavailable"):
+            # Honest failure beats silently creating nothing from real notes.
+            raise HTTPException(
+                status_code=503,
+                detail="Zilo couldn't analyze your notes right now. Please try again in a moment.",
+            )
+
         # Apply LLM updates
         # 1. Complete existing tasks — but only if the pasted text actually
         # expresses completion. Without this guard, re-pasting a task's own

@@ -1472,11 +1472,18 @@ def statuses_from_cached_integrations(integrations: Optional[Dict[str, Any]]) ->
     return {toolkit: bool(cached.get(toolkit)) for toolkit in ALL_TOOLKITS}
 
 
-async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
-    """Return connection status for all Zilo-supported toolkits (all apps)."""
+async def get_all_connection_statuses(user_id: str, force_refresh: bool = False) -> Dict[str, bool]:
+    """Return connection status for all Zilo-supported toolkits (all apps).
+
+    Pass force_refresh=True to bypass the short account-list cache and always
+    fetch live data from Composio right after a connect/OAuth flow.
+    """
 
     if not _get_key():
         return {t: False for t in ALL_TOOLKITS}
+
+    if force_refresh:
+        _ACCOUNTS_CACHE.pop(user_id, None)
 
     try:
         items = await _v3_list_user_accounts(user_id)
