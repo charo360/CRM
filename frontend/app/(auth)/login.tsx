@@ -9,30 +9,32 @@ import {
   Platform,
   Alert,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 
 export default function LoginScreen() {
-  const [phoneNumber, setPhoneNumber] = useState('+254');
+  const [phoneNumber, setPhoneNumber] = useState('+');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { sendOTP } = useAuth();
 
   const handleSendOTP = async () => {
-    if (phoneNumber.length < 10) {
-      Alert.alert('Error', 'Please enter a valid phone number');
+    const cleaned = phoneNumber.replace(/\s/g, '');
+    if (cleaned.length < 10 || !cleaned.startsWith('+')) {
+      Alert.alert('Invalid Number', 'Please enter your number with country code, e.g. +254712345678');
       return;
     }
 
     setLoading(true);
     try {
-      const result = await sendOTP(phoneNumber);
+      const result = await sendOTP(cleaned);
       if (result.success) {
         router.push({
           pathname: '/(auth)/verify',
-          params: { phone: phoneNumber, devOtp: result.devOtp || '' },
+          params: { phone: cleaned, devOtp: result.devOtp || '' },
         });
       } else {
         Alert.alert('Error', result.message || 'Failed to send OTP');
@@ -50,27 +52,39 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <View style={styles.content}>
+        {/* Header */}
         <View style={styles.header}>
+          <View style={styles.logoCircle}>
+            <Text style={styles.logoText}>Z</Text>
+          </View>
           <Text style={styles.title}>Zilo CRM</Text>
           <Text style={styles.subtitle}>Grow your business with AI</Text>
         </View>
 
+        {/* Form */}
         <View style={styles.form}>
-          <Text style={styles.label}>Enter your phone number</Text>
+          <Text style={styles.label}>Phone Number</Text>
           <View style={styles.inputContainer}>
-            <Ionicons name="call-outline" size={20} color="#666" style={styles.inputIcon} />
+            <Ionicons name="call-outline" size={20} color="#8A9BB5" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
               value={phoneNumber}
-              onChangeText={setPhoneNumber}
+              onChangeText={(text) => {
+                // Always keep the + prefix
+                if (!text.startsWith('+')) {
+                  setPhoneNumber('+' + text.replace(/\+/g, ''));
+                } else {
+                  setPhoneNumber(text);
+                }
+              }}
               placeholder="+1 555 000 0000"
-              placeholderTextColor="#666"
+              placeholderTextColor="#4A5A72"
               keyboardType="phone-pad"
               autoComplete="tel"
             />
           </View>
           <Text style={styles.hint}>
-            We'll send you a verification code via SMS
+            Include your country code · e.g. +254 for Kenya, +1 for US
           </Text>
 
           <TouchableOpacity
@@ -81,15 +95,29 @@ export default function LoginScreen() {
             {loading ? (
               <ActivityIndicator color="#FFFFFF" />
             ) : (
-              <Text style={styles.buttonText}>Send OTP</Text>
+              <View style={styles.buttonInner}>
+                <Ionicons name="send" size={18} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={styles.buttonText}>Send Verification Code</Text>
+              </View>
             )}
           </TouchableOpacity>
         </View>
 
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            Manage customers, follow up, send offers{"\n"}and receipts — all from WhatsApp
-          </Text>
+        {/* Features */}
+        <View style={styles.featuresCard}>
+          {[
+            { icon: 'people-outline', text: 'Manage customer contacts' },
+            { icon: 'notifications-outline', text: 'Smart follow-up reminders' },
+            { icon: 'bar-chart-outline', text: 'AI-powered business insights' },
+            { icon: 'megaphone-outline', text: 'Broadcast promotions & offers' },
+          ].map((item, i) => (
+            <View key={i} style={styles.featureRow}>
+              <View style={styles.featureIcon}>
+                <Ionicons name={item.icon as any} size={16} color="#25D366" />
+              </View>
+              <Text style={styles.featureText}>{item.text}</Text>
+            </View>
+          ))}
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -108,36 +136,56 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: 48,
+    marginBottom: 40,
   },
-  emoji: {
-    fontSize: 48,
+  logoCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#25D366',
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 16,
+    shadowColor: '#25D366',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  logoText: {
+    fontSize: 36,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
   },
   title: {
     fontSize: 32,
     fontWeight: 'bold',
     color: '#FFFFFF',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#25D366',
+    fontSize: 15,
+    color: '#8A9BB5',
   },
   form: {
-    marginBottom: 32,
+    marginBottom: 24,
   },
   label: {
-    fontSize: 16,
+    fontSize: 14,
+    fontWeight: '600',
     color: '#FFFFFF',
-    marginBottom: 12,
+    marginBottom: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1A2942',
-    borderRadius: 12,
+    borderRadius: 14,
     paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: '#243451',
     marginBottom: 8,
   },
   inputIcon: {
@@ -145,37 +193,65 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    height: 56,
-    fontSize: 18,
+    height: 58,
+    fontSize: 20,
     color: '#FFFFFF',
+    letterSpacing: 1,
   },
   hint: {
-    fontSize: 13,
-    color: '#666',
+    fontSize: 12,
+    color: '#4A5A72',
     marginBottom: 24,
+    paddingHorizontal: 4,
   },
   button: {
     backgroundColor: '#25D366',
-    borderRadius: 12,
-    height: 56,
+    borderRadius: 14,
+    height: 58,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#25D366',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
   },
   buttonDisabled: {
-    opacity: 0.7,
+    opacity: 0.6,
+  },
+  buttonInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   buttonText: {
     color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
   },
-  footer: {
+  featuresCard: {
+    backgroundColor: '#111F35',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#1E3452',
+  },
+  featureRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 14,
   },
-  footerText: {
+  featureIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#0D2038',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  featureText: {
     fontSize: 14,
-    color: '#666',
-    textAlign: 'center',
-    lineHeight: 22,
+    color: '#8A9BB5',
+    flex: 1,
   },
 });

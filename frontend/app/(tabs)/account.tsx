@@ -16,6 +16,8 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, settingsAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
+import CreditBundleModal from '../../components/CreditBundleModal';
+import SubscriptionModal from '../../components/SubscriptionModal';
 
 interface SubscriptionPlan {
   id: string;
@@ -47,6 +49,9 @@ export default function AccountScreen() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [subscribing, setSubscribing] = useState(false);
+  const [showCreditModal, setShowCreditModal] = useState(false);
+  const [showSubModal, setShowSubModal] = useState(false);
+  const [extraCredits, setExtraCredits] = useState(0);
 
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
@@ -57,12 +62,14 @@ export default function AccountScreen() {
 
   const fetchData = async () => {
     try {
-      const [plansRes, statsRes] = await Promise.all([
+      const [plansRes, statsRes, statusRes] = await Promise.all([
         apiClient.get('/subscription/plans'),
         apiClient.get('/stats'),
+        apiClient.get('/subscription/status'),
       ]);
       setPlans(plansRes.data);
       setStats(statsRes.data);
+      setExtraCredits(statusRes.data.extra_credits || 0);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -71,42 +78,7 @@ export default function AccountScreen() {
   };
 
   const handleSubscribe = async (plan: SubscriptionPlan) => {
-    if (!user) return;
-
-    Alert.prompt(
-      'Enter Email',
-      'Enter your email for payment receipt',
-      async (email) => {
-        if (!email || !email.includes('@')) {
-          Alert.alert('Error', 'Please enter a valid email');
-          return;
-        }
-
-        setSubscribing(true);
-        try {
-          const response = await apiClient.post('/subscription/initialize', {
-            email: email,
-            plan_id: plan.id,
-          });
-
-          if (response.data.authorization_url) {
-            Linking.openURL(response.data.authorization_url);
-            Alert.alert(
-              'Payment Started',
-              'Complete the payment in your browser. Your subscription will be activated automatically.',
-              [{ text: 'OK', onPress: () => refreshUser() }]
-            );
-          }
-        } catch (error: any) {
-          Alert.alert('Error', error.response?.data?.detail || 'Failed to start payment');
-        } finally {
-          setSubscribing(false);
-        }
-      },
-      'plain-text',
-      '',
-      'email-address'
-    );
+    setShowSubModal(true);
   };
 
   const handleLogout = () => {
@@ -197,6 +169,26 @@ export default function AccountScreen() {
             </View>
           )
         }
+
+        {/* Credits Card */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>AI Credits</Text>
+          <View style={styles.creditsCard}>
+            <View style={styles.creditsLeft}>
+              <Ionicons name="flash" size={28} color="#F59E0B" />
+              <View style={{ marginLeft: 12 }}>
+                <Text style={styles.creditsValue}>{extraCredits.toLocaleString()}</Text>
+                <Text style={styles.creditsLabel}>Extra credits available</Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={styles.buyCreditsButton}
+              onPress={() => setShowCreditModal(true)}
+            >
+              <Text style={styles.buyCreditsText}>Buy More</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* Subscription Plans */}
         <View style={styles.section}>
@@ -292,9 +284,27 @@ export default function AccountScreen() {
         </TouchableOpacity>
 
         <Text style={styles.version}>Version 1.0.0</Text>
-      </ScrollView >
+      </ScrollView>
 
       {/* Modals */}
+      <CreditBundleModal
+        visible={showCreditModal}
+        onClose={() => setShowCreditModal(false)}
+        onSuccess={(added) => {
+          setExtraCredits(prev => prev + added);
+          setShowCreditModal(false);
+        }}
+        currentCredits={extraCredits}
+      />
+      <SubscriptionModal
+        visible={showSubModal}
+        onClose={() => setShowSubModal(false)}
+        onSuccess={() => {
+          setShowSubModal(false);
+          refreshUser();
+        }}
+        currentPlan={user?.subscription_plan}
+      />
     </SafeAreaView>
   );
 }
@@ -598,5 +608,40 @@ const styles = StyleSheet.create({
     color: '#999',
     fontSize: 14,
     paddingVertical: 20,
+  },
+  creditsCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1.5,
+    borderColor: '#2A3F5A',
+  },
+  creditsLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  creditsValue: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  creditsLabel: {
+    fontSize: 12,
+    color: '#8A9BB5',
+    marginTop: 2,
+  },
+  buyCreditsButton: {
+    backgroundColor: '#F59E0B',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  buyCreditsText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });

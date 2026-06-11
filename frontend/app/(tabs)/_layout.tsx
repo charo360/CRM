@@ -1,19 +1,23 @@
 import React, { useState } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, View, Platform, Modal } from 'react-native';
+import { StyleSheet, View, Platform, Modal, Text, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
+import { useAuth } from '../../context/AuthContext';
+import SubscriptionModal from '../../components/SubscriptionModal';
 
 import { settingsAPI } from '../../context/api';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { user, logout, refreshUser } = useAuth();
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [showBusinessKnowledge, setShowBusinessKnowledge] = useState(false);
+  const [showSubModal, setShowSubModal] = useState(false);
 
   // Settings State
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
@@ -52,9 +56,45 @@ export default function TabsLayout() {
       await settingsAPI.updateSettings({ notification_enabled: newValue });
     } catch (error) {
       console.error('Failed to update notifications', error);
-      setNotificationEnabled(!newValue); // Revert on failure
     }
   };
+
+  // If user is loaded and does not have dashboard access, block app access with a premium paywall screen
+  const isExpired = user && user.dashboard_access === false;
+
+  if (isExpired) {
+    return (
+      <View style={styles.paywallContainer}>
+        <View style={styles.paywallCard}>
+          <View style={styles.paywallIconContainer}>
+            <Ionicons name="lock-closed" size={54} color="#25D366" />
+          </View>
+          <Text style={styles.paywallTitle}>Trial Expired</Text>
+          <Text style={styles.paywallDescription}>
+            Your free trial has ended. To continue managing your customers, tracking your sales, and sending AI automated replies, please choose a plan.
+          </Text>
+          
+          <TouchableOpacity style={styles.paywallButton} onPress={() => setShowSubModal(true)}>
+            <Text style={styles.paywallButtonText}>Unlock Zilo CRM</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={styles.paywallLogout} onPress={() => logout()}>
+            <Text style={styles.paywallLogoutText}>Log Out</Text>
+          </TouchableOpacity>
+        </View>
+
+        <SubscriptionModal
+          visible={showSubModal}
+          onClose={() => setShowSubModal(false)}
+          onSuccess={() => {
+            setShowSubModal(false);
+            refreshUser();
+          }}
+          currentPlan={user?.subscription_plan}
+        />
+      </View>
+    );
+  }
 
   return (
     <>
@@ -190,5 +230,72 @@ const styles = StyleSheet.create({
   tabBarLabel: {
     fontSize: 11,
     fontWeight: '500',
+  },
+  paywallContainer: {
+    flex: 1,
+    backgroundColor: '#0A1628',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  paywallCard: {
+    backgroundColor: '#111F35',
+    borderRadius: 24,
+    padding: 32,
+    alignItems: 'center',
+    width: '100%',
+    borderWidth: 1.5,
+    borderColor: '#1E3452',
+  },
+  paywallIconContainer: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: 'rgba(37, 211, 102, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  paywallTitle: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  paywallDescription: {
+    fontSize: 15,
+    color: '#8A9BB5',
+    lineHeight: 22,
+    textAlign: 'center',
+    marginBottom: 32,
+    paddingHorizontal: 10,
+  },
+  paywallButton: {
+    backgroundColor: '#25D366',
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    width: '100%',
+    alignItems: 'center',
+    shadowColor: '#25D366',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+    marginBottom: 16,
+  },
+  paywallButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  paywallLogout: {
+    paddingVertical: 10,
+  },
+  paywallLogoutText: {
+    color: '#FF4444',
+    fontSize: 15,
+    fontWeight: '600',
   },
 });

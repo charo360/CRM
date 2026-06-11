@@ -58,8 +58,8 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
     const isExpoGo = Constants.appOwnership === 'expo';
     if (isExpoGo) {
       Alert.alert(
-        'Development Mode',
-        'In-app purchases require a real build installed from the Play Store / App Store.',
+        'Not Available Yet',
+        'Subscriptions are available in the full Play Store version of the app. Coming soon!',
         [{ text: 'OK' }]
       );
       return;
@@ -68,9 +68,8 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       setPurchasing(true);
       const Purchases = require('react-native-purchases').default;
       const offerings = await Purchases.getOfferings();
-      if (!offerings.current && !offerings.all) throw new Error('No offerings available');
 
-      // Search all offerings by product identifier (crm_starter_monthly contains 'starter', etc.)
+      // Search all offerings for a matching product
       const allPackages = [
         ...(offerings.current?.availablePackages || []),
         ...Object.values(offerings.all || {}).flatMap((o: any) => o.availablePackages || []),
@@ -80,11 +79,18 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
           p.product?.identifier?.includes(plan.id) ||
           p.identifier?.includes(plan.id)
       );
-      if (!pkg) throw new Error('Product not found');
+
+      if (!pkg) {
+        Alert.alert(
+          'Coming Soon',
+          'Subscriptions are being set up in the Play Store. They will be available very soon!',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
 
       const { customerInfo, transaction } = await Purchases.purchasePackage(pkg);
       if (customerInfo.entitlements.active['premium']) {
-        // Sync subscription to backend so subscription_plan/subscription_active are updated in DB
         try {
           const purchaseToken = transaction?.transactionIdentifier || transaction?.revenueCatId || '';
           const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
@@ -96,13 +102,13 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
         } catch (syncErr) {
           console.warn('Backend subscription sync failed (non-fatal):', syncErr);
         }
-        Alert.alert('Success', 'Subscription activated!');
+        Alert.alert('Success! 🎉', 'Your subscription is now active!');
         onSuccess();
         onClose();
       }
     } catch (error: any) {
       if (!error.userCancelled) {
-        Alert.alert('Error', error.message || 'Purchase failed');
+        Alert.alert('Error', error.message || 'Purchase failed. Please try again.');
       }
     } finally {
       setPurchasing(false);
@@ -112,7 +118,7 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
   const restorePurchases = async () => {
     const isExpoGo = Constants.appOwnership === 'expo';
     if (isExpoGo) {
-      Alert.alert('Development Mode', 'Restore purchases requires a real build.', [{ text: 'OK' }]);
+      Alert.alert('Not Available Yet', 'Restore purchases requires the full Play Store version.', [{ text: 'OK' }]);
       return;
     }
     try {
@@ -121,11 +127,9 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       const customerInfo = await Purchases.restorePurchases();
 
       if (customerInfo.entitlements.active['premium']) {
-        // Sync restored subscription to backend
         try {
           const entitlement = customerInfo.entitlements.active['premium'];
           const productId = entitlement?.productIdentifier || '';
-          // Map RevenueCat product ID to plan_id (e.g. crm_pro_monthly → pro)
           const planMatch = productId.match(/crm_(starter|standard|pro)/);
           if (planMatch) {
             const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
@@ -136,14 +140,14 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
         } catch (syncErr) {
           console.warn('Backend restore sync failed (non-fatal):', syncErr);
         }
-        Alert.alert('Success', 'Subscription restored!');
+        Alert.alert('Restored!', 'Your subscription has been restored.');
         onSuccess();
         onClose();
       } else {
-        Alert.alert('No Subscription', 'No active subscription found');
+        Alert.alert('No Subscription Found', 'No active subscription found on this account.');
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Restore failed');
+      Alert.alert('Error', error.message || 'Restore failed. Please try again.');
     } finally {
       setPurchasing(false);
     }

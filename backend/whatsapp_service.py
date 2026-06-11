@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Module-level constants (imported by server.py)
 EVOLUTION_API_URL: str = os.environ.get("EVOLUTION_API_URL", "http://localhost:8080")
 EVOLUTION_API_KEY: str = os.environ.get("EVOLUTION_API_KEY", "")
+EVOLUTION_API_VERIFY_SSL: bool = os.environ.get("EVOLUTION_API_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
 
 # Daily send throttle (monthly caps enforced via entitlements)
 _DAILY_SEND_LIMITS: Dict[str, int] = {
@@ -122,6 +123,7 @@ class WhatsAppService:
         self.db = db
         self.base_url = EVOLUTION_API_URL.rstrip("/")
         self._api_key = EVOLUTION_API_KEY
+        self.verify_ssl = EVOLUTION_API_VERIFY_SSL
         self._conn_throttle: Dict[str, float] = {}  # instance -> last processed timestamp
 
     # ── Helpers ─────────────────────────────────────────────────────────────
@@ -139,32 +141,91 @@ class WhatsAppService:
         """Create Evolution API instance and request a pairing code."""
         instance_name = self._instance_name(user_id)
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                # Create instance
-                create_resp = await client.post(
-                    f"{self.base_url}/instance/create",
-                    headers=self._headers(),
-                    json={
-                        "instanceName": instance_name,
-                        "number": phone,
-                        "token": "",
-                        "qrcode": False,
-                        "integration": "WHATSAPP-BAILEYS",
-                    },
-                )
-                logger.info(f"[create_instance] status={create_resp.status_code} body={create_resp.text[:300]}")
+            async with httpx.AsyncClient(timeout=30, verify=self.verify_ssl) as client:
+                # 1. Clean up existing stale instances first (like in QR flow)
+                await self._delete_all_user_instances(client, user_id)
+                await asyncio.sleep(1)
 
-                # 409 = already exists — that is fine, continue to get pairing code
-                if create_resp.status_code not in (200, 201, 409):
-                    return {"status": "error", "message": create_resp.text[:200]}
+                # 2. Try creating instance with retries (for eventual consistency)
+                last_body = ""
+                created_ok = False
+                for attempt in range(3):
+                    if attempt > 0:
+                        await asyncio.sleep(min(2 + attempt * 2, 8))
 
-                # Persist instance name in DB
+                    create_resp = await client.post(
+                        f"{self.base_url}/instance/create",
+                        headers=self._headers(),
+                        json={
+                            "instanceName": instance_name,
+                            "number": phone,
+                            "token": str(uuid.uuid4()),
+                            "qrcode": False,
+                            "integration": "WHATSAPP-BAILEYS",
+                            "reject_call": False,
+                            "groupsIgnore": True,
+                        },
+                    )
+                    last_body = create_resp.text[:500]
+                    logger.info(
+                        "[create_instance] attempt=%s status=%s body=%s",
+                        attempt + 1,
+                        create_resp.status_code,
+                        last_body[:300],
+                    )
+
+                    if create_resp.status_code in (200, 201):
+                        created_ok = True
+                        break
+
+                    if self._create_conflict_response(last_body):
+                        if await self._instance_exists(client, instance_name):
+                            created_ok = True
+                            break
+                        await self._force_delete_instance(client, instance_name)
+                        await asyncio.sleep(3)
+                        continue
+
+                if not created_ok:
+                    return {"status": "error", "message": f"Instance creation failed: {last_body[:200]}"}
+
+                # 3. Configure webhook on the new instance
+                webhook_base = os.environ.get("WEBHOOK_BASE_URL", "http://host.docker.internal:8000")
+                webhook_secret = os.environ.get("WEBHOOK_SECRET", os.environ.get("EVOLUTION_API_KEY", ""))
+                
+                webhook_cfg = {
+                    "webhook": {
+                        "enabled": True,
+                        "url": f"{webhook_base}/api/webhooks/evolution",
+                        "webhookByEvents": False,
+                        "webhookBase64": False,
+                        "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CHATS_UPDATE", "CONNECTION_UPDATE"],
+                    }
+                }
+                if webhook_secret:
+                    webhook_cfg["webhook"]["headers"] = {"apikey": webhook_secret}
+
+                try:
+                    await client.post(
+                        f"{self.base_url}/webhook/set/{instance_name}",
+                        headers=self._headers(),
+                        json=webhook_cfg,
+                    )
+                except Exception as web_err:
+                    logger.warning(f"[create_instance] failed to set webhook: {web_err}")
+
+                # 4. Update MongoDB user record to track pending connection
                 await self.db.users.update_one(
                     {"_id": user_id},
-                    {"$set": {"whatsapp.instance_name": instance_name}},
+                    {"$set": {
+                        "whatsapp.instance_name": instance_name,
+                        "whatsapp.status": "pairing_pending",
+                        "whatsapp.connected": False,
+                        "whatsapp.created_at": datetime.utcnow()
+                    }},
                 )
 
-                # Request pairing code
+                # 5. Request pairing code
                 pair_resp = await client.post(
                     f"{self.base_url}/instance/pairingCode/{instance_name}",
                     headers=self._headers(),
@@ -191,7 +252,7 @@ class WhatsAppService:
         """Re-request a pairing code for an existing instance."""
         instance_name = self._instance_name(user_id)
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
                 resp = await client.post(
                     f"{self.base_url}/instance/pairingCode/{instance_name}",
                     headers=self._headers(),
@@ -211,7 +272,7 @@ class WhatsAppService:
         """Return connection status for the user's WhatsApp instance."""
         instance_name = self._instance_name(user_id)
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
                 resp = await client.get(
                     f"{self.base_url}/instance/connectionState/{instance_name}",
                     headers=self._headers(),
@@ -387,7 +448,7 @@ class WhatsAppService:
         instance_name = self._instance_name(user_id)
         results: dict = {}
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=15, verify=self.verify_ssl) as client:
                 await self._force_delete_instance(client, instance_name)
                 results["delete"] = "attempted"
         except Exception as e:
@@ -531,7 +592,7 @@ class WhatsAppService:
             # Send via Evolution API
             evo_msg_id: Optional[str] = None
             try:
-                async with httpx.AsyncClient(timeout=20) as client:
+                async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
                     if media_url:
                         mtype = (media_type or "document").lower()
                         payload = {
@@ -592,7 +653,7 @@ class WhatsAppService:
         instance_name = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
 
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, verify=self.verify_ssl) as client:
                 resp = await client.get(
                     f"{self.base_url}/contacts/findContacts/{instance_name}",
                     headers=self._headers(),
@@ -665,7 +726,7 @@ class WhatsAppService:
         instance_name = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
 
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=60, verify=self.verify_ssl) as client:
                 # Get list of chats
                 chats_resp = await client.post(
                     f"{self.base_url}/chat/findChats/{instance_name}",
@@ -726,7 +787,7 @@ class WhatsAppService:
         imported = 0
 
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, verify=self.verify_ssl) as client:
                 resp = await client.post(
                     f"{self.base_url}/chat/findMessages/{instance_name}",
                     headers=self._headers(),
@@ -789,7 +850,7 @@ class WhatsAppService:
         user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
         instance_name = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
                 resp = await client.get(
                     f"{self.base_url}/chat/fetchProfilePictureUrl/{instance_name}",
                     headers=self._headers(),
@@ -826,7 +887,7 @@ class WhatsAppService:
     async def mark_as_read(self, instance_name: str, remote_jid: str, evo_msg_id: str) -> None:
         """Send a blue-tick read receipt for a message."""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
                 await client.post(
                     f"{self.base_url}/message/markMessageAsRead/{instance_name}",
                     headers=self._headers(),

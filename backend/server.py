@@ -2415,6 +2415,172 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
     }
 
 
+@api_router.post("/auth/send-otp")
+async def send_otp(request: OTPRequest):
+    """
+    Generate and send a 6-digit OTP code to the user's phone number.
+    Uses Vonage API. If Vonage credentials are not configured, returns the code in the response as dev_otp.
+    """
+    import random
+    phone = request.phone_number.strip()
+    if not phone or len(phone) < 8:
+        raise HTTPException(status_code=400, detail="Valid phone number is required")
+
+    # Generate 6-digit code
+    code = f"{random.randint(100000, 999999)}"
+    expires_at = datetime.utcnow() + timedelta(minutes=5)
+
+    # Store OTP in MongoDB collection (otp_codes)
+    await db.otp_codes.update_one(
+        {"_id": phone},
+        {"$set": {"code": code, "expires_at": expires_at}},
+        upsert=True
+    )
+
+    # Send SMS via Vonage
+    api_key = os.environ.get("VONAGE_API_KEY")
+    api_secret = os.environ.get("VONAGE_API_SECRET")
+    sender = os.environ.get("VONAGE_FROM", "Zilo")
+
+    sms_sent = False
+    error_msg = None
+
+    if api_key and api_secret:
+        to_number = phone.lstrip('+')
+        text = f"Your Zilo verification code is {code}. It expires in 5 minutes."
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    "https://rest.nexmo.com/sms/json",
+                    json={
+                        "api_key": api_key,
+                        "api_secret": api_secret,
+                        "to": to_number,
+                        "from": sender,
+                        "text": text,
+                    },
+                    timeout=10.0
+                )
+                if res.status_code == 200:
+                    res_json = res.json()
+                    messages = res_json.get("messages", [])
+                    if messages and messages[0].get("status") == "0":
+                        logging.info(f"Vonage SMS sent successfully to {phone}")
+                        sms_sent = True
+                    else:
+                        error_msg = messages[0].get("error-text") if messages else "Unknown error"
+                        logging.error(f"Vonage SMS failed: {error_msg}")
+                else:
+                    error_msg = f"HTTP status {res.status_code}"
+                    logging.error(f"Vonage API HTTP error: {res.status_code}")
+        except Exception as e:
+            error_msg = str(e)
+            logging.exception(f"Exception trying to send Vonage SMS to {phone}")
+    else:
+        logging.warning("VONAGE_API_KEY or VONAGE_API_SECRET not set. SMS not sent.")
+
+    # Return dev_otp if SMS could not be sent (or if in sandbox mode)
+    # To facilitate local testing, we return dev_otp whenever SMS wasn't sent or if explicitly requested.
+    response_data = {"status": "success"}
+    if not sms_sent:
+        response_data["dev_otp"] = code
+        if error_msg:
+            response_data["warning"] = f"Vonage SMS failed: {error_msg}. Using sandbox code."
+    
+    return response_data
+
+
+@api_router.post("/auth/verify-otp")
+async def verify_otp(request: OTPVerify):
+    """
+    Verify the 6-digit OTP code.
+    If valid:
+      1. Finds or creates the user doc (reusing the new user creation logic).
+      2. Generates a JWT token.
+      3. Returns token, is_new_user, and user object.
+    """
+    from country_utils import detect_country_from_phone, get_payment_methods_for_country
+    
+    phone = request.phone_number.strip()
+    code = request.code.strip()
+
+    if not phone or not code:
+        raise HTTPException(status_code=400, detail="Phone number and code are required")
+
+    # Find the OTP code in MongoDB
+    otp_doc = await db.otp_codes.find_one({"_id": phone})
+    if not otp_doc:
+        raise HTTPException(status_code=400, detail="Invalid verification code or code expired")
+
+    if otp_doc["code"] != code:
+        raise HTTPException(status_code=400, detail="Invalid verification code")
+
+    if datetime.utcnow() > otp_doc["expires_at"]:
+        await db.otp_codes.delete_one({"_id": phone})
+        raise HTTPException(status_code=400, detail="Verification code has expired")
+
+    # OTP is valid! Delete it so it cannot be reused
+    await db.otp_codes.delete_one({"_id": phone})
+
+    # Check if user already exists
+    user = await db.users.find_one({"phone_number": phone})
+    is_new_user = user is None
+
+    if is_new_user:
+        # Create new user doc
+        country_code = detect_country_from_phone(phone)
+        country_config = get_payment_methods_for_country(country_code)
+
+        user_id = str(uuid.uuid4())
+        user_doc = {
+            "_id": user_id,
+            "phone_number": phone,
+            "business_name": "",
+            "owner_name": "",
+            "subscription_plan": None,
+            "subscription_active": False,
+            "country_code": country_code,
+            "currency": country_config["currency"],
+            "payment_methods": [{"name": m, "details": ""} for m in country_config["methods"][:3]],
+            "created_at": datetime.utcnow(),
+            "setup_complete": False,
+            "role": TeamMemberRole.OWNER,
+            "business_id": user_id,
+            "auth_provider": "phone_otp",
+            "settings": {"business_type": "retail", "onboarding_v1_completed": False},
+        }
+        await db.users.insert_one(user_doc)
+        from entitlements import provision_signup_trial
+        await provision_signup_trial(db, user_id)
+        user = user_doc
+    else:
+        user_id = user["_id"]
+
+    token = create_token(user_id, phone)
+    
+    # Determine if setup is complete
+    setup_complete = user.get("setup_complete", False)
+    is_new_user_flag = not setup_complete or not user.get("business_name")
+
+    return serialize_doc({
+        "status": "success",
+        "token": token,
+        "access_token": token,
+        "is_new_user": is_new_user_flag,
+        "user": {
+            "id": user_id,
+            "phone_number": phone,
+            "business_name": user.get("business_name", ""),
+            "owner_name": user.get("owner_name", ""),
+            "subscription_active": user.get("subscription_active", False),
+            "business_id": user.get("business_id", user_id),
+            "role": user.get("role", TeamMemberRole.OWNER),
+            "settings": user.get("settings", {}),
+            "auth_provider": user.get("auth_provider", "phone_otp"),
+        }
+    })
+
+
 @api_router.post("/auth/register-web")
 async def register_web(req: WebRegisterRequest):
     """
@@ -2617,6 +2783,14 @@ async def get_me(user = Depends(get_current_user)):
     except (asyncio.TimeoutError, Exception):
         team_members_count = 0
     
+    # Resolve entitlements
+    try:
+        from entitlements import build_entitlements
+        ent = await build_entitlements(db, user)
+        dashboard_access = ent.get("dashboard_access", False)
+    except Exception:
+        dashboard_access = True  # fallback if entitlements fails
+
     return serialize_doc({
         "id": user["_id"],
         "email": user.get("email"),
@@ -2628,6 +2802,7 @@ async def get_me(user = Depends(get_current_user)):
         "team_members_count": team_members_count,
         "subscription_plan": user.get("subscription_plan"),
         "subscription_active": user.get("subscription_active", False),
+        "dashboard_access": dashboard_access,
         "country_code": user.get("country_code"),
         "currency": user.get("currency", "USD"),
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"]),
@@ -8041,18 +8216,69 @@ async def get_subscription_status(user = Depends(get_current_user)):
         **ent,
     }
 
-# Credit top-up bundles: bundle_id -> {credits, price_usd}
+# Credit top-up bundles: bundle_id -> {credits, price_usd, play_product_id}
+# bundle_id must match the Google Play Console product IDs exactly
 CREDIT_BUNDLES = {
-    "credits_500":  {"credits": 500,  "price_usd": 2.99,  "label": "500 Credits"},
-    "credits_1000": {"credits": 1000, "price_usd": 4.99,  "label": "1,000 Credits"},
-    "credits_2500": {"credits": 2500, "price_usd": 9.99,  "label": "2,500 Credits"},
-    "credits_5000": {"credits": 5000, "price_usd": 17.99, "label": "5,000 Credits"},
+    "charo360_credits_500":  {"credits": 500,  "price_usd": 2.99,  "label": "500 Extra Messages"},
+    "charo360_credits_1000": {"credits": 1000, "price_usd": 4.99,  "label": "1,000 Extra Messages"},
+    "charo360_credits_2500": {"credits": 2500, "price_usd": 9.99,  "label": "2,500 Extra Messages"},
+    "charo360_credits_5000": {"credits": 5000, "price_usd": 17.99, "label": "5,000 Extra Messages"},
 }
 
 class CreditTopUpRequest(BaseModel):
     bundle_id: str
     purchase_token: str
     platform: str  # "android" | "ios"
+
+async def _verify_google_play_consumable(purchase_token: str, product_id: str) -> dict:
+    """Verify a Google Play one-time consumable purchase (credits top-up).
+    Uses the product_id directly — no prefix/suffix transformation."""
+    package_name = GOOGLE_PLAY_PACKAGE_NAME
+    sa_key_path = os.environ.get('GOOGLE_SA_KEY_PATH', '')
+
+    if not package_name:
+        logging.warning("GOOGLE_PLAY_PACKAGE_NAME not set — skipping consumable verification")
+        return {"valid": True, "reason": "no_server_config"}
+
+    if not sa_key_path or not os.path.exists(sa_key_path):
+        logging.warning("GOOGLE_SA_KEY_PATH not set or file missing — skipping consumable verification")
+        return {"valid": True, "reason": "no_server_config"}
+
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request as GRequest
+        import httpx
+
+        creds = service_account.Credentials.from_service_account_file(
+            sa_key_path,
+            scopes=["https://www.googleapis.com/auth/androidpublisher"],
+        )
+        creds.refresh(GRequest())
+
+        url = (
+            f"https://androidpublisher.googleapis.com/androidpublisher/v3"
+            f"/applications/{package_name}/purchases/products/{product_id}"
+            f"/tokens/{purchase_token}"
+        )
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {creds.token}"})
+
+        if resp.status_code != 200:
+            return {"valid": False, "reason": f"Google API error: {resp.status_code}"}
+
+        data = resp.json()
+        # purchaseState 0 = purchased, 1 = canceled
+        if data.get("purchaseState", -1) != 0:
+            return {"valid": False, "reason": "Purchase not completed"}
+
+        return {"valid": True, "order_id": data.get("orderId")}
+    except ImportError:
+        logging.warning("google-auth not installed — skipping consumable verification")
+        return {"valid": True, "reason": "no_google_auth_lib"}
+    except Exception as e:
+        logging.error(f"Google Play consumable verification error: {e}")
+        return {"valid": False, "reason": str(e)}
+
 
 @api_router.get("/subscription/credit-bundles")
 async def get_credit_bundles_list(user = Depends(get_current_user)):
@@ -8071,9 +8297,10 @@ async def add_credits(request: CreditTopUpRequest, user = Depends(get_current_us
     if existing:
         raise HTTPException(status_code=400, detail="This purchase has already been redeemed")
 
-    # Server-side receipt verification (reuse same IAP flow)
+    # Server-side receipt verification using the bundle_id directly as the product_id
     if request.platform == "android":
-        verification = await _verify_google_play_purchase(request.purchase_token, request.bundle_id)
+        # Pass the bundle_id as the product_id directly (it IS the Google Play product ID)
+        verification = await _verify_google_play_consumable(request.purchase_token, request.bundle_id)
     elif request.platform == "ios":
         verification = await _verify_apple_receipt(request.purchase_token)
     else:
@@ -8344,6 +8571,7 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
     headers = wa_service._headers()
 
     webhook_base = _os.environ.get("WEBHOOK_BASE_URL", "http://host.docker.internal:8000")
+    webhook_secret = _os.environ.get("WEBHOOK_SECRET", _os.environ.get("EVOLUTION_API_KEY", ""))
     webhook_cfg = {
         "webhook": {
             "enabled": True,
@@ -8353,9 +8581,13 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
             "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CHATS_UPDATE", "CONNECTION_UPDATE"],
         }
     }
+    if webhook_secret:
+        webhook_cfg["webhook"]["headers"] = {"apikey": webhook_secret}
+
+    _verify_ssl = _os.environ.get("EVOLUTION_API_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
 
     try:
-        async with _httpx.AsyncClient(timeout=90) as client:
+        async with _httpx.AsyncClient(timeout=90, verify=_verify_ssl) as client:
             try:
                 instance_name = await wa_service.recreate_instance_for_qr(
                     client, user_id, extra_instance_names=extra_names
@@ -8494,8 +8726,10 @@ async def whatsapp_qr_fetch(user = Depends(get_current_user)):
     user_id = whatsapp_owner_id(user)
     instance_name = wa_service._instance_name(user_id)
 
+    _verify_ssl = _os.environ.get("EVOLUTION_API_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+
     try:
-        async with _httpx.AsyncClient(timeout=15) as client:
+        async with _httpx.AsyncClient(timeout=15, verify=_verify_ssl) as client:
             live = await wa_service.get_instance_status(user_id)
             live_state = (live.get("status") or "").lower()
             if live.get("connected"):

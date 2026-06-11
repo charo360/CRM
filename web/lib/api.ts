@@ -1018,6 +1018,13 @@ export const authApi = {
   register: (data: { business_name: string; owner_name: string }) =>
     api.post<Record<string, unknown>>("/auth/register", data),
   me: () => api.get<Record<string, unknown>>("/auth/me"),
+  sendOTP: (phoneNumber: string) =>
+    api.post<{ success: boolean; dev_otp?: string }>("/auth/send-otp", { phone_number: phoneNumber }),
+  verifyOTP: (phoneNumber: string, code: string) =>
+    api.post<{ token: string; is_new_user: boolean; user: Record<string, unknown> }>("/auth/verify-otp", {
+      phone_number: phoneNumber,
+      code,
+    }),
 };
 
 export interface FollowupSuggestionStats {

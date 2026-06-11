@@ -307,10 +307,10 @@ export default function ChatScreen() {
       setShowToast(true);
     } catch (error: any) {
       console.error('Send media error:', error);
-      if (error?.response?.status === 429) {
+      if (error?.response?.status === 429 || error?.response?.status === 403) {
         Alert.alert(
           "You've reached your message limit",
-          'Upgrade your plan to send more messages and unlock more features.',
+          error?.response?.data?.detail || 'Upgrade your plan to send more messages and unlock more features.',
           [
             { text: 'Later', style: 'cancel' },
             { text: 'Upgrade Now', onPress: () => router.push('/(tabs)/account') },
@@ -453,10 +453,10 @@ export default function ChatScreen() {
       );
     } catch (error: any) {
       console.error('Send error:', error);
-      if (error?.response?.status === 429) {
+      if (error?.response?.status === 429 || error?.response?.status === 403) {
         Alert.alert(
           "You've reached your message limit",
-          'Upgrade your plan to send more messages and unlock more features.',
+          error?.response?.data?.detail || 'Upgrade your plan to send more messages and unlock more features.',
           [
             { text: 'Later', style: 'cancel' },
             { text: 'Upgrade Now', onPress: () => router.push('/(tabs)/account') },
