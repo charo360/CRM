@@ -195,13 +195,15 @@ Respond ONLY with valid JSON array."""
 
     res = await _call_llm_json(prompt, expect_array=True)
     if not res or not isinstance(res, list):
-        # Fallback list of steps based on project name
+        # LLM unavailable — generic skeleton derived from the actual project,
+        # not launch-themed steps that look hardcoded on unrelated projects.
+        logger.warning("[workplan-ai] step suggestion fell back — no LLM provider answered")
         now = datetime.now(timezone.utc)
         return [
-            {"name": "Write copy and description", "owner": "founder", "due_date": (now + timedelta(days=2)).isoformat()},
-            {"name": "Design visual assets", "owner": "zilo", "due_date": (now + timedelta(days=3)).isoformat()},
-            {"name": "Schedule launch post", "owner": "zilo", "due_date": (now + timedelta(days=4)).isoformat()},
-            {"name": "Monitor launch and replies", "owner": "founder", "due_date": due_date}
+            {"name": f"Break down: {goal or project_name}", "owner": "founder", "due_date": (now + timedelta(days=1)).isoformat()},
+            {"name": f"Draft the core work for {project_name}", "owner": "zilo", "due_date": (now + timedelta(days=3)).isoformat()},
+            {"name": "Review draft and adjust", "owner": "founder", "due_date": (now + timedelta(days=4)).isoformat()},
+            {"name": f"Finalize {project_name}", "owner": "founder", "due_date": due_date},
         ]
 
     # Defensive clamp: never trust the model's dates. Force every step's
@@ -218,8 +220,11 @@ async def parse_notes_and_create_tasks(notes_text: str, current_tasks: List[dict
     Checks if notes imply completing any of the current_tasks.
     """
     tasks_simplified = [{"id": t["id"], "title": t["title"]} for t in current_tasks]
-    
+    now = datetime.now(timezone.utc)
+    today_label = f"{now.strftime('%b')} {now.day}"  # e.g. "Jun 11"
+
     prompt = f"""You are Zilo, an AI CRM Chief of Staff.
+Today's date is {now.strftime('%Y-%m-%d')} ({today_label}).
 A founder uploaded meeting notes or a voice log:
 Notes:
 \"\"\"
@@ -245,8 +250,8 @@ Return a JSON object with:
       "title": "Task title",
       "owner": "founder" or "zilo",
       "due_date": "ISO-8601 string or null",
-      "source": "Meeting notes Jun 8",
-      "context": "Henderson is waiting on this etc."
+      "source": "Meeting notes {today_label}",
+      "context": "1-line why, quoting the relevant detail from the notes"
     }}
   ],
   "notebook_entries": [
@@ -257,37 +262,22 @@ Return a JSON object with:
   ]
 }}
 
+Every "due_date" and "source" must come from the notes and today's date above — never reuse the literal example values.
 Respond ONLY with valid JSON."""
 
     res = await _call_llm_json(prompt)
     if not res:
-        # Fallback parsing
+        # LLM unavailable. Never invent tasks the notes don't contain — only a
+        # conservative text-derived heuristic (explicit "signed the NDA").
+        logger.warning("[workplan-ai] notes parse fell back — no LLM provider answered")
         completed = []
-        new_t = []
-        notebook = []
-        
-        # Check simple NDA/contract sign in notes
         if "signed the nda" in notes_text.lower() or "nda is signed" in notes_text.lower():
-            # Try to match NDA task in current_tasks
             for t in current_tasks:
                 if "nda" in t["title"].lower():
                     completed.append(t["id"])
-                    
-        # Check commitments like "Sam will send the deck by Friday"
-        if "deck by friday" in notes_text.lower():
-            now = datetime.now(timezone.utc)
-            friday = now + timedelta(days=(4 - now.weekday()) % 7)
-            new_t.append({
-                "title": "Send pitch deck to investor",
-                "owner": "founder",
-                "due_date": friday.isoformat(),
-                "source": "Parsed from notes",
-                "context": "Sam committed to send deck by Friday"
-            })
-            
         res = {
             "completed_task_ids": completed,
-            "new_tasks": new_t,
-            "notebook_entries": notebook
+            "new_tasks": [],
+            "notebook_entries": [],
         }
     return res

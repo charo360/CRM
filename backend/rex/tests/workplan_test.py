@@ -61,7 +61,8 @@ class TestWorkPlanService:
         assert "zilo" in owners
 
     def test_parse_notes_and_create_tasks_fallback(self):
-        """Test notes parsing matching current tasks and extracting commitments."""
+        """LLM-down fallback: explicit completions still match, but the parser
+        must NEVER invent tasks the notes don't contain (no canned content)."""
         current_tasks = [
             {"id": "task_nda", "title": "Get NDA signed by Henderson"},
             {"id": "task_other", "title": "Other work"},
@@ -71,8 +72,8 @@ class TestWorkPlanService:
             current_tasks
         ))
         assert "task_nda" in res["completed_task_ids"]
-        assert len(res["new_tasks"]) == 1
-        assert "deck" in res["new_tasks"][0]["title"].lower()
+        assert res["new_tasks"] == []
+        assert res["notebook_entries"] == []
 
 
 class TestWorkPlanRoutes:
@@ -223,8 +224,28 @@ class TestWorkPlanRoutes:
         assert any(p["name"] == "Design New Homepage" for p in wp_data["projects"])
         assert any("Design New Homepage" in t["title"] for t in wp_data["tasks"])
 
-    def test_parse_input_dedups_against_open_task(self, test_client):
+    @staticmethod
+    def _stub_deck_parse(monkeypatch):
+        """Deterministic parse result so these tests exercise route-level dedup,
+        not LLM availability (the fallback intentionally creates nothing now)."""
+        async def fake_parse(notes_text, current_tasks):
+            return {
+                "completed_task_ids": [],
+                "new_tasks": [{
+                    "title": "Send pitch deck to investor",
+                    "owner": "founder",
+                    "due_date": None,
+                    "source": "Meeting notes test",
+                    "context": "Sam committed to send the deck",
+                }],
+                "notebook_entries": [],
+            }
+        import rex.workplan.service as svc
+        monkeypatch.setattr(svc, "parse_notes_and_create_tasks", fake_parse)
+
+    def test_parse_input_dedups_against_open_task(self, test_client, monkeypatch):
         """Pasting notes whose task already exists (open) must not duplicate it."""
+        self._stub_deck_parse(monkeypatch)
         # Demo seed already contains an open "Send pitch deck to investor" task.
         res = test_client.post("/workplan/parse-input", json={
             "text": "Signed the partnership contract. Sam will send the deck by Friday."
@@ -238,8 +259,9 @@ class TestWorkPlanRoutes:
         deck = [t for t in wp["tasks"] if "pitch deck" in t["title"].lower()]
         assert len(deck) == 1
 
-    def test_parse_input_creates_after_existing_done(self, test_client):
+    def test_parse_input_creates_after_existing_done(self, test_client, monkeypatch):
         """Once the matching task is done, the same paste can create a fresh one."""
+        self._stub_deck_parse(monkeypatch)
         wp = test_client.get("/workplan").json()
         deck = next(t for t in wp["tasks"] if "pitch deck" in t["title"].lower())
         test_client.post(f"/workplan/tasks/{deck['id']}/complete")

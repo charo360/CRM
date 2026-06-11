@@ -505,6 +505,154 @@ async def sync_calendar_events_to_workplan(db: Any, user: dict) -> None:
                 except Exception as ex:
                     logger.warning("[workplan-calendar-notes] After-call check failed: %s", ex)
 
+
+_NOTES_INGEST_LOOKBACK_DAYS = 7
+_NOTES_INGEST_BATCH = 5  # cap LLM calls per page load
+
+
+def _smart_note_to_text(note: Dict[str, Any]) -> str:
+    """Flatten a Smart Note (real meeting note) into parseable text."""
+    parts: List[str] = []
+    title = (note.get("title") or "").strip()
+    if title:
+        parts.append(f"Meeting: {title}")
+    attendees = [a for a in (note.get("attendees") or []) if a]
+    if attendees:
+        parts.append("Attendees: " + ", ".join(str(a) for a in attendees[:10]))
+    summary = (note.get("summary") or "").strip()
+    if summary:
+        parts.append(f"Summary:\n{summary}")
+    items = [str(i).strip() for i in (note.get("action_items") or []) if str(i).strip()]
+    if items:
+        parts.append("Action items:\n- " + "\n- ".join(items[:20]))
+    transcript = (note.get("transcript") or "").strip()
+    # Transcript only when there's no summary — it's the noisiest, costliest input.
+    if transcript and not summary:
+        parts.append(f"Transcript (excerpt):\n{transcript[:4000]}")
+    return "\n\n".join(parts)
+
+
+def _note_source_label(note: Dict[str, Any]) -> str:
+    """Real provenance label for tasks created from this note."""
+    title = (note.get("title") or "Meeting").strip()[:60]
+    when = note.get("meeting_start") or note.get("created_at")
+    if isinstance(when, datetime):
+        return f"Meeting notes · {title} · {when.strftime('%b')} {when.day}"
+    if isinstance(when, str):
+        try:
+            dt = datetime.fromisoformat(when.replace("Z", "+00:00"))
+            return f"Meeting notes · {title} · {dt.strftime('%b')} {dt.day}"
+        except ValueError:
+            pass
+    return f"Meeting notes · {title}"
+
+
+async def ingest_smart_notes_to_workplan(db: Any, user: dict) -> None:
+    """Connect the Work Plan to actual recorded meeting notes (Smart Notes).
+
+    Each not-yet-ingested note from the past week is parsed exactly once:
+    explicit completions check off matching tasks, commitments become new
+    tasks (deduped, with the note title + real date as the source), and
+    customer facts go to the notebook. Notes are claimed atomically via
+    workplan_ingested_at so concurrent page loads can't double-process.
+    """
+    if not _use_live_db(db):
+        return
+    uid = _uid(user)
+    tenant = str(user.get("business_id") or uid)  # smart_notes keys by business_id or _id
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_NOTES_INGEST_LOOKBACK_DAYS)
+    try:
+        notes = await db.smart_notes.find({
+            "user_id": {"$in": list({uid, tenant})},
+            "workplan_ingested_at": {"$exists": False},
+            "created_at": {"$gte": cutoff},
+        }).sort("created_at", 1).to_list(_NOTES_INGEST_BATCH)
+    except Exception as e:
+        logger.warning("[workplan-notes-ingest] query failed: %s", e)
+        return
+    if not notes:
+        return
+
+    from rex.workplan.service import parse_notes_and_create_tasks
+
+    for note in notes:
+        claim = await db.smart_notes.update_one(
+            {"_id": note["_id"], "workplan_ingested_at": {"$exists": False}},
+            {"$set": {"workplan_ingested_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        if claim.modified_count == 0:
+            continue  # another request claimed it
+
+        notes_text = _smart_note_to_text(note)
+        if len(notes_text) < 30:
+            continue  # nothing substantive recorded
+
+        try:
+            raw_tasks = await db.workplan_tasks.find({"user_id": uid}).to_list(100)
+            tasks_list = [{**t, "id": str(t["_id"])} for t in raw_tasks]
+            result = await parse_notes_and_create_tasks(notes_text, tasks_list)
+        except Exception as e:
+            logger.warning("[workplan-notes-ingest] parse failed for note %s: %s", note.get("_id"), e)
+            continue
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        completed_ids = result.get("completed_task_ids") or []
+        if not _has_completion_signal(notes_text):
+            completed_ids = []
+        for tid in completed_ids:
+            await db.workplan_tasks.update_one(
+                _id_filter(tid, uid),
+                {"$set": {"status": "done", "completed_at": now_iso}},
+            )
+
+        source_label = _note_source_label(note)
+        created = 0
+        for nt in result.get("new_tasks") or []:
+            nt_title = (nt.get("title") or "").strip()
+            if not nt_title:
+                continue
+            nt_owner = safe_owner(nt.get("owner"), nt_title)
+            if await open_duplicate_exists(db, uid, nt_title, nt_owner):
+                continue
+            new_task = {
+                "_id": str(uuid.uuid4()),
+                "user_id": uid,
+                "title": nt_title,
+                "owner": nt_owner,
+                "due_date": nt.get("due_date"),
+                "source": source_label,
+                "status": "pending",
+                "context": nt.get("context"),
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }
+            if nt_owner == "zilo":
+                new_task["zilo_status"] = "scheduled"
+            await db.workplan_tasks.insert_one(new_task)
+            created += 1
+
+        if result.get("notebook_entries"):
+            try:
+                from rex_routes import _persist_orch_with_retry
+
+                def mutate_notebook(orch):
+                    from rex.memory import Bucket
+                    for entry in result["notebook_entries"]:
+                        orch.notebook.add(
+                            bucket=Bucket.PEOPLE,
+                            subject=entry.get("subject", "Meeting note"),
+                            text=entry.get("text", ""),
+                        )
+                await _persist_orch_with_retry(user, db, mutate=mutate_notebook)
+            except Exception as e:
+                logger.warning("[workplan-notes-ingest] notebook write failed: %s", e)
+
+        logger.info(
+            "[workplan-notes-ingest] note %s → %d task(s) created, %d completed",
+            note.get("_id"), created, len(completed_ids),
+        )
+
+
 def init_workplan_routes(get_current_user, db: Any | None = None) -> APIRouter:
     router = APIRouter(prefix="/workplan", tags=["workplan"])
 
@@ -572,6 +720,10 @@ def init_workplan_routes(get_current_user, db: Any | None = None) -> APIRouter:
             await sync_calendar_events_to_workplan(db, user)
         except Exception as e:
             logger.warning("[workplan-calendar-sync] Failed: %s", e)
+        try:
+            await ingest_smart_notes_to_workplan(db, user)
+        except Exception as e:
+            logger.warning("[workplan-notes-ingest] Failed: %s", e)
         tasks = await get_tasks(uid)
         projects = await get_projects(uid)
         return {"tasks": tasks, "projects": projects}
