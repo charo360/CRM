@@ -9,12 +9,13 @@ import {
   ActivityIndicator,
   Linking,
   Switch,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient, settingsAPI } from '../../context/api';
+import { apiClient, settingsAPI, whatsappAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
 import CreditBundleModal from '../../components/CreditBundleModal';
 import SubscriptionModal from '../../components/SubscriptionModal';
@@ -53,6 +54,17 @@ export default function AccountScreen() {
   const [showSubModal, setShowSubModal] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
 
+  // WhatsApp connection state
+  const [waConnected, setWaConnected] = useState(false);
+  const [waStatus, setWaStatus] = useState('not_connected');
+  const [waNumber, setWaNumber] = useState('');
+  const [waPhoneInput, setWaPhoneInput] = useState('');
+  const [waPairingCode, setWaPairingCode] = useState('');
+  const [waConnecting, setWaConnecting] = useState(false);
+  const [waDisconnecting, setWaDisconnecting] = useState(false);
+  const [waMsgSent, setWaMsgSent] = useState(0);
+  const [waMsgLimit, setWaMsgLimit] = useState(50);
+
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
 
@@ -70,6 +82,18 @@ export default function AccountScreen() {
       setPlans(plansRes.data);
       setStats(statsRes.data);
       setExtraCredits(statusRes.data.extra_credits || 0);
+
+      // Fetch WhatsApp status
+      try {
+        const waRes = await whatsappAPI.getStatus();
+        setWaConnected(waRes.connected);
+        setWaStatus(waRes.status);
+        setWaNumber(waRes.number || '');
+        setWaMsgSent(waRes.messages_sent || 0);
+        setWaMsgLimit(waRes.messages_limit || 50);
+      } catch (e) {
+        console.log('WhatsApp status not available');
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -79,6 +103,56 @@ export default function AccountScreen() {
 
   const handleSubscribe = async (plan: SubscriptionPlan) => {
     setShowSubModal(true);
+  };
+
+  const handleWhatsAppConnect = async () => {
+    if (!waPhoneInput.trim()) {
+      Alert.alert('Error', 'Please enter your WhatsApp phone number');
+      return;
+    }
+    setWaConnecting(true);
+    setWaPairingCode('');
+    try {
+      const res = await whatsappAPI.connect(waPhoneInput.trim());
+      if (res.pairing_code) {
+        setWaPairingCode(res.pairing_code);
+      } else {
+        Alert.alert('Error', res.message || 'Failed to get pairing code');
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to connect WhatsApp');
+    } finally {
+      setWaConnecting(false);
+    }
+  };
+
+  const handleWhatsAppDisconnect = async () => {
+    Alert.alert(
+      'Disconnect WhatsApp',
+      'Are you sure? You will need to re-pair to send messages.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            setWaDisconnecting(true);
+            try {
+              await whatsappAPI.disconnect();
+              setWaConnected(false);
+              setWaStatus('not_connected');
+              setWaNumber('');
+              setWaPairingCode('');
+              setWaPhoneInput('');
+            } catch (error: any) {
+              Alert.alert('Error', error.response?.data?.detail || 'Failed to disconnect');
+            } finally {
+              setWaDisconnecting(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleLogout = () => {
@@ -169,6 +243,93 @@ export default function AccountScreen() {
             </View>
           )
         }
+
+        {/* WhatsApp Business */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>WhatsApp Business</Text>
+          <View style={styles.settingsCard}>
+            {waConnected ? (
+              <View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#25D366', marginRight: 10 }} />
+                  <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '600', flex: 1 }}>Connected</Text>
+                  <TouchableOpacity onPress={handleWhatsAppDisconnect} disabled={waDisconnecting}>
+                    <Text style={{ color: '#FF4444', fontSize: 14 }}>{waDisconnecting ? 'Disconnecting...' : 'Disconnect'}</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={{ color: '#8A9BB5', fontSize: 14 }}>Number: {waNumber}</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+                  <Text style={{ color: '#8A9BB5', fontSize: 13 }}>Messages this month</Text>
+                  <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>{waMsgSent} / {waMsgLimit}</Text>
+                </View>
+                <View style={{ height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2, marginTop: 6 }}>
+                  <View style={{ height: 4, backgroundColor: waMsgSent / waMsgLimit > 0.9 ? '#FF4444' : '#25D366', borderRadius: 2, width: `${Math.min((waMsgSent / waMsgLimit) * 100, 100)}%` }} />
+                </View>
+              </View>
+            ) : waPairingCode ? (
+              <View>
+                <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Enter this code in WhatsApp</Text>
+                <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 16 }}>
+                  Open WhatsApp {'>'} Settings {'>'} Linked Devices {'>'} Link a Device {'>'} Link with phone number
+                </Text>
+                <View style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 16 }}>
+                  <Text style={{ color: '#25D366', fontSize: 32, fontWeight: '700', letterSpacing: 8 }}>{waPairingCode}</Text>
+                </View>
+                <Text style={{ color: '#8A9BB5', fontSize: 12, textAlign: 'center' }}>Code expires in 60 seconds. Waiting for connection...</Text>
+                <ActivityIndicator size="small" color="#25D366" style={{ marginTop: 12 }} />
+                <TouchableOpacity
+                  style={{ marginTop: 16, alignItems: 'center' }}
+                  onPress={() => { setWaPairingCode(''); setWaPhoneInput(''); }}
+                >
+                  <Text style={{ color: '#8A9BB5', fontSize: 14 }}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                  <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
+                  <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginLeft: 10 }}>Connect WhatsApp</Text>
+                </View>
+                <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 16 }}>
+                  Link your WhatsApp number to send messages directly from the app.
+                </Text>
+                <TextInput
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.08)',
+                    borderRadius: 10,
+                    paddingHorizontal: 16,
+                    paddingVertical: 12,
+                    fontSize: 16,
+                    color: '#FFFFFF',
+                    marginBottom: 12,
+                  }}
+                  placeholder="+1234567890"
+                  placeholderTextColor="#666"
+                  value={waPhoneInput}
+                  onChangeText={setWaPhoneInput}
+                  keyboardType="phone-pad"
+                />
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: '#25D366',
+                    borderRadius: 10,
+                    paddingVertical: 14,
+                    alignItems: 'center',
+                    opacity: waConnecting ? 0.7 : 1,
+                  }}
+                  onPress={handleWhatsAppConnect}
+                  disabled={waConnecting}
+                >
+                  {waConnecting ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Get Pairing Code</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
 
         {/* Credits Card */}
         <View style={styles.section}>

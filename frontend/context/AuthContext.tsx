@@ -12,6 +12,7 @@ interface User {
   subscription_active: boolean;
   subscription_plan?: string;
   dashboard_access?: boolean;
+  role?: string;
 }
 
 interface AuthContextType {

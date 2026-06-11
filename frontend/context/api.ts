@@ -181,6 +181,30 @@ export const messagesAPI = {
 
 export const whatsappAPI = {
   /**
+   * Start WhatsApp pairing: returns 8-digit code for Linked Devices
+   */
+  connect: async (phoneNumber: string) => {
+    const response = await apiClient.post('/whatsapp/connect', { phone_number: phoneNumber });
+    return response.data;
+  },
+
+  /**
+   * Get WhatsApp connection status and message usage
+   */
+  getStatus: async () => {
+    const response = await apiClient.get('/whatsapp/status');
+    return response.data;
+  },
+
+  /**
+   * Disconnect WhatsApp instance
+   */
+  disconnect: async () => {
+    const response = await apiClient.post('/whatsapp/disconnect', {});
+    return response.data;
+  },
+
+  /**
    * Send a WhatsApp text message to a customer
    */
   sendMessage: async (toNumber: string, message: string, customerName?: string) => {

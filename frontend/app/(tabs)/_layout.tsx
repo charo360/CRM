@@ -7,6 +7,7 @@ import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 import SubscriptionModal from '../../components/SubscriptionModal';
 
 import { settingsAPI } from '../../context/api';
@@ -15,6 +16,7 @@ export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, logout, refreshUser } = useAuth();
+  const { config, isRetailBusiness } = useBusiness();
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [showBusinessKnowledge, setShowBusinessKnowledge] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
@@ -123,9 +125,15 @@ export default function TabsLayout() {
                     onPress: () => router.push('../analytics' as any),
                     color: '#25D366'
                   },
+                  ...(user?.role === 'owner' || user?.role === 'manager' || !user?.role ? [{
+                    icon: 'people-outline' as const,
+                    label: 'Team Analytics',
+                    onPress: () => router.push('../team-analytics' as any),
+                    color: '#4A90E2'
+                  }] : []),
                   {
                     icon: 'cube-outline',
-                    label: 'Product Catalog',
+                    label: `${config.catalogLabel || 'Product'} Catalog`,
                     onPress: () => setShowProductCatalog(true)
                   },
                   {
@@ -180,11 +188,12 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
-          name="sales"
+          name="bookings"
           options={{
-            title: 'Sales',
+            title: config.bookingLabel || 'Bookings',
+            href: config.bookingsTabVisible ? undefined : null,
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="receipt" size={size} color={color} />
+              <Ionicons name="calendar" size={size} color={color} />
             ),
           }}
         />
@@ -192,8 +201,18 @@ export default function TabsLayout() {
           name="broadcast"
           options={{
             title: 'Broadcast',
+            href: isRetailBusiness ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="sales"
+          options={{
+            title: config.salesTabLabel || 'Sales',
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="cash" size={size} color={color} />
             ),
           }}
         />
