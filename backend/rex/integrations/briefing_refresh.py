@@ -227,6 +227,15 @@ async def light_briefing_refresh(
     report["revived"] = _revive_overzealously_dismissed(orch)
     report["auto_dismissed_promo"] = _auto_dismiss_promotional_staged(orch, whitelist)
 
+    # Emit ACTION_CLEAN_SEND for SENT actions whose undo window has closed.
+    # This is the only live call site — it feeds the journal ("sent cleanly")
+    # and the rank engine's clean-send credit. Idempotent via orch._swept_ids.
+    try:
+        report["clean_sends"] = len(orch.sweep_clean_sends())
+    except Exception as e:
+        logger.warning("[zilo] clean-send sweep: %s", e)
+        report["clean_sends"] = 0
+
     metrics = await fetch_metrics(db, uid)
     metrics["followups_zilo"] = sum(
         1 for a in orch.ledger.all_actions()

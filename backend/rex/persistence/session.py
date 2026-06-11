@@ -90,6 +90,15 @@ class ZiloSessionStore:
         # Journal engagement state
         orch._journal_last_visit_day = doc.get("journal_last_visit_day")  # type: ignore[attr-defined]
         orch._journal_streak = int(doc.get("journal_streak") or 0)  # type: ignore[attr-defined]
+        orch._journal_shown_milestones = list(doc.get("journal_shown_milestones") or [])  # type: ignore[attr-defined]
+        # AI journal reflections — Mongo keys are strings, cache keys are int days.
+        # Restoring these keeps past entries stable (and unbilled) across restarts.
+        try:
+            refl = doc.get("ai_reflections") or {}
+            orch._ai_reflections = {int(k): v for k, v in refl.items()}  # type: ignore[attr-defined]
+            orch._ai_reflections_version = doc.get("ai_reflections_version")  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.warning("[zilo-session] reflection cache restore failed: %s", e)
         orch._companies = doc.get("companies") or []
         return orch
 
@@ -316,6 +325,11 @@ class ZiloSessionStore:
             "journal_last_visit_day": getattr(orch, "_journal_last_visit_day", None),
             "journal_streak": int(getattr(orch, "_journal_streak", 0) or 0),
             "journal_shown_milestones": list(getattr(orch, "_journal_shown_milestones", []) or []),
+            "ai_reflections": {
+                str(k): v
+                for k, v in (getattr(orch, "_ai_reflections", None) or {}).items()
+            },
+            "ai_reflections_version": getattr(orch, "_ai_reflections_version", None),
             "relationship_day_override": getattr(orch, "_relationship_day_override", None),
         }
 
