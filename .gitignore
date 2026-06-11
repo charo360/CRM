@@ -76,6 +76,9 @@ backend/uploads/
 **/*.tar
 **/*.tgz
 
+# ── Personal / non-project folders ────────────────────────────────────────────
+EB2/
+
 # ── Local dev / AI tool artifacts ─────────────────────────────────────────────
 .emergent/
 .gitconfig
