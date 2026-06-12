@@ -66,6 +66,12 @@ export default function TabsLayout() {
     return <View style={styles.loadingContainer} />;
   }
 
+  // Bookings and Broadcast swap a single tab slot: booking businesses get the
+  // Bookings tab (Broadcast moves to the three-dot menu), everyone else gets
+  // the Broadcast tab (Bookings in the menu when the business supports them).
+  const showBookingsTab = config.bookingsTabVisible && !isRetailBusiness;
+  const showBroadcastTab = !showBookingsTab;
+
   return (
     <>
       <Tabs
@@ -87,6 +93,25 @@ export default function TabsLayout() {
               <ThreeDotMenu
                 color="#FFFFFF"
                 items={[
+                  // Whichever of Bookings/Broadcast isn't in the tab bar lives here
+                  ...(showBookingsTab ? [{
+                    icon: 'megaphone-outline' as const,
+                    label: 'Broadcast',
+                    onPress: () => router.push('/(tabs)/broadcast' as any),
+                    color: '#25D366'
+                  }] : []),
+                  ...(showBroadcastTab && config.bookingsTabVisible ? [{
+                    icon: 'calendar-outline' as const,
+                    label: config.bookingLabel ? `${config.bookingLabel}s` : 'Bookings',
+                    onPress: () => router.push('/(tabs)/bookings' as any),
+                    color: '#25D366'
+                  }] : []),
+                  {
+                    icon: 'search-outline',
+                    label: 'Group Scout',
+                    onPress: () => router.push('../group-scout' as any),
+                    color: '#25D366'
+                  },
                   {
                     icon: 'analytics-outline',
                     label: 'Follow-up Analytics',
@@ -159,7 +184,7 @@ export default function TabsLayout() {
           name="bookings"
           options={{
             title: config.bookingLabel || 'Bookings',
-            href: config.bookingsTabVisible ? undefined : null,
+            href: showBookingsTab ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="calendar" size={size} color={color} />
             ),
@@ -169,7 +194,7 @@ export default function TabsLayout() {
           name="broadcast"
           options={{
             title: 'Broadcast',
-            href: isRetailBusiness ? undefined : null,
+            href: showBroadcastTab ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
             ),
