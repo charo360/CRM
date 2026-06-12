@@ -2,17 +2,17 @@
 
 
 
-Handles OAuth connections (Gmail, Google Calendar) and action execution.
+Handles OAuth connections (Gmail, Google Calendar, social channels) and action execution.
 
-Uses Composio managed auth — only COMPOSIO_API_KEY needed.
+Uses Composio dashboard auth configs with COMPOSIO_API_KEY.
 
 
 
 Correct Composio REST base: https://backend.composio.dev/api
 
-  - Managed OAuth toolkits: v1 integrations + POST /v1/connectedAccounts (integrationId, userUuid).
+  - OAuth toolkits: v3.1 auth_configs + POST /v3.1/connected_accounts (auth_config.id).
 
-  - Shopify/Brevo/Klaviyo (no managed app): v3.1 auth_configs + POST /v3.1/connected_accounts (auth_config.id).
+  - Legacy v1 integrations remain as a best-effort fallback for older Composio accounts.
 
 """
 
@@ -184,9 +184,14 @@ async def _shopify_direct_proxy(
 
 _COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo", "shopify", "klaviyo"})
 
-# Try v3.1 auth_configs FIRST for these toolkits (managed OAuth works but custom apps are common)
+# Try v3.1 auth_configs FIRST for every OAuth toolkit. The legacy v1
+# integration discovery endpoints now return 410 for newer Composio projects.
 _COMPOSIO_TRY_V31_FIRST: frozenset[str] = frozenset({
+    "gmail", "googlecalendar", "outlook",
+    "slack", "googlesheets", "notion",
+    "stripe", "mailchimp",
     "googlesearchconsole", "googleanalytics", "googleads",
+    "facebook", "instagram", "youtube",
 })
 
 
@@ -899,6 +904,10 @@ async def _init_connected_account_v31(
 
         )
 
+        if resp.status_code in (401, 403):
+
+            return {"error": _composio_err_text(data, resp.status_code)}
+
         if resp.status_code in (200, 201) and isinstance(data, dict):
 
             url, cid = _v31_extract_redirect(data)
@@ -1003,7 +1012,7 @@ async def get_connect_url(user_id: str, toolkit: str, redirect_url: str, extra_d
 
                         return out
 
-                    logger.info("[composio] v3.1 attempt failed for %s, falling through to v1", app_name)
+                    return out
 
             integration_id = await _get_or_create_integration_id(client, app_name)
 

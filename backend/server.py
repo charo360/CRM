@@ -18,14 +18,16 @@ except ModuleNotFoundError:
 sys.path.insert(0, str(ROOT_DIR))
 
 # .env.local overrides for local dev — but blank values must NOT wipe keys already set
-# from .env (or the host). A stray `OPENROUTER_KEY=` line has cleared working keys.
-_local_env = ROOT_DIR / ".env.local"
-if _local_env.exists():
-    try:
-        from dotenv import dotenv_values
-    except ModuleNotFoundError:
-        pass
-    else:
+# from .env (or the host). Root .env.local is included because local full-stack
+# runs often keep shared server keys there while Next.js uses web/.env.local.
+try:
+    from dotenv import dotenv_values
+except ModuleNotFoundError:
+    pass
+else:
+    for _local_env in (ROOT_DIR.parent / ".env.local", ROOT_DIR / ".env.local"):
+        if not _local_env.exists():
+            continue
         for _k, _v in dotenv_values(_local_env).items():
             if not _k or _v is None:
                 continue
