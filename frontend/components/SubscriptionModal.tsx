@@ -34,6 +34,9 @@ interface StorePrice {
   price: number;
   priceString: string;
   currencyCode: string;
+  // Introductory offer price from the store (e.g. 50% off first 3 months
+  // configured in Play Console). Null when the product has no intro offer.
+  introPriceString: string | null;
 }
 
 function formatPrice(amount: number, currencyCode: string): string {
@@ -93,6 +96,7 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
             price: pkg.product.price,
             priceString: pkg.product.priceString,
             currencyCode: pkg.product.currencyCode || '',
+            introPriceString: pkg.product.introPrice?.priceString || null,
           };
         }
       }
@@ -242,8 +246,10 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
                   const fullPrice = store
                     ? store.priceString
                     : `${plan.currency} ${plan.amount.toLocaleString()}`;
+                  // Prefer the real intro offer from the store; only compute
+                  // 50% as a display fallback when the store didn't provide one.
                   const introPrice = store
-                    ? formatPrice(store.price / 2, store.currencyCode)
+                    ? (store.introPriceString || formatPrice(store.price / 2, store.currencyCode))
                     : `${plan.currency} ${Math.round(plan.amount * 0.5).toLocaleString()}`;
                   return (
                     <TouchableOpacity
