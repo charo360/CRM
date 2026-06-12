@@ -21,14 +21,17 @@ sys.path.insert(0, str(ROOT_DIR))
 # from .env (or the host). A stray `OPENROUTER_KEY=` line has cleared working keys.
 _local_env = ROOT_DIR / ".env.local"
 if _local_env.exists():
-    from dotenv import dotenv_values
-
-    for _k, _v in dotenv_values(_local_env).items():
-        if not _k or _v is None:
-            continue
-        if str(_v).strip() == "":
-            continue
-        os.environ[_k] = str(_v).strip()
+    try:
+        from dotenv import dotenv_values
+    except ModuleNotFoundError:
+        pass
+    else:
+        for _k, _v in dotenv_values(_local_env).items():
+            if not _k or _v is None:
+                continue
+            if str(_v).strip() == "":
+                continue
+            os.environ[_k] = str(_v).strip()
 
 # Force UTF-8 for Windows console output (skip if already wrapped to avoid deadlock)
 import io
@@ -151,32 +154,57 @@ import json
 import re as _re
 # Evolution API replaces Twilio — config in whatsapp_service.py
 # from emergentintegrations.llm.chat import LlmChat, UserMessage
-from .ai_service import get_drafter, AIMessageDrafter
-from .daily_analyzer import DailyCustomerAnalyzer
-from .notification_service import get_notification_service
-from .image_handler import ImageUploadHandler, S3Handler
-from .product_organizer import get_organizer
-from .whatsapp_service import get_whatsapp_service
-from .followup_analytics import get_analytics
-from .smart_notifications import get_smart_notifications
-from .supplier_analyzer import SupplierAnalyzer
-from .contact_classifier import get_classifier
+if __package__:
+    from .ai_service import get_drafter, AIMessageDrafter
+    from .daily_analyzer import DailyCustomerAnalyzer
+    from .notification_service import get_notification_service
+    from .image_handler import ImageUploadHandler, S3Handler
+    from .product_organizer import get_organizer
+    from .whatsapp_service import get_whatsapp_service
+    from .followup_analytics import get_analytics
+    from .smart_notifications import get_smart_notifications
+    from .supplier_analyzer import SupplierAnalyzer
+    from .contact_classifier import get_classifier
+else:
+    from ai_service import get_drafter, AIMessageDrafter
+    from daily_analyzer import DailyCustomerAnalyzer
+    from notification_service import get_notification_service
+    from image_handler import ImageUploadHandler, S3Handler
+    from product_organizer import get_organizer
+    from whatsapp_service import get_whatsapp_service
+    from followup_analytics import get_analytics
+    from smart_notifications import get_smart_notifications
+    from supplier_analyzer import SupplierAnalyzer
+    from contact_classifier import get_classifier
 from fastapi import UploadFile, File, Body, Form
 from fastapi.staticfiles import StaticFiles
-from .daily_scheduler import start_daily_scheduler
-from .mongo_http_client import AsyncMongoHTTPClient
+if __package__:
+    from .daily_scheduler import start_daily_scheduler
+    from .mongo_http_client import AsyncMongoHTTPClient
+else:
+    from daily_scheduler import start_daily_scheduler
+    from mongo_http_client import AsyncMongoHTTPClient
 
 
 
 from bson import ObjectId as _ObjectId
 print("[DEBUG] Core imports done, loading CRM services...")
-from .redis_client import (
-    cache_get, cache_set, cache_delete, cache_delete_pattern,
-    enqueue_job,
-    key_tenant_settings, key_plan_limits, key_dashboard, key_products,
-    QUEUE_BROADCAST, QUEUE_RECEIPT,
-    TTL_TENANT_SETTINGS, TTL_PLAN_LIMITS, TTL_DASHBOARD, TTL_PRODUCTS,
-)
+if __package__:
+    from .redis_client import (
+        cache_get, cache_set, cache_delete, cache_delete_pattern,
+        enqueue_job,
+        key_tenant_settings, key_plan_limits, key_dashboard, key_products,
+        QUEUE_BROADCAST, QUEUE_RECEIPT,
+        TTL_TENANT_SETTINGS, TTL_PLAN_LIMITS, TTL_DASHBOARD, TTL_PRODUCTS,
+    )
+else:
+    from redis_client import (
+        cache_get, cache_set, cache_delete, cache_delete_pattern,
+        enqueue_job,
+        key_tenant_settings, key_plan_limits, key_dashboard, key_products,
+        QUEUE_BROADCAST, QUEUE_RECEIPT,
+        TTL_TENANT_SETTINGS, TTL_PLAN_LIMITS, TTL_DASHBOARD, TTL_PRODUCTS,
+    )
 
 # Anti-duplicate auto-reply guard: tracks evo_message_id to prevent double replies
 # Evolution API often fires messages.upsert webhook multiple times for the same message
