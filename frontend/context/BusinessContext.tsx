@@ -248,6 +248,10 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
 
   const load = useCallback(async () => {
     if (!isAuthenticated) { setIsLoading(false); return; }
+    // Re-arm loading on every (re)load — without this, the early
+    // not-authenticated pass sets isLoading=false and the tabs mount with the
+    // default config (Bookings/Broadcast hidden) before settings arrive.
+    setIsLoading(true);
     try {
       const settings = await settingsAPI.getSettings();
       setBusinessType((settings.business_type as BusinessType) || '');

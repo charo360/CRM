@@ -13,6 +13,7 @@ interface User {
   subscription_plan?: string;
   dashboard_access?: boolean;
   role?: string;
+  team_members_count?: number;
 }
 
 interface AuthContextType {
