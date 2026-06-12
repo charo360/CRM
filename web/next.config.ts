@@ -25,10 +25,10 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
-        // /proxy/rex/:path* → http://localhost:8000/rex/:path*
-        // Rex routes are mounted at /rex (not /api/rex) on the backend
+        // /proxy/rex/:path* → http://localhost:8000/api/rex/:path*
+        // Rex routes are mounted at /api/rex on the backend
         source: "/proxy/rex/:path*",
-        destination: `${BACKEND_ORIGIN}/rex/:path*`,
+        destination: `${BACKEND_ORIGIN}/api/rex/:path*`,
       },
       {
         // /proxy/:path* → http://localhost:8000/api/:path*

@@ -19702,8 +19702,8 @@ except Exception as _gfe:
 # ── Rex (Phase 11+ Day 0 Onboarding, future Briefing/Notebook/Journal/Ledger) ─
 try:
     from rex_routes import init_rex_routes
-    app.include_router(init_rex_routes(get_current_user, db))
-    logging.info("[rex] routes mounted at /rex/*")
+    api_router.include_router(init_rex_routes(get_current_user, db))
+    logging.info("[rex] routes mounted at /api/rex/*")
 except Exception as _rxe:
     logging.error("[rex] failed to mount routes: %s", _rxe)
 
