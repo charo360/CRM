@@ -254,8 +254,13 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     try {
       const settings = await settingsAPI.getSettings();
-      setBusinessType((settings.business_type as BusinessType) || '');
+      // Accounts without a business_type get 'general' (hybrid): Bookings and
+      // Broadcast both visible — matches the original production app where
+      // these tabs were never hidden.
+      setBusinessType((settings.business_type as BusinessType) || 'general');
     } catch (_) {
+      // Settings fetch failed — show the full tab set rather than hiding tabs.
+      setBusinessType((prev) => prev || 'general');
     } finally {
       setIsLoading(false);
     }
