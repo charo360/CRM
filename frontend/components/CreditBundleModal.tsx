@@ -218,7 +218,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A1628',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '80%',
+    // Fixed height (not maxHeight): with only a maxHeight the flex:1 ScrollView
+    // collapses to zero and the bundle list is unreachable.
+    height: '80%',
   },
   header: {
     flexDirection: 'row',
