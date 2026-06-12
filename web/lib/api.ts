@@ -971,7 +971,7 @@ export type SubscriptionPlan = {
 export const subscriptionApi = {
   publicPlans: (currency = "USD") =>
     api.get<SubscriptionPlan[]>(`/subscription/plans/public?currency=${encodeURIComponent(currency)}`),
-  plans: () => api.get<SubscriptionPlan[]>("/subscription/plans"),
+  plans: () => api.get<SubscriptionPlan[]>("/subscription/plans/web"),
   entitlements: () => api.get<Entitlements>("/subscription/entitlements"),
   status: () => api.get<Entitlements & { extra_credits?: number; subscription_date?: string }>("/subscription/status"),
   startTrial: () => api.post<Entitlements & { status: string; trial_days: number }>("/subscription/start-trial", {}),

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from entitlements import (
     PAID_PLAN_IDS,
     TRIAL_DAYS,
+    WEB_USD_MONTHLY,
     build_entitlements,
     marketing_features_for_plan,
     normalize_plan_id,
@@ -22,6 +23,26 @@ from entitlements import (
     trial_end_from_start,
     trial_provision_update,
 )
+
+PLAN_DISPLAY_NAMES = {"starter": "Starter", "standard": "Growth", "pro": "Pro"}
+
+
+def get_web_plans() -> list:
+    """Web product catalog (Stripe checkout): USD pricing with web-tier caps.
+    Separate from the mobile app's /subscription/plans catalog."""
+    plans = []
+    for plan_id in PAID_PLAN_IDS:
+        amount = WEB_USD_MONTHLY[plan_id]
+        plans.append({
+            "id": plan_id,
+            "name": PLAN_DISPLAY_NAMES.get(plan_id, plan_id.title()),
+            "amount": amount,
+            "currency": "USD",
+            "amount_display": f"USD {amount}/month",
+            "interval": "monthly",
+            "features": marketing_features_for_plan(plan_id),
+        })
+    return plans
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +91,13 @@ def register_subscription_billing_routes(
 
     @api_router.get("/subscription/plans/public")
     async def public_plans(currency: str = "USD"):
-        """Catalog for logged-out pricing page."""
-        return get_regional_plans(currency.upper())
+        """Catalog for the logged-out web pricing page (web product)."""
+        return get_web_plans()
+
+    @api_router.get("/subscription/plans/web")
+    async def web_plans(user=Depends(get_current_user)):
+        """Catalog for the logged-in web billing page (web product)."""
+        return get_web_plans()
 
     @api_router.get("/subscription/entitlements")
     async def entitlements(user=Depends(get_current_user)):

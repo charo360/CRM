@@ -8048,17 +8048,17 @@ PLAN_FEATURES = {
     "starter": {
         "name": "Starter",
         "interval": "monthly",
-        "features": ["5,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"]
+        "features": ["2,500 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies"]
     },
     "standard": {
         "name": "Growth",
         "interval": "monthly",
-        "features": ["10,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Priority support"]
+        "features": ["5,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Priority support"]
     },
     "pro": {
         "name": "Pro",
         "interval": "monthly",
-        "features": ["25,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Advanced analytics", "Custom templates", "Dedicated support"]
+        "features": ["10,000 messages/month", "Unlimited customers", "Follow-ups & broadcasts", "AI replies", "Advanced analytics", "Custom templates", "Dedicated support"]
     }
 }
 
@@ -8267,7 +8267,8 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
             "$set": {
                 "subscription_plan": request.plan_id,
                 "subscription_active": True,
-                "subscription_date": datetime.utcnow()
+                "subscription_date": datetime.utcnow(),
+                "billing_provider": "iap",
             }
         }
     )
