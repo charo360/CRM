@@ -181,6 +181,15 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
+          name="sales"
+          options={{
+            title: config.salesTabLabel || 'Sales',
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="cash" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
           name="bookings"
           options={{
             title: config.bookingLabel || 'Bookings',
@@ -197,15 +206,6 @@ export default function TabsLayout() {
             href: showBroadcastTab ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
-            ),
-          }}
-        />
-        <Tabs.Screen
-          name="sales"
-          options={{
-            title: config.salesTabLabel || 'Sales',
-            tabBarIcon: ({ color, size }) => (
-              <Ionicons name="cash" size={size} color={color} />
             ),
           }}
         />
