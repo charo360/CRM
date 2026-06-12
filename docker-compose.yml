@@ -2,7 +2,10 @@ version: '3.9'
 
 services:
   evolution-api:
-    image: evoapicloud/evolution-api:latest
+    # Pinned version: "latest" auto-updates on restart and breaking Evolution
+    # changes have silently broken pairing before. Upgrade deliberately by
+    # bumping this tag after testing.
+    image: evoapicloud/evolution-api:v2.3.7
     environment:
       - DATABASE_PROVIDER=postgresql
       - WEBHOOK_GLOBAL_ENABLED=true
@@ -17,6 +20,12 @@ services:
       - ./evolution.env
     volumes:
       - evolution_instances:/evolution/instances
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     depends_on:
       - postgres
       - redis

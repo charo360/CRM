@@ -21,6 +21,14 @@ EVOLUTION_API_URL: str = os.environ.get("EVOLUTION_API_URL", "http://localhost:8
 EVOLUTION_API_KEY: str = os.environ.get("EVOLUTION_API_KEY", "")
 EVOLUTION_API_VERIFY_SSL: bool = os.environ.get("EVOLUTION_API_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
 
+# Randomized pause between consecutive broadcast/bulk sends (min, max) seconds.
+# Human-like pacing is the single most important anti-ban measure for bulk
+# sending through an unofficial gateway. Tunable via env without a deploy.
+BROADCAST_DELAY: tuple = (
+    float(os.environ.get("BROADCAST_DELAY_MIN", "3.0")),
+    float(os.environ.get("BROADCAST_DELAY_MAX", "8.0")),
+)
+
 # Daily send throttle (monthly caps enforced via entitlements)
 _DAILY_SEND_LIMITS: Dict[str, int] = {
     "free": 50,
@@ -589,51 +597,82 @@ class WhatsAppService:
             user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
             instance_name = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
 
-            # Send via Evolution API
+            # Send via Evolution API with retries (transient failures only).
+            # 3 attempts, exponential backoff with jitter: ~1s, ~2-3s.
             evo_msg_id: Optional[str] = None
-            try:
-                async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
-                    if media_url:
-                        mtype = (media_type or "document").lower()
-                        payload = {
-                            "number": to_number,
-                            "mediatype": mtype,
-                            "media": media_url,
-                            "caption": message,
-                        }
-                        if media_filename:
-                            payload["fileName"] = media_filename
-                        evo_resp = await client.post(
-                            f"{self.base_url}/message/sendMedia/{instance_name}",
-                            headers=self._headers(),
-                            json=payload,
-                        )
-                    else:
-                        evo_resp = await client.post(
-                            f"{self.base_url}/message/sendText/{instance_name}",
-                            headers=self._headers(),
-                            json={"number": to_number, "text": message},
-                        )
+            delivery_error: Optional[str] = None
+            if media_url:
+                mtype = (media_type or "document").lower()
+                send_path = f"/message/sendMedia/{instance_name}"
+                send_payload: dict = {
+                    "number": to_number,
+                    "mediatype": mtype,
+                    "media": media_url,
+                    "caption": message,
+                }
+                if media_filename:
+                    send_payload["fileName"] = media_filename
+            else:
+                send_path = f"/message/sendText/{instance_name}"
+                send_payload = {"number": to_number, "text": message}
 
+            import random as _random
+            for attempt in range(3):
+                try:
+                    async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
+                        evo_resp = await client.post(
+                            f"{self.base_url}{send_path}",
+                            headers=self._headers(),
+                            json=send_payload,
+                        )
                     if evo_resp.status_code in (200, 201):
                         evo_data = evo_resp.json()
                         evo_msg_id = (
                             evo_data.get("key", {}).get("id")
                             or evo_data.get("id")
                         )
+                        delivery_error = None
                         if evo_msg_id:
                             await self.db.messages.update_one(
                                 {"_id": message_id},
                                 {"$set": {"evo_message_id": evo_msg_id}},
                             )
-                    else:
-                        logger.warning(f"[send_message] Evolution API {evo_resp.status_code}: {evo_resp.text[:200]}")
-            except Exception as evo_err:
-                logger.error(f"[send_message] Evolution API error: {evo_err}")
-                # Message already stored in DB — don't fail the whole request
+                        break
+                    # 5xx and 429 are transient — retry; other 4xx are permanent
+                    delivery_error = f"Evolution API {evo_resp.status_code}: {evo_resp.text[:200]}"
+                    logger.warning(f"[send_message] attempt {attempt + 1}: {delivery_error}")
+                    if evo_resp.status_code < 500 and evo_resp.status_code != 429:
+                        break
+                except Exception as evo_err:
+                    delivery_error = str(evo_err)
+                    logger.error(f"[send_message] attempt {attempt + 1} error: {evo_err}")
+                if attempt < 2:
+                    await asyncio.sleep((2 ** attempt) * (1 + _random.random() * 0.5))
+
+            # Honest delivery state on the stored message. Webhooks will upgrade
+            # it (sent → delivered → read); "failed" surfaces in the chat UI and
+            # in the failed_sends collection for recovery/inspection.
+            if delivery_error and not evo_msg_id:
+                await self.db.messages.update_one(
+                    {"_id": message_id},
+                    {"$set": {"delivery_status": "failed", "delivery_error": delivery_error[:500]}},
+                )
+                try:
+                    await self.db.failed_sends.insert_one({
+                        "message_id": message_id,
+                        "user_id": user_id,
+                        "to_number": to_number,
+                        "error": delivery_error[:500],
+                        "send_context": send_context,
+                        "created_at": datetime.utcnow(),
+                    })
+                except Exception:
+                    pass
 
             return {
                 "status": "success",
+                "delivered": evo_msg_id is not None,
+                "delivery_error": delivery_error if not evo_msg_id else None,
                 "customer_id": customer_id,
                 "message_id": message_id,
                 "evo_message_id": evo_msg_id,
@@ -1108,6 +1147,75 @@ class WhatsAppService:
         except Exception as e:
             logger.error("[handle_group_message] %s: %s", instance_name, e)
             return None
+
+# ── Connection watchdog ──────────────────────────────────────────────────────
+
+WATCHDOG_INTERVAL = int(os.environ.get("WA_WATCHDOG_INTERVAL_SECONDS", "300"))
+# Consecutive failed checks before declaring an instance dead (2 × 5min ≈ 10min)
+WATCHDOG_FAIL_THRESHOLD = int(os.environ.get("WA_WATCHDOG_FAIL_THRESHOLD", "2"))
+
+
+async def connection_watchdog_loop(db, notify_user=None) -> None:
+    """Periodically verify every 'connected' WhatsApp instance is actually alive.
+
+    Webhook-driven state goes stale silently (phone offline, unlinked, Evolution
+    restart). This loop heals state in both directions and notifies the owner
+    when their connection dies, instead of them discovering it via failed sends.
+
+    notify_user: optional async callable (user_id, title, body) for push alerts.
+    """
+    service = get_whatsapp_service(db)
+    while True:
+        try:
+            cursor = db.users.find(
+                {"whatsapp.connected": True},
+                {"_id": 1, "whatsapp": 1},
+            )
+            async for user in cursor:
+                user_id = user["_id"]
+                status = await service.get_instance_status(user_id)
+                state = status.get("status")
+
+                if status.get("connected"):
+                    if (user.get("whatsapp") or {}).get("watchdog_fails"):
+                        await db.users.update_one(
+                            {"_id": user_id}, {"$set": {"whatsapp.watchdog_fails": 0}}
+                        )
+                elif state == "error":
+                    # Couldn't reach Evolution — that's our problem, not the
+                    # user's connection. Never mark users offline for this.
+                    logger.warning("[watchdog] Evolution unreachable while checking %s", user_id)
+                else:
+                    fails = ((user.get("whatsapp") or {}).get("watchdog_fails") or 0) + 1
+                    if fails >= WATCHDOG_FAIL_THRESHOLD:
+                        await db.users.update_one(
+                            {"_id": user_id},
+                            {"$set": {
+                                "whatsapp.connected": False,
+                                "whatsapp.disconnected_at": datetime.utcnow(),
+                                "whatsapp.watchdog_fails": 0,
+                            }},
+                        )
+                        logger.warning("[watchdog] marked %s disconnected (state=%s)", user_id, state)
+                        if notify_user:
+                            try:
+                                await notify_user(
+                                    user_id,
+                                    "WhatsApp disconnected",
+                                    "Your WhatsApp connection was lost. Open Account → WhatsApp Business to reconnect.",
+                                )
+                            except Exception as ne:
+                                logger.warning("[watchdog] notify failed for %s: %s", user_id, ne)
+                    else:
+                        await db.users.update_one(
+                            {"_id": user_id}, {"$set": {"whatsapp.watchdog_fails": fails}}
+                        )
+                # Gentle pacing so a large tenant list doesn't hammer Evolution
+                await asyncio.sleep(1)
+        except Exception as e:
+            logger.error("[watchdog] loop error: %s", e)
+        await asyncio.sleep(WATCHDOG_INTERVAL)
+
 
 # ── Singleton ────────────────────────────────────────────────────────────────
 

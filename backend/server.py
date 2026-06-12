@@ -573,6 +573,27 @@ async def start_lead_scout_worker():
         logging.warning("[lead_scout] could not start background worker: %s", e)
 
 @app.on_event("startup")
+async def start_whatsapp_watchdog():
+    try:
+        from whatsapp_service import connection_watchdog_loop
+
+        async def _notify(user_id: str, title: str, body: str):
+            await send_push_notification(user_id, title, body)
+
+        asyncio.create_task(connection_watchdog_loop(db, notify_user=_notify))
+        logging.info("[wa-watchdog] connection watchdog started")
+    except Exception as e:
+        logging.warning("[wa-watchdog] could not start: %s", e)
+
+@app.on_event("startup")
+async def start_webhook_replay_worker():
+    try:
+        asyncio.create_task(webhook_replay_loop())
+        logging.info("[webhook-replay] worker started")
+    except Exception as e:
+        logging.warning("[webhook-replay] could not start: %s", e)
+
+@app.on_event("startup")
 async def start_weekly_report_worker():
     # Dormant unless WEEKLY_REPORTS_ENABLED=1 and tenants opt in; the loop self-checks.
     try:
@@ -11090,10 +11111,77 @@ async def evolution_webhook(request: Request):
             return {"status": "ok"}
         
         return {"status": "ok", "event": event}
-        
+
     except Exception as e:
         logging.error(f"Evolution webhook error: {e}")
+        # Persist the raw payload for replay so transient failures (DB hiccup,
+        # deploy restart mid-request) don't permanently lose incoming messages.
+        try:
+            _payload_for_replay = None
+            try:
+                _payload_for_replay = payload  # parsed earlier if we got that far
+            except NameError:
+                pass
+            if _payload_for_replay and not _payload_for_replay.get("_replay"):
+                await db.webhook_replay.insert_one({
+                    "_id": str(uuid.uuid4()),
+                    "payload": _payload_for_replay,
+                    "error": str(e)[:500],
+                    "attempts": 0,
+                    "next_retry_at": datetime.utcnow() + timedelta(seconds=60),
+                    "created_at": datetime.utcnow(),
+                })
+        except Exception as qe:
+            logging.error(f"webhook replay enqueue failed: {qe}")
         return {"status": "error", "message": str(e)}
+
+
+async def webhook_replay_loop():
+    """Retry failed Evolution webhook payloads by re-POSTing to our own
+    endpoint (re-enters the exact same processing path). Max 5 attempts with
+    exponential backoff; replayed payloads are tagged to avoid re-enqueueing."""
+    import httpx as _httpx
+    port = os.environ.get("PORT", "8000")
+    url = f"http://127.0.0.1:{port}/api/webhooks/evolution"
+    try:
+        await db.webhook_replay.create_index("created_at", expireAfterSeconds=86400)
+    except Exception:
+        pass
+    while True:
+        try:
+            now = datetime.utcnow()
+            cursor = db.webhook_replay.find(
+                {"next_retry_at": {"$lte": now}, "attempts": {"$lt": 5}}
+            ).limit(50)
+            async for doc in cursor:
+                body = dict(doc["payload"])
+                body["_replay"] = True
+                ok = False
+                try:
+                    async with _httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.post(
+                            url,
+                            json=body,
+                            headers={"apikey": WEBHOOK_SECRET} if WEBHOOK_SECRET else {},
+                        )
+                    ok = resp.status_code == 200 and resp.json().get("status") != "error"
+                except Exception as re_err:
+                    logging.warning(f"[webhook-replay] retry failed: {re_err}")
+                if ok:
+                    await db.webhook_replay.delete_one({"_id": doc["_id"]})
+                    logging.info(f"[webhook-replay] recovered payload {doc['_id']}")
+                else:
+                    attempts = doc.get("attempts", 0) + 1
+                    await db.webhook_replay.update_one(
+                        {"_id": doc["_id"]},
+                        {"$set": {
+                            "attempts": attempts,
+                            "next_retry_at": now + timedelta(seconds=60 * (2 ** attempts)),
+                        }},
+                    )
+        except Exception as loop_err:
+            logging.error(f"[webhook-replay] loop error: {loop_err}")
+        await asyncio.sleep(60)
 
 # ============ STATS ENDPOINTS ============
 
