@@ -2415,16 +2415,41 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
     }
 
 
+_otp_send_rate: dict = {}
+_otp_verify_rate: dict = {}
+
+# Dev OTP fallback (code returned in the API response when SMS fails) is only
+# allowed when explicitly enabled — never silently in production.
+ALLOW_DEV_OTP = os.environ.get("ALLOW_DEV_OTP", "").lower() in ("1", "true", "yes")
+
+
+def _rate_limit(bucket: dict, key: str, max_attempts: int, window_seconds: int) -> bool:
+    """Sliding-window in-memory rate limit. Returns True when allowed."""
+    import time as _time
+    now = _time.time()
+    attempts = [t for t in bucket.get(key, []) if now - t < window_seconds]
+    if len(attempts) >= max_attempts:
+        bucket[key] = attempts
+        return False
+    attempts.append(now)
+    bucket[key] = attempts
+    return True
+
+
 @api_router.post("/auth/send-otp")
 async def send_otp(request: OTPRequest):
     """
     Generate and send a 6-digit OTP code to the user's phone number.
-    Uses Vonage API. If Vonage credentials are not configured, returns the code in the response as dev_otp.
+    Uses Vonage API. If SMS fails and ALLOW_DEV_OTP is enabled, returns the code as dev_otp.
     """
     import random
     phone = request.phone_number.strip()
     if not phone or len(phone) < 8:
         raise HTTPException(status_code=400, detail="Valid phone number is required")
+
+    # Rate limit: max 5 OTP sends per phone per 10 minutes
+    if not _rate_limit(_otp_send_rate, phone, max_attempts=5, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Too many code requests. Please wait a few minutes and try again.")
 
     # Generate 6-digit code
     code = f"{random.randint(100000, 999999)}"
@@ -2479,14 +2504,18 @@ async def send_otp(request: OTPRequest):
     else:
         logging.warning("VONAGE_API_KEY or VONAGE_API_SECRET not set. SMS not sent.")
 
-    # Return dev_otp if SMS could not be sent (or if in sandbox mode)
-    # To facilitate local testing, we return dev_otp whenever SMS wasn't sent or if explicitly requested.
     response_data = {"status": "success"}
     if not sms_sent:
-        response_data["dev_otp"] = code
-        if error_msg:
-            response_data["warning"] = f"Vonage SMS failed: {error_msg}. Using sandbox code."
-    
+        if ALLOW_DEV_OTP:
+            # Local/dev convenience only — never enabled in production
+            response_data["dev_otp"] = code
+            if error_msg:
+                response_data["warning"] = f"Vonage SMS failed: {error_msg}. Using sandbox code."
+        else:
+            # Don't leak the code; surface a real error instead
+            logging.error(f"OTP SMS delivery failed for {phone}: {error_msg or 'SMS not configured'}")
+            raise HTTPException(status_code=502, detail="We couldn't send the verification code. Please try again shortly.")
+
     return response_data
 
 
@@ -2506,6 +2535,11 @@ async def verify_otp(request: OTPVerify):
 
     if not phone or not code:
         raise HTTPException(status_code=400, detail="Phone number and code are required")
+
+    # Rate limit: max 8 verification attempts per phone per 10 minutes
+    # (a 6-digit code is brute-forceable without this)
+    if not _rate_limit(_otp_verify_rate, phone, max_attempts=8, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please request a new code in a few minutes.")
 
     # Find the OTP code in MongoDB
     otp_doc = await db.otp_codes.find_one({"_id": phone})
