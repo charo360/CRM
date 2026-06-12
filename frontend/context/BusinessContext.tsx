@@ -62,13 +62,23 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     showCheckinCheckout: false,
   },
   services: {
-    // Covers tech/IT services, freelance, trades, repairs
+    // Covers freelance, trades, repairs
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
     bookingMode: 'appointment', bookingLabel: 'Appointment',
     staffLabel: 'Technician', customerLabel: 'Client',
+    showCheckinCheckout: false,
+  },
+  tech: {
+    // Tech/IT services, software, consultancy
+    catalogLabel: 'Services', catalogItemLabel: 'Service',
+    showDuration: true, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Revenue',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Consultant', customerLabel: 'Client',
     showCheckinCheckout: false,
   },
   fitness: {

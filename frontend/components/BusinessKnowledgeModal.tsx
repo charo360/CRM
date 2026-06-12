@@ -137,12 +137,28 @@ function FAQField({
     );
 }
 
+// Keys must match BusinessType in context/BusinessContext.tsx
 const BUSINESS_TYPES = [
     { key: 'general', label: 'General', icon: 'storefront-outline' },
     { key: 'retail', label: 'Retail', icon: 'cart-outline' },
+    { key: 'wholesale', label: 'Wholesale', icon: 'cube-outline' },
+    { key: 'restaurant', label: 'Restaurant', icon: 'restaurant-outline' },
+    { key: 'food', label: 'Food', icon: 'fast-food-outline' },
+    { key: 'bakery', label: 'Bakery', icon: 'pizza-outline' },
+    { key: 'grocery', label: 'Grocery', icon: 'basket-outline' },
+    { key: 'salon', label: 'Salon', icon: 'cut-outline' },
+    { key: 'spa', label: 'Spa', icon: 'flower-outline' },
+    { key: 'services', label: 'Services', icon: 'briefcase-outline' },
+    { key: 'repair', label: 'Repair', icon: 'construct-outline' },
+    { key: 'cleaning', label: 'Cleaning', icon: 'sparkles-outline' },
+    { key: 'fitness', label: 'Fitness', icon: 'barbell-outline' },
+    { key: 'events', label: 'Events', icon: 'calendar-outline' },
+    { key: 'healthcare', label: 'Healthcare', icon: 'medkit-outline' },
+    { key: 'rental', label: 'Rentals', icon: 'key-outline' },
+    { key: 'hotel', label: 'Hotel & Stays', icon: 'bed-outline' },
+    { key: 'support', label: 'Support', icon: 'headset-outline' },
     { key: 'creator', label: 'Creator', icon: 'videocam-outline' },
-    { key: 'restaurant', label: 'Food & Resto', icon: 'restaurant-outline' },
-    { key: 'service', label: 'Services', icon: 'briefcase-outline' },
+    { key: 'tech', label: 'Tech', icon: 'laptop-outline' },
 ];
 
 const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'Twitter/X', 'Facebook', 'Snapchat', 'LinkedIn', 'Podcast'];
