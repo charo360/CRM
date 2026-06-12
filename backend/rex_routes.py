@@ -30,9 +30,63 @@ from rex.onboarding import (
     DirectnessLevel,
     HonestDemoScanner,
 )
-from rex.persistence.session import ZiloSessionStore
+from rex.persistence.session import OptimisticLockError, ZiloSessionStore
+from rex.decisions.models import (
+    DecideRequest,
+    MessageRequest,
+    NoteFeedbackRequest,
+    NoteRequest,
+    ScheduleRequest,
+    SparRequest,
+    serialize_session,
+)
+from rex.decisions.persistence import (
+    append_founder_update,
+    append_thread_messages,
+    archive_session,
+    count_open,
+    create_session,
+    ensure_indexes as ensure_decision_indexes,
+    get_session,
+    list_sessions,
+    patch_founder_update,
+    patch_thread_message,
+    record_decision,
+    seed_thread_if_empty,
+    update_outcome_schedule,
+    update_spar,
+)
+from rex.decisions.spar import (
+    MAX_UPDATE_REGENERATIONS,
+    analyze_rejected_response,
+    react_to_update,
+    regenerate_thread_assistant,
+    run_conversation_turn,
+    run_spar,
+    spar_opening_message,
+)
+from rex.decisions.journal import (
+    add_decision_notebook_pattern,
+    fetch_decision_journal_entries,
+    persist_decision_journal,
+)
+from rex.decisions.bridge import (
+    ack_outcome_briefing,
+    dismiss_decision_briefing_actions,
+    sync_open_decisions_to_briefing,
+)
+from rex.decisions.context import gather_decision_context
+from rex.decisions.outcomes import (
+    baseline_from_context,
+    init_outcome_tracking,
+    normalize_review_days,
+    process_due_outcomes,
+    rebuild_checkpoints_for_schedule,
+)
 
 logger = logging.getLogger(__name__)
+
+_decision_indexes_ready = False
 
 
 def _uid(user: dict) -> str:
@@ -153,6 +207,54 @@ async def _persist(user: dict, db: Any | None, orch: Orchestrator) -> None:
         await _SESSION.save(_uid(user), business_id=_business_id(user), orch=orch)
 
 
+async def _persist_orch_with_retry(
+    user: dict,
+    db: Any | None,
+    *,
+    mutate,
+    attempts: int = 4,
+) -> bool:
+    """Apply ``mutate(orch)`` then persist, retrying on optimistic-lock collisions.
+
+    The background briefing refresh writes the same session doc, so a concurrent
+    save can lose the optimistic-lock race. We reload a fresh orchestrator and
+    re-apply the mutation each attempt. Best-effort: if every attempt collides we
+    log and give up — the caller's primary write (decision/spar) already landed.
+    Returns True if persisted, False if it gave up.
+    """
+    async def _run_mutate(orch: Orchestrator) -> None:
+        result = mutate(orch)
+        if asyncio.iscoroutine(result):
+            await result
+
+    if not _use_live_db(db):
+        orch = await _get_orchestrator(user, db, refresh=False)
+        await _run_mutate(orch)
+        await _persist(user, db, orch)
+        return True
+
+    uid = _uid(user)
+    for attempt in range(attempts):
+        try:
+            if _SESSION is not None and attempt > 0:
+                _SESSION.invalidate_cache(uid)
+            orch = await _get_orchestrator(user, db, refresh=False)
+            await _run_mutate(orch)
+            await _persist(user, db, orch)
+            return True
+        except OptimisticLockError:
+            if attempt == attempts - 1:
+                logger.warning(
+                    "[zilo] persist retry exhausted for uid=%s — concurrent writer won", uid
+                )
+                return False
+            await asyncio.sleep(0.15 * (attempt + 1))
+        except Exception as e:
+            logger.warning("[zilo] persist with retry failed for uid=%s: %s", uid, e)
+            return False
+    return False
+
+
 _BG_REFRESH_INFLIGHT: set[str] = set()
 
 
@@ -248,7 +350,10 @@ class EditCompanyRequest(BaseModel):
 
 def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     """Build the Rex router with the host app's auth dependency."""
-    router = APIRouter(prefix="/api/rex", tags=["rex"])
+    router = APIRouter(prefix="/rex", tags=["rex"])
+
+    from rex.workplan.routes import init_workplan_routes
+    router.include_router(init_workplan_routes(get_current_user, db))
 
     async def _session_store() -> ZiloSessionStore:
         global _SESSION
@@ -331,6 +436,41 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
         except Exception as e:
             raise HTTPException(status_code=409, detail=str(e))
         await _persist(user, db, orch)
+
+        # Briefing integration hook: if user approves outreach or replies, auto-create a Zilo monitoring task
+        try:
+            action = orch.ledger.get(action_id)
+            if action and action.category in ("outreach", "replies"):
+                import uuid as _uuid
+                target_subj = action.target_subject or "contact"
+                now = datetime.utcnow()
+                due_dt = now + timedelta(days=3)
+                task_id = str(_uuid.uuid4())
+                task_doc = {
+                    "title": f"Watch for {target_subj} reply. Flag if no response in 3 days.",
+                    "owner": "zilo",
+                    "due_date": due_dt.isoformat(),
+                    "source": f"Briefing action {now.strftime('%b %d')}",
+                    "status": "pending",
+                    "zilo_status": "scheduled",
+                    "context": f"Auto-created from approved briefing action: {action.summary}",
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat()
+                }
+                if _use_live_db(db):
+                    task_doc["_id"] = task_id
+                    task_doc["user_id"] = _uid(user)
+                    await db.workplan_tasks.insert_one(task_doc)
+                else:
+                    uid = _uid(user)
+                    if uid not in _IN_MEMORY_TASKS:
+                        from rex.workplan.routes import get_demo_tasks
+                        _IN_MEMORY_TASKS[uid] = get_demo_tasks()
+                    task_doc["id"] = task_id
+                    _IN_MEMORY_TASKS[uid].append(task_doc)
+        except Exception as _hook_err:
+            logger.warning("[workplan-hook] Failed to auto-create tracking task: %s", _hook_err)
+
         return {
             "ok": True,
             "action_id": result.action_id,
@@ -341,12 +481,20 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     @router.post("/actions/{action_id}/dismiss")
     async def rex_dismiss(action_id: str, body: ActionVerbRequest, user=Depends(get_current_user)):
         orch = await _get_orchestrator(user, db, refresh=False)
+        action = orch.ledger.get(action_id)
         try:
             orch.dismiss(action_id, reason=body.reason)
         except KeyError:
             raise HTTPException(status_code=404, detail="Action not found")
         except Exception as e:
             raise HTTPException(status_code=409, detail=str(e))
+        if action and _use_live_db(db):
+            payload = action.payload or {}
+            if payload.get("action_mode_type") == "decision_outcome":
+                sid = payload.get("decision_session_id")
+                day = payload.get("outcome_day")
+                if sid and day is not None:
+                    await ack_outcome_briefing(db, _uid(user), str(sid), int(day))
         await _persist(user, db, orch)
         return {"ok": True, "home": serialize_home(orch)}
 
@@ -643,8 +791,19 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     @router.get("/journal")
     async def rex_journal(user=Depends(get_current_user)):
         orch = await _get_orchestrator(user, db, refresh=False)
-        payload = await serialize_journal(orch)  # mutates streak + shown_milestones
-        await _persist(user, db, orch)
+        day = getattr(orch, "_relationship_day", 1)
+        extra_entries = []
+        if _use_live_db(db):
+            extra_entries = await fetch_decision_journal_entries(
+                db, _uid(user), relationship_day=day
+            )
+        payload = await serialize_journal(orch, extra_entries=extra_entries)
+        try:
+            await _persist(user, db, orch)
+        except OptimisticLockError:
+            # Visit-streak save lost the race against a background refresh —
+            # the journal read itself is still valid, don't 500 it.
+            logger.warning("[zilo] journal visit-state persist lost lock race")
         return payload
 
     @router.post("/journal/clear-day-override")
@@ -726,6 +885,15 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
             raise HTTPException(status_code=409, detail="Target rank is not a promotion.")
         if direction == "demote" and int(to_rank) >= int(from_rank):
             raise HTTPException(status_code=409, detail="Target rank is not a demotion.")
+
+        # Strategy category never auto-executes — cap at Drafter (Decision Room).
+        if body.category == "strategy" and direction == "promote":
+            from rex.ranks.events import Rank as _Rank
+            if int(to_rank) > int(_Rank.DRAFTER):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Strategy stays at Drafter. Zilo spars — you decide.",
+                )
 
         if direction == "promote":
             event = TrustEvent.user_promoted_rex(
@@ -888,5 +1056,584 @@ def init_rex_routes(get_current_user, db: Any | None = None) -> APIRouter:
     async def onboarding_reset(user=Depends(get_current_user)):
         engine = _reset_engine(user, db)
         return {"ok": True, "state": engine.state.value}
+
+    # ── Decision Room (strategic sparring) ─────────────────────────────────
+
+    async def _ensure_decision_indexes() -> None:
+        global _decision_indexes_ready
+        if _decision_indexes_ready or not _use_live_db(db):
+            return
+        await ensure_decision_indexes(db)
+        _decision_indexes_ready = True
+
+    @router.get("/decisions")
+    async def rex_decisions_list(
+        user=Depends(get_current_user),
+        status: str = Query("open", description="open | decided | archived | all"),
+    ):
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            return {"sessions": [], "open_count": 0}
+        uid = _uid(user)
+        st = None if status == "all" else status
+        sessions = await list_sessions(db, uid, status=st, limit=30)
+        open_count = await count_open(db, uid)
+        return {"sessions": sessions, "open_count": open_count}
+
+    @router.get("/decisions/{session_id}")
+    async def rex_decision_get(session_id: str, user=Depends(get_current_user)):
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Decision session not found")
+        if not doc.get("thread") and doc.get("status") == "open":
+            from rex.decisions.models import SparResult
+            try:
+                opening = spar_opening_message(SparResult.model_validate(doc.get("spar") or {}))
+                doc = await seed_thread_if_empty(db, session_id, uid, opening) or doc
+            except Exception:
+                pass
+        return serialize_session(doc)
+
+    @router.post("/decisions/spar")
+    async def rex_decision_spar(body: SparRequest, user=Depends(get_current_user)):
+        """Start a new spar or push back harder on an existing open session."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        prior = None
+        if body.session_id and body.push_back_harder:
+            doc = await get_session(db, body.session_id, uid)
+            if not doc or doc.get("status") != "open":
+                raise HTTPException(status_code=404, detail="Open session not found")
+            prior = doc.get("spar")
+            question = doc.get("question") or body.question
+            founder_lean = doc.get("founder_lean") or body.founder_lean
+        else:
+            question = body.question
+            founder_lean = body.founder_lean
+
+        spar_result, ctx = await run_spar(
+            db,
+            user,
+            question=question,
+            founder_lean=founder_lean,
+            push_back_harder=body.push_back_harder,
+            prior_spar=prior,
+        )
+        spar_dict = spar_result.model_dump()
+        ctx_snapshot = {
+            k: ctx.get(k)
+            for k in (
+                "customer_count", "revenue_30d", "revenue_90d", "stalled_deals",
+                "followups_due", "followup_conversion_30d", "currency",
+            )
+        }
+
+        if body.session_id and body.push_back_harder:
+            doc = await update_spar(
+                db, body.session_id, uid, spar=spar_dict, push_back=True
+            )
+            if not doc:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return {"session": serialize_session(doc)}
+
+        doc = await create_session(
+            db,
+            user,
+            question=question,
+            founder_lean=founder_lean,
+            spar=spar_dict,
+            pricing_simulation=ctx.get("pricing_simulation"),
+            context_snapshot=ctx_snapshot,
+        )
+        opening = spar_opening_message(spar_result)
+        doc = await seed_thread_if_empty(db, doc["_id"], uid, opening) or doc
+
+        async def _sync_briefing(o: Orchestrator) -> None:
+            await sync_open_decisions_to_briefing(db, user, o)
+
+        try:
+            await _persist_orch_with_retry(user, db, mutate=_sync_briefing)
+        except Exception as e:
+            logger.warning("[zilo] decision spar briefing sync: %s", e)
+        return {"session": serialize_session(doc)}
+
+    @router.post("/decisions/{session_id}/message")
+    async def rex_decision_message(
+        session_id: str,
+        body: MessageRequest,
+        user=Depends(get_current_user),
+    ):
+        """Continue the Decision Room conversation — Zilo spars, never decides."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc or doc.get("status") != "open":
+            raise HTTPException(status_code=404, detail="Open session not found")
+
+        spar_raw = doc.get("spar") or {}
+        thread = list(doc.get("thread") or [])
+        if not thread:
+            from rex.decisions.models import SparResult
+            try:
+                opening = spar_opening_message(SparResult.model_validate(spar_raw))
+            except Exception:
+                opening = spar_raw.get("pressure_question") or "What's making this hard to call?"
+            seeded = await seed_thread_if_empty(db, session_id, uid, opening)
+            if seeded:
+                doc = seeded
+                thread = list(doc.get("thread") or [])
+
+        from datetime import datetime as _dt
+        user_msg = {
+            "role": "user",
+            "content": body.message.strip(),
+            "created_at": _dt.utcnow().isoformat() + "Z",
+        }
+        reply = await run_conversation_turn(
+            db,
+            user,
+            question=doc.get("question") or "",
+            founder_lean=doc.get("founder_lean") or "",
+            spar=spar_raw,
+            thread=thread + [user_msg],
+            user_message=body.message.strip(),
+        )
+        assistant_msg = {
+            "role": "assistant",
+            "content": reply,
+            "created_at": _dt.utcnow().isoformat() + "Z",
+            "regeneration_count": 0,
+            "feedback": None,
+        }
+        updated = await append_thread_messages(db, session_id, uid, [user_msg, assistant_msg])
+        if not updated:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"session": serialize_session(updated), "reply": reply}
+
+    @router.post("/decisions/{session_id}/thread/{message_index}/feedback")
+    async def rex_decision_thread_feedback(
+        session_id: str,
+        message_index: int,
+        body: NoteFeedbackRequest,
+        user=Depends(get_current_user),
+    ):
+        """Thumbs up/down on a spar conversation Zilo message."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc or doc.get("status") != "open":
+            raise HTTPException(status_code=404, detail="Open session not found")
+        thread = doc.get("thread") or []
+        if message_index < 0 or message_index >= len(thread):
+            raise HTTPException(status_code=404, detail="Message not found")
+        if thread[message_index].get("role") != "assistant":
+            raise HTTPException(status_code=400, detail="Only Zilo messages can be rated")
+
+        updated = await patch_thread_message(
+            db,
+            session_id,
+            uid,
+            message_index,
+            fields={"feedback": body.feedback},
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Message not found")
+        return {"session": serialize_session(updated)}
+
+    @router.post("/decisions/{session_id}/thread/{message_index}/regenerate")
+    async def rex_decision_thread_regenerate(
+        session_id: str,
+        message_index: int,
+        user=Depends(get_current_user),
+    ):
+        """Regenerate a Zilo spar conversation reply (max 3 per message)."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc or doc.get("status") != "open":
+            raise HTTPException(status_code=404, detail="Open session not found")
+        thread = list(doc.get("thread") or [])
+        if message_index < 0 or message_index >= len(thread):
+            raise HTTPException(status_code=404, detail="Message not found")
+        entry = thread[message_index]
+        if entry.get("role") != "assistant":
+            raise HTTPException(status_code=400, detail="Only Zilo messages can be regenerated")
+
+        regen_count = int(entry.get("regeneration_count") or 0)
+        if regen_count >= MAX_UPDATE_REGENERATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="Regeneration limit reached. Add more context in the conversation.",
+            )
+
+        rejected = (entry.get("content") or "").strip()
+        prior_reactions = [
+            (m.get("content") or "").strip()
+            for m in thread[:message_index]
+            if m.get("role") == "assistant" and (m.get("content") or "").strip()
+        ]
+        if message_index == 0:
+            context_text = (doc.get("question") or "").strip()
+        else:
+            context_text = (thread[message_index - 1].get("content") or "").strip()
+        hints = analyze_rejected_response(rejected, prior_reactions, context_text)
+        marked_unhelpful = entry.get("feedback") == "down"
+
+        try:
+            reply = await regenerate_thread_assistant(
+                db,
+                user,
+                session=doc,
+                message_index=message_index,
+                rejected_response=rejected,
+                marked_unhelpful=marked_unhelpful,
+                rejection_hints=hints,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        updated = await patch_thread_message(
+            db,
+            session_id,
+            uid,
+            message_index,
+            fields={
+                "content": reply,
+                "regeneration_count": regen_count + 1,
+            },
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Message not found")
+        return {"session": serialize_session(updated), "reply": reply}
+
+    @router.post("/decisions/{session_id}/note")
+    async def rex_decision_note(
+        session_id: str,
+        body: NoteRequest,
+        user=Depends(get_current_user),
+    ):
+        """Log a founder progress update / outcome on a decision — Zilo reacts as advisor."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Decision session not found")
+
+        from datetime import datetime as _dt
+
+        reaction = await react_to_update(db, user, session=doc, update_text=body.text.strip())
+        update = {
+            "text": body.text.strip(),
+            "zilo_reaction": reaction,
+            "created_at": _dt.utcnow().isoformat() + "Z",
+            "regeneration_count": 0,
+            "feedback": None,
+        }
+        updated = await append_founder_update(db, session_id, uid, update)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"session": serialize_session(updated), "reaction": reaction}
+
+    @router.post("/decisions/{session_id}/note/{update_index}/feedback")
+    async def rex_decision_note_feedback(
+        session_id: str,
+        update_index: int,
+        body: NoteFeedbackRequest,
+        user=Depends(get_current_user),
+    ):
+        """Thumbs up/down on a Zilo update reaction — used when regenerating."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Decision session not found")
+        updates = doc.get("founder_updates") or []
+        if update_index < 0 or update_index >= len(updates):
+            raise HTTPException(status_code=404, detail="Update not found")
+
+        updated = await patch_founder_update(
+            db,
+            session_id,
+            uid,
+            update_index,
+            fields={"feedback": body.feedback},
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Update not found")
+        return {"session": serialize_session(updated)}
+
+    @router.post("/decisions/{session_id}/note/{update_index}/regenerate")
+    async def rex_decision_note_regenerate(
+        session_id: str,
+        update_index: int,
+        user=Depends(get_current_user),
+    ):
+        """Regenerate Zilo's reaction to a founder update (max 3 per log entry)."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Decision session not found")
+        updates = doc.get("founder_updates") or []
+        if update_index < 0 or update_index >= len(updates):
+            raise HTTPException(status_code=404, detail="Update not found")
+
+        entry = updates[update_index]
+        regen_count = int(entry.get("regeneration_count") or 0)
+        if regen_count >= MAX_UPDATE_REGENERATIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="Regeneration limit reached. Add more context in a new log entry.",
+            )
+
+        rejected = (entry.get("zilo_reaction") or "").strip()
+        update_text = (entry.get("text") or "").strip()
+        prior_reactions = [
+            (u.get("zilo_reaction") or "").strip()
+            for u in updates[:update_index]
+            if (u.get("zilo_reaction") or "").strip()
+        ]
+        hints = analyze_rejected_response(rejected, prior_reactions, update_text)
+        marked_unhelpful = entry.get("feedback") == "down"
+
+        reaction = await react_to_update(
+            db,
+            user,
+            session=doc,
+            update_text=update_text,
+            thread_updates=updates[:update_index],
+            rejected_response=rejected,
+            marked_unhelpful=marked_unhelpful,
+            rejection_hints=hints,
+        )
+
+        updated = await patch_founder_update(
+            db,
+            session_id,
+            uid,
+            update_index,
+            fields={
+                "zilo_reaction": reaction,
+                "regeneration_count": regen_count + 1,
+            },
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Update not found")
+        return {"session": serialize_session(updated), "reaction": reaction}
+
+    @router.post("/decisions/{session_id}/decide")
+    async def rex_decision_decide(
+        session_id: str,
+        body: DecideRequest,
+        user=Depends(get_current_user),
+    ):
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        ctx = await gather_decision_context(db, user)
+        baseline = baseline_from_context(ctx)
+        from datetime import datetime as _dt
+
+        decided_now = _dt.utcnow()
+        review_days = normalize_review_days(body.review_days)
+        tracking = init_outcome_tracking(decided_now, baseline, review_days)
+        doc = await record_decision(
+            db,
+            session_id,
+            uid,
+            decision=body.decision,
+            notes=body.notes,
+            metrics_baseline=baseline,
+            outcome_checkpoints=tracking["outcome_checkpoints"],
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Open session not found")
+
+        # Decision is recorded. The rest (journal, notebook, briefing cleanup)
+        # is best-effort — never fail the request if a background writer collides.
+        try:
+            orch = await _get_orchestrator(user, db, refresh=False)
+            day = getattr(orch, "_relationship_day", 1)
+            await persist_decision_journal(
+                db,
+                doc,
+                decision=body.decision,
+                notes=body.notes,
+                relationship_day=day,
+            )
+        except Exception as e:
+            logger.warning("[zilo] decision journal persist: %s", e)
+
+        def _apply_decision_sideeffects(o: Orchestrator) -> None:
+            add_decision_notebook_pattern(
+                o,
+                question=doc.get("question") or "",
+                decision=body.decision,
+            )
+            dismiss_decision_briefing_actions(o, session_id)
+
+        await _persist_orch_with_retry(user, db, mutate=_apply_decision_sideeffects)
+
+        # Work Plan integration hook: if decision is made, run background task to parse and create tasks
+        try:
+            async def parse_decision_and_create_tasks_bg():
+                try:
+                    from rex.workplan.service import parse_notes_and_create_tasks
+                    from rex.workplan.routes import _IN_MEMORY_TASKS
+                    import uuid as _uuid
+                    notes_text = f"Founder decided: {body.decision}\nNotes: {body.notes}"
+                    
+                    if _use_live_db(db):
+                        tasks = await db.workplan_tasks.find({"user_id": uid}).to_list(100)
+                        current_tasks = [{**t, "id": str(t["_id"])} for t in tasks]
+                    else:
+                        current_tasks = _IN_MEMORY_TASKS.get(uid, [])
+                        
+                    result = await parse_notes_and_create_tasks(notes_text, current_tasks)
+                    from rex.workplan.routes import open_duplicate_exists, _norm_title
+                    for nt in result.get("new_tasks", []):
+                        nt_id = str(_uuid.uuid4())
+                        nt_title = nt.get("title") or ""
+                        nt_owner = nt.get("owner", "founder")
+                        # Re-running the same decision must not duplicate tasks.
+                        if _use_live_db(db):
+                            if await open_duplicate_exists(db, uid, nt_title, nt_owner):
+                                continue
+                        else:
+                            _norm = _norm_title(nt_title)
+                            if any(
+                                t.get("owner") == nt_owner
+                                and t.get("status") != "done"
+                                and _norm_title(t.get("title")) == _norm
+                                for t in _IN_MEMORY_TASKS.get(uid, [])
+                            ):
+                                continue
+                        new_task = {
+                            "title": nt.get("title"),
+                            "owner": nt.get("owner", "founder"),
+                            "due_date": nt.get("due_date") or (datetime.utcnow() + timedelta(days=7)).isoformat(),
+                            "source": f"Decision Room {datetime.utcnow().strftime('%b %d')}",
+                            "status": "pending",
+                            "context": nt.get("context"),
+                            "created_at": datetime.utcnow().isoformat(),
+                            "updated_at": datetime.utcnow().isoformat(),
+                        }
+                        if _use_live_db(db):
+                            new_task["_id"] = nt_id
+                            new_task["user_id"] = uid
+                            await db.workplan_tasks.insert_one(new_task)
+                        else:
+                            new_task["id"] = nt_id
+                            if uid not in _IN_MEMORY_TASKS:
+                                from rex.workplan.routes import get_demo_tasks
+                                _IN_MEMORY_TASKS[uid] = get_demo_tasks()
+                            _IN_MEMORY_TASKS[uid].append(new_task)
+                except Exception as bg_err:
+                    logger.warning("[workplan-decision-hook] Background parsing failed: %s", bg_err)
+            
+            asyncio.create_task(parse_decision_and_create_tasks_bg())
+        except Exception as _hook_err:
+            logger.warning("[workplan-decision-hook] Failed to spawn task creator: %s", _hook_err)
+
+        refreshed = await get_session(db, session_id, uid)
+        return {"session": serialize_session(refreshed or doc)}
+
+    @router.post("/decisions/{session_id}/schedule")
+    async def rex_decision_update_schedule(
+        session_id: str,
+        body: ScheduleRequest,
+        user=Depends(get_current_user),
+    ):
+        """Update review checkpoints on a recorded decision (keeps completed reviews)."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        doc = await get_session(db, session_id, uid)
+        if not doc or doc.get("status") != "decided":
+            raise HTTPException(status_code=404, detail="Decided session not found")
+        decided_at = doc.get("decided_at")
+        if not decided_at:
+            raise HTTPException(status_code=400, detail="Decision has no decided_at timestamp")
+
+        from datetime import datetime as _dt
+
+        if hasattr(decided_at, "replace"):
+            decided_dt = decided_at.replace(tzinfo=None) if getattr(decided_at, "tzinfo", None) else decided_at
+        else:
+            decided_dt = _dt.fromisoformat(str(decided_at).replace("Z", "+00:00")).replace(tzinfo=None)
+
+        review_days = normalize_review_days(body.review_days)
+        checkpoints = rebuild_checkpoints_for_schedule(
+            existing_checkpoints=doc.get("outcome_checkpoints") or [],
+            outcome_reports=doc.get("outcome_reports") or [],
+            decided_at=decided_dt,
+            review_days=review_days,
+        )
+        updated = await update_outcome_schedule(
+            db,
+            session_id,
+            uid,
+            outcome_checkpoints=checkpoints,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Decided session not found")
+        return {"session": serialize_session(updated)}
+
+    @router.post("/decisions/outcomes/run")
+    async def rex_decisions_outcomes_run(
+        user=Depends(get_current_user),
+        force: bool = Query(False, description="Process all pending checkpoints immediately (demo/testing)"),
+    ):
+        """Process due 30/60/90-day outcome checkpoints (also runs on briefing refresh)."""
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        created = await process_due_outcomes(db, user, force=force)
+        from rex.decisions.bridge import sync_outcome_reports_to_briefing
+
+        async def _sync_outcomes(o: Orchestrator) -> None:
+            await sync_outcome_reports_to_briefing(db, user, o)
+
+        try:
+            await _persist_orch_with_retry(user, db, mutate=_sync_outcomes)
+        except Exception as e:
+            logger.warning("[zilo] outcomes briefing sync: %s", e)
+        return {"processed": len(created), "reports": created}
+
+    @router.post("/decisions/{session_id}/archive")
+    async def rex_decision_archive(session_id: str, user=Depends(get_current_user)):
+        await _ensure_decision_indexes()
+        if not _use_live_db(db):
+            raise HTTPException(status_code=501, detail="Database required")
+        uid = _uid(user)
+        ok = await archive_session(db, session_id, uid)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        def _dismiss(o: Orchestrator) -> None:
+            dismiss_decision_briefing_actions(o, session_id)
+
+        await _persist_orch_with_retry(user, db, mutate=_dismiss)
+        return {"ok": True}
 
     return router

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { authApi } from "@/lib/api";
-import { setToken, setUser } from "@/lib/auth";
+import { setToken, setUser, getUser } from "@/lib/auth";
 import { ZiloLogo } from "@/components/ZiloLogo";
 import {
   Zap,
@@ -32,8 +32,8 @@ const LOGIN_FEATURES = [
   { icon: Sparkles, text: "AI-assisted marketing, ads, and follow-ups" },
 ] as const;
 
-type Step = "phone" | "pairing" | "waiting";
-type AuthMode = "email" | "whatsapp";
+type Step = "phone" | "verify" | "register" | "pairing" | "waiting";
+type AuthMode = "email" | "phone";
 type EmailStep = "login" | "register";
 
 function normalizeUser(u: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -50,6 +50,8 @@ export default function LoginPage() {
 
   const [step, setStep] = useState<Step>("phone");
   const [phone, setPhone] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [devOtp, setDevOtp] = useState("");
   const [sessionToken, setSessionToken] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [error, setError] = useState("");
@@ -132,60 +134,72 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await authApi.whatsappStart(phone.trim());
-
-      const jwt = res.access_token || res.token;
-      if (jwt && res.user) {
-        setToken(jwt);
-        setUser(normalizeUser(res.user));
-        router.push("/dashboard");
-        return;
+      const res = await authApi.sendOTP(phone.trim());
+      if (res.dev_otp) {
+        setDevOtp(res.dev_otp);
+      } else {
+        setDevOtp("");
       }
-
-      if (res.session_token) {
-        setSessionToken(res.session_token);
-        setPairingCode(res.pairing_code || "");
-        setStep("pairing");
-      }
+      setStep("verify");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to start. Check your phone number.");
+      setError(err instanceof Error ? err.message : "Failed to send code. Check your phone number.");
     } finally {
       setLoading(false);
     }
   }
 
-  function handleLinked() {
-    setStep("waiting");
-    setPollCount(0);
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await authApi.whatsappCheck(sessionToken);
-
-        const jwt = res.access_token || res.token;
-        if (jwt && res.user) {
-          if (pollRef.current) clearInterval(pollRef.current);
-          setToken(jwt);
-          setUser(normalizeUser(res.user));
-          router.push("/dashboard");
-        }
-      } catch {
-        // keep polling
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    if (!otpCode.trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await authApi.verifyOTP(phone.trim(), otpCode.trim());
+      setToken(res.token);
+      setUser(normalizeUser(res.user));
+      
+      if (res.is_new_user) {
+        setStep("register");
+      } else {
+        const next =
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("next") || "/dashboard"
+            : "/dashboard";
+        router.push(next);
       }
-      setPollCount((n) => {
-        if (n >= 30) {
-          if (pollRef.current) clearInterval(pollRef.current);
-          setError("Timed out waiting for WhatsApp connection. Please try again.");
-          setStep("phone");
-        }
-        return n + 1;
-      });
-    }, 3000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Verification failed. Check the code.");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  function copyCode() {
-    navigator.clipboard.writeText(pairingCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  async function handleFinishRegistration(e: React.FormEvent) {
+    e.preventDefault();
+    if (!businessName.trim()) {
+      setError("Business name is required");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      await authApi.register({
+        business_name: businessName.trim(),
+        owner_name: ownerName.trim(),
+      });
+      const currentUser = getUser();
+      if (currentUser) {
+        currentUser.business_name = businessName.trim();
+        currentUser.owner_name = ownerName.trim();
+        currentUser.setup_complete = true;
+        setUser(currentUser);
+      }
+      router.push("/dashboard");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not complete setup.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   const inputClass =
@@ -277,17 +291,17 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setMode("whatsapp");
+                  setMode("phone");
                   setError("");
                   setStep("phone");
                 }}
                 className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
-                  mode === "whatsapp"
+                  mode === "phone"
                     ? "bg-white text-slate-900 border border-slate-200"
                     : "text-slate-600 hover:text-slate-800 border border-transparent"
                 }`}
               >
-                WhatsApp
+                Phone
               </button>
             </div>
 
@@ -464,11 +478,11 @@ export default function LoginPage() {
             </>
           )}
 
-          {mode === "whatsapp" && step === "phone" && (
+          {mode === "phone" && step === "phone" && (
             <form onSubmit={handleStart} className="space-y-4">
               <div>
-                <h2 className="text-base font-semibold text-slate-900 mb-1">Sign in with WhatsApp</h2>
-                <p className="text-xs text-slate-500">Enter your WhatsApp phone number to continue</p>
+                <h2 className="text-base font-semibold text-slate-900 mb-1">Sign in with Phone</h2>
+                <p className="text-xs text-slate-500">Enter your phone number to continue</p>
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Phone number</label>
@@ -500,82 +514,113 @@ export default function LoginPage() {
             </form>
           )}
 
-          {mode === "whatsapp" && step === "pairing" && (
-            <div className="space-y-5">
+          {mode === "phone" && step === "verify" && (
+            <form onSubmit={handleVerify} className="space-y-4">
               <div>
-                <h2 className="text-base font-semibold text-slate-900 mb-1">Link your WhatsApp</h2>
-                <p className="text-xs text-slate-500">Open WhatsApp → Linked Devices → Link a Device → Link with phone number</p>
+                <h2 className="text-base font-semibold text-slate-900 mb-1">Verify Phone</h2>
+                <p className="text-xs text-slate-500">Enter the 6-digit verification code sent to {phone}</p>
               </div>
 
-              {pairingCode && (
+              {devOtp && (
                 <div className="rounded-xl border border-[#4CD137]/35 bg-[#4CD137]/12 p-4 text-center">
-                  <p className="mb-2 text-xs font-medium text-[#065a24]">Your pairing code</p>
-                  <p className="font-mono text-3xl font-bold tracking-widest text-[#009B3A]">{pairingCode}</p>
+                  <p className="mb-1 text-xs font-medium text-[#065a24]">🧪 Sandbox Code</p>
+                  <p className="font-mono text-2xl font-bold tracking-widest text-[#009B3A]">{devOtp}</p>
                   <button
                     type="button"
-                    onClick={copyCode}
-                    className="mx-auto mt-3 flex items-center gap-1.5 text-xs font-medium text-[#009B3A] hover:text-[#0a2614]"
+                    onClick={() => {
+                      setOtpCode(devOtp);
+                    }}
+                    className="mx-auto mt-2 text-xs font-semibold text-[#009B3A] hover:underline"
                   >
-                    {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />}
-                    {copied ? "Copied!" : "Copy code"}
+                    Auto-fill code
                   </button>
                 </div>
               )}
 
-              <ol className="text-xs text-slate-500 space-y-1.5 list-decimal list-inside">
-                <li>Open WhatsApp on your phone</li>
-                <li>Tap ⋮ Menu → Linked Devices</li>
-                <li>Tap <strong>Link a Device</strong></li>
-                <li>Choose <strong>Link with phone number</strong></li>
-                <li>Enter the code above</li>
-              </ol>
-
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Verification Code</label>
+                <input
+                  type="text"
+                  pattern="\d*"
+                  maxLength={6}
+                  value={otpCode}
+                  onChange={(e) => {
+                    setOtpCode(e.target.value);
+                    setError("");
+                  }}
+                  placeholder="123456"
+                  required
+                  className={`${inputClass} px-3 text-center text-lg font-mono tracking-widest`}
+                />
+              </div>
               {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
-
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setStep("phone")}
-                  className="flex-1 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50"
+                  className="flex-1 py-2.5 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50"
                 >
                   Back
                 </button>
                 <button
-                  type="button"
-                  onClick={handleLinked}
-                  className="flex-1 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2 text-sm font-medium text-white transition hover:bg-[#4CD137] hover:text-[#0a2614]"
+                  type="submit"
+                  disabled={loading || otpCode.length !== 6}
+                  className="flex-1 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-medium text-white transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
                 >
-                  I&apos;ve entered the code
+                  {loading ? <Loader2 size={15} className="mx-auto animate-spin" /> : "Verify"}
                 </button>
               </div>
-            </div>
+            </form>
           )}
 
-          {mode === "whatsapp" && step === "waiting" && (
-            <div className="space-y-5 text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-[#4CD137]/15">
-                <RefreshCw size={28} className="animate-spin text-[#009B3A]" />
+          {mode === "phone" && step === "register" && (
+            <form onSubmit={handleFinishRegistration} className="space-y-4">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900 mb-1">Setup Business</h2>
+                <p className="text-xs text-slate-500">Tell us about your business to get started</p>
               </div>
               <div>
-                <h2 className="text-base font-semibold text-slate-900">Waiting for WhatsApp…</h2>
-                <p className="text-xs text-slate-500 mt-1">Checking connection every 3 seconds</p>
-              </div>
-              {error && (
-                <div>
-                  <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setStep("phone");
+                <label className="block text-xs font-medium text-slate-700 mb-1">Business Name</label>
+                <div className="relative">
+                  <Building2 size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={businessName}
+                    onChange={(e) => {
+                      setBusinessName(e.target.value);
                       setError("");
                     }}
-                    className="mt-3 text-sm font-medium text-[#009B3A] hover:underline"
-                  >
-                    Start over
-                  </button>
+                    placeholder="Your company or brand"
+                    required
+                    className={inputWithIconClass}
+                  />
                 </div>
-              )}
-            </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Your Name (optional)</label>
+                <div className="relative">
+                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={ownerName}
+                    onChange={(e) => {
+                      setOwnerName(e.target.value);
+                      setError("");
+                    }}
+                    placeholder="Jane Doe"
+                    className={inputWithIconClass}
+                  />
+                </div>
+              </div>
+              {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#007a2e] bg-[#009B3A] py-2.5 text-sm font-semibold text-white transition hover:bg-[#4CD137] hover:text-[#0a2614] disabled:opacity-60"
+              >
+                {loading ? <Loader2 size={15} className="animate-spin" /> : "Get Started"}
+              </button>
+            </form>
           )}
         </div>
 

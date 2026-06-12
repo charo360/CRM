@@ -1,6 +1,17 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
-import { customersApi, zernioApi, settingsApi, type ZernioCommentAutoReplySettings } from "@/lib/api";
+import { customersApi, socialInboxApi, settingsApi, unipileApi, aiApi, type SocialCommentAutoReplySettings } from "@/lib/api";
+import {
+  personalProfileFromSettings,
+  senderDisplayName,
+  substituteSocialTemplate,
+  type PersonalProfile,
+} from "@/lib/emailSignature";
+import {
+  buildPlatformCommentDraft,
+  normalizeSocialPlatform,
+  PLATFORM_IDENTITY_HINTS,
+} from "@/lib/socialPlatformProfile";
 import { getToken } from "@/lib/auth";
 import {
   Inbox, RefreshCw, Send,
@@ -24,6 +35,8 @@ type Conversation = {
   last_message_at?: string;
   unread?: number;
   avatar?: string;
+  linkedin_channel?: string;
+  content_type?: string;
 };
 type Message = {
   id: string;
@@ -111,7 +124,7 @@ type EngagementDebug = {
   comments?: number;
 };
 
-const DEFAULT_COMMENT_AUTOREPLY: ZernioCommentAutoReplySettings = {
+const DEFAULT_COMMENT_AUTOREPLY: SocialCommentAutoReplySettings = {
   enabled: false,
   engine_mode: "hybrid",
   apply_all_posts: true,
@@ -198,6 +211,13 @@ function normalizeConversation(input: Conversation): Conversation {
     avatar:
       (raw.avatar as string | undefined)
       ?? (raw.participantPicture as string | undefined),
+    linkedin_channel:
+      (raw.linkedin_channel as string | undefined)
+      ?? (raw.linkedinChannel as string | undefined),
+    subject:
+      (raw.subject as string | undefined)
+      ?? (raw.linkedin_subject as string | undefined),
+    content_type: raw.content_type as string | undefined,
   };
 }
 
@@ -323,6 +343,30 @@ function PlatformBadge({ platform }: { platform: string }) {
   return (
     <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs border capitalize ${PLATFORM_COLOR[platform] || "bg-slate-50 text-slate-600 border-slate-200"}`}>
       {PLATFORM_ICON[platform] || <Globe size={12} />} {platform}
+    </span>
+  );
+}
+
+const LINKEDIN_CHANNEL_LABEL: Record<string, string> = {
+  classic: "DM",
+  inmail: "InMail",
+  sales_navigator: "Sales Nav",
+  recruiter: "Recruiter",
+};
+
+const LINKEDIN_CHANNEL_COLOR: Record<string, string> = {
+  classic: "bg-slate-50 text-slate-600 border-slate-200",
+  inmail: "bg-amber-50 text-amber-800 border-amber-200",
+  sales_navigator: "bg-sky-50 text-sky-800 border-sky-200",
+  recruiter: "bg-violet-50 text-violet-800 border-violet-200",
+};
+
+function LinkedInChannelBadge({ channel }: { channel?: string }) {
+  if (!channel) return null;
+  const label = LINKEDIN_CHANNEL_LABEL[channel] || channel.replace(/_/g, " ");
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] border ${LINKEDIN_CHANNEL_COLOR[channel] || "bg-slate-50 text-slate-600 border-slate-200"}`}>
+      {label}
     </span>
   );
 }
@@ -781,6 +825,15 @@ export default function SocialInboxPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [platformFilter, setPlatformFilter] = useState("");
   const [accountFilter, setAccountFilter] = useState("");
+  const [linkedinChannelFilter, setLinkedinChannelFilter] = useState("");
+  const [showInmailCompose, setShowInmailCompose] = useState(false);
+  const [inmailRecipient, setInmailRecipient] = useState("");
+  const [inmailSubject, setInmailSubject] = useState("");
+  const [inmailMessage, setInmailMessage] = useState("");
+  const [inmailApi, setInmailApi] = useState<"auto" | "classic" | "sales_navigator">("auto");
+  const [sendingInmail, setSendingInmail] = useState(false);
+  const [inmailError, setInmailError] = useState<string | null>(null);
+  const [linkedInPremiumConnected, setLinkedInPremiumConnected] = useState(false);
   const [sortMode, setSortMode] = useState<"newest" | "oldest" | "unanswered" | "ai_autoreply">("newest");
   const [commentSort, setCommentSort] = useState<"newest" | "oldest" | "most_comments" | "least_comments" | "best_engagement">("newest");
   const [aiCustomers, setAiCustomers] = useState<AiCustomer[]>([]);
@@ -798,10 +851,20 @@ export default function SocialInboxPage() {
   const [sendingCommentReply, setSendingCommentReply] = useState(false);
   const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null);
   const [engagementDebugByPost, setEngagementDebugByPost] = useState<Record<string, EngagementDebug>>({});
-  const [commentAutoReply, setCommentAutoReply] = useState<ZernioCommentAutoReplySettings>(DEFAULT_COMMENT_AUTOREPLY);
+  const [commentAutoReply, setCommentAutoReply] = useState<SocialCommentAutoReplySettings>(DEFAULT_COMMENT_AUTOREPLY);
   const [savingCommentAutoReply, setSavingCommentAutoReply] = useState(false);
   const [dmAutoReply, setDmAutoReply] = useState(false);
   const [savingDmAutoReply, setSavingDmAutoReply] = useState(false);
+  const [liDmAutoReply, setLiDmAutoReply] = useState(false);
+  const [savingLiDmAutoReply, setSavingLiDmAutoReply] = useState(false);
+  const [senderProfile, setSenderProfile] = useState<PersonalProfile>({
+    name: "",
+    title: "",
+    company: "",
+  });
+  const [draftingDm, setDraftingDm] = useState(false);
+  const [draftingComment, setDraftingComment] = useState(false);
+  const [draftHint, setDraftHint] = useState<string | null>(null);
   const [newRuleKeyword, setNewRuleKeyword] = useState("");
   const [newRuleMessage, setNewRuleMessage] = useState("");
   const [newStepType, setNewStepType] = useState<"text" | "image" | "video" | "file">("text");
@@ -862,27 +925,91 @@ export default function SocialInboxPage() {
     };
   };
 
-  const buildQuickReplyDraft = (comment: PostComment): string => {
-    const author = (comment.author || "there").split(" ")[0];
-    const text = String(comment.message || comment.text || "").toLowerCase();
-    if (text.includes("?")) return `Hi ${author}, thanks for your question. Please share a bit more detail and we will assist right away.`;
-    if (text.includes("price") || text.includes("how much")) return `Hi ${author}, thanks for checking in. Please DM us the item you want and we will share the latest price and options.`;
-    if (text.includes("thank")) return `You are welcome ${author}. We appreciate your support.`;
-    return `Hi ${author}, thanks for your comment. We have seen it and we will follow up shortly.`;
+  const buildQuickReplyDraft = (comment: PostComment, platform = ""): string => {
+    const author = (comment.author || comment.username || "there").split(" ")[0];
+    const text = String(comment.message || comment.text || "");
+    const draft = buildPlatformCommentDraft(platform, author, text);
+    return substituteSocialTemplate(draft, senderProfile, author, platform);
   };
+
+  const generateCommentDraft = async () => {
+    const c = postComments.find((x) => (x.commentId || x.comment_id || x.id) === selectedCommentId);
+    if (!c || !selectedPost) return;
+    setDraftingComment(true);
+    setDraftHint(null);
+    try {
+      const author = c.username || c.author || c.from?.name || "User";
+      const text = String(c.message || c.text || "");
+      const postCaption = String(
+        selectedPost.caption || selectedPost.message || selectedPost.text || ""
+      );
+      const res = await aiApi.draftSocialReply({
+        platform: selectedPost.platform || "",
+        channel: "comment",
+        recipient_name: author,
+        their_message: text,
+        post_caption: postCaption,
+      });
+      setCommentReply(res.message);
+      setDraftHint(res.reason + (res.source === "template" ? " (template fallback)" : ""));
+    } catch {
+      setCommentReply(buildQuickReplyDraft(c, selectedPost.platform || ""));
+      setDraftHint("AI unavailable — used smart template");
+    } finally {
+      setDraftingComment(false);
+    }
+  };
+
+  const generateDmDraft = async () => {
+    if (!selected || selected.source === "email") return;
+    setDraftingDm(true);
+    setDraftHint(null);
+    try {
+      const incoming = [...messages].reverse().find((m) => m.direction === "in");
+      const theirMessage = incoming?.content || selected.last_message || "";
+      const history = messages.slice(-10).map((m) => ({
+        role: m.direction === "in" ? "customer" : "you",
+        content: m.content,
+      }));
+      const res = await aiApi.draftSocialReply({
+        platform: selected.platform || "",
+        channel: "dm",
+        recipient_name: selected.participant_name || selected.participant || "",
+        their_message: theirMessage,
+        participant_id: selected.participantId || "",
+        conversation_history: history,
+      });
+      setReply(res.message);
+      setDraftHint(res.reason + (res.source === "template" ? " (template fallback)" : ""));
+    } catch {
+      const name = (selected.participant_name || selected.participant || "there").split(" ")[0];
+      setReply(`Hi ${name}, thanks for your message — how can I help?`);
+      setDraftHint("AI unavailable — used basic opener");
+    } finally {
+      setDraftingDm(false);
+    }
+  };
+
+  const outboundSenderLabel = (platform = "") => senderDisplayName(senderProfile, platform);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [status, accs, customers, autoReplySettings, bizSettings, emailRes] = await Promise.all([
-        zernioApi.status(),
-        zernioApi.accounts().catch(() => ({})),
+      const [status, accs, customers, autoReplySettings, bizSettings, emailRes, unipileStatus] = await Promise.all([
+        socialInboxApi.status(),
+        socialInboxApi.accounts().catch(() => ({})),
         customersApi.list().catch(() => [] as AiCustomer[]),
-        zernioApi.getCommentAutoReplySettings().catch(() => DEFAULT_COMMENT_AUTOREPLY),
+        socialInboxApi.getCommentAutoReplySettings().catch(() => DEFAULT_COMMENT_AUTOREPLY),
         settingsApi.get().catch(() => null),
         fetch("/api/email?limit=50", { headers: authHeaders() }).catch(() => null),
+        unipileApi.status().catch(() => ({ connected: false })),
       ]);
-      if (bizSettings) setDmAutoReply(Boolean(bizSettings.social_dm_autoreply_enabled));
+      setLinkedInPremiumConnected(Boolean((unipileStatus as { connected?: boolean }).connected));
+      if (bizSettings) {
+        setDmAutoReply(Boolean(bizSettings.social_dm_autoreply_enabled));
+        setLiDmAutoReply(Boolean(bizSettings.linkedin_dm_autoreply_enabled));
+        setSenderProfile(personalProfileFromSettings(bizSettings));
+      }
       const socialConnected = (status as { connected?: boolean }).connected === true;
       const emailPayload = emailRes && emailRes.ok
         ? (await emailRes.json() as { connected?: boolean; threads?: Array<Record<string, unknown>> })
@@ -896,19 +1023,19 @@ export default function SocialInboxPage() {
         setAccounts(list);
         if (socialConnected) {
           // Load social inbox
-          const inbox = await zernioApi.inbox(platformFilter || undefined);
+          const inbox = await socialInboxApi.inbox(platformFilter || undefined);
           socialConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
         }
         if (socialConnected) {
-          const cposts = await zernioApi.commentedPosts({
+          const cposts = await socialInboxApi.commentedPosts({
             ...(platformFilter ? { platform: platformFilter } : {}),
             ...(accountFilter ? { account_id: accountFilter } : {}),
             limit: 50,
           }).catch(() => ({}));
           const [commentedRaw, postsRaw, analyticsRaw] = await Promise.all([
             Promise.resolve(pickList<CommentedPost>(cposts, ["posts", "comments"])),
-            zernioApi.posts(platformFilter || undefined).then((p) => pickList<CommentedPost>(p, ["posts"])).catch(() => [] as CommentedPost[]),
-            zernioApi.analytics({
+            socialInboxApi.posts(platformFilter || undefined).then((p) => pickList<CommentedPost>(p, ["posts"])).catch(() => [] as CommentedPost[]),
+            socialInboxApi.analytics({
               platform: platformFilter || "facebook",
               ...(accountFilter ? { account_id: accountFilter } : {}),
               metrics: "likes,comments,shares,saves,clicks,reach,impressions",
@@ -983,7 +1110,7 @@ export default function SocialInboxPage() {
             for (const pid of ids) {
               try {
                 tried.push(pid);
-                const payload = await zernioApi.analyticsByPostId(pid, {
+                const payload = await socialInboxApi.analyticsByPostId(pid, {
                   platform: String(post.platform || platformFilter || "facebook"),
                   account_id: accountId,
                   metrics: "likes,comments,shares,saves,clicks,reach,impressions",
@@ -1148,7 +1275,7 @@ export default function SocialInboxPage() {
           setAiCustomers([]);
         }
       }
-      const settings = autoReplySettings as ZernioCommentAutoReplySettings;
+      const settings = autoReplySettings as SocialCommentAutoReplySettings;
       if (settings && typeof settings === "object") {
         setCommentAutoReply({
           ...DEFAULT_COMMENT_AUTOREPLY,
@@ -1188,11 +1315,11 @@ export default function SocialInboxPage() {
       if (loading || sending) return;
       try {
         let socialConversations: Conversation[] = [];
-        const status = await zernioApi.status().catch(() => ({}));
+        const status = await socialInboxApi.status().catch(() => ({}));
         const socialConnected = (status as { connected?: boolean }).connected === true;
         
         if (socialConnected) {
-          const inbox = await zernioApi.inbox(platformFilter || undefined);
+          const inbox = await socialInboxApi.inbox(platformFilter || undefined);
           socialConversations = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
         }
 
@@ -1281,7 +1408,7 @@ export default function SocialInboxPage() {
           return normalized;
         });
       } else {
-        const data = await zernioApi.conversation(conv.id, conv.accountId || conv.account_id);
+        const data = await socialInboxApi.conversation(conv.id, conv.accountId || conv.account_id);
         const normalized = pickList<Message>(data, ["messages"]).map((m) => normalizeMessage(m, conv));
         const rebalanced = rebalanceDirections(normalized, conv);
         
@@ -1313,7 +1440,7 @@ export default function SocialInboxPage() {
       content: replyText,
       direction: "out",
       created_at: new Date().toISOString(),
-      sender: "Me",
+      sender: outboundSenderLabel(selected.platform),
     };
     setMessages((prev) => [...prev, tempMsg]);
     setReply(""); // Clear text input box instantly
@@ -1339,7 +1466,7 @@ export default function SocialInboxPage() {
         });
         if (!res.ok) throw new Error(await res.text());
       } else {
-        await zernioApi.send(
+        await socialInboxApi.send(
           selected.id,
           replyText,
           selected.accountId || selected.account_id,
@@ -1369,6 +1496,38 @@ export default function SocialInboxPage() {
     } finally { setSending(false); }
   }
 
+  async function sendInmail() {
+    const recipient = inmailRecipient.trim();
+    const message = inmailMessage.trim();
+    if (!recipient || !message) return;
+    setSendingInmail(true);
+    setInmailError(null);
+    try {
+      const linkedin_api = inmailApi === "auto" ? undefined : inmailApi;
+      const res = await socialInboxApi.newConversation("linkedin", recipient, message, {
+        subject: inmailSubject.trim() || undefined,
+        linkedin_api,
+        inmail: true,
+      });
+      const chatId = String(res.conversation_id || res.chat_id || "");
+      setShowInmailCompose(false);
+      setInmailRecipient("");
+      setInmailSubject("");
+      setInmailMessage("");
+      await load();
+      if (chatId) {
+        const inbox = await socialInboxApi.inbox("linkedin");
+        const list = pickList<Conversation>(inbox, ["conversations"]).map(normalizeConversation);
+        const match = list.find((c) => c.id === chatId);
+        if (match) void openConversation(match);
+      }
+    } catch (e) {
+      setInmailError(e instanceof Error ? e.message : "Failed to send InMail.");
+    } finally {
+      setSendingInmail(false);
+    }
+  }
+
   async function openCommentPost(post: CommentedPost) {
     setSelectedPost(post);
     setLoadingComments(true);
@@ -1376,7 +1535,7 @@ export default function SocialInboxPage() {
     try {
       const accountId = post.accountId || post.account_id;
       if (!accountId) return;
-      const data = await zernioApi.postComments(post.id, accountId, {
+      const data = await socialInboxApi.postComments(post.id, accountId, {
         ...(post.platform ? { platform: post.platform } : {}),
         limit: 100,
       });
@@ -1412,10 +1571,11 @@ export default function SocialInboxPage() {
     if (!accountId) return;
     setSendingCommentReply(true);
     try {
-      await zernioApi.replyToComment(selectedPost.id, {
+      await socialInboxApi.replyToComment(selectedPost.id, {
         account_id: accountId,
         comment_id: selectedCommentId,
         message: commentReply.trim(),
+        platform: selectedPost.platform || "",
       });
       setCommentReply("");
       await openCommentPost(selectedPost);
@@ -1424,10 +1584,10 @@ export default function SocialInboxPage() {
     }
   }
 
-  async function saveCommentAutoReply(next: ZernioCommentAutoReplySettings) {
+  async function saveCommentAutoReply(next: SocialCommentAutoReplySettings) {
     setSavingCommentAutoReply(true);
     try {
-      const saved = await zernioApi.updateCommentAutoReplySettings(next);
+      const saved = await socialInboxApi.updateCommentAutoReplySettings(next);
       setCommentAutoReply({
         ...DEFAULT_COMMENT_AUTOREPLY,
         ...saved,
@@ -1453,6 +1613,18 @@ export default function SocialInboxPage() {
     }
   }
 
+  async function saveLiDmAutoReply(enabled: boolean) {
+    setLiDmAutoReply(enabled);
+    setSavingLiDmAutoReply(true);
+    try {
+      await settingsApi.update({ linkedin_dm_autoreply_enabled: enabled });
+    } catch {
+      setLiDmAutoReply(!enabled); // revert on failure
+    } finally {
+      setSavingLiDmAutoReply(false);
+    }
+  }
+
   // Derive the platform list from connected accounts (not from conversations) so
   // a freshly-connected platform like TikTok/Twitter/YouTube/LinkedIn shows up
   // in the filter even before any DM has arrived from it. Fall back to the
@@ -1466,8 +1638,16 @@ export default function SocialInboxPage() {
     ]),
   ];
 
+  const hasLinkedIn =
+    accounts.some((a) => String(a.platform || "").toLowerCase() === "linkedin")
+    || conversations.some((c) => c.platform === "linkedin");
+
   const filteredConvs = conversations
     .filter((c) => (platformFilter ? c.platform === platformFilter : true))
+    .filter((c) => {
+      if (!linkedinChannelFilter || c.platform !== "linkedin") return true;
+      return (c.linkedin_channel || "classic") === linkedinChannelFilter;
+    })
     .filter((c) => {
       if (!accountFilter) return true;
       const cid = c.accountId || c.account_id || "";
@@ -1570,10 +1750,66 @@ export default function SocialInboxPage() {
             <h1 className="font-bold text-slate-800 flex items-center gap-2">
               <Inbox size={18} className="text-brand-dark" /> Social Inbox
             </h1>
-            <button onClick={load} className="text-slate-400 hover:text-slate-700">
-              <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
-            </button>
+            <div className="flex items-center gap-2">
+              {viewMode === "messages" && linkedInPremiumConnected && (
+                <button
+                  type="button"
+                  onClick={() => setShowInmailCompose((v) => !v)}
+                  className="text-[10px] font-semibold text-[#0A66C2] hover:text-[#004182]"
+                >
+                  {showInmailCompose ? "Cancel" : "New InMail"}
+                </button>
+              )}
+              <button onClick={load} className="text-slate-400 hover:text-slate-700">
+                <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
+              </button>
+            </div>
           </div>
+          {viewMode === "messages" && showInmailCompose && (
+            <div className="mb-3 space-y-2 rounded-lg border border-[#0A66C2]/20 bg-[#0A66C2]/5 p-2.5">
+              <p className="text-[10px] text-[#004182]">
+                Recipient LinkedIn ID — <span className="font-mono">ACo</span> (profile), <span className="font-mono">ACw</span> (Sales Nav lead).
+              </p>
+              <input
+                value={inmailRecipient}
+                onChange={(e) => setInmailRecipient(e.target.value)}
+                placeholder="e.g. ACw1234567890"
+                className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-mono"
+              />
+              <input
+                value={inmailSubject}
+                onChange={(e) => setInmailSubject(e.target.value)}
+                placeholder="InMail subject (optional)"
+                className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs"
+              />
+              <textarea
+                value={inmailMessage}
+                onChange={(e) => setInmailMessage(e.target.value)}
+                placeholder="Your message"
+                rows={3}
+                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs resize-none"
+              />
+              <select
+                value={inmailApi}
+                onChange={(e) => setInmailApi(e.target.value as typeof inmailApi)}
+                className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs"
+              >
+                <option value="auto">API: auto (from ID prefix)</option>
+                <option value="sales_navigator">Sales Navigator</option>
+                <option value="classic">Classic + InMail</option>
+              </select>
+              {inmailError ? <p className="text-[10px] text-red-600">{inmailError}</p> : null}
+              <button
+                type="button"
+                disabled={sendingInmail || !inmailRecipient.trim() || !inmailMessage.trim()}
+                onClick={() => void sendInmail()}
+                className="flex h-8 w-full items-center justify-center gap-1 rounded-md bg-[#0A66C2] text-xs font-semibold text-white hover:bg-[#004182] disabled:opacity-50"
+              >
+                {sendingInmail ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                Send InMail
+              </button>
+            </div>
+          )}
           <div className="mb-3 inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
             <button
               type="button"
@@ -1643,6 +1879,19 @@ export default function SocialInboxPage() {
                 <option value="ai_autoreply">AI auto-reply customers</option>
               </select>
             )}
+            {viewMode === "messages" && linkedInPremiumConnected && (platformFilter === "linkedin" || hasLinkedIn) && (
+              <select
+                value={linkedinChannelFilter}
+                onChange={(e) => setLinkedinChannelFilter(e.target.value)}
+                className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+              >
+                <option value="">All LinkedIn channels</option>
+                <option value="classic">Direct messages</option>
+                <option value="inmail">InMail</option>
+                <option value="sales_navigator">Sales Navigator</option>
+                <option value="recruiter">Recruiter</option>
+              </select>
+            )}
             {viewMode === "messages" && (
               <label
                 className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
@@ -1654,8 +1903,23 @@ export default function SocialInboxPage() {
                   disabled={savingDmAutoReply}
                   onChange={(e) => void saveDmAutoReply(e.target.checked)}
                 />
-                AI auto-reply DMs
+                AI auto-reply (Instagram)
                 {savingDmAutoReply && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+              </label>
+            )}
+            {viewMode === "messages" && linkedInPremiumConnected && (
+              <label
+                className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+                title="When on, the AI automatically replies to new LinkedIn DMs and company-page inbox messages, even when this tab is closed. LinkedIn automation carries account risk; a daily reply cap is applied."
+              >
+                <input
+                  type="checkbox"
+                  checked={liDmAutoReply}
+                  disabled={savingLiDmAutoReply}
+                  onChange={(e) => void saveLiDmAutoReply(e.target.checked)}
+                />
+                AI auto-reply (LinkedIn)
+                {savingLiDmAutoReply && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
               </label>
             )}
             {viewMode === "comments" && (
@@ -1733,8 +1997,11 @@ export default function SocialInboxPage() {
                       <span className="text-xs text-slate-400 shrink-0">{timeAgo(conv.last_message_at)}</span>
                     </div>
                     <p className="text-xs text-slate-500 truncate mt-0.5">{conv.last_message || "No messages"}</p>
-                    <div className="flex items-center gap-2 mt-1">
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
                       <PlatformBadge platform={conv.platform} />
+                      {conv.platform === "linkedin" ? (
+                        <LinkedInChannelBadge channel={conv.linkedin_channel} />
+                      ) : null}
                       {conv.unread ? (
                         <span className="bg-brand-dark text-white text-xs rounded-full px-1.5 py-0.5 font-bold">{conv.unread}</span>
                       ) : null}
@@ -1819,7 +2086,15 @@ export default function SocialInboxPage() {
             />
             <div>
               <p className="font-semibold text-slate-800 text-sm">{selected.participant_name || selected.participant}</p>
-              <PlatformBadge platform={selected.platform} />
+              <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                <PlatformBadge platform={selected.platform} />
+                {selected.platform === "linkedin" ? (
+                  <LinkedInChannelBadge channel={selected.linkedin_channel} />
+                ) : null}
+              </div>
+              {selected.subject ? (
+                <p className="text-[11px] text-slate-500 mt-0.5 truncate max-w-xs">{selected.subject}</p>
+              ) : null}
             </div>
           </div>
 
@@ -1871,6 +2146,16 @@ export default function SocialInboxPage() {
                 <XCircle size={12} /> {sendError || "Failed to send. Try again."}
               </p>
             )}
+            <p className="text-xs text-slate-500 mb-2">
+              Replying as <span className="font-medium text-slate-700">{outboundSenderLabel(selected.platform)}</span>
+              {" "}on {selected.platform}
+              {PLATFORM_IDENTITY_HINTS[normalizeSocialPlatform(selected.platform)] ? (
+                <span className="text-slate-400"> · {PLATFORM_IDENTITY_HINTS[normalizeSocialPlatform(selected.platform)]}</span>
+              ) : null}
+            </p>
+            {draftHint && selected.source !== "email" ? (
+              <p className="text-xs text-emerald-700 mb-2">{draftHint}</p>
+            ) : null}
             <div className="flex gap-2 items-end">
               <textarea
                 className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-brand"
@@ -1880,12 +2165,22 @@ export default function SocialInboxPage() {
                 onChange={e => setReply(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
               />
+              {selected.source !== "email" ? (
+                <button
+                  type="button"
+                  onClick={() => void generateDmDraft()}
+                  disabled={draftingDm || sending}
+                  className="px-3 py-2 text-xs border border-slate-200 rounded-xl text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-40 whitespace-nowrap"
+                >
+                  {draftingDm ? <Loader2 size={14} className="animate-spin" /> : "AI draft"}
+                </button>
+              ) : null}
               <button onClick={sendReply} disabled={sending || !reply.trim()}
                 className="p-2.5 bg-brand-dark text-white rounded-xl hover:bg-brand disabled:opacity-40 transition-colors">
                 {sending ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
               </button>
             </div>
-            <p className="text-xs text-slate-400 mt-1">Enter to send · Shift+Enter for new line</p>
+            <p className="text-xs text-slate-400 mt-1">Enter to send · Shift+Enter for new line · AI draft uses their message + your catalog</p>
           </div>
         </div>
       ) : viewMode === "comments" && selectedPost ? (
@@ -2019,7 +2314,7 @@ export default function SocialInboxPage() {
                     value={commentAutoReply.default_message}
                     onChange={(e) => setCommentAutoReply({ ...commentAutoReply, default_message: e.target.value })}
                     onBlur={() => void saveCommentAutoReply(commentAutoReply)}
-                    placeholder="ManyChat default message (supports {name})"
+                    placeholder="ManyChat default message ({name}, {owner_name}, {sender_intro} — adapts per platform)"
                   />
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
                     <input
@@ -2032,7 +2327,7 @@ export default function SocialInboxPage() {
                       className="md:col-span-2 border border-slate-200 rounded-md px-2 py-1 text-xs bg-white"
                       value={newRuleMessage}
                       onChange={(e) => setNewRuleMessage(e.target.value)}
-                      placeholder="reply message (supports {name})"
+                      placeholder="reply message ({name}, {sender_intro}, {owner_name} — adapts per platform)"
                     />
                   </div>
                   <div className="flex items-center justify-between">
@@ -2214,6 +2509,7 @@ export default function SocialInboxPage() {
             {selectedCommentId ? (
               <p className="text-xs text-slate-500 mb-2">
                 Replying to selected comment.
+                {draftHint ? <span className="block text-emerald-700 mt-0.5">{draftHint}</span> : null}
               </p>
             ) : null}
             <div className="flex gap-2 items-end">
@@ -2235,18 +2531,14 @@ export default function SocialInboxPage() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  const c = postComments.find((x) => (x.commentId || x.comment_id || x.id) === selectedCommentId);
-                  if (!c) return;
-                  setCommentReply(buildQuickReplyDraft(c));
-                }}
-                disabled={!selectedCommentId}
-                className="px-3 py-2 text-xs border border-slate-200 rounded-xl text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-40"
+                onClick={() => void generateCommentDraft()}
+                disabled={!selectedCommentId || draftingComment}
+                className="px-3 py-2 text-xs border border-slate-200 rounded-xl text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-40 whitespace-nowrap"
               >
-                Quick draft
+                {draftingComment ? <Loader2 size={14} className="animate-spin" /> : "AI draft"}
               </button>
             </div>
-            <p className="text-xs text-slate-400 mt-1">Select a comment then press Enter to reply</p>
+            <p className="text-xs text-slate-400 mt-1">Select a comment · AI draft answers what they actually said</p>
           </div>
         </div>
       ) : (

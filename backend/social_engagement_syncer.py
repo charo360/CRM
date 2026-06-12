@@ -147,25 +147,74 @@ async def _fetch_post_analytics(zernio_post_id: str, db, user_id: str) -> Option
     return None
 
 
+async def _fetch_composio_analytics(db, post: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Sync engagement for Composio-published posts (LinkedIn, etc.)."""
+    channels = [str(c).lower() for c in (post.get("channels") or [])]
+    if "linkedin" not in channels:
+        return None
+
+    user = await db.users.find_one({"_id": post.get("user_id")})
+    if not user:
+        return None
+
+    ext = str(post.get("external_post_id") or post.get("zernio_post_id") or "")
+    urn = ""
+    for part in ext.split("|"):
+        part = part.strip()
+        if part.lower().startswith("li:"):
+            urn = part[3:]
+            break
+    if not urn and "urn:li:" in ext:
+        urn = ext
+    if not urn:
+        return None
+
+    try:
+        from social_composio_engagement import get_single_post_analytics
+        res = await get_single_post_analytics(db, user, urn, platform="linkedin")
+        row = (res.get("posts") or [{}])[0]
+        if not isinstance(row, dict):
+            return None
+        return {
+            "likes": int(row.get("likes") or 0),
+            "comments": int(row.get("commentCount") or row.get("comments_count") or 0),
+            "shares": int(row.get("shares") or 0),
+            "reach": int(row.get("reach") or row.get("impressions") or 0),
+            "clicks": int(row.get("clicks") or 0),
+            "saves": int(row.get("saves") or 0),
+            "raw": row,
+        }
+    except Exception as exc:
+        logger.warning("[engagement_syncer] Composio sync failed for %s: %s", post.get("_id"), exc)
+        return None
+
+
 async def run_engagement_syncer(db) -> None:
     """Main loop — runs forever, syncs engagement every 30 minutes."""
     logger.info("[engagement_syncer] Started. Syncing every 30 min.")
     while True:
         await asyncio.sleep(1800)  # 30 minutes
-        if not ZERNIO_API_KEY:
-            continue
 
         try:
             cutoff = datetime.utcnow() - timedelta(minutes=_SYNC_INTERVAL_MINUTES)
 
-            # Find published posts with a Zernio ID that are due for a sync
+            # Find published posts with an external ID that are due for a sync
             due: List[Dict[str, Any]] = await db.scheduled_posts.find({
                 "status": "published",
-                "zernio_post_id": {"$exists": True, "$ne": None},
-                "$or": [
-                    {"engagement_synced_at": None},
-                    {"engagement_synced_at": {"$lte": cutoff}},
-                    {"engagement_synced_at": {"$exists": False}},
+                "$and": [
+                    {
+                        "$or": [
+                            {"zernio_post_id": {"$exists": True, "$ne": None}},
+                            {"external_post_id": {"$exists": True, "$ne": None}},
+                        ],
+                    },
+                    {
+                        "$or": [
+                            {"engagement_synced_at": None},
+                            {"engagement_synced_at": {"$lte": cutoff}},
+                            {"engagement_synced_at": {"$exists": False}},
+                        ],
+                    },
                 ],
             }).to_list(100)
 
@@ -179,7 +228,14 @@ async def run_engagement_syncer(db) -> None:
                 if not zid:
                     continue
 
-                metrics = await _fetch_post_analytics(zid, db, post.get("user_id"))
+                provider = (post.get("publish_provider") or "").lower()
+                channels = [str(c).lower() for c in (post.get("channels") or [])]
+                if provider == "composio" or "linkedin" in channels:
+                    metrics = await _fetch_composio_analytics(db, post)
+                elif ZERNIO_API_KEY:
+                    metrics = await _fetch_post_analytics(zid, db, post.get("user_id"))
+                else:
+                    metrics = None
                 now = datetime.utcnow()
 
                 if metrics:

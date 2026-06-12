@@ -15,7 +15,9 @@ export function WaGlyph({ className }: { className?: string }) {
 }
 
 /** Compact body for Integrations grid — matches Slack/Email single-CTA tiles. */
-export function WhatsAppIntegrationControls() {
+export function WhatsAppIntegrationControls({
+  onChanged,
+}: { onChanged?: (status: WhatsAppStatus | null) => void } = {}) {
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [showQr, setShowQr] = useState(false);
@@ -24,12 +26,14 @@ export function WhatsAppIntegrationControls() {
     try {
       const data = await whatsappApi.status();
       setStatus(data);
+      onChanged?.(data);
     } catch {
       setStatus(null);
+      onChanged?.(null);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onChanged]);
 
   useEffect(() => {
     void loadStatus();

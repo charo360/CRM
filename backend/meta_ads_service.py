@@ -188,8 +188,19 @@ async def get_account_insights(days: int = 7) -> List[Dict[str, Any]]:
 
 # ── Campaign mutation ─────────────────────────────────────────────────────────
 
-async def update_campaign_status(campaign_id: str, status: str) -> Dict[str, Any]:
+async def update_campaign_status(
+    campaign_id: str,
+    status: str,
+    platform: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Set campaign status: ACTIVE | PAUSED | DELETED."""
+    if user_id:
+        from meta_ads_composio_service import is_user_configured, update_campaign_status as composio_status
+        if await is_user_configured(user_id):
+            return await composio_status(user_id, campaign_id, status, platform)
+
+    del platform
     if not _is_configured():
         return {"error": "META_ADS_ACCESS_TOKEN / META_ADS_ACCOUNT_ID not configured"}
 
@@ -255,3 +266,181 @@ def _days_to_preset(days: int) -> str:
     # Find closest preset
     best = min(mapping.keys(), key=lambda k: abs(k - days))
     return mapping[best]
+
+
+def _parse_conversions(row: Dict[str, Any]) -> int:
+    total = 0
+    for action in row.get("actions") or []:
+        atype = str(action.get("action_type") or "")
+        if "purchase" in atype or atype.endswith(".lead"):
+            total += int(float(action.get("value") or 0))
+    return total
+
+
+def _normalize_campaign(campaign: Dict[str, Any], insights: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    metrics = insights or {}
+    daily_budget = campaign.get("daily_budget")
+    daily_budget_dollars = None
+    if daily_budget is not None:
+        try:
+            daily_budget_dollars = round(float(daily_budget) / 100, 2)
+        except (TypeError, ValueError):
+            daily_budget_dollars = None
+
+    return {
+        "id": str(campaign.get("id") or ""),
+        "name": campaign.get("name") or "Unknown",
+        "status": str(campaign.get("status") or "").lower(),
+        "platform": "facebook",
+        "objective": campaign.get("objective"),
+        "daily_budget": daily_budget_dollars,
+        "metrics": {
+            "spend": float(metrics.get("spend", 0) or 0),
+            "impressions": int(metrics.get("impressions", 0) or 0),
+            "reach": int(metrics.get("reach", 0) or 0),
+            "clicks": int(metrics.get("clicks", 0) or 0),
+            "ctr": float(metrics.get("ctr", 0) or 0),
+            "cpc": float(metrics.get("cpc", 0) or 0),
+            "cpm": float(metrics.get("cpm", 0) or 0),
+            "roas": float(metrics.get("roas", 0) or 0),
+            "conversions": int(metrics.get("conversions", 0) or 0),
+        },
+    }
+
+
+async def list_campaigns_with_metrics(
+    *,
+    platform: Optional[str] = None,
+    status: Optional[str] = None,
+    days: int = 30,
+    account_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Campaign list with embedded metrics — Composio METAADS first, env token fallback."""
+    if user_id:
+        from meta_ads_composio_service import is_user_configured, list_campaigns_with_metrics as composio_list
+        if await is_user_configured(user_id):
+            return await composio_list(
+                user_id,
+                platform=platform,
+                status=status,
+                days=days,
+                account_id=account_id,
+            )
+
+    if platform and platform.lower() not in ("facebook", "meta", ""):
+        return {"campaigns": [], "error": f"Platform '{platform}' not supported via Meta Ads API"}
+
+    if not _is_configured():
+        return {
+            "campaigns": [],
+            "error": "Meta Ads not connected. Connect Meta Ads in Integrations or set META_ADS_ACCESS_TOKEN.",
+        }
+
+    status_filter = status.upper() if status else None
+    raw_campaigns = await list_campaigns(status_filter=status_filter, limit=100)
+    insight_rows = await get_account_insights(days=days)
+    insights_by_id = {str(r.get("campaign_id") or ""): r for r in insight_rows}
+
+    campaigns: List[Dict[str, Any]] = []
+    for campaign in raw_campaigns:
+        cid = str(campaign.get("id") or "")
+        row = insights_by_id.get(cid)
+        insights = None
+        if row:
+            insights = {
+                **row,
+                "conversions": _parse_conversions(row),
+            }
+        normalized = _normalize_campaign(campaign, insights)
+        if status and normalized["status"] != status.lower():
+            continue
+        campaigns.append(normalized)
+
+    return {"campaigns": campaigns}
+
+
+async def list_ad_accounts(user_id: Optional[str] = None) -> Dict[str, Any]:
+    if user_id:
+        from meta_ads_composio_service import is_user_configured, list_ad_accounts as composio_accounts
+        if await is_user_configured(user_id):
+            return await composio_accounts(user_id)
+
+    if not _is_configured():
+        return {"accounts": [], "error": "Meta Ads not connected via Composio or env token."}
+    return {
+        "accounts": [{
+            "id": META_ADS_ACCOUNT_ID,
+            "name": META_ADS_ACCOUNT_ID,
+            "platform": "facebook",
+        }],
+    }
+
+
+async def boost_post(
+    post_id: str,
+    platform: str,
+    daily_budget: float,
+    duration_days: int,
+    objective: Optional[str] = None,
+    audience: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    if user_id:
+        from meta_ads_composio_service import boost_post as composio_boost, is_user_configured
+        if await is_user_configured(user_id):
+            return await composio_boost(
+                user_id, post_id, platform, daily_budget, duration_days, objective, audience,
+            )
+    del post_id, platform, daily_budget, duration_days, objective, audience
+    return {
+        "error": "Post boosting requires Composio Meta Ads connection or Meta Ads Manager.",
+    }
+
+
+async def create_ctwa_ad(
+    platform: str,
+    whatsapp_number: str,
+    creative: Dict[str, Any],
+    daily_budget: float,
+    duration_days: int,
+    audience: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    if user_id:
+        from meta_ads_composio_service import create_ctwa_ad as composio_ctwa, is_user_configured
+        if await is_user_configured(user_id):
+            return await composio_ctwa(
+                user_id, platform, whatsapp_number, creative, daily_budget, duration_days, audience,
+            )
+    del platform, whatsapp_number, creative, daily_budget, duration_days, audience
+    return {
+        "error": "Click-to-WhatsApp ads require Composio Meta Ads or Meta Ads Manager.",
+    }
+
+
+async def update_campaign_budget_compat(
+    campaign_id: str,
+    *,
+    daily_budget: Optional[float] = None,
+    lifetime_budget: Optional[float] = None,
+    bid_strategy: Optional[str] = None,
+    platform: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    if user_id:
+        from meta_ads_composio_service import is_user_configured, update_campaign_budget_compat as composio_budget
+        if await is_user_configured(user_id):
+            return await composio_budget(
+                user_id,
+                campaign_id,
+                daily_budget=daily_budget,
+                lifetime_budget=lifetime_budget,
+                bid_strategy=bid_strategy,
+                platform=platform,
+            )
+    del lifetime_budget, bid_strategy, platform
+    if daily_budget is None:
+        return {"error": "daily_budget is required"}
+    cents = int(round(float(daily_budget) * 100))
+    return await update_campaign_budget(campaign_id, cents)

@@ -26,6 +26,7 @@ from typing import Iterable
 from rex.identity import CHIEF_OF_STAFF_NAME
 from rex.ranks.events import (
     EventType,
+    JOURNAL_ONLY_EVENTS,
     OPERATIONAL_EVENTS,
     Rank,
     TrustEvent,
@@ -129,6 +130,11 @@ class RankEngine:
         if event.type in OPERATIONAL_EVENTS:
             # No rank state change. Operational events still need to be in
             # the event log so trust scores can read them downstream.
+            return
+
+        if event.type in JOURNAL_ONLY_EVENTS:
+            # Recorded purely for journal/narrative context (e.g. the daily
+            # background-work summary). Never affects rank state or trust score.
             return
 
         t = event.type

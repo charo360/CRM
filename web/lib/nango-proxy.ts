@@ -1,18 +1,18 @@
 /**
- * Nango proxy helper for Next.js API routes.
- * Looks up the user's connection ID then routes calls through the Nango proxy.
+ * Integration auth helpers for Next.js API routes.
+ * Composio is the sole OAuth provider — Nango is no longer used.
  */
 
-const NANGO_API = process.env.NANGO_API_URL || "https://api.nango.dev";
-const NANGO_KEY = process.env.NANGO_SECRET_KEY || "";
+function backendInternalBase(): string {
+  return (process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+}
 
 function backendAuthMeUrl(): string {
   const publicBase = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api").trim();
   if (publicBase.startsWith("http://") || publicBase.startsWith("https://")) {
     return `${publicBase.replace(/\/$/, "")}/auth/me`;
   }
-  const internal = (process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
-  return `${internal}/api/auth/me`;
+  return `${backendInternalBase()}/api/auth/me`;
 }
 
 /** Resolve the user_id from a Bearer token via /auth/me */
@@ -34,135 +34,96 @@ export async function resolveUserId(authHeader: string | null): Promise<string |
   }
 }
 
-/** Get the Nango connection ID for a user + integration */
-export async function getNangoConnectionId(
-  userId: string,
-  integrationKey: string,
-): Promise<string | null> {
-  if (!NANGO_KEY) return null;
-  try {
-    const res = await fetch(
-      `${NANGO_API}/connection?end_user_id=${encodeURIComponent(userId)}&provider_config_key=${integrationKey}`,
-      { headers: { Authorization: `Bearer ${NANGO_KEY}` } },
-    );
-    if (!res.ok) return null;
-    const data = await res.json() as { connections?: { connection_id?: string }[] };
-    return data.connections?.[0]?.connection_id ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** Proxy a request through Nango to a third-party API */
-export async function nangoProxy(opts: {
-  integrationKey: string;
-  connectionId: string;
-  method?: string;
-  path: string;                     // path on the provider API, e.g. /gmail/v1/users/me/threads
-  params?: Record<string, string>;  // URL query params
-  body?: unknown;
-  headers?: Record<string, string>;
-}): Promise<Response> {
-  const { integrationKey, connectionId, method = "GET", path, params, body, headers = {} } = opts;
-
-  let url = `${NANGO_API}/proxy${path}`;
-  if (params && Object.keys(params).length) {
-    url += "?" + new URLSearchParams(params).toString();
-  }
-
-  const init: RequestInit = {
-    method,
-    headers: {
-      "Authorization": `Bearer ${NANGO_KEY}`,
-      "Connection-Id": connectionId,
-      "Provider-Config-Key": integrationKey,
-      "Content-Type": "application/json",
-      ...headers,
-    },
-  };
-  if (body) init.body = JSON.stringify(body);
-
-  return fetch(url, init);
-}
-
-/** Check if Gmail is connected via Composio for this user.
- *  Returns the composio connected account ID or null. */
-export async function getComposioGmailConnectionId(
-  userId: string,
+/** Check if a Composio toolkit is connected; returns connection id when available. */
+export async function getComposioToolkitConnectionId(
   authHeader: string,
+  toolkit: string,
 ): Promise<string | null> {
   try {
-    const internal = (process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
-    const res = await fetch(`${internal}/api/composio/connections/gmail`, {
+    const res = await fetch(`${backendInternalBase()}/api/composio/connections/${toolkit}`, {
       headers: { Authorization: authHeader },
     });
     if (!res.ok) return null;
     const data = await res.json() as { connected?: boolean; connection_id?: string };
-    return data.connected && data.connection_id ? data.connection_id : null;
+    if (!data.connected) return null;
+    return data.connection_id || toolkit;
   } catch {
     return null;
   }
 }
 
-/** Detect ALL email providers connected for this user */
+/** @deprecated Nango removed — kept for type compatibility in legacy call sites. */
+export async function getNangoConnectionId(): Promise<string | null> {
+  return null;
+}
+
+/** @deprecated Nango removed — legacy call sites should use Composio backend routes. */
+export async function nangoProxy(_opts?: unknown): Promise<Response> {
+  return new Response(JSON.stringify({ error: "Nango is disabled; connect via Composio in Integrations." }), {
+    status: 410,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** Detect ALL email providers connected for this user (Composio only). */
 export async function detectAllEmailProviders(
-  userId: string,
+  _userId: string,
   authHeader?: string,
 ): Promise<Array<{
   provider: "gmail" | "microsoft";
   integrationKey: string;
   connectionId: string;
-  via?: "nango" | "composio";
+  via: "composio";
 }>> {
-  const [gmailId, msId] = await Promise.all([
-    getNangoConnectionId(userId, "google-mail"),
-    getNangoConnectionId(userId, "microsoft"),
+  if (!authHeader) return [];
+  const [gmailId, outlookId] = await Promise.all([
+    getComposioToolkitConnectionId(authHeader, "gmail"),
+    getComposioToolkitConnectionId(authHeader, "outlook"),
   ]);
-  const results: Array<{ provider: "gmail" | "microsoft"; integrationKey: string; connectionId: string; via?: "nango" | "composio" }> = [];
-  if (gmailId) results.push({ provider: "gmail", integrationKey: "google-mail", connectionId: gmailId, via: "nango" });
-  if (msId)    results.push({ provider: "microsoft", integrationKey: "microsoft", connectionId: msId, via: "nango" });
-
-  // Fall back to Composio Gmail if Nango Gmail not connected
-  if (!gmailId && authHeader) {
-    const composioConnId = await getComposioGmailConnectionId(userId, authHeader);
-    if (composioConnId) {
-      results.unshift({ provider: "gmail", integrationKey: "composio-gmail", connectionId: composioConnId, via: "composio" });
-    }
+  const results: Array<{
+    provider: "gmail" | "microsoft";
+    integrationKey: string;
+    connectionId: string;
+    via: "composio";
+  }> = [];
+  if (gmailId) {
+    results.push({ provider: "gmail", integrationKey: "gmail", connectionId: gmailId, via: "composio" });
   }
-
+  if (outlookId) {
+    results.push({ provider: "microsoft", integrationKey: "outlook", connectionId: outlookId, via: "composio" });
+  }
   return results;
 }
 
-/** Detect which email provider is connected for this user (gmail preferred).
- *  Pass preferredProvider to override the default Gmail-first order. */
+/** Detect which email provider is connected (Composio only). */
 export async function detectEmailProvider(
   userId: string,
   preferredProvider?: "gmail" | "microsoft",
+  authHeader?: string,
 ): Promise<{
   provider: "gmail" | "microsoft" | null;
   integrationKey: string;
   connectionId: string;
+  via: "composio";
 } | null> {
-  const all = await detectAllEmailProviders(userId);
+  const all = await detectAllEmailProviders(userId, authHeader);
   if (!all.length) return null;
   if (preferredProvider) {
     const match = all.find((p) => p.provider === preferredProvider);
     if (match) return match;
   }
-  return all[0]; // Gmail first by default (inserted first above)
+  return all[0];
 }
 
-/** Detect which calendar provider is connected */
-export async function detectCalendarProvider(userId: string): Promise<{
-  provider: "google" | "microsoft" | null;
-  integrationKey: string;
-  connectionId: string;
-} | null> {
-  const gcalId = await getNangoConnectionId(userId, "google-calendar");
-  if (gcalId) return { provider: "google", integrationKey: "google-calendar", connectionId: gcalId };
-
-  const msId = await getNangoConnectionId(userId, "microsoft");
-  if (msId) return { provider: "microsoft", integrationKey: "microsoft", connectionId: msId };
-
+/** @deprecated Use Composio googlecalendar / outlook via detectCalendarConnection in calendar route. */
+export async function detectCalendarProvider(): Promise<null> {
   return null;
+}
+
+/** Back-compat alias */
+export async function getComposioGmailConnectionId(
+  _userId: string,
+  authHeader: string,
+): Promise<string | null> {
+  return getComposioToolkitConnectionId(authHeader, "gmail");
 }

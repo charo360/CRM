@@ -359,10 +359,17 @@ async def _score_and_save(
 
     cutoff = _now() - timedelta(days=URL_DEDUP_DAYS)
     saved = 0
+    from delegate.service import _owner_website_from_user, _sanitize_lead_source_url
+
+    user_doc = await db.users.find_one({"_id": uid}) or {}
+    owner_site = _owner_website_from_user(user_doc)
 
     for opp in enriched[:MAX_RESULTS_PER_SCOUT]:
-        url = opp.get("url", "")
-        if not url or not opp.get("title"):
+        raw_url = (opp.get("url") or "").strip()
+        if not raw_url or not opp.get("title"):
+            continue
+        url = _sanitize_lead_source_url(raw_url, owner_website=owner_site)
+        if not url:
             continue
 
         existing = await db.action_mode_opportunities.find_one({
@@ -379,8 +386,9 @@ async def _score_and_save(
         elif scout.get("scout_type") == "buy_intent":
             kind = "group"
 
+        opp_id = str(uuid.uuid4())
         await db.action_mode_opportunities.insert_one({
-            "_id": str(uuid.uuid4()),
+            "_id": opp_id,
             "user_id": uid,
             "kind": kind,
             "agent": "zilo_scout",
@@ -393,6 +401,22 @@ async def _score_and_save(
             "created_at": _now(),
         })
         saved += 1
+
+        try:
+            from delegate.service import notify_opportunity_created
+            import asyncio
+            opp_doc = {
+                "_id": opp_id,
+                "user_id": uid,
+                "url": url,
+                "snippet": opp.get("snippet", ""),
+                "title": opp["title"],
+                "agent": "zilo_scout",
+                "created_at": _now(),
+            }
+            asyncio.create_task(notify_opportunity_created(db, uid, opp_doc))
+        except Exception:
+            pass
 
         draft = _draft_contextual_comment(
             biz_name,

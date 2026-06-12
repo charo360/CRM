@@ -195,6 +195,22 @@ async def light_briefing_refresh(
 
     await sync_from_crm(db, user, orch, skip_heavy_staging=True)
 
+    try:
+        from rex.decisions.bridge import (
+            sync_open_decisions_to_briefing,
+            sync_outcome_reports_to_briefing,
+        )
+        from rex.decisions.outcomes import process_due_outcomes
+
+        report["outcomes_processed"] = len(await process_due_outcomes(db, user))
+        report["decisions_staged"] = await sync_open_decisions_to_briefing(db, user, orch)
+        report["outcomes_staged"] = await sync_outcome_reports_to_briefing(db, user, orch)
+    except Exception as e:
+        logger.warning("[zilo] decision briefing sync: %s", e)
+        report["decisions_staged"] = 0
+        report["outcomes_staged"] = 0
+        report["outcomes_processed"] = 0
+
     # Batch-fetch customer email addresses for fast whitelist lookup
     whitelist: set[str] = set()
     try:
@@ -210,6 +226,15 @@ async def light_briefing_refresh(
     # over-aggressive rule), then run the current promo-dismiss pass.
     report["revived"] = _revive_overzealously_dismissed(orch)
     report["auto_dismissed_promo"] = _auto_dismiss_promotional_staged(orch, whitelist)
+
+    # Emit ACTION_CLEAN_SEND for SENT actions whose undo window has closed.
+    # This is the only live call site — it feeds the journal ("sent cleanly")
+    # and the rank engine's clean-send credit. Idempotent via orch._swept_ids.
+    try:
+        report["clean_sends"] = len(orch.sweep_clean_sends())
+    except Exception as e:
+        logger.warning("[zilo] clean-send sweep: %s", e)
+        report["clean_sends"] = 0
 
     metrics = await fetch_metrics(db, uid)
     metrics["followups_zilo"] = sum(

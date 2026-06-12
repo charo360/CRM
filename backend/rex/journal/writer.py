@@ -36,6 +36,7 @@ class JournalEventKind(str, Enum):
     MILESTONE = "milestone"            # Phase-flip moments (day 15, 31, 61, 91)
     DAILY_ANCHOR = "daily_anchor"      # One ambient entry per quiet day
     RETURNED = "returned"              # Re-emergence after silence
+    STRATEGIC_DECISION = "strategic_decision"  # Decision Room — founder recorded a call
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { Bell, Loader2, ThumbsUp, ThumbsDown, Settings, X, Mail, MessageSquare, Globe, ShoppingCart, Calendar, Award, CheckCircle, Newspaper } from "lucide-react";
+import { Bell, Loader2, ThumbsUp, ThumbsDown, Settings, X, Mail, MessageSquare, Globe, ShoppingCart, Calendar, Award, CheckCircle, Newspaper, Scale } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function SlackIcon({ size = 14, className }: { size?: number; className?: string }) {
@@ -30,6 +30,7 @@ function CategoryIcon({ cat, size = 14, className }: { cat: string; size?: numbe
     return <ShoppingCart size={size} className={cn("text-emerald-400", className)} />;
   }
   if (cat === "news") return <Newspaper size={size} className={cn("text-sky-400", className)} />;
+  if (cat === "strategy") return <Scale size={size} className={cn("text-violet-400", className)} />;
   return <MessageSquare size={size} className={cn("text-slate-400", className)} />;
 }
 
@@ -47,6 +48,8 @@ export type LetterAction = {
   channel?: string;
   review_only?: boolean;
   action_mode_type?: string;
+  decision_session_id?: string;
+  decision_href?: string;
   source_url?: string | null;
   is_informational?: boolean;
   feedback?: "like" | "dislike" | null;
@@ -131,6 +134,12 @@ function channelLabel(ch?: string) {
 }
 
 function primaryActionLabel(action: LetterAction) {
+  if (action.action_mode_type === "decision_outcome") {
+    return "View outcome";
+  }
+  if (action.action_mode_type === "decision_room") {
+    return "Open Decision Room";
+  }
   if (action.review_only || action.action_mode_type === "send_email") {
     return "Send it";
   }
@@ -138,6 +147,15 @@ function primaryActionLabel(action: LetterAction) {
     return "Send it";
   }
   return "Send it";
+}
+
+function decisionRoomHref(action: LetterAction): string {
+  if (action.decision_href) return action.decision_href;
+  if (action.decision_session_id) {
+    const tab = action.action_mode_type === "decision_outcome" ? "&tab=outcomes" : "";
+    return `/dashboard/rex/decisions?session=${action.decision_session_id}${tab}`;
+  }
+  return "/dashboard/rex/decisions";
 }
 
 type OvernightItem = {
@@ -211,6 +229,7 @@ function categoryLabel(cat: string) {
   if (cat === "orders") return "SHOPIFY ORDERS";
   if (cat === "inventory") return "SHOPIFY INVENTORY";
   if (cat === "news") return "NEWS & INDUSTRY UPDATES";
+  if (cat === "strategy") return "DECISION ROOM";
   return cat.replace(/_/g, " ").toUpperCase();
 }
 
@@ -245,6 +264,7 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
   const [draftOpen, setDraftOpen] = useState<Set<string>>(new Set());
   const [draftEdits, setDraftEdits] = useState<Record<string, string>>({});
   const [quickFilter, setQuickFilter] = useState<string>("all");
+  const [workplanBriefing, setWorkplanBriefing] = useState<any>(null);
 
   const [showPreferencesModal, setShowPreferencesModal] = useState(false);
   const [preferences, setPreferences] = useState<{ name: string; display: string; tier: number; enabled: boolean }[]>([]);
@@ -350,6 +370,14 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
       const data = normalizeHome(await api.get<ZiloHome>("/rex/home"));
       setHome(data);
       onStagedCountRef.current?.(data.counts.staged);
+
+      // Fetch workplan briefing data
+      try {
+        const wpData = await api.get<any>("/rex/workplan/briefing");
+        setWorkplanBriefing(wpData);
+      } catch (wpErr) {
+        console.warn("Failed to load workplan briefing", wpErr);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not load briefing";
       if (msg.includes("404")) {
@@ -626,6 +654,63 @@ export default function MorningBriefing({ onStagedCount }: MorningBriefingProps)
                   <LinkifiedText text={openerLine} className="text-sm leading-relaxed text-slate-200" />
                 </div>
               </div>
+
+              {workplanBriefing && (workplanBriefing.due_today?.length > 0 || workplanBriefing.completed_overnight?.length > 0 || workplanBriefing.coming_up?.length > 0) && (
+                <div className="relative overflow-hidden rounded-xl border border-brand/20 bg-gradient-to-br from-[#07150e]/60 via-[#040e0a]/80 to-[#020604]/95 p-5 shadow-lg shadow-black/10 transition hover:border-brand/40 duration-300">
+                  <div className="flex items-center justify-between border-b border-white/5 pb-2.5 mb-3">
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-brand-light">
+                      YOUR PLAN TODAY
+                    </span>
+                    <Link href="/dashboard/workplan" className="text-xs text-brand hover:text-brand-light hover:underline transition">
+                      View full work plan →
+                    </Link>
+                  </div>
+                  
+                  <div className="space-y-4 text-xs text-slate-300">
+                    {workplanBriefing.due_today?.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-mono uppercase font-semibold text-slate-500 mb-1.5 tracking-wider">Due Today:</p>
+                        <ul className="space-y-1.5">
+                          {workplanBriefing.due_today.map((task: any) => (
+                            <li key={task.id} className="flex justify-between items-center pl-2 border-l border-amber-500/40 py-0.5">
+                              <span className="text-slate-200 font-medium">{task.title}</span>
+                              <span className="text-[9px] rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-400 font-mono">You</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    
+                    {workplanBriefing.completed_overnight?.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-mono uppercase font-semibold text-slate-500 mb-1.5 tracking-wider">Zilo Completed Overnight:</p>
+                        <ul className="space-y-1.5">
+                          {workplanBriefing.completed_overnight.map((task: any) => (
+                            <li key={task.id} className="flex justify-between items-center pl-2 border-l border-emerald-500/40 py-0.5">
+                              <span className="text-slate-200 font-medium">{task.title}</span>
+                              <span className="text-[9px] text-emerald-400 font-mono font-medium">{task.result ? `→ ${task.result}` : "Complete"}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    
+                    {workplanBriefing.coming_up?.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-mono uppercase font-semibold text-slate-500 mb-1.5 tracking-wider">Coming Up:</p>
+                        <ul className="space-y-1.5">
+                          {workplanBriefing.coming_up.map((task: any) => (
+                            <li key={task.id} className="flex justify-between items-center pl-2 border-l border-slate-500/40 py-0.5">
+                              <span className="text-slate-200 font-medium">{task.title}</span>
+                              <span className="text-[9px] text-slate-400 italic">{task.context || "Upcoming"}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* On-Screen Interactive Quick Filters */}
               {staged.length > 0 && (
@@ -1245,7 +1330,24 @@ function BriefingActionCard({
 
       {/* Action buttons */}
       <div className="mt-5 flex flex-wrap items-center gap-2">
-        {action.is_informational ? (
+        {action.action_mode_type === "decision_room" || action.action_mode_type === "decision_outcome" ? (
+          <>
+            <Link
+              href={decisionRoomHref(action)}
+              className="rounded-lg bg-brand px-4 py-2 text-xs font-bold text-brand-ink transition hover:bg-brand-light hover:scale-102 active:scale-98 shadow-md shadow-brand/10 flex items-center gap-1.5 cursor-pointer"
+            >
+              {action.action_mode_type === "decision_outcome" ? "View outcome" : "Open Decision Room"}
+            </Link>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onDismiss}
+              className="rounded-lg px-3 py-2 text-xs text-slate-500 transition hover:text-slate-300 hover:bg-white/5 cursor-pointer"
+            >
+              Not now
+            </button>
+          </>
+        ) : action.is_informational ? (
           <button
             type="button"
             disabled={busy}

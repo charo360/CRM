@@ -1,8 +1,8 @@
 """
 Push CRM scheduled posts to social platforms.
 
-Facebook and Instagram use Composio (same OAuth flow as Gmail/Google Calendar).
-LinkedIn, X, and TikTok still use Zernio when configured.
+Facebook, Instagram, YouTube, LinkedIn, X, and TikTok use Composio (official OAuth).
+LinkedIn Premium (Unipile) handles posting, inbox, InMail, and Sales Navigator in one connect.
 """
 from __future__ import annotations
 
@@ -427,66 +427,11 @@ def should_push_to_zernio(post: Dict[str, Any], *, force: bool = False) -> bool:
 
 
 async def push_post(db, post: Dict[str, Any]) -> Dict[str, Any]:
-    """Route publish to Composio (Facebook/Instagram) and/or Zernio (other platforms)."""
-    from social_composio_publish import (
-        COMPOSIO_CHANNELS,
-        post_uses_composio,
-        post_uses_zernio,
-        push_post_to_composio,
-    )
+    """Publish via Composio for all supported social channels."""
+    from social_composio_publish import post_uses_composio, push_post_to_composio
 
-    channels = [c.strip().lower() for c in (post.get("channels") or []) if c.strip()]
-    composio_channels = [c for c in channels if c in COMPOSIO_CHANNELS]
-    zernio_channels = [c for c in channels if c not in COMPOSIO_CHANNELS]
-
-    composio_result: Optional[Dict[str, Any]] = None
-    zernio_result: Optional[Dict[str, Any]] = None
-
-    if composio_channels:
-        composio_result = await push_post_to_composio(
-            db, {**post, "channels": composio_channels}
-        )
-    if zernio_channels:
-        zernio_result = await push_post_to_zernio(
-            db, {**post, "channels": zernio_channels}
-        )
-
-    if composio_result and zernio_result:
-        ids = [
-            x
-            for x in (
-                composio_result.get("external_post_id"),
-                zernio_result.get("zernio_post_id"),
-            )
-            if x
-        ]
-        ok = composio_result.get("success") and zernio_result.get("success")
-        errors = [
-            e
-            for e in (composio_result.get("error"), zernio_result.get("error"))
-            if e
-        ]
-        crm_status = "published"
-        if composio_result.get("crm_status") == "scheduled" or zernio_result.get("crm_status") == "scheduled":
-            crm_status = "scheduled"
-        return {
-            "success": ok,
-            "external_post_id": "|".join(ids) if ids else None,
-            "zernio_post_id": "|".join(ids) if ids else None,
-            "error": "; ".join(errors) if errors else None,
-            "crm_status": "failed" if not ok else crm_status,
-            "publish_provider": "mixed",
-        }
-
-    if composio_result:
-        return composio_result
-    if zernio_result:
-        return {**zernio_result, "publish_provider": "zernio", "external_post_id": zernio_result.get("zernio_post_id")}
     if post_uses_composio(post):
         return await push_post_to_composio(db, post)
-    if post_uses_zernio(post):
-        res = await push_post_to_zernio(db, post)
-        return {**res, "publish_provider": "zernio", "external_post_id": res.get("zernio_post_id")}
     return {
         "success": False,
         "external_post_id": None,

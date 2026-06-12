@@ -30,14 +30,33 @@ interface Plan {
   features: string[];
 }
 
+interface StorePrice {
+  price: number;
+  priceString: string;
+  currencyCode: string;
+  // Introductory offer price from the store (e.g. 50% off first 3 months
+  // configured in Play Console). Null when the product has no intro offer.
+  introPriceString: string | null;
+}
+
+function formatPrice(amount: number, currencyCode: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: currencyCode }).format(amount);
+  } catch {
+    return `${currencyCode} ${Math.round(amount).toLocaleString()}`;
+  }
+}
+
 export default function SubscriptionModal({ visible, onClose, onSuccess, currentPlan }: SubscriptionModalProps) {
   const [plans, setPlans] = useState<Plan[]>([]);
+  const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
 
   useEffect(() => {
     if (visible) {
       loadPlans();
+      loadStorePrices();
     }
   }, [visible]);
 
@@ -54,12 +73,45 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
     }
   };
 
+  // The store (Google Play / App Store) is the source of truth for what users
+  // are actually charged. Show its localized prices when available; the
+  // backend amounts are only a fallback for builds without IAP (e.g. Expo Go).
+  const loadStorePrices = async () => {
+    if (Constants.appOwnership === 'expo') return;
+    try {
+      const Purchases = require('react-native-purchases').default;
+      const offerings = await Purchases.getOfferings();
+      const allPackages = [
+        ...(offerings.current?.availablePackages || []),
+        ...Object.values(offerings.all || {}).flatMap((o: any) => o.availablePackages || []),
+      ];
+      const map: Record<string, StorePrice> = {};
+      for (const planId of ['starter', 'standard', 'pro']) {
+        const pkg = allPackages.find(
+          (p: any) =>
+            p.product?.identifier?.includes(planId) || p.identifier?.includes(planId)
+        );
+        if (pkg?.product?.priceString) {
+          map[planId] = {
+            price: pkg.product.price,
+            priceString: pkg.product.priceString,
+            currencyCode: pkg.product.currencyCode || '',
+            introPriceString: pkg.product.introPrice?.priceString || null,
+          };
+        }
+      }
+      setStorePrices(map);
+    } catch (error) {
+      console.warn('Store prices unavailable, using backend display prices:', error);
+    }
+  };
+
   const handlePurchase = async (plan: Plan) => {
     const isExpoGo = Constants.appOwnership === 'expo';
     if (isExpoGo) {
       Alert.alert(
-        'Development Mode',
-        'In-app purchases require a real build installed from the Play Store / App Store.',
+        'Not Available Yet',
+        'Subscriptions are available in the full Play Store version of the app. Coming soon!',
         [{ text: 'OK' }]
       );
       return;
@@ -68,9 +120,8 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       setPurchasing(true);
       const Purchases = require('react-native-purchases').default;
       const offerings = await Purchases.getOfferings();
-      if (!offerings.current && !offerings.all) throw new Error('No offerings available');
 
-      // Search all offerings by product identifier (crm_starter_monthly contains 'starter', etc.)
+      // Search all offerings for a matching product
       const allPackages = [
         ...(offerings.current?.availablePackages || []),
         ...Object.values(offerings.all || {}).flatMap((o: any) => o.availablePackages || []),
@@ -80,11 +131,18 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
           p.product?.identifier?.includes(plan.id) ||
           p.identifier?.includes(plan.id)
       );
-      if (!pkg) throw new Error('Product not found');
+
+      if (!pkg) {
+        Alert.alert(
+          'Coming Soon',
+          'Subscriptions are being set up in the Play Store. They will be available very soon!',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
 
       const { customerInfo, transaction } = await Purchases.purchasePackage(pkg);
       if (customerInfo.entitlements.active['premium']) {
-        // Sync subscription to backend so subscription_plan/subscription_active are updated in DB
         try {
           const purchaseToken = transaction?.transactionIdentifier || transaction?.revenueCatId || '';
           const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
@@ -96,13 +154,13 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
         } catch (syncErr) {
           console.warn('Backend subscription sync failed (non-fatal):', syncErr);
         }
-        Alert.alert('Success', 'Subscription activated!');
+        Alert.alert('Success! 🎉', 'Your subscription is now active!');
         onSuccess();
         onClose();
       }
     } catch (error: any) {
       if (!error.userCancelled) {
-        Alert.alert('Error', error.message || 'Purchase failed');
+        Alert.alert('Error', error.message || 'Purchase failed. Please try again.');
       }
     } finally {
       setPurchasing(false);
@@ -112,7 +170,7 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
   const restorePurchases = async () => {
     const isExpoGo = Constants.appOwnership === 'expo';
     if (isExpoGo) {
-      Alert.alert('Development Mode', 'Restore purchases requires a real build.', [{ text: 'OK' }]);
+      Alert.alert('Not Available Yet', 'Restore purchases requires the full Play Store version.', [{ text: 'OK' }]);
       return;
     }
     try {
@@ -121,11 +179,9 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       const customerInfo = await Purchases.restorePurchases();
 
       if (customerInfo.entitlements.active['premium']) {
-        // Sync restored subscription to backend
         try {
           const entitlement = customerInfo.entitlements.active['premium'];
           const productId = entitlement?.productIdentifier || '';
-          // Map RevenueCat product ID to plan_id (e.g. crm_pro_monthly → pro)
           const planMatch = productId.match(/crm_(starter|standard|pro)/);
           if (planMatch) {
             const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
@@ -136,14 +192,14 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
         } catch (syncErr) {
           console.warn('Backend restore sync failed (non-fatal):', syncErr);
         }
-        Alert.alert('Success', 'Subscription restored!');
+        Alert.alert('Restored!', 'Your subscription has been restored.');
         onSuccess();
         onClose();
       } else {
-        Alert.alert('No Subscription', 'No active subscription found');
+        Alert.alert('No Subscription Found', 'No active subscription found on this account.');
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Restore failed');
+      Alert.alert('Error', error.message || 'Restore failed. Please try again.');
     } finally {
       setPurchasing(false);
     }
@@ -186,6 +242,15 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
               <View style={styles.packages}>
                 {plans.map((plan, index) => {
                   const isCurrentPlan = currentPlan === plan.id;
+                  const store = storePrices[plan.id];
+                  const fullPrice = store
+                    ? store.priceString
+                    : `${plan.currency} ${plan.amount.toLocaleString()}`;
+                  // Prefer the real intro offer from the store; only compute
+                  // 50% as a display fallback when the store didn't provide one.
+                  const introPrice = store
+                    ? (store.introPriceString || formatPrice(store.price / 2, store.currencyCode))
+                    : `${plan.currency} ${Math.round(plan.amount * 0.5).toLocaleString()}`;
                   return (
                     <TouchableOpacity
                       key={plan.id}
@@ -212,15 +277,15 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
 
                       <View style={styles.priceContainer}>
                         <Text style={styles.packagePriceStrike}>
-                          {plan.currency} {plan.amount.toLocaleString()}
+                          {fullPrice}
                         </Text>
                         <Text style={styles.packagePrice}>
-                          {plan.currency} {Math.round(plan.amount * 0.5).toLocaleString()}
+                          {introPrice}
                         </Text>
                         <Text style={styles.priceInterval}>/mo · first 3 months</Text>
                       </View>
                       <Text style={styles.afterIntro}>
-                        then {plan.currency} {plan.amount.toLocaleString()}/month
+                        then {fullPrice}/month
                       </Text>
 
                       <View style={styles.featuresContainer}>

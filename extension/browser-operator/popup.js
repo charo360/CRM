@@ -1,78 +1,80 @@
 /**
- * Zilo Browser Control - Popup Script
- * Coordinates with the background service worker to display and update connection status.
+ * Zilo Browser Operator - Popup Script
+ * Shows live connection status and offers a manual reconnect + an advanced
+ * server-URL override for self-hosted/local backends. The CRM token itself is
+ * supplied automatically by the dashboard bridge, so there is nothing to type
+ * in the normal flow.
  */
 
 document.addEventListener("DOMContentLoaded", () => {
   const statusBadge = document.getElementById("status-badge");
-  const userIdInput = document.getElementById("user-id");
-  const wsUrlInput = document.getElementById("ws-url");
-  const connectBtn = document.getElementById("connect-btn");
+  const userIdEl = document.getElementById("user-id");
+  const hintEl = document.getElementById("hint");
+  const reconnectBtn = document.getElementById("reconnect-btn");
+  const serverUrlInput = document.getElementById("server-url");
+  const saveServerBtn = document.getElementById("save-server-btn");
 
-  // Load stored options
-  chrome.storage.local.get(["userId", "wsUrl"], (result) => {
-    if (result.userId) {
-      userIdInput.value = result.userId;
-    }
-    if (result.wsUrl) {
-      wsUrlInput.value = result.wsUrl;
-    }
+  // Load any stored manual server URL.
+  chrome.storage.local.get(["serverUrl"], (r) => {
+    if (r.serverUrl) serverUrlInput.value = r.serverUrl;
+  });
 
-    // Query status from background
-    chrome.runtime.sendMessage({ type: "GET_STATUS" }, (response) => {
-      if (response) {
-        updateStatusUI(response.isConnected, response.userId);
-      }
+  // Initial status.
+  chrome.runtime.sendMessage({ type: "GET_STATUS" }, (res) => {
+    if (chrome.runtime.lastError || !res) return;
+    updateStatusUI(res.isConnected, res.userId, res.hasCrmToken);
+  });
+
+  reconnectBtn.addEventListener("click", () => {
+    reconnectBtn.textContent = "Reconnecting…";
+    reconnectBtn.disabled = true;
+    chrome.runtime.sendMessage({ type: "RECONNECT" }, () => {
+      setTimeout(refreshStatus, 1200);
     });
   });
 
-  // Handle connect request
-  connectBtn.addEventListener("click", () => {
-    const userId = userIdInput.value.trim();
-    const wsUrl = wsUrlInput.value.trim() || "http://localhost:8000";
-
-    if (!userId) {
-      alert("Please provide a valid Zilo User ID to authenticate the session.");
-      return;
-    }
-
-    connectBtn.textContent = "Connecting...";
-    connectBtn.disabled = true;
-
-    chrome.runtime.sendMessage(
-      { type: "CONNECT_REQUEST", userId, wsUrl },
-      (response) => {
-        console.log("[Zilo Popup] Connection initiated response:", response);
-        setTimeout(() => {
-          chrome.runtime.sendMessage({ type: "GET_STATUS" }, (statusResponse) => {
-            if (statusResponse) {
-              updateStatusUI(statusResponse.isConnected, statusResponse.userId);
-            }
-            connectBtn.disabled = false;
-            connectBtn.textContent = "Connect Session";
-          });
-        }, 1500);
-      }
-    );
+  saveServerBtn.addEventListener("click", () => {
+    const serverUrl = serverUrlInput.value.trim();
+    if (!serverUrl) return;
+    saveServerBtn.textContent = "Connecting…";
+    saveServerBtn.disabled = true;
+    chrome.runtime.sendMessage({ type: "SET_SERVER", serverUrl }, () => {
+      setTimeout(refreshStatus, 1200);
+    });
   });
 
-  // Listen for status broadcast from background
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "STATUS_UPDATE") {
       updateStatusUI(message.status === "connected", message.userId);
     }
   });
 
-  function updateStatusUI(isConnected, userId) {
+  function refreshStatus() {
+    chrome.runtime.sendMessage({ type: "GET_STATUS" }, (res) => {
+      reconnectBtn.disabled = false;
+      reconnectBtn.textContent = "Reconnect";
+      saveServerBtn.disabled = false;
+      saveServerBtn.textContent = "Save & Connect";
+      if (chrome.runtime.lastError || !res) return;
+      updateStatusUI(res.isConnected, res.userId, res.hasCrmToken);
+    });
+  }
+
+  function updateStatusUI(isConnected, userId, hasCrmToken) {
     if (isConnected) {
       statusBadge.textContent = "Connected";
       statusBadge.className = "badge connected";
-      if (userId) {
-        userIdInput.value = userId;
-      }
+      hintEl.style.display = "none";
     } else {
       statusBadge.textContent = "Disconnected";
       statusBadge.className = "badge disconnected";
+      hintEl.style.display = "block";
+      if (hasCrmToken === false) {
+        hintEl.innerHTML =
+          "Open and log into your <strong>Zilo dashboard</strong> in any tab — " +
+          "the operator connects automatically. No IDs to enter.";
+      }
     }
+    userIdEl.textContent = userId ? userId : "—";
   }
 });

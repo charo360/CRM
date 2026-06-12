@@ -8,13 +8,22 @@ import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, TypedDict
 
-# Landing-aligned USD reference (regional checkout may differ)
-LANDING_USD_MONTHLY = (49, 79, 200)
-MONTHLY_MESSAGE_CAPS = {
+# Two separate products share the same plan ids:
+# - App (mobile IAP via RevenueCat): cheaper, lower caps
+# - Web (Stripe, landing page): 49/79/200 USD, higher caps + more capacity
+MONTHLY_MESSAGE_CAPS = {  # app product (default)
+    "starter": 2_500,
+    "standard": 5_000,
+    "pro": 10_000,
+}
+MONTHLY_MESSAGE_CAPS_WEB = {  # web product (landing-aligned)
     "starter": 5_000,
     "standard": 10_000,
     "pro": 25_000,
 }
+WEB_USD_MONTHLY = {"starter": 49, "standard": 79, "pro": 200}
+# billing_provider values set by web checkout flows; absent/other = app (IAP)
+WEB_BILLING_PROVIDERS = {"stripe", "paystack", "flutterwave", "payhero"}
 TRIAL_PLAN_ID = "trial"
 TRIAL_CREDITS = int(os.environ.get("BILLING_TRIAL_CREDITS", "100"))
 TRIAL_MESSAGE_CAP = TRIAL_CREDITS
@@ -69,11 +78,18 @@ def _plan_flags(plan_id: str, *, paid_active: bool, trial_active: bool) -> PlanF
     )
 
 
-def monthly_message_cap(plan_id: str, *, trial_active: bool, paid_active: bool) -> int:
+def monthly_message_cap(
+    plan_id: str, *, trial_active: bool, paid_active: bool, billing_provider: Optional[str] = None
+) -> int:
     if trial_active:
         return TRIAL_MESSAGE_CAP
-    if paid_active and plan_id in MONTHLY_MESSAGE_CAPS:
-        return MONTHLY_MESSAGE_CAPS[plan_id]
+    caps = (
+        MONTHLY_MESSAGE_CAPS_WEB
+        if (billing_provider or "").lower() in WEB_BILLING_PROVIDERS
+        else MONTHLY_MESSAGE_CAPS
+    )
+    if paid_active and plan_id in caps:
+        return caps[plan_id]
     return 0
 
 
@@ -152,6 +168,7 @@ async def build_entitlements(db, user: dict) -> Dict[str, Any]:
         plan_id,
         trial_active=trial_entitled,
         paid_active=paid_active,
+        billing_provider=record.get("billing_provider"),
     )
     flags = _plan_flags(
         plan_id,
@@ -260,8 +277,8 @@ async def provision_signup_trial(db, owner_id: str) -> bool:
 
 
 def marketing_features_for_plan(plan_id: str) -> List[str]:
-    """Human-readable bullets aligned with landing page."""
-    caps = MONTHLY_MESSAGE_CAPS.get(plan_id, TRIAL_MESSAGE_CAP)
+    """Human-readable bullets aligned with landing page (web product)."""
+    caps = MONTHLY_MESSAGE_CAPS_WEB.get(plan_id, TRIAL_MESSAGE_CAP)
     rows = [
         f"{TRIAL_DAYS}-day free trial with {TRIAL_CREDITS:,} outbound messages on every plan",
         f"{caps:,} outbound messages / month",

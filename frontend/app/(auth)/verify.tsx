@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,14 +14,32 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 
+const RESEND_COOLDOWN = 30; // seconds
+
 export default function VerifyScreen() {
   const { phone, devOtp } = useLocalSearchParams<{ phone: string; devOtp: string }>();
   const [code, setCode] = useState(['', '', '', '', '', '']);
   const [loading, setLoading] = useState(false);
-  const [showOtp, setShowOtp] = useState(true);
+  const [resendCooldown, setResendCooldown] = useState(RESEND_COOLDOWN);
+  const [resending, setResending] = useState(false);
   const inputRefs = useRef<TextInput[]>([]);
   const router = useRouter();
-  const { verifyOTP } = useAuth();
+  const { verifyOTP, sendOTP } = useAuth();
+
+  // Countdown timer for resend
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const handleCodeChange = (text: string, index: number) => {
     const newCode = [...code];
@@ -68,7 +86,7 @@ export default function VerifyScreen() {
           router.replace('/(tabs)/customers');
         }
       } else {
-        Alert.alert('Error', result.message || 'Invalid OTP');
+        Alert.alert('Invalid Code', result.message || 'The code you entered is incorrect. Please try again.');
       }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Verification failed');
@@ -76,6 +94,32 @@ export default function VerifyScreen() {
       setLoading(false);
     }
   };
+
+  const handleResend = async () => {
+    if (resendCooldown > 0 || resending) return;
+    setResending(true);
+    try {
+      const result = await sendOTP(phone!);
+      if (result.success) {
+        // Reset code inputs
+        setCode(['', '', '', '', '', '']);
+        inputRefs.current[0]?.focus();
+        // Restart cooldown
+        setResendCooldown(RESEND_COOLDOWN);
+        Alert.alert('Code Sent', `A new verification code has been sent to ${phone}`);
+      } else {
+        Alert.alert('Error', result.message || 'Failed to resend code');
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Something went wrong');
+    } finally {
+      setResending(false);
+    }
+  };
+
+  const maskedPhone = phone
+    ? phone.slice(0, -4).replace(/\d/g, '•') + phone.slice(-4)
+    : '';
 
   return (
     <KeyboardAvoidingView
@@ -88,36 +132,15 @@ export default function VerifyScreen() {
         </TouchableOpacity>
 
         <View style={styles.header}>
-          <Text style={styles.title}>Verify Phone</Text>
-          <Text style={styles.subtitle}>Enter the 6-digit code sent to</Text>
-          <Text style={styles.phone}>{phone}</Text>
+          <View style={styles.iconCircle}>
+            <Ionicons name="chatbubble-ellipses-outline" size={32} color="#25D366" />
+          </View>
+          <Text style={styles.title}>Check your SMS</Text>
+          <Text style={styles.subtitle}>We sent a 6-digit code to</Text>
+          <Text style={styles.phone}>{maskedPhone}</Text>
         </View>
 
-        {/* SANDBOX MODE - Show OTP on screen */}
-        {devOtp && showOtp && (
-          <View style={styles.otpBox}>
-            <View style={styles.otpBoxHeader}>
-              <Text style={styles.otpBoxTitle}>🧪 SANDBOX MODE</Text>
-              <TouchableOpacity onPress={() => setShowOtp(false)}>
-                <Ionicons name="close" size={20} color="#666" />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.otpBoxCode}>{devOtp}</Text>
-            <Text style={styles.otpBoxHint}>Use this code to verify (SMS not sent)</Text>
-            <TouchableOpacity
-              style={styles.autoFillButton}
-              onPress={() => {
-                const digits = devOtp.split('');
-                setCode(digits);
-                // Auto verify after filling
-                setTimeout(() => handleVerify(devOtp), 500);
-              }}
-            >
-              <Text style={styles.autoFillText}>Tap to Auto-Fill & Verify</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
+        {/* OTP input boxes */}
         <View style={styles.codeContainer}>
           {code.map((digit, index) => (
             <TextInput
@@ -133,10 +156,12 @@ export default function VerifyScreen() {
               keyboardType="number-pad"
               maxLength={1}
               selectTextOnFocus
+              autoFocus={index === 0}
             />
           ))}
         </View>
 
+        {/* Verify button */}
         <TouchableOpacity
           style={[styles.button, loading && styles.buttonDisabled]}
           onPress={() => handleVerify()}
@@ -145,14 +170,33 @@ export default function VerifyScreen() {
           {loading ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.buttonText}>Verify</Text>
+            <Text style={styles.buttonText}>Verify Code</Text>
           )}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.resendButton}>
-          <Text style={styles.resendText}>Didn't receive code? </Text>
-          <Text style={styles.resendLink}>Resend</Text>
-        </TouchableOpacity>
+        {/* Resend */}
+        <View style={styles.resendRow}>
+          <Text style={styles.resendText}>Didn't receive it? </Text>
+          {resendCooldown > 0 ? (
+            <Text style={styles.resendCooldown}>Resend in {resendCooldown}s</Text>
+          ) : (
+            <TouchableOpacity onPress={handleResend} disabled={resending}>
+              {resending ? (
+                <ActivityIndicator size="small" color="#25D366" />
+              ) : (
+                <Text style={styles.resendLink}>Resend Code</Text>
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Dev sandbox box — only shown when SMS was NOT sent (no real Vonage keys) */}
+        {devOtp ? (
+          <View style={styles.devBox}>
+            <Ionicons name="flask-outline" size={16} color="#F59E0B" />
+            <Text style={styles.devText}>Dev mode — code: <Text style={styles.devCode}>{devOtp}</Text></Text>
+          </View>
+        ) : null}
       </View>
     </KeyboardAvoidingView>
   );
@@ -175,22 +219,36 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   header: {
-    marginBottom: 48,
+    alignItems: 'center',
+    marginBottom: 40,
+  },
+  iconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#111F35',
+    borderWidth: 2,
+    borderColor: '#25D366',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
   },
   title: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: 'bold',
     color: '#FFFFFF',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#666',
+    fontSize: 15,
+    color: '#8A9BB5',
+    marginBottom: 4,
   },
   phone: {
     fontSize: 16,
     color: '#25D366',
     fontWeight: '600',
+    letterSpacing: 1,
   },
   codeContainer: {
     flexDirection: 'row',
@@ -199,88 +257,77 @@ const styles = StyleSheet.create({
   },
   codeInput: {
     width: 48,
-    height: 56,
+    height: 60,
     backgroundColor: '#1A2942',
-    borderRadius: 12,
-    fontSize: 24,
+    borderRadius: 14,
+    fontSize: 26,
     fontWeight: 'bold',
     color: '#FFFFFF',
     textAlign: 'center',
+    borderWidth: 2,
+    borderColor: '#243451',
   },
   codeInputFilled: {
-    backgroundColor: '#25D366',
+    backgroundColor: '#1A3D2A',
+    borderColor: '#25D366',
+    color: '#25D366',
   },
   button: {
     backgroundColor: '#25D366',
-    borderRadius: 12,
-    height: 56,
+    borderRadius: 14,
+    height: 58,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
+    shadowColor: '#25D366',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
   },
   buttonDisabled: {
-    opacity: 0.7,
+    opacity: 0.6,
   },
   buttonText: {
     color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
   },
-  resendButton: {
+  resendRow: {
     flexDirection: 'row',
     justifyContent: 'center',
+    alignItems: 'center',
   },
   resendText: {
-    color: '#666',
+    color: '#8A9BB5',
     fontSize: 14,
   },
   resendLink: {
     color: '#25D366',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  otpBox: {
-    backgroundColor: '#1E3A5F',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 24,
-    borderWidth: 2,
-    borderColor: '#25D366',
+  resendCooldown: {
+    color: '#4A5A72',
+    fontSize: 14,
   },
-  otpBoxHeader: {
+  devBox: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
-  },
-  otpBoxTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#25D366',
-  },
-  otpBoxCode: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    textAlign: 'center',
-    letterSpacing: 8,
-    marginVertical: 8,
-  },
-  otpBoxHint: {
-    fontSize: 12,
-    color: '#888',
-    textAlign: 'center',
-  },
-  autoFillButton: {
-    backgroundColor: '#25D366',
-    borderRadius: 8,
+    backgroundColor: '#1F1A0D',
+    borderRadius: 10,
     padding: 12,
-    marginTop: 12,
-    alignItems: 'center',
+    marginTop: 32,
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    gap: 8,
   },
-  autoFillText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
+  devText: {
+    color: '#F59E0B',
+    fontSize: 13,
+  },
+  devCode: {
+    fontWeight: 'bold',
+    letterSpacing: 2,
   },
 });

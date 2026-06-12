@@ -1,17 +1,21 @@
 import React, { useState } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, View, Platform, Modal } from 'react-native';
+import { StyleSheet, View, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ThreeDotMenu from '../../components/ThreeDotMenu';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
+import { useAuth } from '../../context/AuthContext';
+import { useBusiness } from '../../context/BusinessContext';
 
 import { settingsAPI } from '../../context/api';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { user } = useAuth();
+  const { config, isRetailBusiness, isLoading } = useBusiness();
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [showBusinessKnowledge, setShowBusinessKnowledge] = useState(false);
 
@@ -52,9 +56,21 @@ export default function TabsLayout() {
       await settingsAPI.updateSettings({ notification_enabled: newValue });
     } catch (error) {
       console.error('Failed to update notifications', error);
-      setNotificationEnabled(!newValue); // Revert on failure
     }
   };
+
+  // Wait for business settings to load before mounting the tabs.
+  // Mounting earlier hides Bookings/Broadcast because the default config
+  // has them off until the real settings arrive.
+  if (isLoading) {
+    return <View style={styles.loadingContainer} />;
+  }
+
+  // Bookings and Broadcast swap a single tab slot: booking businesses get the
+  // Bookings tab (Broadcast moves to the three-dot menu), everyone else gets
+  // the Broadcast tab (Bookings in the menu when the business supports them).
+  const showBookingsTab = config.bookingsTabVisible && !isRetailBusiness;
+  const showBroadcastTab = !showBookingsTab;
 
   return (
     <>
@@ -77,15 +93,40 @@ export default function TabsLayout() {
               <ThreeDotMenu
                 color="#FFFFFF"
                 items={[
+                  // Whichever of Bookings/Broadcast isn't in the tab bar lives here
+                  ...(showBookingsTab ? [{
+                    icon: 'megaphone-outline' as const,
+                    label: 'Broadcast',
+                    onPress: () => router.push('/(tabs)/broadcast' as any),
+                    color: '#25D366'
+                  }] : []),
+                  ...(showBroadcastTab && config.bookingsTabVisible ? [{
+                    icon: 'calendar-outline' as const,
+                    label: config.bookingLabel ? `${config.bookingLabel}s` : 'Bookings',
+                    onPress: () => router.push('/(tabs)/bookings' as any),
+                    color: '#25D366'
+                  }] : []),
+                  {
+                    icon: 'search-outline',
+                    label: 'Group Scout',
+                    onPress: () => router.push('../group-scout' as any),
+                    color: '#25D366'
+                  },
                   {
                     icon: 'analytics-outline',
                     label: 'Follow-up Analytics',
                     onPress: () => router.push('../analytics' as any),
                     color: '#25D366'
                   },
+                  ...(user?.role === 'owner' || user?.role === 'manager' || !user?.role ? [{
+                    icon: 'people-outline' as const,
+                    label: 'Team Analytics',
+                    onPress: () => router.push('../team-analytics' as any),
+                    color: '#4A90E2'
+                  }] : []),
                   {
                     icon: 'cube-outline',
-                    label: 'Product Catalog',
+                    label: `${config.catalogLabel || 'Product'} Catalog`,
                     onPress: () => setShowProductCatalog(true)
                   },
                   {
@@ -142,9 +183,19 @@ export default function TabsLayout() {
         <Tabs.Screen
           name="sales"
           options={{
-            title: 'Sales',
+            title: config.salesTabLabel || 'Sales',
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="receipt" size={size} color={color} />
+              <Ionicons name="cash" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="bookings"
+          options={{
+            title: config.bookingLabel || 'Bookings',
+            href: showBookingsTab ? undefined : null,
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="calendar" size={size} color={color} />
             ),
           }}
         />
@@ -152,6 +203,7 @@ export default function TabsLayout() {
           name="broadcast"
           options={{
             title: 'Broadcast',
+            href: showBroadcastTab ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="megaphone" size={size} color={color} />
             ),
@@ -190,5 +242,9 @@ const styles = StyleSheet.create({
   tabBarLabel: {
     fontSize: 11,
     fontWeight: '500',
+  },
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#0A1628',
   },
 });

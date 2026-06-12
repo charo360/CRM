@@ -19,6 +19,11 @@ import {
   WORLD_COUNTRIES,
   getCountryByCode,
 } from "@/lib/worldCountries";
+import { formatEmailClosing } from "@/lib/emailSignature";
+import {
+  adaptProfileForPlatform,
+  PLATFORM_IDENTITY_HINTS,
+} from "@/lib/socialPlatformProfile";
 
 /** Same set as mobile `BusinessType` (app). */
 const BUSINESS_TYPES = [
@@ -230,6 +235,8 @@ export default function SettingsPage() {
       await settingsApi.update({
         business_name: userSettings.business_name,
         owner_name: userSettings.owner_name,
+        owner_title: userSettings.owner_title,
+        append_signature_to_drafts: userSettings.append_signature_to_drafts,
         business_type: userSettings.business_type,
         currency: userSettings.currency,
         country_code: userSettings.country_code,
@@ -359,7 +366,7 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Business settings</h1>
           <p className="text-slate-500 text-sm mt-1">
-            Same options as the mobile app — profile, region, AI, and per–business-type operations.
+            Start with <strong>Business → Your profile</strong> for your name. Same options as the mobile app — region, AI, and operations.
           </p>
         </div>
         <button
@@ -394,7 +401,103 @@ export default function SettingsPage() {
       <div className="bg-white rounded-xl border border-slate-200 p-6">
         {activeTab === "business" && (
           <div className="space-y-6">
-            {/* Website URL at top — auto-fills all fields below */}
+            {/* Personal profile — used for email sign-offs, social DMs, and AI drafts */}
+            <div className="rounded-xl border-2 border-emerald-200 bg-emerald-50/40 p-4 space-y-4">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Your profile</h2>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  Set your name once here — used when Zilo signs emails, social replies, and follow-up drafts
+                  so you don&apos;t type it every time. Click <strong>Save changes</strong> when done.
+                </p>
+              </div>
+              {!userSettings.owner_name?.trim() && (
+                <p className="text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Add your name below, then save — drafts won&apos;t show [Your Name] placeholders anymore.
+                </p>
+              )}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  label="Your name"
+                  value={userSettings.owner_name || ""}
+                  onChange={(v) => updateUser("owner_name", v)}
+                  placeholder="e.g. Samuel Sarch"
+                />
+                <Field
+                  label="Your title / role"
+                  value={userSettings.owner_title || ""}
+                  onChange={(v) => updateUser("owner_title", v)}
+                  placeholder="e.g. Founder & CEO"
+                />
+              </div>
+              <Field
+                label="Company / business name"
+                value={userSettings.business_name || ""}
+                onChange={(v) => updateUser("business_name", v)}
+                placeholder="Your business name"
+              />
+              {(userSettings.owner_name || userSettings.owner_title || userSettings.business_name) && (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                      Email sign-off
+                    </p>
+                    <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans">
+                      {formatEmailClosing({
+                        name: userSettings.owner_name || "",
+                        title: userSettings.owner_title || "",
+                        company: userSettings.business_name || "",
+                      })}
+                    </pre>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                      Social — adapts by platform
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {(["linkedin", "instagram", "facebook", "twitter"] as const).map((plat) => {
+                        const adapted = adaptProfileForPlatform(
+                          {
+                            name: userSettings.owner_name || "",
+                            title: userSettings.owner_title || "",
+                            company: userSettings.business_name || "",
+                          },
+                          plat
+                        );
+                        return (
+                          <div key={plat} className="rounded-md bg-slate-50 px-3 py-2">
+                            <p className="text-[10px] font-semibold uppercase text-slate-500 capitalize">{plat}</p>
+                            <p className="text-xs text-slate-700 mt-0.5">
+                              {adapted.sender_intro || adapted.name || "—"}
+                            </p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {PLATFORM_IDENTITY_HINTS[plat]}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
+                <input
+                  type="checkbox"
+                  id="append-signature"
+                  checked={userSettings.append_signature_to_drafts !== false}
+                  onChange={(e) => updateUser("append_signature_to_drafts", e.target.checked)}
+                  className="mt-0.5 w-4 h-4 text-brand-dark rounded focus:ring-brand"
+                />
+                <label htmlFor="append-signature" className="text-sm text-slate-700">
+                  <span className="font-medium text-slate-900">Add sign-off to email AI drafts</span>
+                  <span className="block mt-1 text-xs text-slate-500 leading-relaxed">
+                    Social DMs use your name from above automatically (no extra signature block).
+                    Turn this off if Gmail already adds your email signature.
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {/* Website URL — auto-fills business description fields below */}
             <div className="rounded-xl border-2 border-brand/20 bg-brand/5 p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <Link size={16} className="text-brand-dark shrink-0" />
@@ -426,18 +529,6 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <Field
-              label="Business name"
-              value={userSettings.business_name || ""}
-              onChange={(v) => updateUser("business_name", v)}
-              placeholder="Your business name"
-            />
-            <Field
-              label="Owner name"
-              value={userSettings.owner_name || ""}
-              onChange={(v) => updateUser("owner_name", v)}
-              placeholder="Your name"
-            />
             <Select
               label="Business type"
               value={bt}

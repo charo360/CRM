@@ -290,7 +290,7 @@ async def _sweep_one_user(
         user_doc = await db.users.find_one({"_id": uid}) or {"_id": uid}
         depth = await _sweep_depth(db, user_doc)
 
-        orch = await store.load(uid)
+        orch = await store.load(uid, business_id=bid)
         if orch is None:
             summary["skipped"] += 1
             return
@@ -608,6 +608,32 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         args=[db],
         id="social_dm_autoreply",
         name="Social DM AI Auto-Reply (every 45s)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Comment auto-reply poller — every 90s (Composio FB/IG; no webhook required).
+    from social_comment_autoreply import run_comment_autoreply_poll
+    scheduler.add_job(
+        run_comment_autoreply_poll,
+        IntervalTrigger(seconds=90),
+        args=[db],
+        id="social_comment_autoreply",
+        name="Social Comment Auto-Reply (every 90s)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Delegate scheduled runs — every 5 min (time-based automations).
+    from delegate.service import run_due_scheduled_delegations
+    scheduler.add_job(
+        run_due_scheduled_delegations,
+        IntervalTrigger(minutes=5),
+        args=[db],
+        id="delegate_scheduled_runs",
+        name="Delegate Scheduled Runs (every 5 min)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

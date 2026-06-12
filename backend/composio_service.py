@@ -20,6 +20,7 @@ from __future__ import annotations
 
 
 
+import asyncio
 import logging
 
 import os
@@ -184,14 +185,17 @@ async def _shopify_direct_proxy(
 
 _COMPOSIO_NO_MANAGED_OAUTH: frozenset[str] = frozenset({"brevo", "shopify", "klaviyo"})
 
-# Try v3.1 auth_configs FIRST for every OAuth toolkit. The legacy v1
+# Try v3.1 auth_configs FIRST for OAuth toolkits. The legacy v1
 # integration discovery endpoints now return 410 for newer Composio projects.
 _COMPOSIO_TRY_V31_FIRST: frozenset[str] = frozenset({
     "gmail", "googlecalendar", "outlook",
     "slack", "googlesheets", "notion",
     "stripe", "mailchimp",
-    "googlesearchconsole", "googleanalytics", "googleads",
-    "facebook", "instagram", "youtube",
+    "googlesearchconsole", "googleanalytics", "googleads", "metaads",
+    "facebook", "instagram", "youtube", "linkedin", "twitter", "tiktok",
+    "reddit", "pinterest", "whatsapp", "telegram", "googlebusiness",
+    "salesforce", "hubspot", "calendly", "zoom", "quickbooks",
+    "apollo", "instantly", "pipedrive",
 })
 
 
@@ -234,11 +238,33 @@ _APP_NAMES: Dict[str, str] = {
     "googlesearchconsole":  "googlesearchconsole",
     "googleanalytics":      "googleanalytics",
     "googleads":            "googleads",
+    "metaads":              "metaads",
 
-    # Social (Meta)
+    # Social (Meta + LinkedIn + extended)
     "facebook":             "facebook",
     "instagram":            "instagram",
     "youtube":              "youtube",
+    "linkedin":             "linkedin",
+    "twitter":              "twitter",
+    "x":                    "twitter",
+    "tiktok":               "tiktok",
+    "reddit":               "reddit",
+    "pinterest":            "pinterest",
+    "whatsapp":             "whatsapp",
+    "telegram":             "telegram",
+    "googlebusiness":       "googlebusiness",
+
+    # CRM & sales
+    "apollo":               "apollo",
+    "instantly":            "instantly",
+    "salesforce":           "salesforce",
+    "hubspot":              "hubspot",
+    "pipedrive":            "pipedrive",
+
+    # Scheduling & accounting
+    "calendly":             "calendly",
+    "zoom":                 "zoom",
+    "quickbooks":           "quickbooks",
 
 }
 
@@ -277,6 +303,40 @@ TOOLKIT_FACEBOOK           = "facebook"
 TOOLKIT_INSTAGRAM          = "instagram"
 
 TOOLKIT_YOUTUBE            = "youtube"
+
+TOOLKIT_LINKEDIN           = "linkedin"
+
+TOOLKIT_TWITTER            = "twitter"
+
+TOOLKIT_TIKTOK             = "tiktok"
+
+TOOLKIT_REDDIT             = "reddit"
+
+TOOLKIT_PINTEREST          = "pinterest"
+
+TOOLKIT_WHATSAPP           = "whatsapp"
+
+TOOLKIT_TELEGRAM           = "telegram"
+
+TOOLKIT_GOOGLEBUSINESS     = "googlebusiness"
+
+TOOLKIT_APOLLO             = "apollo"
+
+TOOLKIT_INSTANTLY          = "instantly"
+
+TOOLKIT_SALESFORCE         = "salesforce"
+
+TOOLKIT_HUBSPOT            = "hubspot"
+
+TOOLKIT_PIPEDRIVE          = "pipedrive"
+
+TOOLKIT_CALENDLY           = "calendly"
+
+TOOLKIT_ZOOM               = "zoom"
+
+TOOLKIT_QUICKBOOKS         = "quickbooks"
+
+TOOLKIT_METAADS            = "metaads"
 
 
 
@@ -353,6 +413,17 @@ ACTION_IG_USER_INFO       = "INSTAGRAM_GET_USER_INFO"
 
 # YouTube
 ACTION_YT_MULTIPART_UPLOAD = "YOUTUBE_MULTIPART_UPLOAD_VIDEO"
+
+# LinkedIn (Community Management API via Composio)
+ACTION_LI_GET_MY_INFO      = "LINKEDIN_GET_MY_INFO"
+ACTION_LI_CREATE_POST      = "LINKEDIN_CREATE_LINKED_IN_POST"
+ACTION_LI_GET_COMPANY_INFO = "LINKEDIN_GET_COMPANY_INFO"
+
+# X / Twitter
+ACTION_TWITTER_CREATE_POST = "TWITTER_CREATION_OF_A_POST"
+
+# TikTok (requires BYO OAuth app in Composio)
+ACTION_TIKTOK_PUBLISH_VIDEO = "TIKTOK_PUBLISH_VIDEO"
 
 
 
@@ -710,6 +781,47 @@ def _auth_config_item_matches_toolkit(item: Dict[str, Any], app_name: str) -> bo
 
 
 
+async def _create_composio_managed_auth_config(client: httpx.AsyncClient, app_name: str) -> Optional[str]:
+    """Auto-create a Composio-managed OAuth auth config when the toolkit supports it."""
+    slug = app_name.lower()
+    try:
+        r = await client.get(f"{_BASE}/v3/toolkits/{slug}", headers=_headers())
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        managed = [str(s).upper() for s in (data.get("composio_managed_auth_schemes") or [])]
+        if "OAUTH2" not in managed:
+            return None
+
+        r2 = await client.post(
+            f"{_BASE}/v3.1/auth_configs",
+            headers=_headers(),
+            json={
+                "toolkit": {"slug": slug},
+                "auth_scheme": "OAUTH2",
+                "use_composio_managed_auth": True,
+            },
+        )
+        if r2.status_code not in (200, 201):
+            logger.warning(
+                "[composio] create managed auth_config %s → %d %s",
+                slug, r2.status_code, r2.text[:300],
+            )
+            return None
+        body = r2.json()
+        ac = body.get("auth_config") if isinstance(body.get("auth_config"), dict) else body
+        iid = ac.get("id") if isinstance(ac, dict) else None
+        if iid:
+            logger.info("[composio] created managed auth_config for %s id=%s", slug, iid)
+            return str(iid)
+    except Exception as e:
+        logger.warning("[composio] create managed auth_config error for %s: %s", app_name, e)
+    return None
+
+
+
+
+
 async def _resolve_auth_config_nanoid(client: httpx.AsyncClient, app_name: str) -> Optional[str]:
 
     """v3.1 auth config id. Override with COMPOSIO_AUTH_CONFIG_ID_SHOPIFY (etc.) in .env."""
@@ -817,6 +929,10 @@ async def _resolve_auth_config_nanoid(client: httpx.AsyncClient, app_name: str) 
             logger.info("[composio] auth_config matched toolkit %s id=%s", app_name, iid)
 
             return str(iid)
+
+    created = await _create_composio_managed_auth_config(client, app_name)
+    if created:
+        return created
 
     return None
 
@@ -1122,7 +1238,68 @@ _CONNECTED_STATUSES = {"ACTIVE", "CONNECTED", "VALID", "SUCCESS", "ENABLED"}
 # OAuth in progress — must NOT show as connected in the UI
 _PENDING_STATUSES = {"INITIATED", "INITIALIZING", "PENDING", "IN_PROGRESS"}
 _ACCOUNTS_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+_ACCOUNTS_INFLIGHT: Dict[str, asyncio.Task[List[Dict[str, Any]]]] = {}
 CACHE_TTL = 5.0  # short TTL so post-OAuth status checks see fresh data quickly
+
+_COMPOSIO_UID_RESOLVE_CACHE: Dict[str, tuple[float, str]] = {}
+_COMPOSIO_UID_CACHE_TTL = 120.0
+
+
+def composio_user_id_candidates(user: Dict[str, Any]) -> List[str]:
+    """CRM user ids that may own Composio OAuth connections (workspace + account)."""
+    ids: List[str] = []
+    for key in ("business_id", "_id"):
+        val = user.get(key)
+        if val is None:
+            continue
+        s = str(val)
+        if s and s not in ids:
+            ids.append(s)
+    return ids
+
+
+async def resolve_composio_user_id(user: Any) -> str:
+    """Pick the Composio entity id that actually has connected accounts."""
+    if isinstance(user, str):
+        return user
+    if not isinstance(user, dict):
+        return str(user)
+
+    stored = user.get("composio_entity_id")
+    if stored:
+        return str(stored)
+
+    import time
+
+    cache_key = f"{user.get('_id')}:{user.get('business_id')}"
+    now = time.time()
+    cached = _COMPOSIO_UID_RESOLVE_CACHE.get(cache_key)
+    if cached and now - cached[0] < _COMPOSIO_UID_CACHE_TTL:
+        return cached[1]
+
+    candidates = composio_user_id_candidates(user)
+    if not candidates:
+        return ""
+    if len(candidates) == 1:
+        _COMPOSIO_UID_RESOLVE_CACHE[cache_key] = (now, candidates[0])
+        return candidates[0]
+    # Same workspace + account id — no need to probe Composio twice.
+    if len(candidates) == 2 and candidates[0] == candidates[1]:
+        _COMPOSIO_UID_RESOLVE_CACHE[cache_key] = (now, candidates[0])
+        return candidates[0]
+
+    for uid in candidates:
+        try:
+            items = await _v3_list_user_accounts(uid)
+            if any(str(it.get("status") or "").upper() in _CONNECTED_STATUSES for it in items):
+                _COMPOSIO_UID_RESOLVE_CACHE[cache_key] = (now, uid)
+                return uid
+        except Exception:
+            continue
+
+    resolved = candidates[0]
+    _COMPOSIO_UID_RESOLVE_CACHE[cache_key] = (now, resolved)
+    return resolved
 
 
 def _normalize_app(s: str) -> str:
@@ -1130,18 +1307,46 @@ def _normalize_app(s: str) -> str:
     return re.sub(r"[_\-\s]+", "", (s or "").lower())
 
 
-async def _v3_list_user_accounts(user_id: str) -> List[Dict[str, Any]]:
-    """Fetch all Composio connected accounts for a given user_id (v3, paginated).
+def _item_belongs_to_user(item: Dict[str, Any], user_id: str) -> bool:
+    """Match Composio connected-account rows to our user id (field names vary by API version)."""
+    uid = str(user_id)
+    for key in (
+        "user_id",
+        "user_uuid",
+        "userUuid",
+        "entity_id",
+        "entityId",
+        "client_unique_user_id",
+        "clientUniqueUserId",
+    ):
+        val = item.get(key)
+        if val is not None and str(val) == uid:
+            return True
+    # List was already filtered by user_ids= — include when no user field is present.
+    return not any(item.get(k) is not None for k in (
+        "user_id", "user_uuid", "userUuid", "entity_id", "entityId",
+        "client_unique_user_id", "clientUniqueUserId",
+    ))
 
-    The v1 endpoint /api/v1/connectedAccounts was deprecated and now returns
-    HTTP 410 Gone, so this is the only working list endpoint.
-    """
+
+def _account_toolkit_slug(item: Dict[str, Any]) -> str:
+    toolkit = item.get("toolkit")
+    if isinstance(toolkit, dict):
+        return str(toolkit.get("slug") or toolkit.get("name") or "")
+    if isinstance(toolkit, str):
+        return toolkit
+    return str(
+        item.get("appName")
+        or item.get("app_name")
+        or item.get("appUniqueId")
+        or item.get("integrationId")
+        or ""
+    )
+
+
+async def _v3_fetch_user_accounts_live(user_id: str) -> List[Dict[str, Any]]:
+    """Single live Composio connected_accounts fetch (no cache / dedupe)."""
     import time
-    now = time.time()
-    if user_id in _ACCOUNTS_CACHE:
-        ts, cached = _ACCOUNTS_CACHE[user_id]
-        if now - ts < CACHE_TTL:
-            return cached
 
     items: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
@@ -1164,21 +1369,45 @@ async def _v3_list_user_accounts(user_id: str) -> List[Dict[str, Any]]:
             data = resp.json() if resp.content else {}
             page = data.get("items") or []
             for it in page:
-                # Defensive: ignore items that don't belong to this user
-                if isinstance(it, dict) and str(it.get("user_id") or "") == user_id:
+                if isinstance(it, dict) and _item_belongs_to_user(it, user_id):
                     items.append(it)
             cursor = data.get("next_cursor")
             if not cursor or not page:
                 break
-    _ACCOUNTS_CACHE[user_id] = (now, items)
+    _ACCOUNTS_CACHE[user_id] = (time.time(), items)
     return items
+
+
+async def _v3_list_user_accounts(user_id: str) -> List[Dict[str, Any]]:
+    """Fetch all Composio connected accounts for a given user_id (v3, paginated).
+
+    Concurrent callers share one in-flight request per user_id so the Integrations
+    page does not stampede Composio with duplicate list calls.
+    """
+    import time
+
+    now = time.time()
+    if user_id in _ACCOUNTS_CACHE:
+        ts, cached = _ACCOUNTS_CACHE[user_id]
+        if now - ts < CACHE_TTL:
+            return cached
+
+    inflight = _ACCOUNTS_INFLIGHT.get(user_id)
+    if inflight is not None:
+        return await asyncio.shield(inflight)
+
+    task = asyncio.create_task(_v3_fetch_user_accounts_live(user_id))
+    _ACCOUNTS_INFLIGHT[user_id] = task
+    try:
+        return await task
+    finally:
+        _ACCOUNTS_INFLIGHT.pop(user_id, None)
 
 
 def _account_matches_toolkit(item: Dict[str, Any], toolkit: str) -> bool:
     app_name_norm = _normalize_app(_APP_NAMES.get(toolkit.lower(), toolkit.lower()))
     toolkit_norm = _normalize_app(toolkit)
-    slug = (item.get("toolkit") or {}).get("slug", "") if isinstance(item.get("toolkit"), dict) else ""
-    slug_norm = _normalize_app(slug)
+    slug_norm = _normalize_app(_account_toolkit_slug(item))
     if not slug_norm:
         return False
     return (
@@ -1245,11 +1474,24 @@ async def get_connection_status(user_id: str, toolkit: str, force_refresh: bool 
 
 
 
-async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
-    """Return connection status for all Zilo-supported toolkits (all apps)."""
+def statuses_from_cached_integrations(integrations: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+    """Build toolkit status map from MongoDB composio_integrations (instant, no Composio API)."""
+    cached = integrations if isinstance(integrations, dict) else {}
+    return {toolkit: bool(cached.get(toolkit)) for toolkit in ALL_TOOLKITS}
+
+
+async def get_all_connection_statuses(user_id: str, force_refresh: bool = False) -> Dict[str, bool]:
+    """Return connection status for all Zilo-supported toolkits (all apps).
+
+    Pass force_refresh=True to bypass the short account-list cache and always
+    fetch live data from Composio right after a connect/OAuth flow.
+    """
 
     if not _get_key():
         return {t: False for t in ALL_TOOLKITS}
+
+    if force_refresh:
+        _ACCOUNTS_CACHE.pop(user_id, None)
 
     try:
         items = await _v3_list_user_accounts(user_id)
@@ -1262,7 +1504,7 @@ async def get_all_connection_statuses(user_id: str) -> Dict[str, bool]:
         status = str(item.get("status") or "").upper()
         if status not in _CONNECTED_STATUSES:
             continue
-        slug = (item.get("toolkit") or {}).get("slug", "") if isinstance(item.get("toolkit"), dict) else ""
+        slug = _account_toolkit_slug(item)
         if slug:
             connected_slugs.add(_normalize_app(slug))
 
@@ -1652,6 +1894,22 @@ def _toolkit_for_action(action: str) -> Optional[str]:
     if a.startswith("YOUTUBE_"):
 
         return TOOLKIT_YOUTUBE
+
+    if a.startswith("LINKEDIN_"):
+
+        return TOOLKIT_LINKEDIN
+
+    if a.startswith("TWITTER_"):
+
+        return TOOLKIT_TWITTER
+
+    if a.startswith("TIKTOK_"):
+
+        return TOOLKIT_TIKTOK
+
+    if a.startswith("METAADS_"):
+
+        return TOOLKIT_METAADS
 
     return None
 
@@ -2255,20 +2513,29 @@ async def slack_post_message_via_composio_or_proxy(
 
 
 
-async def execute_action(user_id: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_action(
+    user_id: str,
+    action: str,
+    params: Dict[str, Any],
+    *,
+    connected_account_id: Optional[str] = None,
+    timeout: float = 60.0,
+) -> Dict[str, Any]:
     """Execute a Composio action on behalf of a user (v3 tools/execute endpoint).
 
     v2 (/api/v2/actions/{action}/execute) was retired with HTTP 410.
     v3 uses /api/v3/tools/execute/{slug} with body {user_id, arguments,
     connected_account_id?} and response {data, successful, error, log_id}.
+
+    Pass connected_account_id when the caller already resolved it (avoids a duplicate
+    connected_accounts list round-trip per action).
     """
     if not _get_key():
         return {"error": "COMPOSIO_API_KEY not configured in .env"}
 
-    # Resolve connected_account_id for auth-requiring toolkits
-    conn_id: Optional[str] = None
+    conn_id: Optional[str] = connected_account_id
     toolkit = _toolkit_for_action(action)
-    if toolkit:
+    if toolkit and not conn_id:
         status = await get_connection_status(user_id, toolkit)
         conn_id = status.get("connection_id")
         if not status.get("connected"):
@@ -2284,7 +2551,7 @@ async def execute_action(user_id: str, action: str, params: Dict[str, Any]) -> D
         body["connected_account_id"] = conn_id
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{_BASE}/v3/tools/execute/{action}",
                 headers=_headers(),

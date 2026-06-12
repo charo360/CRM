@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,13 +12,16 @@ import {
   RefreshControl,
   Platform,
   ScrollView,
-  Linking,
+  Image,
+  Switch,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient } from '../../context/api';
+import { apiClient, productsAPI, settingsAPI, suppliersAPI, classificationAPI, dashboardAPI, messageHelpers } from '../../context/api';
+import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import * as Contacts from 'expo-contacts';
+import CountryPicker, { Country, COUNTRIES } from '../../components/CountryPicker';
 
 interface Customer {
   id: string;
@@ -26,12 +29,43 @@ interface Customer {
   phone_number: string;
   notes: string | null;
   tags: string[];
+  stage: string;
   purchase_count: number;
   total_spent: number;
   last_message: string | null;
   last_contacted: string | null;
+  profile_picture: string | null;
+  auto_reply: boolean;
+  unread_count: number;
   created_at: string;
+  assigned_to?: string | null;
+  assigned_to_name?: string | null;
 }
+
+interface DashboardSummary {
+  unread_messages: number;
+  followups_today: number;
+  sales_today: number;
+  sales_count_today: number;
+  total_customers: number;
+}
+
+const STAGES = ['all', 'lead', 'contacted', 'negotiating', 'won', 'lost'] as const;
+const STAGE_COLORS: Record<string, string> = {
+  lead: '#8696A0',
+  contacted: '#4A90D9',
+  negotiating: '#FF9800',
+  won: '#25D366',
+  lost: '#FF4444',
+};
+const STAGE_LABELS: Record<string, string> = {
+  all: 'All',
+  lead: 'Lead',
+  contacted: 'Contacted',
+  negotiating: 'Negotiating',
+  won: 'Won',
+  lost: 'Lost',
+};
 
 interface PhoneContact {
   id: string;
@@ -42,22 +76,90 @@ interface PhoneContact {
 
 const TAGS = ['New', 'Returning', 'VIP'];
 
+const CATEGORY_COLORS: Record<string, string> = {
+  'Electronics': '#4A90D9',
+  'Clothing': '#9B59B6',
+  'Food & Beverage': '#E67E22',
+  'Beauty & Health': '#E91E63',
+  'Home & Garden': '#27AE60',
+  'Automotive': '#607D8B',
+  'Raw Materials': '#795548',
+  'Packaging': '#00BCD4',
+  'Stationery': '#FF9800',
+  'Services': '#3F51B5',
+  'Other': '#8696A0',
+};
+
+const CATEGORY_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
+  'Electronics': 'hardware-chip-outline',
+  'Clothing': 'shirt-outline',
+  'Food & Beverage': 'restaurant-outline',
+  'Beauty & Health': 'heart-outline',
+  'Home & Garden': 'home-outline',
+  'Automotive': 'car-outline',
+  'Raw Materials': 'cube-outline',
+  'Packaging': 'gift-outline',
+  'Stationery': 'pencil-outline',
+  'Services': 'construct-outline',
+  'Other': 'business-outline',
+};
+
+interface Message {
+  id: string;
+  direction: 'incoming' | 'outgoing';
+  content: string;
+  created_at: string;
+}
+
 export default function CustomersScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string }>();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
+  const isPollingRef = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<'recently_added' | 'recently_contacted'>('recently_contacted');
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
+  // Suppliers mode state
+  const [viewMode, setViewMode] = useState<'customers' | 'suppliers' | 'contacts'>('customers');
+  const [showFilters, setShowFilters] = useState(false);
+  const [allContacts, setAllContacts] = useState<any[]>([]);
+  const [loadingContacts2, setLoadingContacts2] = useState(false);
+  const [contactSearch2, setContactSearch2] = useState('');
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [supplierCategories, setSupplierCategories] = useState<string[]>([]);
+  const [selectedSupplierCategory, setSelectedSupplierCategory] = useState<string | null>(null);
+  const [loadingSupplierData, setLoadingSupplierData] = useState(false);
+  const [supplierDetailVisible, setSupplierDetailVisible] = useState(false);
+  const [selectedSupplier, setSelectedSupplier] = useState<any | null>(null);
+  const [editingSupplierCategory, setEditingSupplierCategory] = useState('Other');
+  const [editingPaymentTerms, setEditingPaymentTerms] = useState('');
+  const [editingLeadTime, setEditingLeadTime] = useState('');
+  const [editingRating, setEditingRating] = useState(0);
+  const [savingSupplier, setSavingSupplier] = useState(false);
+
+  // AI Classification
+  const [pendingClassifications, setPendingClassifications] = useState<any[]>([]);
+  const [scanningContacts, setScanningContacts] = useState(false);
+
   // New customer form
   const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('+1');
+  const [newPhone, setNewPhone] = useState('');
+  const [customerCountry, setCustomerCountry] = useState<Country>(
+    COUNTRIES.find(c => c.code === 'KE')!
+  );
   const [newNotes, setNewNotes] = useState('');
   const [newTags, setNewTags] = useState<string[]>(['New']);
   const [saving, setSaving] = useState(false);
+  const [showTagInput, setShowTagInput] = useState(false);
+  const [newTagText, setNewTagText] = useState('');
+  const [newAutoReply, setNewAutoReply] = useState(false);
+  const [newStage, setNewStage] = useState<string>('lead');
 
   // Contact import
   const [contactsModalVisible, setContactsModalVisible] = useState(false);
@@ -66,10 +168,137 @@ export default function CustomersScreen() {
   const [importingContacts, setImportingContacts] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
 
-  const { user } = useAuth();
-  const insets = useSafeAreaInsets();
+  // AI Draft Message Modal State
+  const [showDraftModal, setShowDraftModal] = useState(false);
+  const [draftMessage, setDraftMessage] = useState('');
+  const [draftReason, setDraftReason] = useState('');
+  const [loadingDraft, setLoadingDraft] = useState(false);
+  const [draftCustomer, setDraftCustomer] = useState<Customer | null>(null);
+  const [customDirection, setCustomDirection] = useState('');
+  const [regenerateCount, setRegenerateCount] = useState(0);
+  const [recentMessages, setRecentMessages] = useState<Message[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [showRecentMessages, setShowRecentMessages] = useState(false);
 
-  const fetchCustomers = useCallback(async () => {
+  // Product picker state
+  const [showProductPicker, setShowProductPicker] = useState(false);
+  const [productPickerCustomer, setProductPickerCustomer] = useState<Customer | null>(null);
+  const [pickerProducts, setPickerProducts] = useState<any[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [sendingProduct, setSendingProduct] = useState<string | null>(null);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [sendingCatalog, setSendingCatalog] = useState(false);
+  const [currency, setCurrency] = useState('USD');
+  const [aiModel, setAiModel] = useState('standard');
+  const [showModelSelector, setShowModelSelector] = useState(false);
+  const [selectedStage, setSelectedStage] = useState<string>('all');
+  const [assignmentFilter, setAssignmentFilter] = useState<string>('all'); // 'all', 'assigned_to_me', 'unassigned'
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
+
+  const { user, token } = useAuth();
+  const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
+
+  const loadSettings = async () => {
+    try {
+      const settings = await settingsAPI.getSettings();
+      if (settings.currency) setCurrency(settings.currency);
+      if (settings.ai_model) setAiModel(settings.ai_model);
+    } catch (e) { }
+  };
+
+  const fetchDashboard = async () => {
+    try {
+      const data = await dashboardAPI.getSummary();
+      setDashboardSummary(data);
+    } catch (e) { }
+  };
+
+  useEffect(() => {
+    loadSettings();
+    fetchDashboard();
+  }, []);
+
+  const getModelShortName = (modelId: string) => {
+    switch (modelId) {
+      case 'standard': return 'GPT-4o Mini';
+      case 'premium': return 'GPT-4o';
+      case 'gpt-5': return 'GPT-5';
+      case 'claude-4.7': return 'Claude Opus 4.7';
+      case 'claude-3.5': return 'Claude Opus 4.7';
+      case 'sonnet-4.5': return 'Claude Sonnet 4.5';
+      case 'grok': return 'Grok 4.1';
+      case 'deepseek': return 'DeepSeek';
+      default: return 'AI';
+    }
+  };
+
+  React.useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTitle: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: 'bold' }}>Customers</Text>
+          <TouchableOpacity
+            onPress={() => setShowModelSelector(true)}
+            style={{
+              marginLeft: 16,
+              backgroundColor: aiModel === 'standard' ? 'rgba(255,255,255,0.1)' : '#25D366',
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 12,
+              flexDirection: 'row',
+              alignItems: 'center'
+            }}
+          >
+            <Ionicons name="hardware-chip" size={12} color={aiModel === 'standard' ? '#8B9DC3' : '#FFFFFF'} style={{ marginRight: 4 }} />
+            <Text style={{ color: aiModel === 'standard' ? '#8B9DC3' : '#FFFFFF', fontSize: 12, fontWeight: '600' }}>
+              {getModelShortName(aiModel)}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ),
+    });
+  }, [navigation, aiModel]);
+
+  const handleModelSelect = async (model: string) => {
+    setAiModel(model);
+    setShowModelSelector(false);
+    try {
+      await settingsAPI.updateSettings({ ai_model: model });
+    } catch (error) {
+      console.error('Failed to update AI model');
+    }
+  };
+
+  const fetchAllContacts = useCallback(async (search?: string, silent = false) => {
+    if (!silent) setLoadingContacts2(true);
+    try {
+      const q = search ? `?search=${encodeURIComponent(search)}` : '';
+      const res = await apiClient.get(`/contacts${q}`);
+      const newData = res.data;
+      if (silent) {
+        setAllContacts(prev => {
+          if (prev.length !== newData.length) return newData;
+          const hasChange = newData.some((c: any, i: number) =>
+            prev[i]?.id !== c.id ||
+            prev[i]?.name !== c.name ||
+            prev[i]?.suggested_type !== c.suggested_type
+          );
+          return hasChange ? newData : prev;
+        });
+      } else {
+        setAllContacts(newData);
+      }
+    } catch (e) {
+      console.error('Error fetching all contacts:', e);
+    } finally {
+      if (!silent) setLoadingContacts2(false);
+    }
+  }, []);
+
+  const fetchCustomers = useCallback(async (silent = false) => {
+    if (silent && isPollingRef.current) return; // skip if previous poll still in flight
+    if (silent) isPollingRef.current = true;
     try {
       let params = '';
 
@@ -86,17 +315,45 @@ export default function CustomersScreen() {
         params = '?tag=Returning';
       } else if (selectedTag) {
         params = `?tag=${selectedTag}`;
+      } else {
+        // Apply sorting based on toggle
+        params = sortBy === 'recently_contacted' ? '?sort_by=recently_contacted' : '';
+      }
+
+      // Add assignment filter
+      if (assignmentFilter !== 'all') {
+        params += (params ? '&' : '?') + `filter_by=${assignmentFilter}`;
       }
 
       const response = await apiClient.get(`/customers${params}`);
-      setCustomers(response.data);
+      const newData = response.data;
+      if (silent) {
+        // Only update if something actually changed — avoids FlatList re-render and scroll reset
+        setCustomers(prev => {
+          if (prev.length !== newData.length) return newData;
+          const hasChange = newData.some((c: Customer, i: number) =>
+            prev[i]?.id !== c.id ||
+            prev[i]?.unread_count !== c.unread_count ||
+            prev[i]?.last_message !== c.last_message ||
+            prev[i]?.last_contacted !== c.last_contacted
+          );
+          return hasChange ? newData : prev;
+        });
+      } else {
+        setCustomers(newData);
+      }
     } catch (error) {
       console.error('Error fetching customers:', error);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (!silent) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+      isPollingRef.current = false;
     }
-  }, [selectedTag, searchQuery]);
+  }, [selectedTag, searchQuery, sortBy, assignmentFilter]);
+
+
 
   useEffect(() => {
     // Debounce search to prevent too many API calls
@@ -106,10 +363,169 @@ export default function CustomersScreen() {
     return () => clearTimeout(timeoutId);
   }, [fetchCustomers]);
 
+  // Auto-refresh every 5 seconds — runs silently in background, no loading state or scroll interruption
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchCustomers(true);
+      fetchDashboard();
+      if (viewMode === 'contacts') fetchAllContacts(contactSearch2, true);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [fetchCustomers, fetchAllContacts, viewMode, contactSearch2]);
+
+  // Immediately refresh when navigating back from chat (clears stale unread counts)
+  useFocusEffect(
+    useCallback(() => {
+      fetchCustomers();
+      fetchDashboard();
+    }, [fetchCustomers])
+  );
+
+
+
+  // Handle route param from account tab
+  useEffect(() => {
+    if (params.mode === 'suppliers') {
+      setViewMode('suppliers');
+    }
+  }, [params.mode]);
+
   const handleRefresh = () => {
     setRefreshing(true);
     fetchCustomers();
+    fetchPendingClassifications();
+    fetchDashboard();
+    if (viewMode === 'suppliers') {
+      fetchSupplierData();
+    }
   };
+
+  const fetchSupplierData = useCallback(async () => {
+    setLoadingSupplierData(true);
+    try {
+      const suppliersData = await suppliersAPI.getSuppliers();
+      setSuppliers(suppliersData);
+      setSupplierCategories(Object.keys(CATEGORY_COLORS));
+    } catch (error) {
+      console.error('Error fetching supplier data:', error);
+    } finally {
+      setLoadingSupplierData(false);
+    }
+  }, []);
+
+  const openSupplierDetail = (supplier: any) => {
+    setSelectedSupplier(supplier);
+    setEditingSupplierCategory(supplier.supplier_category || 'Other');
+    setEditingPaymentTerms(supplier.payment_terms || '');
+    setEditingLeadTime(supplier.lead_time || '');
+    setEditingRating(supplier.rating || 0);
+    setSupplierDetailVisible(true);
+  };
+
+  const saveSupplierDetails = async () => {
+    if (!selectedSupplier) return;
+    setSavingSupplier(true);
+    try {
+      await suppliersAPI.updateSupplier(selectedSupplier.id || selectedSupplier._id, {
+        supplier_category: editingSupplierCategory,
+        payment_terms: editingPaymentTerms,
+        lead_time: editingLeadTime,
+        rating: editingRating,
+      });
+      setSupplierDetailVisible(false);
+      fetchSupplierData();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to save supplier details');
+    } finally {
+      setSavingSupplier(false);
+    }
+  };
+
+  const removeSupplier = async (supplierId: string) => {
+    Alert.alert('Remove Supplier', 'This will remove the supplier tag. The contact will remain as a customer.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove', style: 'destructive', onPress: async () => {
+          try {
+            await suppliersAPI.removeSupplier(supplierId);
+            setSupplierDetailVisible(false);
+            fetchSupplierData();
+            fetchCustomers();
+          } catch (error) {
+            Alert.alert('Error', 'Failed to remove supplier');
+          }
+        }
+      }
+    ]);
+  };
+
+  // AI Classification functions
+  const fetchPendingClassifications = useCallback(async () => {
+    try {
+      const data = await classificationAPI.getPending();
+      setPendingClassifications(data || []);
+    } catch (error) {
+      console.error('Error fetching pending classifications:', error);
+    }
+  }, []);
+
+  const scanAllContacts = async () => {
+    setScanningContacts(true);
+    try {
+      await classificationAPI.scanContacts();
+      await fetchPendingClassifications();
+    } catch (error) {
+      console.error('Error scanning contacts:', error);
+    } finally {
+      setScanningContacts(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPendingClassifications();
+  }, [fetchPendingClassifications]);
+
+  const confirmClassification = async (customerId: string, type: 'customer' | 'supplier') => {
+    try {
+      await classificationAPI.confirm(customerId, 'approve', type);
+      setPendingClassifications(prev => prev.filter(p => p.customer_id !== customerId));
+      fetchCustomers();
+      if (type === 'supplier') fetchSupplierData();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to confirm classification');
+    }
+  };
+
+  const dismissClassification = async (customerId: string) => {
+    try {
+      await classificationAPI.dismiss(customerId);
+      setPendingClassifications(prev => prev.filter(p => p.customer_id !== customerId));
+    } catch (error) {
+      console.error('Error dismissing classification:', error);
+    }
+  };
+
+  const filteredSuppliers = suppliers.filter(s => {
+    const matchesSearch = !searchQuery || s.name.toLowerCase().includes(searchQuery.toLowerCase()) || s.phone_number.includes(searchQuery);
+    const matchesCategory = !selectedSupplierCategory || s.supplier_category === selectedSupplierCategory;
+    return matchesSearch && matchesCategory;
+  });
+
+  const supplierCategoryCounts = suppliers.reduce((acc: Record<string, number>, s: any) => {
+    const cat = s.supplier_category || 'Other';
+    acc[cat] = (acc[cat] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  // Fetch supplier data when mode changes
+  useEffect(() => {
+    if (viewMode === 'suppliers') {
+      fetchSupplierData();
+      setNewTags(['Supplier', 'New']);
+    } else {
+      setNewTags(['New']);
+    }
+  }, [viewMode, fetchSupplierData]);
 
   const handleAddCustomer = async () => {
     if (!newName.trim() || !newPhone.trim()) {
@@ -119,9 +535,15 @@ export default function CustomersScreen() {
 
     setSaving(true);
     try {
+      // Build full phone number with country code
+      let fullPhone = newPhone.trim();
+      if (!fullPhone.startsWith('+')) {
+        fullPhone = fullPhone.replace(/^0+/, '');
+        fullPhone = `${customerCountry.dial}${fullPhone}`;
+      }
       const response = await apiClient.post('/customers', {
         name: newName,
-        phone_number: newPhone,
+        phone_number: fullPhone,
         notes: newNotes || null,
         tags: newTags,
       });
@@ -133,6 +555,10 @@ export default function CustomersScreen() {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to add customer');
     } finally {
       setSaving(false);
+      // If we are in suppliers mode, refresh supplier data too
+      if (viewMode === 'suppliers') {
+        fetchSupplierData();
+      }
     }
   };
 
@@ -145,6 +571,8 @@ export default function CustomersScreen() {
         name: newName,
         notes: newNotes || null,
         tags: newTags,
+        auto_reply: newAutoReply,
+        stage: newStage,
       });
 
       setCustomers(customers.map(c => c.id === selectedCustomer.id ? response.data : c));
@@ -181,9 +609,11 @@ export default function CustomersScreen() {
 
   const resetForm = () => {
     setNewName('');
-    setNewPhone('+1');
+    setNewPhone('');
     setNewNotes('');
-    setNewTags(['New']);
+    setNewTags(viewMode === 'suppliers' ? ['Supplier', 'New'] : ['New']);
+    setNewAutoReply(false);
+    setNewStage('lead');
     setSelectedCustomer(null);
   };
 
@@ -223,13 +653,13 @@ export default function CustomersScreen() {
     }
   };
 
-  const formatPhoneNumber = (phone: string) => {
-    // Remove all non-digit characters
+  const formatPhoneNumber = (phone: string, country?: Country) => {
     let cleaned = phone.replace(/\D/g, '');
 
-    // If starts with 0, add + prefix without assuming a country code
+    // If starts with 0, replace with country dial code
     if (cleaned.startsWith('0')) {
-      cleaned = cleaned.substring(1);
+      const dial = (country || customerCountry).dial.replace('+', '');
+      cleaned = dial + cleaned.substring(1);
     }
 
     // Add + if not present
@@ -261,18 +691,29 @@ export default function CustomersScreen() {
       return;
     }
 
+    const isSupplierImport = viewMode === 'suppliers';
     setImportingContacts(true);
     let imported = 0;
     let failed = 0;
 
     for (const contact of selected) {
       try {
-        await apiClient.post('/customers', {
+        const tags = isSupplierImport ? ['Supplier'] : ['New'];
+        const res = await apiClient.post('/customers', {
           name: contact.name,
           phone_number: contact.phoneNumber,
-          notes: null,
-          tags: ['New'],
+          notes: isSupplierImport ? 'Imported as supplier from contacts' : null,
+          tags,
         });
+        // If importing as supplier, also mark classification as confirmed
+        if (isSupplierImport && res.data?.id) {
+          try {
+            await apiClient.put(`/customers/${res.data.id}`, {
+              classification_confirmed: true,
+              classification_type: 'supplier',
+            });
+          } catch (_) { }
+        }
         imported++;
       } catch (error) {
         failed++;
@@ -283,10 +724,12 @@ export default function CustomersScreen() {
     setContactsModalVisible(false);
     setPhoneContacts([]);
     fetchCustomers();
+    if (isSupplierImport) fetchSupplierData();
 
+    const label = isSupplierImport ? 'supplier' : 'contact';
     Alert.alert(
       'Import Complete',
-      `Successfully imported ${imported} contact${imported !== 1 ? 's' : ''}${failed > 0 ? `\n${failed} failed (may already exist)` : ''}`
+      `Successfully imported ${imported} ${label}${imported !== 1 ? 's' : ''}${failed > 0 ? `\n${failed} failed (may already exist)` : ''}`
     );
   };
 
@@ -303,15 +746,19 @@ export default function CustomersScreen() {
     setNewPhone(customer.phone_number);
     setNewNotes(customer.notes || '');
     setNewTags(customer.tags);
+    setNewAutoReply(customer.auto_reply || false);
+    setNewStage(customer.stage || 'lead');
     setEditModalVisible(true);
   };
 
   const filteredCustomers = customers.filter(c => {
-    // If search query is a "command" (handled by backend), don't filter client-side
+    // Stage filter
+    if (selectedStage !== 'all' && (c.stage || 'lead') !== selectedStage) return false;
+
     const queryLower = searchQuery.toLowerCase();
     if (queryLower.includes('top') || queryLower.includes('best') ||
       queryLower.includes('highest') || queryLower.includes('vip') ||
-      queryLower.includes('returning') || (queryLower.includes('new') && !queryLower.includes('news'))) { // simple check
+      queryLower.includes('returning') || (queryLower.includes('new') && !queryLower.includes('news'))) {
       return true;
     }
 
@@ -327,53 +774,300 @@ export default function CustomersScreen() {
     }
   };
 
-  const handleWhatsApp = (phone: string) => {
-    const url = `https://wa.me/${phone.replace(/\D/g, '')}`;
-    Linking.openURL(url).catch(() => {
-      Alert.alert('Error', 'Could not open WhatsApp');
+  const handleWhatsApp = (customer: Customer) => {
+    router.push({
+      pathname: '/chat',
+      params: {
+        customerId: customer.id,
+        customerName: customer.name,
+        customerPhone: customer.phone_number,
+      },
     });
   };
 
+  const handleShowDraftMessage = async (customer: Customer, direction?: string, countOverride?: number) => {
+    setDraftCustomer(customer);
+    setShowDraftModal(true);
+    setLoadingDraft(true);
+    setShowRecentMessages(false);
+    if (countOverride === undefined) {
+      setCustomDirection('');
+      setRegenerateCount(0);
+    }
+    fetchRecentMessages(customer.id);
+
+    try {
+      const response = await apiClient.post(`/ai/draft-message`, {
+        customer_id: customer.id,
+        custom_instructions: direction || '',
+        regenerate_count: countOverride ?? 0
+      });
+
+      setDraftMessage(response.data.message || response.data.drafted_message || '');
+      setDraftReason(response.data.reason || response.data.ai_reason || 'Based on your interaction history');
+    } catch (error) {
+      console.error('Error fetching draft message:', error);
+      setDraftMessage(`Hi ${customer.name}, just checking in! How can I help you today?`);
+      setDraftReason('Generic follow-up message');
+    } finally {
+      setLoadingDraft(false);
+    }
+  };
+
+  const fetchRecentMessages = async (customerId: string) => {
+    setLoadingMessages(true);
+    try {
+      const response = await apiClient.get(`/customers/${customerId}/messages`);
+      setRecentMessages(response.data);
+    } catch (error) {
+      console.error('Error fetching recent messages:', error);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const handleRegenerateWithDirection = () => {
+    if (!draftCustomer) return;
+    const nextCount = regenerateCount + 1;
+    setRegenerateCount(nextCount);
+    handleShowDraftMessage(draftCustomer, customDirection, nextCount);
+  };
+
+  // Product picker handlers
+  const handleOpenProductPicker = async (customer: Customer) => {
+    setProductPickerCustomer(customer);
+    setShowProductPicker(true);
+    setLoadingProducts(true);
+    setSelectedProductIds([]);
+    try {
+      const data = await productsAPI.getProducts();
+      setPickerProducts(data.filter((p: any) => p.in_stock !== false));
+    } catch (error) {
+      console.error('Error fetching products:', error);
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
+
+  const toggleProductSelection = (productId: string) => {
+    setSelectedProductIds(prev =>
+      prev.includes(productId) ? prev.filter(id => id !== productId) : [...prev, productId]
+    );
+  };
+
+  const handleSendProduct = async (product: any) => {
+    if (!productPickerCustomer) return;
+    setSendingProduct(product.id);
+    try {
+      await productsAPI.sendProductToCustomer(product.id, productPickerCustomer.id);
+      Alert.alert('Sent!', `${product.name} sent to ${productPickerCustomer.name} via WhatsApp`);
+      setShowProductPicker(false);
+      setProductPickerCustomer(null);
+    } catch (error: any) {
+      // Fallback: navigate to chat with product message pre-filled
+      const desc = product.description ? `\n${product.description}` : '';
+      const text = `*${product.name}*\n${currency} ${product.price.toLocaleString()}${desc}\n\nInterested? Let me know!`;
+      setShowProductPicker(false);
+      router.push({
+        pathname: '/chat',
+        params: {
+          customerId: productPickerCustomer.id,
+          customerName: productPickerCustomer.name,
+          customerPhone: productPickerCustomer.phone_number,
+          prefill: text,
+        },
+      });
+      setProductPickerCustomer(null);
+    } finally {
+      setSendingProduct(null);
+    }
+  };
+
+  const handleSendCatalog = async () => {
+    if (!productPickerCustomer || selectedProductIds.length === 0) return;
+    setSendingCatalog(true);
+    try {
+      const result = await productsAPI.sendCatalog(productPickerCustomer.id, selectedProductIds);
+      Alert.alert('Catalog Sent!', `${result.products_sent} products sent to ${productPickerCustomer.name} via WhatsApp. They can reply to order!`);
+      setShowProductPicker(false);
+      setProductPickerCustomer(null);
+      setSelectedProductIds([]);
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to send catalog');
+    } finally {
+      setSendingCatalog(false);
+    }
+  };
+
+  const handleCreateOrderFromProduct = async (product: any) => {
+    if (!productPickerCustomer) return;
+    try {
+      await apiClient.post('/orders', {
+        customer_id: productPickerCustomer.id,
+        product: product.name,
+        quantity: 1,
+        price: product.price,
+        total_amount: product.price,
+      });
+      Alert.alert('Order Created!', `Order for ${product.name} (${currency} ${product.price.toLocaleString()}) created for ${productPickerCustomer.name}`);
+      setShowProductPicker(false);
+      setProductPickerCustomer(null);
+    } catch (error) {
+      console.error('Error creating order:', error);
+      Alert.alert('Error', 'Failed to create order');
+    }
+  };
+
+  const handleSendDraftMessage = () => {
+    if (!draftCustomer) return;
+
+    const text = draftMessage || `Hi ${draftCustomer.name}, just checking in!`;
+
+    setShowDraftModal(false);
+
+    // Navigate to in-app chat with message pre-filled
+    router.push({
+      pathname: '/chat',
+      params: {
+        customerId: draftCustomer.id,
+        customerName: draftCustomer.name,
+        customerPhone: draftCustomer.phone_number,
+        prefill: text,
+      },
+    });
+
+    // Reset
+    setDraftMessage('');
+    setDraftReason('');
+    setDraftCustomer(null);
+    setCustomDirection('');
+  };
+
+
+  const TAG_COLORS: Record<string, string> = {
+    VIP: '#FFD700',
+    New: '#25D366',
+    Returning: '#4A90D9',
+    Wholesale: '#9B59B6',
+  };
+
+  const RotatingBadge = ({ tags, purchaseCount }: { tags: string[]; purchaseCount: number }) => {
+    const items: { label: string; color: string }[] = [];
+    tags.forEach(t => items.push({ label: t, color: TAG_COLORS[t] || '#8696A0' }));
+    if (purchaseCount > 0) {
+      items.push({ label: `${purchaseCount} ${purchaseCount === 1 ? 'Sale' : 'Sales'}`, color: '#00A884' });
+    }
+
+    const [index, setIndex] = useState(0);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    useEffect(() => {
+      if (items.length <= 1) return;
+      timerRef.current = setInterval(() => {
+        setIndex(prev => (prev + 1) % items.length);
+      }, 2000);
+      return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    }, [items.length]);
+
+    if (items.length === 0) return null;
+    const item = items[index % items.length];
+
+    return (
+      <View style={[styles.chatRowBadge, { backgroundColor: item.color }]}>
+        <Text style={styles.chatRowBadgeText}>{item.label}</Text>
+      </View>
+    );
+  };
+
+  const formatLastContact = (dateStr: string | null) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' });
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  };
+
+  const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+  const CustomerAvatar = ({ customer }: { customer: Customer }) => {
+    const [imgError, setImgError] = React.useState(false);
+    // Use backend endpoint which fetches fresh from Evolution API and proxies the image.
+    // Token passed as query param because React Native Image can't set custom headers.
+    const picUrl = customer.profile_picture && token
+      ? `${BACKEND_URL}/api/customers/${customer.id}/profile-picture?token=${encodeURIComponent(token)}`
+      : null;
+    if (picUrl && !imgError) {
+      return (
+        <Image
+          source={{ uri: picUrl }}
+          style={[styles.customerAvatar, styles.avatarImage]}
+          onError={() => setImgError(true)}
+        />
+      );
+    }
+    return (
+      <View style={[styles.customerAvatar, customer.tags.includes('VIP') && { backgroundColor: '#FFD700' }]}>
+        <Text style={styles.avatarText}>{customer.name.charAt(0).toUpperCase()}</Text>
+      </View>
+    );
+  };
+
   const renderCustomer = ({ item }: { item: Customer }) => (
-    <TouchableOpacity style={styles.customerCard} onPress={() => openEditModal(item)}>
-      <View style={styles.customerAvatar}>
-        <Text style={styles.avatarText}>{item.name.charAt(0).toUpperCase()}</Text>
-      </View>
-      <View style={styles.customerInfo}>
-        <Text style={styles.customerName}>{item.name}</Text>
-        <Text style={styles.customerPhone}>{item.phone_number}</Text>
-        <View style={styles.tagsContainer}>
-          {item.purchase_count > 0 && (
-            <View style={[styles.tag, styles.tagCount]}>
-              <Text style={styles.tagText}>{item.purchase_count} {item.purchase_count === 1 ? 'Sale' : 'Sales'}</Text>
-            </View>
-          )}
-          {item.total_spent > 0 && (
-            <View style={[styles.tag, styles.tagMoney]}>
-              <Text style={[styles.tagText, styles.tagMoneyText]}>KES {item.total_spent.toLocaleString()}</Text>
-            </View>
-          )}
-          {item.tags.map((tag, index) => (
-            <View key={index} style={[styles.tag, tag === 'VIP' && styles.tagVip, tag === 'Returning' && styles.tagReturning]}>
-              <Text style={styles.tagText}>{tag}</Text>
-            </View>
-          ))}
-        </View>
-      </View>
-      <View style={styles.customerRight}>
-        {item.notes && (
-          <View style={styles.notesPreview}>
-            <Ionicons name="document-text-outline" size={12} color="#25D366" />
-            <Text style={styles.notesPreviewText} numberOfLines={2}>{item.notes}</Text>
+    <TouchableOpacity
+      style={styles.chatRow}
+      onPress={() => handleWhatsApp(item)}
+      onLongPress={() => openEditModal(item)}
+      delayLongPress={400}
+    >
+      <View>
+        <CustomerAvatar customer={item} />
+        {item.unread_count > 0 && (
+          <View style={styles.unreadBadge}>
+            <Text style={styles.unreadBadgeText}>{item.unread_count > 9 ? '9+' : item.unread_count}</Text>
           </View>
         )}
-        <View style={styles.actionButtons}>
-          <TouchableOpacity onPress={() => handleWhatsApp(item.phone_number)} style={styles.iconButton}>
-            <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => handleDeleteCustomer(item)} style={styles.iconButton}>
-            <Ionicons name="trash-outline" size={20} color="#FF4444" />
-          </TouchableOpacity>
+      </View>
+      <View style={styles.chatRowContent}>
+        <View style={styles.chatRowTop}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8, gap: 6 }}>
+            {item.stage && item.stage !== 'lead' && (
+              <View style={{
+                width: 8, height: 8, borderRadius: 4,
+                backgroundColor: STAGE_COLORS[item.stage] || '#8696A0',
+              }} />
+            )}
+            <Text style={[styles.chatRowName, { flex: 1 }]} numberOfLines={1}>{item.name}</Text>
+          </View>
+          <Text style={styles.chatRowTime}>{formatLastContact(item.last_contacted)}</Text>
+        </View>
+        <View style={styles.chatRowBottom}>
+          <Text style={styles.chatRowMessage} numberOfLines={1}>
+            {item.last_message || item.notes || item.phone_number}
+          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {/* Only show assignment badges for teams (1+ members) */}
+            {(user?.team_members_count ?? 0) >= 1 ? (
+              <>
+                {item.assigned_to_name && (
+                  <View style={styles.assignedBadge}>
+                    <Ionicons name="person" size={10} color="#4A90D9" />
+                    <Text style={styles.assignedBadgeText}>{item.assigned_to_name}</Text>
+                  </View>
+                )}
+                {!item.assigned_to && (
+                  <View style={styles.unassignedBadge}>
+                    <Ionicons name="help-circle-outline" size={10} color="#25D366" />
+                    <Text style={styles.unassignedBadgeText}>Available</Text>
+                  </View>
+                )}
+              </>
+            ) : null}
+            <RotatingBadge tags={item.tags} purchaseCount={item.purchase_count} />
+          </View>
         </View>
       </View>
     </TouchableOpacity>
@@ -397,7 +1091,11 @@ export default function CustomersScreen() {
           }}>
             <Text style={styles.modalCancel}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={styles.modalTitle}>{isEdit ? 'Edit Customer' : 'Add Customer'}</Text>
+          <Text style={styles.modalTitle}>
+            {isEdit
+              ? (viewMode === 'suppliers' ? 'Edit Supplier' : 'Edit Customer')
+              : (viewMode === 'suppliers' ? 'Add Supplier' : 'Add Customer')}
+          </Text>
           <TouchableOpacity onPress={isEdit ? handleUpdateCustomer : handleAddCustomer} disabled={saving}>
             <Text style={[styles.modalSave, saving && styles.modalSaveDisabled]}>
               {saving ? 'Saving...' : 'Save'}
@@ -405,7 +1103,7 @@ export default function CustomersScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.modalContent}>
+        <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Name *</Text>
             <TextInput
@@ -419,16 +1117,75 @@ export default function CustomersScreen() {
 
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Phone Number *</Text>
-            <TextInput
-              style={[styles.formInput, isEdit && styles.inputDisabled]}
-              value={newPhone}
-              onChangeText={setNewPhone}
-              placeholder="+254 7XX XXX XXX"
-              placeholderTextColor="#666"
-              keyboardType="phone-pad"
-              editable={!isEdit}
-            />
+            <View style={styles.phoneRow}>
+              {!isEdit && (
+                <CountryPicker
+                  selectedCountry={customerCountry}
+                  onSelect={setCustomerCountry}
+                />
+              )}
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  style={[styles.formInput, isEdit && styles.inputDisabled]}
+                  value={newPhone}
+                  onChangeText={setNewPhone}
+                  placeholder="Phone number"
+                  placeholderTextColor="#666"
+                  keyboardType="phone-pad"
+                  editable={!isEdit}
+                />
+              </View>
+            </View>
           </View>
+
+          {isEdit && (
+            <View style={styles.formGroup}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={styles.formLabel}>AI Auto-Reply</Text>
+                <Switch
+                  value={newAutoReply}
+                  onValueChange={setNewAutoReply}
+                  trackColor={{ false: "#767577", true: "#25D366" }}
+                  thumbColor={newAutoReply ? "#ffffff" : "#f4f3f4"}
+                />
+              </View>
+              <Text style={{ color: '#8899AA', fontSize: 12, marginTop: 4 }}>
+                {newAutoReply
+                  ? 'Auto-reply is ENABLED for this customer.'
+                  : 'Auto-reply is DISABLED for this customer.'}
+              </Text>
+            </View>
+          )}
+
+          {isEdit && (
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Pipeline Stage</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                {(['lead', 'contacted', 'negotiating', 'won', 'lost'] as const).map((stage) => (
+                  <TouchableOpacity
+                    key={stage}
+                    onPress={() => setNewStage(stage)}
+                    style={{
+                      paddingHorizontal: 14,
+                      paddingVertical: 8,
+                      borderRadius: 20,
+                      borderWidth: 2,
+                      borderColor: newStage === stage ? STAGE_COLORS[stage] : '#2A3A5C',
+                      backgroundColor: newStage === stage ? STAGE_COLORS[stage] + '30' : 'transparent',
+                    }}
+                  >
+                    <Text style={{
+                      fontSize: 13,
+                      fontWeight: '600',
+                      color: newStage === stage ? STAGE_COLORS[stage] : '#8B9DC3',
+                    }}>
+                      {STAGE_LABELS[stage]}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
 
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Notes</Text>
@@ -446,7 +1203,7 @@ export default function CustomersScreen() {
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Tags</Text>
             <View style={styles.tagsSelector}>
-              {TAGS.map((tag) => (
+              {[...new Set([...TAGS, ...newTags])].map((tag) => (
                 <TouchableOpacity
                   key={tag}
                   style={[
@@ -461,9 +1218,44 @@ export default function CustomersScreen() {
                   ]}>{tag}</Text>
                 </TouchableOpacity>
               ))}
+              {showTagInput ? (
+                <View style={styles.addTagInputRow}>
+                  <TextInput
+                    style={styles.addTagInput}
+                    value={newTagText}
+                    onChangeText={setNewTagText}
+                    placeholder="Tag name"
+                    placeholderTextColor="#666"
+                    autoFocus
+                    onSubmitEditing={() => {
+                      const t = newTagText.trim();
+                      if (t && !newTags.includes(t)) setNewTags(prev => [...prev, t]);
+                      setNewTagText('');
+                      setShowTagInput(false);
+                    }}
+                    returnKeyType="done"
+                  />
+                  <TouchableOpacity onPress={() => {
+                    const t = newTagText.trim();
+                    if (t && !newTags.includes(t)) setNewTags(prev => [...prev, t]);
+                    setNewTagText('');
+                    setShowTagInput(false);
+                  }}>
+                    <Ionicons name="checkmark" size={18} color="#25D366" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setShowTagInput(false); setNewTagText(''); }} style={{ marginLeft: 4 }}>
+                    <Ionicons name="close" size={18} color="#666" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.addTagButton} onPress={() => setShowTagInput(true)}>
+                  <Ionicons name="add" size={16} color="#25D366" />
+                  <Text style={styles.addTagButtonText}>Add Tag</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     </Modal>
   );
@@ -481,76 +1273,984 @@ export default function CustomersScreen() {
   return (
     <SafeAreaView style={styles.container}>
 
-      <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search customers..."
-          placeholderTextColor="#666"
-        />
-      </View>
-
-      <View style={styles.filterContainer}>
+      {/* Customers / Suppliers / Contacts Toggle */}
+      <View style={styles.viewToggle}>
         <TouchableOpacity
-          style={[styles.filterChip, !selectedTag && styles.filterChipActive]}
-          onPress={() => setSelectedTag(null)}
+          style={[styles.toggleButton, viewMode === 'customers' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('customers')}
         >
-          <Text style={[styles.filterText, !selectedTag && styles.filterTextActive]}>All</Text>
+          <Ionicons
+            name="people"
+            size={18}
+            color={viewMode === 'customers' ? '#FFFFFF' : '#666'}
+          />
+          <Text style={[styles.toggleText, viewMode === 'customers' && styles.toggleTextActive]}>Customers</Text>
         </TouchableOpacity>
-        {TAGS.map((tag) => (
-          <TouchableOpacity
-            key={tag}
-            style={[styles.filterChip, selectedTag === tag && styles.filterChipActive]}
-            onPress={() => setSelectedTag(selectedTag === tag ? null : tag)}
-          >
-            <Text style={[styles.filterText, selectedTag === tag && styles.filterTextActive]}>{tag}</Text>
-          </TouchableOpacity>
-        ))}
+        <TouchableOpacity
+          style={[styles.toggleButton, viewMode === 'suppliers' && styles.toggleButtonActive]}
+          onPress={() => setViewMode('suppliers')}
+        >
+          <Ionicons
+            name="business"
+            size={18}
+            color={viewMode === 'suppliers' ? '#FFFFFF' : '#666'}
+          />
+          <Text style={[styles.toggleText, viewMode === 'suppliers' && styles.toggleTextActive]}>Suppliers</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleButton, viewMode === 'contacts' && styles.toggleButtonActive]}
+          onPress={() => { setViewMode('contacts'); fetchAllContacts(); }}
+        >
+          <Ionicons
+            name="person-add"
+            size={18}
+            color={viewMode === 'contacts' ? '#FFFFFF' : '#666'}
+          />
+          <Text style={[styles.toggleText, viewMode === 'contacts' && styles.toggleTextActive]}>Contacts</Text>
+        </TouchableOpacity>
       </View>
 
-      <FlatList
-        data={filteredCustomers}
-        renderItem={renderCustomer}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Ionicons name="people-outline" size={64} color="#666" />
-            <Text style={styles.emptyText}>No customers yet</Text>
-            <Text style={styles.emptySubtext}>Add your first customer to get started</Text>
+      {/* ===== AI PENDING APPROVALS ===== */}
+      {pendingClassifications.length > 0 && (
+        <View style={styles.pendingBanner}>
+          <View style={styles.pendingHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="sparkles" size={16} color="#FFD700" />
+              <Text style={styles.pendingTitle}>AI Detected ({pendingClassifications.length})</Text>
+            </View>
+            <TouchableOpacity onPress={scanAllContacts} disabled={scanningContacts}>
+              <Ionicons name="refresh" size={16} color="#8899AA" />
+            </TouchableOpacity>
           </View>
-        }
-      />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+            {pendingClassifications.slice(0, 10).map((item: any) => (
+              <View key={item.customer_id} style={styles.pendingCard}>
+                <View style={styles.pendingCardTop}>
+                  <View style={[styles.pendingTypeBadge, { backgroundColor: item.suggested_type === 'supplier' ? '#4A90D920' : '#25D36620' }]}>
+                    <Ionicons
+                      name={item.suggested_type === 'supplier' ? 'business' : 'person'}
+                      size={10}
+                      color={item.suggested_type === 'supplier' ? '#4A90D9' : '#25D366'}
+                    />
+                    <Text style={[styles.pendingTypeText, { color: item.suggested_type === 'supplier' ? '#4A90D9' : '#25D366' }]}>
+                      {item.suggested_type === 'supplier' ? 'Supplier' : 'Customer'}
+                    </Text>
+                  </View>
+                  <Text style={styles.pendingConfidence}>{Math.round((item.confidence || 0) * 100)}%</Text>
+                </View>
+                <Text style={styles.pendingName} numberOfLines={1}>{item.contact_name}</Text>
+                <Text style={styles.pendingReason} numberOfLines={2}>{item.reason}</Text>
+                <View style={styles.pendingActions}>
+                  <TouchableOpacity
+                    style={styles.pendingConfirmBtn}
+                    onPress={() => confirmClassification(item.customer_id, item.suggested_type)}
+                  >
+                    <Ionicons name="checkmark" size={14} color="#FFF" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.pendingDismissBtn}
+                    onPress={() => dismissClassification(item.customer_id)}
+                  >
+                    <Ionicons name="close" size={14} color="#FF4444" />
+                  </TouchableOpacity>
+                  {item.suggested_type === 'supplier' && (
+                    <TouchableOpacity
+                      style={styles.pendingSwapBtn}
+                      onPress={() => confirmClassification(item.customer_id, 'customer')}
+                    >
+                      <Text style={styles.pendingSwapText}>Keep as Customer</Text>
+                    </TouchableOpacity>
+                  )}
+                  {item.suggested_type === 'customer' && (
+                    <TouchableOpacity
+                      style={styles.pendingSwapBtn}
+                      onPress={() => confirmClassification(item.customer_id, 'supplier')}
+                    >
+                      <Text style={styles.pendingSwapText}>Make Supplier</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
-      {/* WhatsApp-style Floating Action Button with Menu */}
-      <View style={[styles.fabContainer, { bottom: insets.bottom + 90 }]}>
-        <TouchableOpacity
-          style={styles.fabSecondary}
-          onPress={() => {
-            setContactsModalVisible(true);
-            loadPhoneContacts();
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="cloud-upload" size={22} color="#FFFFFF" />
-          <Text style={styles.fabSecondaryText}>Import</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => setModalVisible(true)}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="add" size={28} color="#FFFFFF" />
-        </TouchableOpacity>
-      </View>
+      {/* ===== CONTACTS MODE ===== */}
+      {viewMode === 'contacts' ? (
+        <>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 12 }}>
+            <View style={[styles.searchContainer, { flex: 1, marginBottom: 0 }]}>
+              <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+              <TextInput
+                style={styles.searchInput}
+                value={contactSearch2}
+                onChangeText={v => { setContactSearch2(v); fetchAllContacts(v); }}
+                placeholder="Search contacts..."
+                placeholderTextColor="#666"
+              />
+            </View>
+            <TouchableOpacity
+              onPress={async () => { setScanningContacts(true); try { await apiClient.post('/contacts/scan-suggestions'); await fetchAllContacts(contactSearch2); } catch(e){} finally { setScanningContacts(false); } }}
+              disabled={scanningContacts}
+              style={{ backgroundColor: '#1A2942', borderRadius: 8, padding: 8 }}
+            >
+              {scanningContacts ? <ActivityIndicator size="small" color="#FFD700" /> : <Ionicons name="sparkles-outline" size={20} color="#FFD700" />}
+            </TouchableOpacity>
+          </View>
+          {loadingContacts2 ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#25D366" />
+            </View>
+          ) : (
+            <FlatList
+              data={allContacts}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listContent}
+              refreshControl={
+                <RefreshControl refreshing={loadingContacts2} onRefresh={() => fetchAllContacts(contactSearch2)} tintColor="#25D366" />
+              }
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="people-outline" size={64} color="#666" />
+                  <Text style={styles.emptyText}>No contacts yet</Text>
+                  <Text style={styles.emptySubtext}>Sync your WhatsApp to see all contacts here</Text>
+                </View>
+              }
+              renderItem={({ item }) => (
+                <View style={[styles.contactRow, item.suggested_type && { borderLeftWidth: 3, borderLeftColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366' }]}>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                    onPress={() => router.push({ pathname: '/chat', params: { customerId: item.id, customerName: item.name, customerPhone: item.phone_number } })}
+                  >
+                    <View style={styles.contactAvatar}>
+                      <Text style={styles.contactAvatarText}>{item.name?.charAt(0)?.toUpperCase() || '?'}</Text>
+                    </View>
+                    <View style={styles.contactInfo}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <Text style={styles.contactName} numberOfLines={1}>{item.name}</Text>
+                        {item.suggested_type === 'customer' && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#1A3B2A', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2, gap: 3 }}>
+                            <Ionicons name="sparkles" size={9} color="#25D366" />
+                            <Text style={{ color: '#25D366', fontSize: 9, fontWeight: '700' }}>Likely Customer</Text>
+                          </View>
+                        )}
+                        {item.suggested_type === 'supplier' && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#3B2A1A', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 2, gap: 3 }}>
+                            <Ionicons name="sparkles" size={9} color="#FF9500" />
+                            <Text style={{ color: '#FF9500', fontSize: 9, fontWeight: '700' }}>Likely Supplier</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.contactPhone}>{item.phone_number}</Text>
+                      {item.suggestion_reason ? <Text numberOfLines={1} style={{ color: '#8899AA', fontSize: 11, marginTop: 1 }}>{item.suggestion_reason}</Text> : null}
+                      {item.suggested_type && (
+                        <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
+                          <TouchableOpacity
+                            style={{ backgroundColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                            onPress={async () => {
+                              try {
+                                await apiClient.post(`/contacts/${item.id}/confirm`, { action: 'approve', type: item.suggested_type });
+                                fetchAllContacts(contactSearch2);
+                                fetchCustomers();
+                                Alert.alert('Done!', `${item.name} added as ${item.suggested_type}.`);
+                              } catch (e) { console.error(e); }
+                            }}
+                          >
+                            <Ionicons name="checkmark" size={11} color="#FFF" />
+                            <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '700' }}>Confirm as {item.suggested_type === 'supplier' ? 'Supplier' : 'Customer'}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={{ backgroundColor: '#1A2942', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 }}
+                            onPress={async () => {
+                              try {
+                                await apiClient.post(`/contacts/${item.id}/confirm`, { action: 'reject', type: item.suggested_type });
+                                fetchAllContacts(contactSearch2);
+                              } catch (e) { console.error(e); }
+                            }}
+                          >
+                            <Text style={{ color: '#8899AA', fontSize: 11 }}>Not this</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                  {!item.suggested_type && (
+                    <TouchableOpacity
+                      style={styles.contactAddBtn}
+                      onPress={async () => {
+                        try {
+                          await apiClient.post(`/contacts/${item.id}/add-as-customer`);
+                          fetchAllContacts(contactSearch2);
+                          fetchCustomers();
+                          Alert.alert('Added!', `${item.name} is now a customer.`);
+                        } catch (e) { console.error('Add as customer failed', e); }
+                      }}
+                    >
+                      <Ionicons name="person-add" size={12} color="#FFF" />
+                      <Text style={styles.contactAddBtnText}>Add</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
+            />
+          )}
+        </>
+      ) : viewMode === 'suppliers' ? (
+        <>
+          {/* Scan button when no pending classifications */}
+          {pendingClassifications.length === 0 && (
+            <TouchableOpacity style={styles.scanButton} onPress={scanAllContacts} disabled={scanningContacts}>
+              {scanningContacts ? (
+                <ActivityIndicator size="small" color="#FFD700" />
+              ) : (
+                <>
+                  <Ionicons name="sparkles" size={14} color="#FFD700" />
+                  <Text style={styles.scanButtonText}>Scan Chats to Classify Contacts</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* Supplier Stats Bar */}
+          <View style={styles.supplierStatsBar}>
+            <View style={styles.supplierStatItem}>
+              <Text style={styles.supplierStatValue}>{suppliers.length}</Text>
+              <Text style={styles.supplierStatLabel}>Total</Text>
+            </View>
+            <View style={styles.supplierStatDivider} />
+            <View style={styles.supplierStatItem}>
+              <Text style={styles.supplierStatValue}>{Object.keys(supplierCategoryCounts).length}</Text>
+              <Text style={styles.supplierStatLabel}>Categories</Text>
+            </View>
+            <View style={styles.supplierStatDivider} />
+            <View style={styles.supplierStatItem}>
+              <Text style={[styles.supplierStatValue, { color: '#FFD700' }]}>
+                {suppliers.filter(s => s.rating >= 4).length}
+              </Text>
+              <Text style={styles.supplierStatLabel}>Top Rated</Text>
+            </View>
+          </View>
+
+          {/* Search */}
+          <View style={styles.searchContainer}>
+            <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search suppliers..."
+              placeholderTextColor="#666"
+            />
+          </View>
+
+          {/* Category Filter Chips */}
+          <View style={{ height: 38, marginBottom: 8 }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6, alignItems: 'center' }}>
+              <TouchableOpacity
+                style={[styles.filterChip, !selectedSupplierCategory && styles.filterChipActive]}
+                onPress={() => setSelectedSupplierCategory(null)}
+              >
+                <Text style={[styles.filterText, !selectedSupplierCategory && styles.filterTextActive]}>All</Text>
+              </TouchableOpacity>
+              {Object.entries(supplierCategoryCounts).map(([cat, count]) => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[styles.filterChip, selectedSupplierCategory === cat && styles.filterChipActive]}
+                  onPress={() => setSelectedSupplierCategory(selectedSupplierCategory === cat ? null : cat)}
+                >
+                  <Text style={[styles.filterText, selectedSupplierCategory === cat && styles.filterTextActive]}>
+                    {cat} ({Number(count)})
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+
+          {/* Supplier List */}
+          {loadingSupplierData ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#25D366" />
+            </View>
+          ) : (
+            <FlatList
+              data={filteredSuppliers}
+              keyExtractor={(item) => item.id || item._id}
+              contentContainerStyle={styles.listContent}
+              refreshControl={
+                <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
+              }
+              renderItem={({ item }) => (
+                <TouchableOpacity style={styles.supplierCard} onPress={() => openSupplierDetail(item)}>
+                  <View style={styles.supplierCardLeft}>
+                    <View style={[styles.supplierAvatar, { backgroundColor: CATEGORY_COLORS[item.supplier_category] || '#4A90D9' }]}>
+                      <Ionicons name={CATEGORY_ICONS[item.supplier_category] || ('business' as keyof typeof Ionicons.glyphMap)} size={18} color="#FFF" />
+                    </View>
+                    <View style={styles.supplierCardInfo}>
+                      <Text style={styles.supplierCardName} numberOfLines={1}>{item.name}</Text>
+                      <Text style={styles.supplierCardPhone}>{item.phone_number}</Text>
+                      <View style={styles.supplierCardMeta}>
+                        <View style={[styles.supplierCategoryBadge, { backgroundColor: (CATEGORY_COLORS[item.supplier_category] || '#4A90D9') + '30' }]}>
+                          <Text style={[styles.supplierCategoryText, { color: CATEGORY_COLORS[item.supplier_category] || '#4A90D9' }]}>{item.supplier_category || 'Other'}</Text>
+                        </View>
+                        {item.rating > 0 && (
+                          <View style={styles.supplierRatingRow}>
+                            {[1, 2, 3, 4, 5].map(star => (
+                              <Ionicons key={star} name={star <= item.rating ? 'star' : 'star-outline'} size={12} color="#FFD700" />
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.supplierWhatsappBtn}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      router.push({ pathname: '/chat', params: { customerId: item.id || item._id, customerName: item.name, customerPhone: item.phone_number } });
+                    }}
+                  >
+                    <Ionicons name="chatbubble-ellipses" size={18} color="#25D366" />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="business-outline" size={64} color="#4A90D9" />
+                  <Text style={styles.emptyText}>No suppliers yet</Text>
+                  <Text style={styles.emptySubtext}>Add suppliers from your contacts to track who you buy from</Text>
+                </View>
+              }
+            />
+          )}
+
+          {/* Supplier FABs */}
+          <View style={[styles.fabContainer, { bottom: 20 }]}>
+            <TouchableOpacity
+              style={styles.fabSecondary}
+              onPress={() => {
+                setContactsModalVisible(true);
+                loadPhoneContacts();
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="people" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.fab}
+              onPress={() => setModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Supplier Detail Modal */}
+          <Modal
+            visible={supplierDetailVisible}
+            animationType="slide"
+            presentationStyle="pageSheet"
+            onRequestClose={() => setSupplierDetailVisible(false)}
+          >
+            <SafeAreaView style={styles.modalContainer}>
+              <View style={styles.modalHeader}>
+                <TouchableOpacity onPress={() => setSupplierDetailVisible(false)}>
+                  <Text style={styles.modalCancel}>Close</Text>
+                </TouchableOpacity>
+                <Text style={styles.modalTitle}>Supplier Details</Text>
+                <TouchableOpacity onPress={saveSupplierDetails} disabled={savingSupplier}>
+                  <Text style={[styles.modalSave, savingSupplier && styles.modalSaveDisabled]}>
+                    {savingSupplier ? 'Saving...' : 'Save'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
+                {selectedSupplier && (
+                  <>
+                    {/* Supplier Header */}
+                    <View style={styles.supplierDetailHeader}>
+                      <View style={[styles.supplierDetailAvatar, { backgroundColor: CATEGORY_COLORS[editingSupplierCategory] || '#4A90D9' }]}>
+                        <Text style={styles.supplierDetailAvatarText}>{selectedSupplier.name?.charAt(0)?.toUpperCase()}</Text>
+                      </View>
+                      <Text style={styles.supplierDetailName}>{selectedSupplier.name}</Text>
+                      <Text style={styles.supplierDetailPhone}>{selectedSupplier.phone_number}</Text>
+                    </View>
+
+                    {/* Category */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Category</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                        {supplierCategories.map(cat => (
+                          <TouchableOpacity
+                            key={cat}
+                            style={[styles.supplierCatChip, editingSupplierCategory === cat && styles.supplierCatChipActive]}
+                            onPress={() => setEditingSupplierCategory(cat)}
+                          >
+                            <Ionicons name={CATEGORY_ICONS[cat] || ('business' as keyof typeof Ionicons.glyphMap)} size={14} color={editingSupplierCategory === cat ? '#FFF' : '#888'} />
+                            <Text style={[styles.supplierCatChipText, editingSupplierCategory === cat && styles.supplierCatChipTextActive]}>{cat}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+
+                    {/* Rating */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Rating</Text>
+                      <View style={styles.ratingRow}>
+                        {[1, 2, 3, 4, 5].map(star => (
+                          <TouchableOpacity key={star} onPress={() => setEditingRating(star === editingRating ? 0 : star)}>
+                            <Ionicons name={star <= editingRating ? 'star' : 'star-outline'} size={28} color="#FFD700" style={{ marginRight: 6 }} />
+                          </TouchableOpacity>
+                        ))}
+                        {editingRating > 0 && <Text style={styles.ratingLabel}>{editingRating}/5</Text>}
+                      </View>
+                    </View>
+
+                    {/* Payment Terms */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Payment Terms</Text>
+                      <TextInput
+                        style={styles.supplierDetailInput}
+                        value={editingPaymentTerms}
+                        onChangeText={setEditingPaymentTerms}
+                        placeholder="e.g. Net 30, Cash on delivery, 50% upfront"
+                        placeholderTextColor="#555"
+                      />
+                    </View>
+
+                    {/* Lead Time */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Lead Time</Text>
+                      <TextInput
+                        style={styles.supplierDetailInput}
+                        value={editingLeadTime}
+                        onChangeText={setEditingLeadTime}
+                        placeholder="e.g. 3-5 days, Same day, 2 weeks"
+                        placeholderTextColor="#555"
+                      />
+                    </View>
+
+                    {/* Quick Actions */}
+                    <View style={styles.supplierDetailSection}>
+                      <Text style={styles.supplierDetailLabel}>Quick Actions</Text>
+                      <TouchableOpacity
+                        style={styles.supplierActionBtn}
+                        onPress={() => {
+                          setSupplierDetailVisible(false);
+                          router.push({ pathname: '/chat', params: { customerId: selectedSupplier.id || selectedSupplier._id, customerName: selectedSupplier.name, customerPhone: selectedSupplier.phone_number } });
+                        }}
+                      >
+                        <Ionicons name="chatbubble-ellipses" size={20} color="#25D366" />
+                        <Text style={styles.supplierActionBtnText}>Message on WhatsApp</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.supplierActionBtn, { borderColor: '#FF4444' }]}
+                        onPress={() => removeSupplier(selectedSupplier.id || selectedSupplier._id)}
+                      >
+                        <Ionicons name="trash-outline" size={20} color="#FF4444" />
+                        <Text style={[styles.supplierActionBtnText, { color: '#FF4444' }]}>Remove Supplier</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+              </ScrollView>
+            </SafeAreaView>
+          </Modal>
+        </>
+      ) : (
+        <>
+          {/* ===== CUSTOMER MODE ===== */}
+          {/* dummy comment to keep structure */}
+          {/* Dashboard Summary Card */}
+          {dashboardSummary && (
+            <View style={styles.dashboardCard}>
+              <TouchableOpacity style={styles.dashboardItem} onPress={() => {}}>
+                <View style={[styles.dashboardIcon, { backgroundColor: '#25D36620' }]}>
+                  <Ionicons name="chatbubble-ellipses" size={14} color="#25D366" />
+                </View>
+                <View style={styles.dashboardInfo}>
+                  <Text style={styles.dashboardValue} numberOfLines={1}>{dashboardSummary.unread_messages}</Text>
+                  <Text style={styles.dashboardLabel}>Unread</Text>
+                </View>
+              </TouchableOpacity>
+              <View style={styles.dashboardDivider} />
+              <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/followups')}>
+                <View style={[styles.dashboardIcon, { backgroundColor: '#FF980020' }]}>
+                  <Ionicons name="alarm" size={14} color="#FF9800" />
+                </View>
+                <View style={styles.dashboardInfo}>
+                  <Text style={styles.dashboardValue} numberOfLines={1}>{dashboardSummary.followups_today}</Text>
+                  <Text style={styles.dashboardLabel}>Follow-ups</Text>
+                </View>
+              </TouchableOpacity>
+              <View style={styles.dashboardDivider} />
+              <TouchableOpacity style={styles.dashboardItem} onPress={() => router.push('/(tabs)/sales')}>
+                <View style={[styles.dashboardIcon, { backgroundColor: '#4A90D920' }]}>
+                  <Ionicons name="cash" size={14} color="#4A90D9" />
+                </View>
+                <View style={styles.dashboardInfo}>
+                  <Text style={styles.dashboardValue} numberOfLines={1} adjustsFontSizeToFit>{currency} {dashboardSummary.sales_today.toLocaleString()}</Text>
+                  <Text style={styles.dashboardLabel}>Sales</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Filter Toggle Bar */}
+          <TouchableOpacity
+            style={styles.filterToggleBar}
+            onPress={() => setShowFilters(v => !v)}
+            activeOpacity={0.8}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="options-outline" size={16} color={showFilters ? '#25D366' : '#8899AA'} />
+              <Text style={[styles.filterToggleText, showFilters && { color: '#25D366' }]}>Filters & Search</Text>
+              {(selectedStage !== 'all' || selectedTag || searchQuery || assignmentFilter !== 'all') && (
+                <View style={styles.filterActiveDot} />
+              )}
+            </View>
+            <Ionicons name={showFilters ? 'chevron-up' : 'chevron-down'} size={16} color={showFilters ? '#25D366' : '#8899AA'} />
+          </TouchableOpacity>
+
+          {showFilters && (
+            <View style={styles.filterPanel}>
+              {/* Pipeline Stage Pills */}
+              <View style={{ height: 38, marginBottom: 8 }}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
+                  {STAGES.map((stage) => (
+                    <TouchableOpacity
+                      key={stage}
+                      style={[
+                        styles.stageChip,
+                        selectedStage === stage && styles.stageChipActive,
+                        selectedStage === stage && stage !== 'all' && { backgroundColor: STAGE_COLORS[stage] }
+                      ]}
+                      onPress={() => setSelectedStage(stage)}
+                    >
+                      <Text style={[styles.stageChipText, selectedStage === stage && styles.stageChipTextActive]}>
+                        {STAGE_LABELS[stage]}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+
+              {/* Assignment Filter Pills - Only show for teams (1+ members) */}
+              {(user?.team_members_count ?? 0) >= 1 ? (
+                <View style={{ height: 38, marginBottom: 8 }}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 4, gap: 6 }}>
+                    <TouchableOpacity
+                      style={[styles.assignmentChip, assignmentFilter === 'all' && styles.assignmentChipActive]}
+                      onPress={() => setAssignmentFilter('all')}
+                    >
+                      <Ionicons name="people" size={14} color={assignmentFilter === 'all' ? '#FFF' : '#8899AA'} />
+                      <Text style={[styles.assignmentChipText, assignmentFilter === 'all' && styles.assignmentChipTextActive]}>
+                        All
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.assignmentChip, assignmentFilter === 'assigned_to_me' && styles.assignmentChipActive]}
+                      onPress={() => setAssignmentFilter('assigned_to_me')}
+                    >
+                      <Ionicons name="person" size={14} color={assignmentFilter === 'assigned_to_me' ? '#FFF' : '#8899AA'} />
+                      <Text style={[styles.assignmentChipText, assignmentFilter === 'assigned_to_me' && styles.assignmentChipTextActive]}>
+                        My Conversations
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.assignmentChip, assignmentFilter === 'unassigned' && styles.assignmentChipActive]}
+                      onPress={() => setAssignmentFilter('unassigned')}
+                    >
+                      <Ionicons name="help-circle-outline" size={14} color={assignmentFilter === 'unassigned' ? '#FFF' : '#8899AA'} />
+                      <Text style={[styles.assignmentChipText, assignmentFilter === 'unassigned' && styles.assignmentChipTextActive]}>
+                        Unassigned
+                      </Text>
+                    </TouchableOpacity>
+                  </ScrollView>
+                </View>
+              ) : null}
+
+              <View style={styles.searchContainer}>
+                <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+                <TextInput
+                  style={styles.searchInput}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Search customers..."
+                  placeholderTextColor="#666"
+                />
+              </View>
+
+              {/* Sorting Toggle */}
+              <View style={styles.sortContainer}>
+                <TouchableOpacity
+                  style={[styles.sortButton, sortBy === 'recently_contacted' && styles.sortButtonActive]}
+                  onPress={() => setSortBy('recently_contacted')}
+                >
+                  <Ionicons
+                    name="chatbubble-outline"
+                    size={16}
+                    color={sortBy === 'recently_contacted' ? '#FFFFFF' : '#666'}
+                  />
+                  <Text style={[styles.sortText, sortBy === 'recently_contacted' && styles.sortTextActive]}>
+                    Recently Contacted
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.sortButton, sortBy === 'recently_added' && styles.sortButtonActive]}
+                  onPress={() => setSortBy('recently_added')}
+                >
+                  <Ionicons
+                    name="time-outline"
+                    size={16}
+                    color={sortBy === 'recently_added' ? '#FFFFFF' : '#666'}
+                  />
+                  <Text style={[styles.sortText, sortBy === 'recently_added' && styles.sortTextActive]}>
+                    Recently Added
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.filterContainer}>
+                <TouchableOpacity
+                  style={[styles.filterChip, !selectedTag && styles.filterChipActive]}
+                  onPress={() => setSelectedTag(null)}
+                >
+                  <Text style={[styles.filterText, !selectedTag && styles.filterTextActive]}>All</Text>
+                </TouchableOpacity>
+                {TAGS.map((tag) => (
+                  <TouchableOpacity
+                    key={tag}
+                    style={[styles.filterChip, selectedTag === tag && styles.filterChipActive]}
+                    onPress={() => setSelectedTag(selectedTag === tag ? null : tag)}
+                  >
+                    <Text style={[styles.filterText, selectedTag === tag && styles.filterTextActive]}>{tag}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
+
+          <FlatList
+            data={filteredCustomers}
+            renderItem={renderCustomer}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#25D366" />
+            }
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <Ionicons name="people-outline" size={64} color="#666" />
+                <Text style={styles.emptyText}>No customers yet</Text>
+                <Text style={styles.emptySubtext}>Add your first customer to get started</Text>
+              </View>
+            }
+          />
+
+          {/* WhatsApp-style Floating Action Button with Menu */}
+          <View style={[styles.fabContainer, { bottom: 20 }]}>
+            <TouchableOpacity
+              style={styles.fabSecondary}
+              onPress={() => {
+                setContactsModalVisible(true);
+                loadPhoneContacts();
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="people" size={18} color="#FFFFFF" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.fab}
+              onPress={() => setModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
 
       {renderModal(false)}
       {renderModal(true)}
+
+      {/* AI Draft Message Modal */}
+      <Modal
+        visible={showDraftModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setShowDraftModal(false);
+          setDraftMessage('');
+          setDraftReason('');
+        }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => {
+              setShowDraftModal(false);
+              setDraftMessage('');
+              setDraftReason('');
+            }}>
+              <Text style={styles.modalCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <View style={styles.aiModalTitleRow}>
+              <Ionicons name="sparkles" size={20} color="#FFD700" />
+              <Text style={styles.modalTitle}>AI Draft Message</Text>
+            </View>
+            <TouchableOpacity onPress={handleSendDraftMessage}>
+              <Text style={styles.modalSave}>Send</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.draftModalContent}>
+            {draftCustomer && (
+              <View style={styles.draftCustomerInfo}>
+                <View style={styles.customerAvatar}>
+                  <Text style={styles.avatarText}>{draftCustomer.name.charAt(0).toUpperCase()}</Text>
+                </View>
+                <View>
+                  <Text style={styles.draftCustomerName}>{draftCustomer.name}</Text>
+                  <Text style={styles.draftCustomerPhone}>{draftCustomer.phone_number}</Text>
+                </View>
+              </View>
+            )}
+
+            {loadingDraft ? (
+              <View style={styles.draftLoadingContainer}>
+                <ActivityIndicator size="large" color="#25D366" />
+                <Text style={styles.draftLoadingText}>AI is drafting your message...</Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.draftReasonContainer}>
+                  <Ionicons name="bulb" size={20} color="#FFD700" />
+                  <Text style={styles.draftReasonText}>{draftReason}</Text>
+                </View>
+
+                {/* Recent Messages Section */}
+                <View style={styles.recentMessagesSection}>
+                  <TouchableOpacity
+                    style={styles.recentMessagesHeader}
+                    onPress={() => setShowRecentMessages(!showRecentMessages)}
+                  >
+                    <View style={styles.recentMessagesTitleRow}>
+                      <Ionicons name="chatbubbles-outline" size={18} color="#4A90D9" />
+                      <Text style={styles.inputLabelRecent}>Recent Messages</Text>
+                    </View>
+                    <Ionicons
+                      name={showRecentMessages ? "chevron-up" : "chevron-down"}
+                      size={20}
+                      color="#666"
+                    />
+                  </TouchableOpacity>
+
+                  {showRecentMessages && (
+                    <View style={styles.messagesList}>
+                      {loadingMessages ? (
+                        <ActivityIndicator size="small" color="#4A90D9" />
+                      ) : recentMessages.length > 0 ? (
+                        recentMessages.map((msg) => (
+                          <View
+                            key={msg.id}
+                            style={[
+                              styles.messageBubble,
+                              msg.direction === 'incoming'
+                                ? styles.incomingBubble
+                                : styles.outgoingBubble,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.messageText,
+                                msg.direction === 'incoming'
+                                  ? styles.incomingText
+                                  : styles.outgoingText,
+                              ]}
+                            >
+                              {msg.content}
+                            </Text>
+                            <Text style={styles.messageTime}>
+                              {new Date(msg.created_at).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </Text>
+                          </View>
+                        ))
+                      ) : (
+                        <Text style={styles.noMessagesText}>No recent messages</Text>
+                      )}
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.draftMessageContainer}>
+                  <Text style={styles.draftLabel}>Message:</Text>
+                  <TextInput
+                    style={styles.draftMessageInput}
+                    value={draftMessage}
+                    onChangeText={setDraftMessage}
+                    multiline
+                    numberOfLines={8}
+                    placeholder="Edit the AI-generated message..."
+                    placeholderTextColor="#666"
+                  />
+                </View>
+
+                <View style={styles.regenerateSection}>
+                  <Text style={styles.draftLabel}>Give AI Direction (Optional):</Text>
+                  <TextInput
+                    style={styles.directionInput}
+                    value={customDirection}
+                    onChangeText={setCustomDirection}
+                    placeholder="e.g., Make it more casual, mention discount..."
+                    placeholderTextColor="#666"
+                    multiline
+                  />
+                  <TouchableOpacity
+                    style={styles.regenerateButton}
+                    onPress={handleRegenerateWithDirection}
+                  >
+                    <Ionicons name="refresh" size={20} color="#4A90D9" />
+                    <Text style={styles.regenerateButtonText}>
+                      {customDirection ? 'Regenerate with Direction' : 'Regenerate'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Product Picker Modal */}
+      <Modal
+        visible={showProductPicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => { setShowProductPicker(false); setProductPickerCustomer(null); }}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => { setShowProductPicker(false); setProductPickerCustomer(null); }}>
+              <Text style={styles.modalCancel}>Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Send Product</Text>
+            <View style={{ width: 50 }} />
+          </View>
+
+          {productPickerCustomer && (
+            <View style={styles.pickerCustomerBar}>
+              <Ionicons name="person-outline" size={16} color="#8899AA" />
+              <Text style={styles.pickerCustomerName}>To: {productPickerCustomer.name}</Text>
+              {selectedProductIds.length > 0 && (
+                <View style={styles.pickerSelectedBadge}>
+                  <Text style={styles.pickerSelectedText}>{selectedProductIds.length} selected</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {loadingProducts ? (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <ActivityIndicator size="large" color="#25D366" />
+              <Text style={{ color: '#8899AA', marginTop: 12 }}>Loading products...</Text>
+            </View>
+          ) : pickerProducts.length > 0 ? (
+            <>
+              <FlatList
+                data={pickerProducts}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={{ padding: 16, paddingBottom: selectedProductIds.length > 0 ? 80 : 16 }}
+                renderItem={({ item: product }) => {
+                  const imageUri = product.image_url
+                    ? (product.image_url.startsWith('http') ? product.image_url : `${process.env.EXPO_PUBLIC_BACKEND_URL}${product.image_url}`)
+                    : null;
+                  const isSending = sendingProduct === product.id;
+                  const isSelected = selectedProductIds.includes(product.id);
+
+                  return (
+                    <TouchableOpacity
+                      style={[styles.pickerProductCard, isSelected && styles.pickerProductCardSelected]}
+                      onPress={() => toggleProductSelection(product.id)}
+                      activeOpacity={0.7}
+                    >
+                      {/* Checkbox */}
+                      <View style={[styles.pickerCheckbox, isSelected && styles.pickerCheckboxSelected]}>
+                        {isSelected && <Ionicons name="checkmark" size={14} color="#FFF" />}
+                      </View>
+                      {imageUri ? (
+                        <Image source={{ uri: imageUri }} style={styles.pickerProductImage} resizeMode="cover" />
+                      ) : (
+                        <View style={[styles.pickerProductImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A2942' }]}>
+                          <Ionicons name="image-outline" size={24} color="#3A4A5C" />
+                        </View>
+                      )}
+                      <View style={styles.pickerProductInfo}>
+                        <Text style={styles.pickerProductName} numberOfLines={1}>{product.name}</Text>
+                        <Text style={styles.pickerProductPrice}>{currency} {product.price.toLocaleString()}</Text>
+                        <Text style={styles.pickerProductCategory}>{product.category || 'Other'}</Text>
+                      </View>
+                      <View style={styles.pickerActions}>
+                        <TouchableOpacity
+                          style={styles.pickerSendBtn}
+                          onPress={() => handleSendProduct(product)}
+                          disabled={isSending}
+                        >
+                          {isSending ? (
+                            <ActivityIndicator size="small" color="#FFF" />
+                          ) : (
+                            <>
+                              <Ionicons name="send" size={14} color="#FFF" />
+                              <Text style={styles.pickerSendText}>Send</Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.pickerOrderBtn}
+                          onPress={() => handleCreateOrderFromProduct(product)}
+                        >
+                          <Ionicons name="cart-outline" size={14} color="#25D366" />
+                          <Text style={styles.pickerOrderText}>Order</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+              {/* Send Catalog floating bar */}
+              {selectedProductIds.length > 0 && (
+                <View style={styles.catalogBar}>
+                  <TouchableOpacity style={styles.catalogClearBtn} onPress={() => setSelectedProductIds([])}>
+                    <Ionicons name="close-circle" size={20} color="#8899AA" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.catalogSendBtn, sendingCatalog && { opacity: 0.6 }]}
+                    onPress={handleSendCatalog}
+                    disabled={sendingCatalog}
+                  >
+                    {sendingCatalog ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : (
+                      <>
+                        <Ionicons name="list-outline" size={18} color="#FFF" />
+                        <Text style={styles.catalogSendText}>Send Catalog ({selectedProductIds.length})</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              )}
+            </>
+          ) : (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 }}>
+              <Ionicons name="storefront-outline" size={48} color="#3A4A5C" />
+              <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginTop: 12 }}>No products yet</Text>
+              <Text style={{ color: '#8899AA', fontSize: 13, marginTop: 6, textAlign: 'center' }}>Add products in your Product Catalog first</Text>
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
 
       {/* Import Contacts Modal */}
       <Modal
@@ -572,7 +2272,7 @@ export default function CustomersScreen() {
             }}>
               <Text style={styles.modalCancel}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.modalTitle}>Import Contacts</Text>
+            <Text style={styles.modalTitle}>{viewMode === 'suppliers' ? 'Import Suppliers' : 'Import Contacts'}</Text>
             <TouchableOpacity onPress={importSelectedContacts} disabled={importingContacts || selectedCount === 0}>
               <Text style={[styles.modalSave, (importingContacts || selectedCount === 0) && styles.modalSaveDisabled]}>
                 {importingContacts ? 'Importing...' : `Import (${selectedCount})`}
@@ -642,6 +2342,51 @@ export default function CustomersScreen() {
           )}
         </SafeAreaView>
       </Modal>
+      {/* AI Model Selector Modal */}
+      <Modal
+        visible={showModelSelector}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowModelSelector(false)}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', paddingTop: 100, alignItems: 'center' }}
+          activeOpacity={1}
+          onPress={() => setShowModelSelector(false)}
+        >
+          <View style={{ backgroundColor: '#1E1E1E', borderRadius: 12, padding: 8, width: 200, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }}>
+            {[
+              { id: 'standard', name: 'GPT-4o Mini' },
+              { id: 'premium', name: 'GPT-4o' },
+              { id: 'gpt-5', name: 'GPT-5' },
+              { id: 'sonnet-4.5', name: 'Claude Sonnet 4.5' },
+              { id: 'claude-4.7', name: 'Claude Opus 4.7' },
+              { id: 'grok', name: 'Grok 4.1' },
+              { id: 'deepseek', name: 'DeepSeek' },
+            ].map((model) => (
+              <TouchableOpacity
+                key={model.id}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  paddingVertical: 12,
+                  paddingHorizontal: 16,
+                  backgroundColor: aiModel === model.id ? 'rgba(37,211,102,0.1)' : 'transparent',
+                  borderRadius: 8,
+                }}
+                onPress={() => handleModelSelect(model.id)}
+              >
+                <Text style={{ color: aiModel === model.id ? '#25D366' : '#FFFFFF', fontSize: 14, fontWeight: aiModel === model.id ? '600' : '400', flex: 1 }}>
+                  {model.name}
+                </Text>
+                {aiModel === model.id && (
+                  <Ionicons name="checkmark" size={16} color="#25D366" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -660,11 +2405,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
@@ -676,148 +2421,139 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1A2942',
-    marginHorizontal: 20,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    marginBottom: 12,
+    marginHorizontal: 16,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
   },
   searchIcon: {
-    marginRight: 12,
+    marginRight: 8,
   },
   searchInput: {
     flex: 1,
-    height: 48,
-    fontSize: 16,
+    height: 38,
+    fontSize: 14,
+    color: '#FFFFFF',
+  },
+  sortContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    gap: 6,
+  },
+  sortButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A2942',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 4,
+  },
+  sortButtonActive: {
+    backgroundColor: '#25D366',
+  },
+  sortText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#666',
+  },
+  sortTextActive: {
     color: '#FFFFFF',
   },
   filterContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    marginBottom: 10,
   },
   filterChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
     backgroundColor: '#1A2942',
-    borderRadius: 20,
-    marginRight: 8,
+    borderRadius: 14,
+    marginRight: 6,
   },
   filterChipActive: {
     backgroundColor: '#25D366',
   },
   filterText: {
     color: '#666',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
   },
   filterTextActive: {
     color: '#FFFFFF',
   },
   listContent: {
-    paddingHorizontal: 20,
     paddingBottom: 150,
   },
-  customerCard: {
+  chatRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1A2942',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   customerAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 14,
+  },
+  avatarImage: {
+    backgroundColor: '#1A2332',
   },
   avatarText: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#FFFFFF',
   },
-  customerInfo: {
+  chatRowContent: {
     flex: 1,
   },
-  customerRight: {
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    marginLeft: 8,
-    maxWidth: 120,
-  },
-  notesPreview: {
+  chatRowTop: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#0D2137',
-    borderRadius: 8,
-    padding: 8,
-    marginBottom: 8,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
   },
-  notesPreviewText: {
-    fontSize: 11,
-    color: '#25D366',
-    marginLeft: 4,
-    flex: 1,
-    lineHeight: 14,
-  },
-  customerName: {
+  chatRowName: {
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
-    marginBottom: 2,
+    flex: 1,
+    marginRight: 8,
   },
-  customerPhone: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 4,
+  chatRowTime: {
+    fontSize: 12,
+    color: '#8B9DC3',
   },
-  tagsContainer: {
-    flexDirection: 'row',
-  },
-  tag: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    backgroundColor: '#25D366',
-    borderRadius: 10,
-    marginRight: 6,
-  },
-  tagVip: {
-    backgroundColor: '#FFD700',
-  },
-  tagReturning: {
-    backgroundColor: '#4A90D9',
-  },
-  tagText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  tagCount: {
-    backgroundColor: '#1A2942',
-    borderWidth: 1,
-    borderColor: '#4A90D9',
-  },
-  tagMoney: {
-    backgroundColor: '#1A2942',
-    borderWidth: 1,
-    borderColor: '#25D366',
-  },
-  tagMoneyText: {
-    color: '#25D366',
-  },
-  actionButtons: {
+  chatRowBottom: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
   },
-  iconButton: {
-    padding: 8,
+  chatRowMessage: {
+    fontSize: 14,
+    color: '#8B9DC3',
+    flex: 1,
+    marginRight: 8,
   },
-  deleteButton: {
-    padding: 8,
+  chatRowBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: 4,
+  },
+  chatRowBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   emptyContainer: {
     alignItems: 'center',
@@ -877,6 +2613,11 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: 8,
   },
+  phoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   formInput: {
     backgroundColor: '#1A2942',
     borderRadius: 12,
@@ -894,6 +2635,8 @@ const styles = StyleSheet.create({
   },
   tagsSelector: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   tagOption: {
     paddingHorizontal: 20,
@@ -905,6 +2648,40 @@ const styles = StyleSheet.create({
   tagOptionSelected: {
     backgroundColor: '#25D366',
   },
+  addTagButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(37,211,102,0.1)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#25D366',
+    borderStyle: 'dashed',
+  },
+  addTagButtonText: {
+    fontSize: 14,
+    color: '#25D366',
+    fontWeight: '500',
+  },
+  addTagInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#25D366',
+    gap: 6,
+  },
+  addTagInput: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    minWidth: 80,
+    paddingVertical: 0,
+  },
   tagOptionText: {
     fontSize: 14,
     color: '#666',
@@ -914,42 +2691,142 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   fab: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: '#25D366',
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 8,
+    elevation: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
   },
   fabContainer: {
     position: 'absolute',
-    right: 24,
+    right: 16,
     alignItems: 'flex-end',
-    gap: 12,
+    gap: 10,
   },
   fabSecondary: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: '#4A90D9',
-    borderRadius: 25,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
     elevation: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
-    shadowRadius: 6,
+    shadowRadius: 4,
   },
   fabSecondaryText: {
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
     marginLeft: 8,
+  },
+  regenerateSection: {
+    marginTop: 8,
+  },
+  directionInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 14,
+    color: '#FFFFFF',
+    minHeight: 60,
+    textAlignVertical: 'top',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#4A90D9',
+  },
+  aiModalTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  draftModalContent: {
+    flex: 1,
+    padding: 20,
+  },
+  draftCustomerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+  },
+  draftCustomerName: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginLeft: 12,
+  },
+  draftCustomerPhone: {
+    fontSize: 14,
+    color: '#666',
+    marginLeft: 12,
+  },
+  draftLoadingContainer: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  draftLoadingText: {
+    fontSize: 16,
+    color: '#666',
+    marginTop: 16,
+  },
+  draftReasonContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#1A2942',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+  },
+  draftReasonText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#FFD700',
+    marginLeft: 12,
+    lineHeight: 20,
+  },
+  draftMessageContainer: {
+    marginBottom: 20,
+  },
+  draftLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  draftMessageInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    color: '#FFFFFF',
+    minHeight: 150,
+    textAlignVertical: 'top',
+  },
+  regenerateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A2942',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+  },
+  regenerateButtonText: {
+    color: '#4A90D9',
+    fontSize: 16,
+    fontWeight: '600',
   },
   contactsSearchContainer: {
     flexDirection: 'row',
@@ -996,18 +2873,800 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 8,
   },
+  recentMessagesSection: {
+    marginBottom: 20,
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  recentMessagesHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+  },
+  recentMessagesTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inputLabelRecent: {
+    fontSize: 14,
+    color: '#888',
+    fontWeight: '600',
+  },
+  messagesList: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 8,
+  },
+  messageBubble: {
+    padding: 10,
+    borderRadius: 12,
+    maxWidth: '85%',
+  },
+  incomingBubble: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#0A1628',
+    borderBottomLeftRadius: 2,
+  },
+  outgoingBubble: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#25D366',
+    borderBottomRightRadius: 2,
+  },
+  messageText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  incomingText: {
+    color: '#FFFFFF',
+  },
+  outgoingText: {
+    color: '#FFFFFF',
+  },
+  messageTime: {
+    fontSize: 10,
+    color: '#666',
+    marginTop: 4,
+    alignSelf: 'flex-end',
+  },
+  noMessagesText: {
+    color: '#666',
+    fontSize: 14,
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  // Product Picker Styles
+  pickerCustomerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#1A2942',
+    borderBottomWidth: 1,
+    borderBottomColor: '#2A3A52',
+  },
+  pickerCustomerName: {
+    color: '#CCD6E0',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pickerProductCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 10,
+    gap: 12,
+  },
+  pickerProductImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: '#0D1B2A',
+  },
+  pickerProductInfo: {
+    flex: 1,
+  },
+  pickerProductName: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pickerProductPrice: {
+    color: '#25D366',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  pickerProductCategory: {
+    color: '#8899AA',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  pickerActions: {
+    gap: 6,
+  },
+  pickerSendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#25D366',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    gap: 4,
+  },
+  pickerSendText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  pickerOrderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D1B2A',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#25D366',
+  },
+  pickerOrderText: {
+    color: '#25D366',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  pickerProductCardSelected: {
+    borderWidth: 1.5,
+    borderColor: '#25D366',
+  },
+  pickerCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#3A4A5C',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pickerCheckboxSelected: {
+    backgroundColor: '#25D366',
+    borderColor: '#25D366',
+  },
+  pickerSelectedBadge: {
+    marginLeft: 'auto',
+    backgroundColor: '#25D366',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  pickerSelectedText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  catalogBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0D1B2A',
+    borderTopWidth: 1,
+    borderTopColor: '#2A3A52',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  catalogClearBtn: {
+    padding: 4,
+  },
+  catalogSendBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#25D366',
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 8,
+  },
+  catalogSendText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  // Suppliers mode styles
+  viewToggle: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    padding: 3,
+  },
+  toggleButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 4,
+  },
+  toggleButtonActive: {
+    backgroundColor: '#25D366',
+  },
+  toggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+  },
+  toggleTextActive: {
+    color: '#FFFFFF',
+  },
+  // Supplier Stats Bar
+  supplierStatsBar: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+  },
+  supplierStatItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  supplierStatValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  supplierStatLabel: {
+    fontSize: 10,
+    color: '#8899AA',
+    marginTop: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  supplierStatDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: '#2A3F5F',
+  },
+  // Supplier Card
+  supplierCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1A2942',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 10,
+    padding: 12,
+  },
+  supplierCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  supplierAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  supplierCardInfo: {
+    flex: 1,
+  },
+  supplierCardName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 1,
+  },
+  supplierCardPhone: {
+    fontSize: 12,
+    color: '#8899AA',
+    marginBottom: 4,
+  },
+  supplierCardMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  supplierCategoryBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  supplierCategoryText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  supplierRatingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 1,
+  },
+  supplierWhatsappBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(37, 211, 102, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Supplier Detail Modal
+  modalBody: {
+    flex: 1,
+    padding: 20,
+  },
+  supplierDetailHeader: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  supplierDetailAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  supplierDetailAvatarText: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  supplierDetailName: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  supplierDetailPhone: {
+    fontSize: 14,
+    color: '#8899AA',
+  },
+  supplierDetailSection: {
+    marginBottom: 20,
+  },
+  supplierDetailLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8899AA',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  supplierDetailInput: {
+    backgroundColor: '#1A2942',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#FFFFFF',
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#2A3F5F',
+  },
+  supplierCatChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1A2942',
+    borderWidth: 1,
+    borderColor: '#2A3F5F',
+    gap: 4,
+  },
+  supplierCatChipActive: {
+    backgroundColor: '#25D366',
+    borderColor: '#25D366',
+  },
+  supplierCatChipText: {
+    fontSize: 12,
+    color: '#888',
+    fontWeight: '500',
+  },
+  supplierCatChipTextActive: {
+    color: '#FFFFFF',
+  },
+  ratingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  ratingLabel: {
+    color: '#FFD700',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  supplierActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#25D366',
+    marginBottom: 10,
+  },
+  supplierActionBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#25D366',
+  },
+  // AI Pending Approvals
+  pendingBanner: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    padding: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FFD700',
+  },
+  pendingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  pendingTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFD700',
+  },
+  pendingCard: {
+    width: 160,
+    backgroundColor: '#0F1D32',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#2A3F5F',
+  },
+  pendingCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  pendingTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    gap: 3,
+  },
+  pendingTypeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  pendingConfidence: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#8899AA',
+  },
+  pendingName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  pendingReason: {
+    fontSize: 10,
+    color: '#8899AA',
+    marginBottom: 8,
+    lineHeight: 14,
+  },
+  pendingActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pendingConfirmBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#25D366',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingDismissBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#FF444420',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingSwapBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: '#2A3F5F',
+  },
+  pendingSwapText: {
+    fontSize: 9,
+    color: '#8899AA',
+    fontWeight: '500',
+  },
+  scanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingVertical: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFD70040',
+  },
+  scanButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFD700',
+  },
+  // Dashboard Summary Card
+  dashboardCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginTop: 6,
+    marginBottom: 8,
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    padding: 8,
+  },
+  dashboardItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dashboardIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dashboardInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  dashboardValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  dashboardLabel: {
+    fontSize: 10,
+    color: '#8B9DC3',
+    marginTop: 1,
+  },
+  dashboardDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    marginHorizontal: 6,
+  },
+  // Pipeline Stage Chips
+  stageChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+  },
+  stageChipActive: {
+    backgroundColor: '#25D366',
+  },
+  stageChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8B9DC3',
+  },
+  stageChipTextActive: {
+    color: '#FFFFFF',
+  },
+  // Assignment Filter Chips
+  assignmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+  },
+  assignmentChipActive: {
+    backgroundColor: '#4A90D9',
+  },
+  assignmentChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8899AA',
+  },
+  assignmentChipTextActive: {
+    color: '#FFFFFF',
+  },
+  // Unread Badge
+  unreadBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: '#25D366',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 5,
+    borderWidth: 2,
+    borderColor: '#0A1628',
+  },
+  unreadBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  // Assignment Badges
+  assignedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#4A90D920',
+    borderRadius: 10,
+  },
+  assignedBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#4A90D9',
+  },
+  unassignedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#25D36620',
+    borderRadius: 10,
+  },
+  unassignedBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#25D366',
+  },
+  contactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
+    backgroundColor: '#0A1628',
+  },
+  contactAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#1A2942',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  contactAvatarText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
   contactInfo: {
     flex: 1,
-    marginLeft: 12,
   },
   contactName: {
-    fontSize: 16,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  contactPhone: {
+    fontSize: 13,
+    color: '#8899AA',
+  },
+  contactBadgeCol: {
+    alignItems: 'flex-end',
+  },
+  contactBadgeCustomer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#25D36620',
+    borderRadius: 10,
+  },
+  contactBadgeCustomerText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#25D366',
+  },
+  contactBadgeSupplier: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#4A90D920',
+    borderRadius: 10,
+  },
+  contactBadgeSupplierText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#4A90D9',
+  },
+  contactAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#25D366',
+    borderRadius: 10,
+  },
+  contactAddBtnText: {
+    fontSize: 11,
     fontWeight: '600',
     color: '#FFFFFF',
   },
-  contactPhone: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 2,
+  filterToggleBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginBottom: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: '#111D30',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1A2942',
+  },
+  filterToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8899AA',
+  },
+  filterActiveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#25D366',
+  },
+  filterPanel: {
+    backgroundColor: '#0D1929',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
+    paddingBottom: 4,
   },
 });

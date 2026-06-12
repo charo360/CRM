@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  resolveUserId,
-  detectCalendarProvider,
-  nangoProxy,
-} from "@/lib/nango-proxy";
+import { resolveUserId, nangoProxy } from "@/lib/nango-proxy";
 import { buildInternalCrmApiUrl } from "@/lib/server-crm-api";
 
 function err(msg: string, status = 400) {
@@ -49,16 +45,6 @@ async function detectCalendarConnection(
     if (outlookConnected) {
       return { provider: "microsoft", via: "composio", integrationKey: "outlook", connectionId: userId };
     }
-  }
-
-  const nango = await detectCalendarProvider(userId);
-  if (nango?.provider) {
-    return {
-      provider: nango.provider,
-      via: "nango",
-      integrationKey: nango.integrationKey,
-      connectionId: nango.connectionId,
-    };
   }
 
   return null;

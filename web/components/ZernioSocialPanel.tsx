@@ -16,6 +16,8 @@ interface PlatformDef {
   border: string;
   ring: string;
   logo: React.ReactNode;
+  /** Shown on Integrations only (e.g. LinkedIn Premium / Unipile). */
+  integrationsOnly?: boolean;
 }
 
 export const SOCIAL_PLATFORMS: PlatformDef[] = [
@@ -69,6 +71,21 @@ export const SOCIAL_PLATFORMS: PlatformDef[] = [
     text: "text-[#0A66C2]",
     border: "border-[#0A66C2]/30",
     ring: "ring-[#0A66C2]/40",
+    logo: (
+      <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-[#0A66C2]">
+        <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
+      </svg>
+    ),
+  },
+  {
+    id: "linkedin_premium",
+    label: "LinkedIn Premium",
+    guideUrl: "https://docs.zernio.com/guides/linkedin",
+    integrationsOnly: true,
+    bg: "bg-amber-50",
+    text: "text-amber-800",
+    border: "border-amber-300",
+    ring: "ring-amber-400",
     logo: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-[#0A66C2]">
         <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
@@ -231,6 +248,39 @@ export const SOCIAL_PLATFORMS: PlatformDef[] = [
   },
 ];
 
+/** Platforms connectable via Zernio OAuth (excludes Integrations-only tiles). */
+export const ZERNIO_SOCIAL_PLATFORMS = SOCIAL_PLATFORMS.filter((p) => !p.integrationsOnly);
+
+const platformById = Object.fromEntries(SOCIAL_PLATFORMS.map((p) => [p.id, p]));
+
+/** Not shown on Integrations — low relevance for target customers. */
+export const INTEGRATIONS_SOCIAL_HIDDEN_IDS = [
+  "threads",
+  "bluesky",
+  "discord",
+  "snapchat",
+] as const;
+
+/** Display order on Integrations (everything except hidden). */
+export const INTEGRATIONS_SOCIAL_ORDER = [
+  "facebook",
+  "instagram",
+  "googlebusiness",
+  "linkedin",
+  "linkedin_premium",
+  "youtube",
+  "tiktok",
+  "reddit",
+  "twitter",
+  "pinterest",
+  "telegram",
+  "whatsapp",
+] as const;
+
+export const INTEGRATIONS_SOCIAL_PLATFORMS = INTEGRATIONS_SOCIAL_ORDER.map(
+  (id) => platformById[id],
+).filter(Boolean);
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 interface ZernioAccount {
@@ -276,7 +326,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Pro
   }, [zernioConnect, refresh]);
 
   const connectedPlatforms = new Set(accounts.map((a) => a.platform.toLowerCase()));
-  const connectedCount = SOCIAL_PLATFORMS.filter((p) => connectedPlatforms.has(p.id)).length;
+  const connectedCount = ZERNIO_SOCIAL_PLATFORMS.filter((p) => connectedPlatforms.has(p.id)).length;
 
   const contextLabel =
     context === "google"
@@ -298,10 +348,10 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Pro
       return (
         <div className="space-y-3 py-1">
           <p className="text-center text-xs text-slate-400">
-            Not yet activated — all {SOCIAL_PLATFORMS.length} platforms will be available once enabled.
+            Not yet activated — all {ZERNIO_SOCIAL_PLATFORMS.length} platforms will be available once enabled.
           </p>
           <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 gap-1.5">
-            {SOCIAL_PLATFORMS.map((p) => (
+            {ZERNIO_SOCIAL_PLATFORMS.map((p) => (
               <div key={p.id} className="flex flex-col items-center gap-1 rounded-lg p-2 border border-slate-200 bg-slate-50 opacity-50 grayscale">
                 {p.logo}
                 <span className="text-[9px] font-medium text-slate-500 text-center leading-tight truncate w-full text-center">{p.label}</span>
@@ -328,7 +378,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Pro
         </div>
         <div className="p-5 space-y-4">
           <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-8 gap-1.5">
-            {SOCIAL_PLATFORMS.map((p) => (
+            {ZERNIO_SOCIAL_PLATFORMS.map((p) => (
               <div key={p.id} className="flex flex-col items-center gap-1 rounded-lg p-2 border border-slate-200 bg-slate-50 opacity-50 grayscale">
                 {p.logo}
                 <span className="text-[9px] font-medium text-slate-500 text-center leading-tight truncate w-full text-center">{p.label}</span>
@@ -350,7 +400,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Pro
               apiConnected ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200"
             }`}>
               <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${apiConnected ? "bg-emerald-500" : "bg-slate-400"}`} />
-              {apiConnected ? `${connectedCount} / ${SOCIAL_PLATFORMS.length} connected` : "0 / " + SOCIAL_PLATFORMS.length + " connected"}
+              {apiConnected ? `${connectedCount} / ${ZERNIO_SOCIAL_PLATFORMS.length} connected` : "0 / " + ZERNIO_SOCIAL_PLATFORMS.length + " connected"}
             </span>
           )}
           <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
@@ -365,7 +415,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Pro
         </div>
         {/* Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {SOCIAL_PLATFORMS.map((p) => {
+          {ZERNIO_SOCIAL_PLATFORMS.map((p) => {
             const isConnected = connectedPlatforms.has(p.id);
             const account = accounts.find((a) => a.platform.toLowerCase() === p.id);
             return (
@@ -418,7 +468,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Pro
               apiConnected ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${apiConnected ? "bg-emerald-500" : "bg-slate-400"}`} />
-              {apiConnected ? `${connectedCount} / ${SOCIAL_PLATFORMS.length} connected` : "API key needed"}
+              {apiConnected ? `${connectedCount} / ${ZERNIO_SOCIAL_PLATFORMS.length} connected` : "API key needed"}
             </span>
           )}
           <button type="button" onClick={() => void load(true)} disabled={refreshing}
@@ -431,7 +481,7 @@ export function ZernioSocialPanel({ context = "meta", hideBranding = true }: Pro
       {/* Platform grid */}
       <div className="p-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {SOCIAL_PLATFORMS.map((p) => {
+          {ZERNIO_SOCIAL_PLATFORMS.map((p) => {
             const isConnected = connectedPlatforms.has(p.id);
             const account = accounts.find((a) => a.platform.toLowerCase() === p.id);
 

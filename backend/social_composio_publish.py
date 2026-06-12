@@ -1,9 +1,10 @@
 """
-Publish CRM scheduled posts to Facebook, Instagram, and YouTube via Composio.
+Publish CRM scheduled posts to Facebook, Instagram, YouTube, LinkedIn, X, and TikTok via Composio.
 
 Uses the same OAuth connection flow as Gmail/Google Calendar (Composio managed auth).
 Facebook requires a selected Page ID; Instagram requires a linked Business account.
 YouTube requires a video file upload.
+LinkedIn posts as the connected member (or a saved organization URN).
 """
 from __future__ import annotations
 
@@ -21,9 +22,17 @@ from composio_service import (
     ACTION_FB_LIST_PAGES,
     ACTION_IG_CREATE_MEDIA,
     ACTION_IG_PUBLISH_MEDIA,
+    ACTION_LI_CREATE_POST,
+    ACTION_LI_GET_COMPANY_INFO,
+    ACTION_LI_GET_MY_INFO,
+    ACTION_TIKTOK_PUBLISH_VIDEO,
+    ACTION_TWITTER_CREATE_POST,
     ACTION_YT_MULTIPART_UPLOAD,
     TOOLKIT_FACEBOOK,
     TOOLKIT_INSTAGRAM,
+    TOOLKIT_LINKEDIN,
+    TOOLKIT_TIKTOK,
+    TOOLKIT_TWITTER,
     TOOLKIT_YOUTUBE,
     execute_action,
     get_connection_status,
@@ -34,7 +43,9 @@ from social_publish_service import resolve_post_media
 
 logger = logging.getLogger(__name__)
 
-COMPOSIO_CHANNELS = frozenset({"facebook", "instagram", "youtube"})
+COMPOSIO_CHANNELS = frozenset({
+    "facebook", "instagram", "youtube", "linkedin", "twitter", "x", "tiktok",
+})
 
 
 def _extract_action_data(result: Dict[str, Any]) -> Any:
@@ -42,7 +53,7 @@ def _extract_action_data(result: Dict[str, Any]) -> Any:
         return None
     data = result.get("data")
     if isinstance(data, dict):
-        for key in ("data", "response", "response_data", "responseData", "result", "body"):
+        for key in ("data", "response", "response_data", "responseData", "result", "body", "response_dict"):
             inner = data.get(key)
             if inner is not None:
                 return inner
@@ -98,6 +109,145 @@ async def get_social_settings(db, tenant_id: str) -> Dict[str, Any]:
     if not isinstance(settings, dict):
         settings = {}
     return dict(settings)
+
+
+async def save_linkedin_author(
+    db,
+    user_oid: Any,
+    *,
+    author_urn: str,
+    author_name: str = "",
+    provider: str = "composio",
+    org_id: str = "",
+) -> None:
+    await db.users.update_one(
+        {"_id": user_oid},
+        {
+            "$set": {
+                "composio_social.linkedin_author_urn": author_urn,
+                "composio_social.linkedin_author_name": author_name or author_urn,
+                "composio_social.linkedin_author_provider": provider or "composio",
+                "composio_social.linkedin_author_org_id": org_id or "",
+            }
+        },
+    )
+
+
+async def save_linkedin_authors_cache(
+    db,
+    user_oid: Any,
+    authors: List[Dict[str, Any]],
+) -> None:
+    if not authors:
+        return
+    await db.users.update_one(
+        {"_id": user_oid},
+        {"$set": {"composio_social.linkedin_authors_cache": authors}},
+    )
+
+
+def linkedin_authors_from_user(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Read cached LinkedIn posting identities from the user document (no Composio call)."""
+    social = user.get("composio_social") if isinstance(user, dict) else None
+    if not isinstance(social, dict):
+        return []
+    cached = social.get("linkedin_authors_cache")
+    if isinstance(cached, list) and cached:
+        return [a for a in cached if isinstance(a, dict) and a.get("urn")]
+    urn = social.get("linkedin_author_urn")
+    if urn:
+        return [{
+            "urn": str(urn),
+            "name": str(social.get("linkedin_author_name") or urn),
+            "type": "person" if ":person:" in str(urn) else "organization",
+        }]
+    return []
+
+
+def _linkedin_org_urn(raw: Any) -> Optional[str]:
+    if isinstance(raw, str) and raw.strip().startswith("urn:li:organization:"):
+        return raw.strip()
+    if isinstance(raw, (int, str)) and str(raw).strip().isdigit():
+        return f"urn:li:organization:{str(raw).strip()}"
+    if isinstance(raw, dict):
+        oid = raw.get("id") or raw.get("organization") or raw.get("organizationalTarget")
+        if isinstance(oid, str) and oid.startswith("urn:li:organization:"):
+            return oid
+        if isinstance(oid, dict):
+            inner = oid.get("id") or oid.get("organization")
+            if inner:
+                return _linkedin_org_urn(inner)
+        if oid is not None:
+            return _linkedin_org_urn(oid)
+    return None
+
+
+async def list_linkedin_authors(
+    user_id: str,
+    *,
+    db=None,
+    user_oid: Any = None,
+) -> Dict[str, Any]:
+    """Personal profile + managed company pages for LinkedIn posting."""
+    if not is_configured():
+        return {"error": "COMPOSIO_API_KEY not configured on the server.", "authors": []}
+
+    authors: List[Dict[str, Any]] = []
+    me_err: Optional[str] = None
+
+    # Personal profile via Composio (member posting, urn:li:person:*).
+    li_status = await get_connection_status(user_id, TOOLKIT_LINKEDIN)
+    if li_status.get("connected"):
+        conn_id = li_status.get("connection_id")
+        me = await execute_action(
+            user_id,
+            ACTION_LI_GET_MY_INFO,
+            {},
+            connected_account_id=conn_id,
+            timeout=20.0,
+        )
+        me_data = _extract_action_data(me)
+        if me.get("error"):
+            me_err = str(me["error"])
+        else:
+            person_urn = _deep_linkedin_person_urn(me_data)
+            if person_urn:
+                authors.append({
+                    "urn": person_urn,
+                    "name": _linkedin_profile_name(me_data if isinstance(me_data, dict) else {}),
+                    "type": "person",
+                    "provider": "composio",
+                })
+
+    # Company/organization pages via Unipile. Composio's LinkedIn connection lacks
+    # org scopes (and its company action 426s on a retired API version), so Unipile —
+    # which works through the member's LinkedIn session — is the source for pages.
+    if db is not None and user_oid is not None:
+        try:
+            from unipile_service import (
+                is_configured as unipile_configured,
+                list_linkedin_company_pages,
+            )
+            if unipile_configured():
+                business_id = str(user_id)
+                udoc = await db.users.find_one({"_id": user_oid}, {"business_id": 1})
+                if udoc and udoc.get("business_id"):
+                    business_id = str(udoc["business_id"])
+                for page in await list_linkedin_company_pages(db, user_oid, business_id):
+                    if not any(a.get("urn") == page.get("urn") for a in authors):
+                        authors.append(page)
+        except Exception as exc:
+            logger.debug("[linkedin] unipile company pages skipped: %s", exc)
+
+    if not authors:
+        return {
+            "error": me_err or "Could not load LinkedIn posting identities. Try disconnecting and reconnecting LinkedIn.",
+            "authors": [],
+        }
+
+    if db is not None and user_oid is not None:
+        await save_linkedin_authors_cache(db, user_oid, authors)
+    return {"authors": authors}
 
 
 async def save_facebook_page(
@@ -189,6 +339,77 @@ async def resolve_instagram_user_id(
     except Exception as e:
         logger.warning(f"[social-publish] Failed to resolve Instagram ID directly: {e}")
     return None
+
+
+async def get_instagram_profile(
+    db,
+    user_id: str,
+    settings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fetch the connected Instagram professional account's public profile.
+
+    Returns {username, name, profile_picture_url, followers_count, account_id}.
+    Username/name are cached to the user doc (they don't expire); the profile
+    picture URL is signed by Instagram and short-lived, so it is fetched live.
+    """
+    profile: Dict[str, Any] = {
+        "username": None,
+        "name": None,
+        "profile_picture_url": None,
+        "followers_count": None,
+        "account_id": None,
+    }
+    settings = settings or await get_social_settings(db, user_id)
+    cached = settings.get("instagram_profile") if isinstance(settings, dict) else None
+    if isinstance(cached, dict):
+        profile["username"] = cached.get("username") or None
+        profile["name"] = cached.get("name") or None
+
+    try:
+        ig_status = await get_connection_status(user_id, TOOLKIT_INSTAGRAM)
+        if not ig_status.get("connected"):
+            return profile
+        res = await execute_action(user_id, "INSTAGRAM_GET_USER_INFO", {})
+        data = _extract_action_data(res)
+        if not isinstance(data, dict):
+            return profile
+        username = (data.get("username") or "").strip() or profile["username"]
+        name = (data.get("name") or "").strip() or profile["name"]
+        pic = (
+            data.get("profile_picture_url")
+            or data.get("profile_pic")
+            or data.get("profile_picture")
+            or ""
+        ).strip() or None
+        followers = data.get("followers_count")
+        account_id = (data.get("id") or "").strip() or None
+        profile.update(
+            {
+                "username": username or None,
+                "name": name or None,
+                "profile_picture_url": pic,
+                "followers_count": followers,
+                "account_id": account_id,
+            }
+        )
+        # Persist the non-expiring fields for instant display on next load.
+        if username or name:
+            user_doc = await _resolve_user_doc(db, user_id)
+            if user_doc:
+                await db.users.update_one(
+                    {"_id": user_doc["_id"]},
+                    {
+                        "$set": {
+                            "composio_social.instagram_profile": {
+                                "username": username or None,
+                                "name": name or None,
+                            }
+                        }
+                    },
+                )
+    except Exception as e:
+        logger.warning("[social-publish] Instagram profile fetch failed: %s", e)
+    return profile
 
 
 def _build_message(post: Dict[str, Any]) -> str:
@@ -399,6 +620,227 @@ async def _download_public_file(url: str, *, max_bytes: int = 500 * 1024 * 1024)
         return None, "video.mp4", "video/mp4"
 
 
+def _linkedin_person_urn(raw: Any) -> Optional[str]:
+    if isinstance(raw, str):
+        s = raw.strip()
+        if s.startswith("urn:li:person:"):
+            return s
+        return None
+    if not isinstance(raw, dict):
+        return None
+    for key in ("urn", "id", "sub", "person_id", "personId", "member_id", "memberId"):
+        val = raw.get(key)
+        if val is None:
+            continue
+        s = str(val).strip()
+        if not s:
+            continue
+        if s.startswith("urn:li:"):
+            return s
+        return f"urn:li:person:{s}"
+    return None
+
+
+def _deep_linkedin_person_urn(raw: Any, depth: int = 0) -> Optional[str]:
+    if depth > 10:
+        return None
+    direct = _linkedin_person_urn(raw)
+    if direct:
+        return direct
+    if isinstance(raw, dict):
+        for val in raw.values():
+            found = _deep_linkedin_person_urn(val, depth + 1)
+            if found:
+                return found
+    elif isinstance(raw, list):
+        for item in raw:
+            found = _deep_linkedin_person_urn(item, depth + 1)
+            if found:
+                return found
+    return None
+
+
+def _linkedin_profile_name(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return "My profile"
+    for key in ("data", "response", "profile", "member"):
+        inner = raw.get(key)
+        if isinstance(inner, dict):
+            raw = inner
+            break
+    first = raw.get("localizedFirstName") or raw.get("firstName") or ""
+    last = raw.get("localizedLastName") or raw.get("lastName") or ""
+    name = f"{first} {last}".strip()
+    return name or str(raw.get("name") or raw.get("vanityName") or "My profile")
+
+
+async def _resolve_linkedin_author(
+    db,
+    user_id: str,
+    settings: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (author_urn, error). Uses saved org URN or falls back to member profile."""
+    settings = settings or await get_social_settings(db, user_id)
+    saved = (settings.get("linkedin_author_urn") or "").strip()
+    if saved.startswith("urn:li:"):
+        return saved, None
+
+    result = await execute_action(user_id, ACTION_LI_GET_MY_INFO, {})
+    if result.get("error"):
+        return None, result["error"]
+
+    data = _extract_action_data(result)
+    if isinstance(data, dict):
+        for key in ("data", "response", "profile", "member"):
+            inner = data.get(key)
+            if isinstance(inner, dict):
+                urn = _linkedin_person_urn(inner)
+                if urn:
+                    user_doc = await _resolve_user_doc(db, user_id)
+                    if user_doc:
+                        await db.users.update_one(
+                            {"_id": user_doc["_id"]},
+                            {"$set": {"composio_social.linkedin_author_urn": urn}},
+                        )
+                    return urn, None
+        urn = _linkedin_person_urn(data)
+        if urn:
+            user_doc = await _resolve_user_doc(db, user_id)
+            if user_doc:
+                await db.users.update_one(
+                    {"_id": user_doc["_id"]},
+                    {"$set": {"composio_social.linkedin_author_urn": urn}},
+                )
+            return urn, None
+
+    return None, "Could not resolve LinkedIn author URN. Reconnect LinkedIn in Integrations."
+
+
+async def _publish_linkedin(
+    user_id: str,
+    post: Dict[str, Any],
+    *,
+    author_urn: str,
+    media_items: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    commentary = _build_message(post)
+    media_items = media_items or []
+    media_url, media_type = _first_media(post, media_items)
+
+    if not commentary and not media_url:
+        return {"success": False, "error": "LinkedIn post requires text or an image."}
+
+    # LinkedIn commentary max ~3000 chars
+    if commentary and len(commentary) > 3000:
+        commentary = commentary[:2997] + "..."
+
+    params: Dict[str, Any] = {
+        "author": author_urn,
+        "commentary": commentary or " ",
+        "visibility": "PUBLIC",
+        "lifecycleState": "PUBLISHED",
+    }
+
+    if media_url and media_type == "image":
+        params["images"] = [media_url]
+
+    result = await execute_action(user_id, ACTION_LI_CREATE_POST, params)
+    if result.get("error"):
+        return {"success": False, "error": result["error"]}
+
+    data = _extract_action_data(result)
+    post_id = None
+    if isinstance(data, dict):
+        post_id = (
+            data.get("id")
+            or data.get("post_id")
+            or data.get("postId")
+            or data.get("x_restli_id")
+            or data.get("urn")
+        )
+    elif data is not None:
+        post_id = str(data)
+
+    return {
+        "success": True,
+        "post_id": str(post_id) if post_id else None,
+        "crm_status": "published",
+    }
+
+
+async def _publish_twitter(
+    user_id: str,
+    post: Dict[str, Any],
+) -> Dict[str, Any]:
+    text = _build_message(post)
+    if not text:
+        return {"success": False, "error": "X post requires text content."}
+    if len(text) > 280:
+        text = text[:277] + "..."
+
+    result = await execute_action(user_id, ACTION_TWITTER_CREATE_POST, {"text": text})
+    if result.get("error"):
+        return {"success": False, "error": result["error"]}
+
+    data = _extract_action_data(result)
+    post_id = None
+    if isinstance(data, dict):
+        post_id = data.get("id") or data.get("tweet_id") or data.get("data", {}).get("id")
+    elif data is not None:
+        post_id = str(data)
+
+    return {
+        "success": True,
+        "post_id": str(post_id) if post_id else None,
+        "crm_status": "published",
+    }
+
+
+async def _publish_tiktok(
+    user_id: str,
+    post: Dict[str, Any],
+    *,
+    media_items: List[Dict[str, str]],
+) -> Dict[str, Any]:
+    title = (post.get("title") or "").strip()
+    description = _build_message(post)
+    if not title:
+        title = (description.split("\n", 1)[0] if description else "CRM Video")[:150]
+    if not description:
+        description = title
+
+    media_url, media_type = _first_media(post, media_items)
+    if not media_url or media_type != "video":
+        return {
+            "success": False,
+            "error": "TikTok posts require a video. Attach a video file before publishing.",
+        }
+
+    params: Dict[str, Any] = {
+        "video_url": media_url,
+        "title": title[:150],
+        "description": description[:2200],
+        "privacy_level": "PUBLIC_TO_EVERYONE",
+    }
+
+    result = await execute_action(user_id, ACTION_TIKTOK_PUBLISH_VIDEO, params)
+    if result.get("error"):
+        return {"success": False, "error": result["error"]}
+
+    data = _extract_action_data(result)
+    post_id = None
+    if isinstance(data, dict):
+        post_id = data.get("id") or data.get("publish_id") or data.get("video_id")
+    elif data is not None:
+        post_id = str(data)
+
+    return {
+        "success": True,
+        "post_id": str(post_id) if post_id else None,
+        "crm_status": "published",
+    }
+
+
 async def _publish_youtube(
     user_id: str,
     post: Dict[str, Any],
@@ -471,7 +913,7 @@ async def _publish_youtube(
 
 
 async def push_post_to_composio(db, post: Dict[str, Any]) -> Dict[str, Any]:
-    """Publish a post to Facebook, Instagram, and/or YouTube via Composio."""
+    """Publish a post to supported social channels via Composio."""
     if not is_configured():
         return {
             "success": False,
@@ -490,7 +932,7 @@ async def push_post_to_composio(db, post: Dict[str, Any]) -> Dict[str, Any]:
             "success": False,
             "external_post_id": None,
             "zernio_post_id": None,
-            "error": "No Facebook, Instagram, or YouTube channels selected.",
+            "error": "No Composio-supported channels selected.",
             "crm_status": "failed",
             "publish_provider": "composio",
         }
@@ -581,6 +1023,105 @@ async def push_post_to_composio(db, post: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 errors.append(f"YouTube: {yt_res.get('error') or 'publish failed'}")
 
+    if "linkedin" in composio_channels:
+        li_res: Optional[Dict[str, Any]] = None
+        user_doc = await _resolve_user_doc(db, tenant_id)
+        author_provider = str(settings.get("linkedin_author_provider") or "").strip().lower()
+        author_org_id = str(settings.get("linkedin_author_org_id") or "").strip()
+
+        async def _unipile_li_post(as_org: Optional[str]) -> Optional[Dict[str, Any]]:
+            """Publish via Unipile (member, or a company page when as_org is set).
+
+            Returns None when Unipile isn't usable (not configured / no account),
+            so the caller can fall back or surface a connect message.
+            """
+            if not user_doc:
+                return None
+            from unipile_service import (
+                is_configured as unipile_configured,
+                publish_linkedin_post,
+                resolve_linkedin_account_id,
+            )
+            if not unipile_configured():
+                return None
+            business_id = str(user_doc.get("business_id") or user_doc["_id"])
+            account_id = await resolve_linkedin_account_id(db, user_doc["_id"], business_id)
+            if not account_id:
+                return None
+            commentary = _build_message(post)
+            media_url, media_type = _first_media(post, media_items)
+            if not commentary and not media_url:
+                return {"success": False, "error": "LinkedIn post requires text or an image."}
+            if commentary and len(commentary) > 3000:
+                commentary = commentary[:2997] + "..."
+            res = await publish_linkedin_post(
+                account_id,
+                text=commentary or " ",
+                image_url=media_url if media_type == "image" else None,
+                as_organization=as_org,
+            )
+            if res.get("error"):
+                return {"success": False, "error": res["error"]}
+            return {"success": True, "post_id": res.get("post_id"), "crm_status": "published"}
+
+        if author_provider == "unipile" and author_org_id:
+            # Company page → Unipile, posting on the organization's behalf.
+            li_res = await _unipile_li_post(author_org_id)
+            if li_res is None:
+                errors.append(
+                    "LinkedIn company-page posting needs LinkedIn Premium (Unipile) connected in Integrations."
+                )
+        else:
+            # Personal profile → Composio (member). Fall back to Unipile member post
+            # if Composio LinkedIn isn't connected.
+            li_status = await get_connection_status(tenant_id, TOOLKIT_LINKEDIN)
+            if li_status.get("connected"):
+                author_urn, author_err = await _resolve_linkedin_author(db, tenant_id, settings)
+                if author_err or not author_urn:
+                    errors.append(f"LinkedIn: {author_err or 'author URN missing'}")
+                else:
+                    li_res = await _publish_linkedin(
+                        tenant_id, post, author_urn=author_urn, media_items=media_items,
+                    )
+            else:
+                li_res = await _unipile_li_post(None)
+                if li_res is None:
+                    errors.append(
+                        "LinkedIn is not connected. Connect LinkedIn (posting) or LinkedIn Premium in Integrations."
+                    )
+
+        if li_res:
+            if li_res.get("success"):
+                if li_res.get("post_id"):
+                    external_ids.append(f"li:{li_res['post_id']}")
+            else:
+                errors.append(f"LinkedIn: {li_res.get('error') or 'publish failed'}")
+
+    twitter_channels = [c for c in composio_channels if c in ("twitter", "x")]
+    if twitter_channels:
+        tw_status = await get_connection_status(tenant_id, TOOLKIT_TWITTER)
+        if not tw_status.get("connected"):
+            errors.append("X is not connected (Integrations → Social Channels).")
+        else:
+            tw_res = await _publish_twitter(tenant_id, post)
+            if tw_res.get("success"):
+                if tw_res.get("post_id"):
+                    external_ids.append(f"x:{tw_res['post_id']}")
+            else:
+                errors.append(f"X: {tw_res.get('error') or 'publish failed'}")
+
+    if "tiktok" in composio_channels:
+        tt_status = await get_connection_status(tenant_id, TOOLKIT_TIKTOK)
+        if not tt_status.get("connected"):
+            errors.append("TikTok is not connected (Integrations → Social Channels).")
+        else:
+            tt_res = await _publish_tiktok(tenant_id, post, media_items=media_items)
+            if tt_res.get("success"):
+                if tt_res.get("post_id"):
+                    external_ids.append(f"tt:{tt_res['post_id']}")
+            else:
+                errors.append(f"TikTok: {tt_res.get('error') or 'publish failed'}")
+
     if external_ids and not errors:
         ext_id = "|".join(external_ids)
         return {
@@ -619,6 +1160,4 @@ def post_uses_composio(post: Dict[str, Any]) -> bool:
 
 
 def post_uses_zernio(post: Dict[str, Any]) -> bool:
-    zernio_map = {"linkedin", "x", "twitter", "tiktok"}
-    channels = [c.strip().lower() for c in (post.get("channels") or []) if c.strip()]
-    return any(c in zernio_map for c in channels)
+    return False

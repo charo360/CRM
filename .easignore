@@ -1,0 +1,10 @@
+# Ignore everything except frontend for EAS builds
+/*
+!/frontend
+**/node_modules/
+**/.git/
+**/.expo/
+**/venv/
+**/.venv/
+**/AppData/
+**/Temp/

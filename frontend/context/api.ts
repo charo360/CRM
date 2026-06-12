@@ -6,13 +6,50 @@ export const apiClient = axios.create({
   baseURL: `${API_URL}/api`,
   headers: {
     'Content-Type': 'application/json',
+    'Bypass-Tunnel-Reminder': 'true',
+    'ngrok-skip-browser-warning': 'true',
   },
-  timeout: 30000,
+  timeout: 60000,
 });
+
+// Helper for file uploads using native fetch (more reliable than Axios for multipart on RN)
+const uploadFetch = async (path: string, formData: FormData, timeoutMs = 30000) => {
+  const token = apiClient.defaults.headers.common['Authorization'];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_URL}/api${path}`, {
+      method: 'POST',
+      headers: {
+        'Bypass-Tunnel-Reminder': 'true',
+        'ngrok-skip-browser-warning': 'true',
+        ...(token ? { 'Authorization': token as string } : {}),
+      },
+      body: formData,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
+      throw new Error(err.detail || `Upload failed (${res.status})`);
+    }
+    return res.json();
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      throw new Error('Upload timed out — please try again with fewer images');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 // Request interceptor for logging
 apiClient.interceptors.request.use(
   (config) => {
+    // Force ngrok bypass headers on every request to avoid 503 interstitial page
+    config.headers['ngrok-skip-browser-warning'] = 'true';
+    config.headers['Bypass-Tunnel-Reminder'] = 'true';
+
     console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
     return config;
   },
@@ -45,10 +82,11 @@ export const aiAPI = {
   /**
    * Draft an AI-generated follow-up message for a customer
    */
-  draftMessage: async (customerId: string, tone: string = 'friendly') => {
+  draftMessage: async (customerId: string, tone: string = 'friendly', customInstructions?: string) => {
     const response = await apiClient.post('/ai/draft-message', {
       customer_id: customerId,
-      tone
+      tone,
+      custom_instructions: customInstructions
     });
     return response.data;
   },
@@ -104,6 +142,12 @@ export const settingsAPI = {
     daily_alert_count?: number;
     message_tone?: string;
     push_token?: string;
+    daily_pulse_enabled?: boolean;
+    daily_pulse_time?: string;
+    currency?: string;
+    country_code?: string;
+    ai_model?: string;
+    auto_reply_audience?: 'everyone' | 'customers_only' | 'new_contacts_only';
   }) => {
     const response = await apiClient.put('/settings', settings);
     return response.data;
@@ -152,6 +196,76 @@ export const settingsAPI = {
   }
 };
 
+// ============ WhatsApp API Methods ============
+
+export const whatsappAPI = {
+  /**
+   * Start WhatsApp pairing: returns 8-digit code for Linked Devices
+   */
+  connect: async (phoneNumber: string) => {
+    const response = await apiClient.post('/whatsapp/connect', { phone_number: phoneNumber });
+    return response.data;
+  },
+
+  /**
+   * Get WhatsApp connection status and message usage
+   */
+  getStatus: async () => {
+    const response = await apiClient.get('/whatsapp/status');
+    return response.data;
+  },
+
+  /**
+   * Sync WhatsApp contacts and chat history into the CRM
+   */
+  sync: async () => {
+    const response = await apiClient.post('/whatsapp/sync', {}, { timeout: 180000 });
+    return response.data;
+  },
+
+  /**
+   * Disconnect WhatsApp instance
+   */
+  disconnect: async () => {
+    const response = await apiClient.post('/whatsapp/disconnect');
+    return response.data;
+  },
+
+  /**
+   * Send a WhatsApp message to a customer
+   */
+  sendMessage: async (toNumber: string, message: string, customerName?: string) => {
+    const response = await apiClient.post('/messages/send', null, {
+      params: { to_number: toNumber, message, customer_name: customerName },
+    });
+    return response.data;
+  },
+
+  /**
+   * Send a media file (image/document) to a customer via WhatsApp
+   */
+  sendMedia: async (toNumber: string, fileUri: string, fileName: string, mimeType: string, caption?: string, customerName?: string) => {
+    const formData = new FormData();
+    formData.append('file', {
+      uri: fileUri,
+      name: fileName,
+      type: mimeType,
+    } as any);
+    formData.append('to_number', toNumber);
+    formData.append('caption', caption || '');
+    if (customerName) formData.append('customer_name', customerName);
+    return await uploadFetch('/messages/send-media', formData);
+  },
+
+  /**
+   * Get message history for a customer
+   */
+  getMessages: async (customerId: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/messages`);
+    return response.data;
+  },
+};
+
 // ============ Messages API Methods ============
 
 export const messagesAPI = {
@@ -177,70 +291,58 @@ export const messagesAPI = {
   }
 };
 
-// ============ WhatsApp API Methods ============
+// ============ Contact Classification API ============
 
-export const whatsappAPI = {
-  /**
-   * Send a WhatsApp text message to a customer
-   */
-  sendMessage: async (toNumber: string, message: string, customerName?: string) => {
-    const response = await apiClient.post('/messages/send', null, {
-      params: {
-        to_number: toNumber,
-        message,
-        ...(customerName ? { customer_name: customerName } : {}),
-      },
-    });
+export const classificationAPI = {
+  scanContacts: async () => {
+    const response = await apiClient.post('/contacts/classify');
     return response.data;
   },
-
-  /**
-   * Upload and send an image/document through WhatsApp
-   */
-  sendMedia: async (
-    toNumber: string,
-    uri: string,
-    fileName: string,
-    mimeType: string,
-    caption: string = '',
-    customerName?: string
-  ) => {
-    const formData = new FormData();
-    formData.append('file', {
-      uri,
-      type: mimeType,
-      name: fileName,
-    } as any);
-    formData.append('to_number', toNumber);
-    formData.append('caption', caption);
-    if (customerName) formData.append('customer_name', customerName);
-
-    const response = await apiClient.post('/messages/send-media', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
+  getPending: async () => {
+    const response = await apiClient.get('/contacts/pending');
+    return response.data;
+  },
+  confirm: async (customerId: string, action: 'approve' | 'reject', type: 'customer' | 'supplier') => {
+    const response = await apiClient.post(`/contacts/${customerId}/confirm`, { action, type });
+    return response.data;
+  },
+  dismiss: async (customerId: string) => {
+    const response = await apiClient.post(`/contacts/${customerId}/dismiss`);
     return response.data;
   },
 };
 
-// ============ Message Helper Methods ============
+// ============ Suppliers API Methods ============
 
-export const messageHelpers = {
-  markRead: async (customerId: string) => {
-    const response = await apiClient.post(`/customers/${customerId}/messages/read`);
+export const suppliersAPI = {
+  getInsights: async () => {
+    const response = await apiClient.get('/suppliers/insights');
     return response.data;
   },
-
-  search: async (customerId: string, query: string) => {
-    const response = await apiClient.get(`/customers/${customerId}/messages/search`, {
-      params: { q: query },
-    });
+  getSuppliers: async () => {
+    const response = await apiClient.get('/suppliers');
     return response.data;
   },
-
-  getTimeline: async (customerId: string) => {
-    const response = await apiClient.get(`/customers/${customerId}/timeline`);
+  getCategories: async () => {
+    const response = await apiClient.get('/suppliers/categories');
+    return response.data;
+  },
+  tagSupplier: async (customerId: string) => {
+    const response = await apiClient.post(`/suppliers/${customerId}/tag`);
+    return response.data;
+  },
+  updateSupplier: async (customerId: string, data: {
+    supplier_category?: string;
+    products_supplied?: string[];
+    payment_terms?: string;
+    lead_time?: string;
+    rating?: number;
+  }) => {
+    const response = await apiClient.put(`/suppliers/${customerId}`, data);
+    return response.data;
+  },
+  removeSupplier: async (customerId: string) => {
+    const response = await apiClient.delete(`/suppliers/${customerId}`);
     return response.data;
   },
 };
@@ -255,19 +357,21 @@ export const productsAPI = {
     const formData = new FormData();
 
     files.forEach((file, index) => {
+      // Expo ImagePicker returns type: "image" which is not a valid MIME type
+      let mimeType = file.mimeType || file.type || 'image/jpeg';
+      if (mimeType === 'image' || !mimeType.includes('/')) {
+        mimeType = 'image/jpeg';
+      }
+      const fileName = file.fileName || file.uri.split('/').pop() || `product_${index}.jpg`;
       formData.append('files', {
         uri: file.uri,
-        type: file.type || 'image/jpeg',
-        name: file.fileName || `product_${index}.jpg`,
+        type: mimeType,
+        name: fileName,
       } as any);
     });
 
-    const response = await apiClient.post('/products/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
+    // Use 120s timeout — AI image analysis can take a while
+    return await uploadFetch('/products/upload', formData, 120000);
   },
 
   /**
@@ -291,11 +395,27 @@ export const productsAPI = {
   },
 
   /**
+   * Create a new product
+   */
+  createProduct: async (product: {
+    name: string;
+    price: number;
+    discount_price?: number;
+    category?: string;
+    description?: string;
+    in_stock?: boolean;
+  }) => {
+    const response = await apiClient.post('/products', product);
+    return response.data;
+  },
+
+  /**
    * Update product
    */
   updateProduct: async (productId: string, updates: {
     name?: string;
     price?: number;
+    discount_price?: number;
     category?: string;
     description?: string;
     in_stock?: boolean;
@@ -313,7 +433,35 @@ export const productsAPI = {
   },
 
   /**
-   * Send product to customer
+   * Add images to an existing product
+   */
+  addProductImages: async (productId: string, files: any[]) => {
+    const formData = new FormData();
+    files.forEach((file, index) => {
+      let mimeType = file.mimeType || file.type || 'image/jpeg';
+      if (mimeType === 'image' || !mimeType.includes('/')) {
+        mimeType = 'image/jpeg';
+      }
+      const fileName = file.fileName || file.uri.split('/').pop() || `photo_${index}.jpg`;
+      formData.append('files', {
+        uri: file.uri,
+        type: mimeType,
+        name: fileName,
+      } as any);
+    });
+    return await uploadFetch(`/products/${productId}/images`, formData);
+  },
+
+  /**
+   * Delete a specific image from a product
+   */
+  deleteProductImage: async (productId: string, imageIndex: number) => {
+    const response = await apiClient.delete(`/products/${productId}/images/${imageIndex}`);
+    return response.data;
+  },
+
+  /**
+   * Send product to customer via WhatsApp API (with image)
    */
   sendProductToCustomer: async (productId: string, customerId: string) => {
     const response = await apiClient.post(`/products/${productId}/send`, null, {
@@ -323,7 +471,7 @@ export const productsAPI = {
   },
 
   /**
-   * Send a group of products to a customer as a catalog
+   * Send multiple products as a catalog to customer via WhatsApp
    */
   sendCatalog: async (customerId: string, productIds: string[]) => {
     const response = await apiClient.post('/products/send-catalog', {
@@ -331,7 +479,129 @@ export const productsAPI = {
       product_ids: productIds,
     });
     return response.data;
+  },
+
+  /**
+   * Broadcast a product catalog to multiple customers
+   */
+  broadcastCatalog: async (productIds: string[], filterType: string, customerIds?: string[]) => {
+    const response = await apiClient.post('/products/broadcast-catalog', {
+      product_ids: productIds,
+      filter_type: filterType,
+      customer_ids: customerIds,
+    });
+    return response.data;
   }
+};
+
+// ============ DASHBOARD API ============
+export const dashboardAPI = {
+  getSummary: async () => {
+    const response = await apiClient.get('/dashboard/summary');
+    return response.data;
+  },
+};
+
+// ============ MESSAGE HELPERS ============
+export const messageHelpers = {
+  markRead: async (customerId: string) => {
+    const response = await apiClient.post(`/customers/${customerId}/messages/read`);
+    return response.data;
+  },
+  search: async (customerId: string, query: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/messages/search`, { params: { q: query } });
+    return response.data;
+  },
+  getTimeline: async (customerId: string) => {
+    const response = await apiClient.get(`/customers/${customerId}/timeline`);
+    return response.data;
+  },
+};
+
+// ============ TEAM MANAGEMENT ============
+export const teamAPI = {
+  /**
+   * Invite a new team member
+   */
+  inviteMember: async (data: { phone_number?: string; name: string; role: string; email?: string }) => {
+    const response = await apiClient.post('/team/invite', data);
+    return response.data;
+  },
+
+  /**
+   * Get all team members
+   */
+  getMembers: async () => {
+    const response = await apiClient.get('/team/members');
+    return response.data;
+  },
+
+  /**
+   * Update team member
+   */
+  updateMember: async (memberId: string, updates: { name?: string; role?: string; status?: string }) => {
+    const response = await apiClient.put(`/team/members/${memberId}`, updates);
+    return response.data;
+  },
+
+  /**
+   * Remove team member
+   */
+  removeMember: async (memberId: string) => {
+    const response = await apiClient.delete(`/team/members/${memberId}`);
+    return response.data;
+  },
+
+  /**
+   * Assign conversation to team member
+   */
+  assignConversation: async (data: { customer_id: string; assigned_to: string | null; assigned_by: string; notes?: string }) => {
+    const response = await apiClient.post('/conversations/assign', data);
+    return response.data;
+  },
+
+  /**
+   * Get all conversation assignments
+   */
+  getAssignments: async () => {
+    const response = await apiClient.get('/conversations/assignments');
+    return response.data;
+  },
+
+  /**
+   * Get my assigned conversations
+   */
+  getMyAssignments: async () => {
+    const response = await apiClient.get('/conversations/my-assignments');
+    return response.data;
+  },
+
+  /**
+   * Get activity logs
+   */
+  getActivityLogs: async (params?: { limit?: number; user_id?: string; entity_type?: string }) => {
+    const response = await apiClient.get('/activity/logs', { params });
+    return response.data;
+  },
+};
+
+// ============ ACCOUNT MANAGEMENT ============
+export const accountAPI = {
+  /**
+   * Permanently delete user account and all data (GDPR/CCPA)
+   */
+  deleteAccount: async () => {
+    const response = await apiClient.delete('/account');
+    return response.data;
+  },
+
+  /**
+   * Export all user data as JSON (GDPR data portability)
+   */
+  exportData: async () => {
+    const response = await apiClient.get('/account/export');
+    return response.data;
+  },
 };
 
 // ============ Bookings API Methods ============
@@ -388,74 +658,6 @@ export const workflowsAPI = {
 
   buildFromDescription: async (description: string) => {
     const response = await apiClient.post('/workflows/build/from-description', { description });
-    return response.data;
-  },
-};
-
-// ============ Team API Methods ============
-
-export const teamAPI = {
-  getMembers: async () => {
-    const response = await apiClient.get('/team/members');
-    return response.data;
-  },
-
-  inviteMember: async (member: {
-    name: string;
-    phone_number?: string;
-    role: string;
-    email?: string;
-  }) => {
-    const response = await apiClient.post('/team/invite', member);
-    return response.data;
-  },
-
-  updateMember: async (memberId: string, updates: Record<string, any>) => {
-    const response = await apiClient.put(`/team/members/${memberId}`, updates);
-    return response.data;
-  },
-
-  removeMember: async (memberId: string) => {
-    const response = await apiClient.delete(`/team/members/${memberId}`);
-    return response.data;
-  },
-
-  assignConversation: async (assignment: {
-    customer_id: string;
-    assigned_to: string | null;
-    assigned_by: string;
-    notes?: string;
-  }) => {
-    const response = await apiClient.post('/conversations/assign', assignment);
-    return response.data;
-  },
-};
-
-// ============ Suppliers API Methods ============
-
-export const suppliersAPI = {
-  getSuppliers: async () => {
-    const response = await apiClient.get('/suppliers');
-    return response.data;
-  },
-
-  getInsights: async () => {
-    const response = await apiClient.get('/suppliers/insights');
-    return response.data;
-  },
-
-  tagSupplier: async (customerId: string) => {
-    const response = await apiClient.post(`/suppliers/${customerId}/tag`);
-    return response.data;
-  },
-
-  updateSupplier: async (customerId: string, updates: Record<string, any>) => {
-    const response = await apiClient.put(`/suppliers/${customerId}`, updates);
-    return response.data;
-  },
-
-  removeSupplier: async (customerId: string) => {
-    const response = await apiClient.delete(`/suppliers/${customerId}`);
     return response.data;
   },
 };

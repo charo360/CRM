@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,13 +9,20 @@ import {
   ActivityIndicator,
   Linking,
   Switch,
+  TextInput,
+  Modal,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { apiClient, settingsAPI } from '../../context/api';
+import { apiClient, settingsAPI, whatsappAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
+import CreditBundleModal from '../../components/CreditBundleModal';
+import SubscriptionModal from '../../components/SubscriptionModal';
+import TeamManagementModal from '../../components/TeamManagementModal';
 
 interface SubscriptionPlan {
   id: string;
@@ -47,6 +54,41 @@ export default function AccountScreen() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [subscribing, setSubscribing] = useState(false);
+  const [showCreditModal, setShowCreditModal] = useState(false);
+  const [showSubModal, setShowSubModal] = useState(false);
+  const [showTeamModal, setShowTeamModal] = useState(false);
+  const [extraCredits, setExtraCredits] = useState(0);
+
+  // WhatsApp connection state
+  const [waConnected, setWaConnected] = useState(false);
+  const [waStatus, setWaStatus] = useState('not_connected');
+  const [waNumber, setWaNumber] = useState('');
+  const [waPhoneInput, setWaPhoneInput] = useState('');
+  const [waPairingCode, setWaPairingCode] = useState('');
+  const [waConnecting, setWaConnecting] = useState(false);
+  const [waDisconnecting, setWaDisconnecting] = useState(false);
+  const [waMsgSent, setWaMsgSent] = useState(0);
+  const [waMsgLimit, setWaMsgLimit] = useState(50);
+  const [waCountdown, setWaCountdown] = useState(0);
+  const [waCopied, setWaCopied] = useState(false);
+  const waCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const waPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const waRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Daily Pulse state
+  const [pulseEnabled, setPulseEnabled] = useState(false);
+  const [pulseTime, setPulseTime] = useState('20:00');
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [pulsePreview, setPulsePreview] = useState<string | null>(null);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [sendingPulse, setSendingPulse] = useState(false);
+
+  // Auto Reply / Notifications state
+  const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+  const [autoReplyAudience, setAutoReplyAudience] = useState<'everyone' | 'customers_only' | 'new_contacts_only'>('everyone');
+  const [showAudiencePicker, setShowAudiencePicker] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
 
   const { user, logout, refreshUser } = useAuth();
   const router = useRouter();
@@ -57,12 +99,38 @@ export default function AccountScreen() {
 
   const fetchData = async () => {
     try {
-      const [plansRes, statsRes] = await Promise.all([
+      const [plansRes, statsRes, statusRes] = await Promise.all([
         apiClient.get('/subscription/plans'),
         apiClient.get('/stats'),
+        apiClient.get('/subscription/status'),
       ]);
       setPlans(plansRes.data);
       setStats(statsRes.data);
+      setExtraCredits(statusRes.data.extra_credits || 0);
+
+      // Load user settings (daily pulse, auto reply, notifications)
+      try {
+        const settings = await settingsAPI.getSettings();
+        setPulseEnabled(settings.daily_pulse_enabled || false);
+        setPulseTime(settings.daily_pulse_time || '20:00');
+        setAutoReplyEnabled(settings.auto_reply_enabled || false);
+        setAutoReplyAudience(settings.auto_reply_audience || 'everyone');
+        setNotificationsEnabled(settings.notification_enabled !== false);
+      } catch (e) {
+        console.log('Settings not available');
+      }
+
+      // Fetch WhatsApp status
+      try {
+        const waRes = await whatsappAPI.getStatus();
+        setWaConnected(waRes.connected);
+        setWaStatus(waRes.status);
+        setWaNumber(waRes.number || '');
+        setWaMsgSent(waRes.messages_sent || 0);
+        setWaMsgLimit(waRes.messages_limit || 50);
+      } catch (e) {
+        console.log('WhatsApp status not available');
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -71,42 +139,228 @@ export default function AccountScreen() {
   };
 
   const handleSubscribe = async (plan: SubscriptionPlan) => {
-    if (!user) return;
+    setShowSubModal(true);
+  };
 
-    Alert.prompt(
-      'Enter Email',
-      'Enter your email for payment receipt',
-      async (email) => {
-        if (!email || !email.includes('@')) {
-          Alert.alert('Error', 'Please enter a valid email');
-          return;
+  const clearWaTimers = useCallback(() => {
+    if (waCountdownRef.current) { clearInterval(waCountdownRef.current); waCountdownRef.current = null; }
+    if (waPollingRef.current) { clearInterval(waPollingRef.current); waPollingRef.current = null; }
+    if (waRefreshRef.current) { clearTimeout(waRefreshRef.current); waRefreshRef.current = null; }
+  }, []);
+
+  useEffect(() => {
+    return () => clearWaTimers();
+  }, [clearWaTimers]);
+
+  const startPairingTimers = useCallback((code: string, phone: string) => {
+    clearWaTimers();
+    setWaPairingCode(code);
+    setWaCountdown(60);
+    setWaCopied(false);
+
+    // Copy to clipboard immediately
+    Clipboard.setStringAsync(code).then(() => {
+      setWaCopied(true);
+      setTimeout(() => setWaCopied(false), 2000);
+    });
+
+    // Countdown timer
+    waCountdownRef.current = setInterval(() => {
+      setWaCountdown(prev => {
+        if (prev <= 1) {
+          if (waCountdownRef.current) clearInterval(waCountdownRef.current);
+          return 0;
         }
+        return prev - 1;
+      });
+    }, 1000);
 
-        setSubscribing(true);
-        try {
-          const response = await apiClient.post('/subscription/initialize', {
-            email: email,
-            plan_id: plan.id,
-          });
-
-          if (response.data.authorization_url) {
-            Linking.openURL(response.data.authorization_url);
-            Alert.alert(
-              'Payment Started',
-              'Complete the payment in your browser. Your subscription will be activated automatically.',
-              [{ text: 'OK', onPress: () => refreshUser() }]
-            );
-          }
-        } catch (error: any) {
-          Alert.alert('Error', error.response?.data?.detail || 'Failed to start payment');
-        } finally {
-          setSubscribing(false);
+    // Auto-refresh code at 50s (before 60s expiry)
+    waRefreshRef.current = setTimeout(async () => {
+      try {
+        const res = await whatsappAPI.connect(phone);
+        if (res.pairing_code) {
+          startPairingTimers(res.pairing_code, phone);
         }
-      },
-      'plain-text',
-      '',
-      'email-address'
+      } catch (e) {
+        console.log('Auto-refresh pairing code failed');
+      }
+    }, 50000);
+
+    // Poll for connection every 5s
+    waPollingRef.current = setInterval(async () => {
+      try {
+        const waRes = await whatsappAPI.getStatus();
+        if (waRes.connected) {
+          clearWaTimers();
+          setWaConnected(true);
+          setWaStatus(waRes.status);
+          setWaNumber(waRes.number || '');
+          setWaPairingCode('');
+          setWaMsgSent(waRes.messages_sent || 0);
+          setWaMsgLimit(waRes.messages_limit || 50);
+          Alert.alert('Connected!', 'WhatsApp linked successfully.');
+        }
+      } catch (e) { /* ignore */ }
+    }, 5000);
+  }, [clearWaTimers]);
+
+  const handleCopyCode = async () => {
+    if (!waPairingCode) return;
+    await Clipboard.setStringAsync(waPairingCode);
+    setWaCopied(true);
+    setTimeout(() => setWaCopied(false), 2000);
+  };
+
+  const handleOpenWhatsApp = () => {
+    Linking.openURL('whatsapp://')
+      .catch(() => {
+        Alert.alert('Error', 'Could not open WhatsApp. Please open it manually and go to Linked Devices.');
+      });
+  };
+
+  const handleWhatsAppConnect = async () => {
+    if (!waPhoneInput.trim()) {
+      Alert.alert('Error', 'Please enter your WhatsApp phone number');
+      return;
+    }
+    setWaConnecting(true);
+    setWaPairingCode('');
+    try {
+      const res = await whatsappAPI.connect(waPhoneInput.trim());
+      if (res.pairing_code) {
+        startPairingTimers(res.pairing_code, waPhoneInput.trim());
+      } else {
+        Alert.alert('Error', res.message || 'Failed to get pairing code');
+      }
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to connect WhatsApp');
+    } finally {
+      setWaConnecting(false);
+    }
+  };
+
+  const handleWhatsAppDisconnect = async () => {
+    Alert.alert(
+      'Disconnect WhatsApp',
+      'Are you sure? You will need to re-pair to send messages.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: async () => {
+            setWaDisconnecting(true);
+            clearWaTimers();
+            try {
+              await whatsappAPI.disconnect();
+              setWaConnected(false);
+              setWaStatus('not_connected');
+              setWaNumber('');
+              setWaPairingCode('');
+              setWaPhoneInput('');
+            } catch (error: any) {
+              Alert.alert('Error', error.response?.data?.detail || 'Failed to disconnect');
+            } finally {
+              setWaDisconnecting(false);
+            }
+          },
+        },
+      ]
     );
+  };
+
+  const formatTime = (time: string) => {
+    const [h, m] = time.split(':');
+    const hour = parseInt(h);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const hour12 = hour % 12 || 12;
+    return `${hour12}:${m} ${ampm}`;
+  };
+
+  const handleTogglePulse = async (value: boolean) => {
+    setPulseEnabled(value);
+    try {
+      await settingsAPI.updateSettings({ daily_pulse_enabled: value });
+      if (value) {
+        Alert.alert('Daily Pulse Enabled', `You'll receive your business summary every day at ${formatTime(pulseTime)} via WhatsApp.`);
+      }
+    } catch (error) {
+      setPulseEnabled(!value);
+      Alert.alert('Error', 'Failed to update setting');
+    }
+  };
+
+  const handlePulseTimeChange = async (event: any, selectedDate?: Date) => {
+    setShowTimePicker(false);
+    if (event.type === 'set' && selectedDate) {
+      const hours = selectedDate.getHours().toString().padStart(2, '0');
+      const minutes = selectedDate.getMinutes().toString().padStart(2, '0');
+      const newTime = `${hours}:${minutes}`;
+      setPulseTime(newTime);
+      try {
+        await settingsAPI.updateSettings({ daily_pulse_time: newTime });
+      } catch (error) {
+        Alert.alert('Error', 'Failed to update time');
+      }
+    }
+  };
+
+  const handlePreviewPulse = async () => {
+    setLoadingPreview(true);
+    setPreviewVisible(true);
+    try {
+      const res = await apiClient.get('/daily-pulse/preview');
+      setPulsePreview(res.data.message);
+    } catch (error) {
+      setPulsePreview('Failed to load preview. Please try again.');
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const handleSendPulseNow = async () => {
+    setSendingPulse(true);
+    try {
+      await apiClient.post('/daily-pulse/send');
+      Alert.alert('Sent!', 'Daily pulse sent to your WhatsApp!');
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to send pulse');
+    } finally {
+      setSendingPulse(false);
+    }
+  };
+
+  const handleToggleAutoReply = async (value: boolean) => {
+    setAutoReplyEnabled(value);
+    try {
+      await settingsAPI.updateSettings({ auto_reply_enabled: value });
+    } catch (error) {
+      setAutoReplyEnabled(!value);
+      Alert.alert('Error', 'Failed to update setting');
+    }
+  };
+
+  const handleSelectAudience = async (audience: 'everyone' | 'customers_only' | 'new_contacts_only') => {
+    const previous = autoReplyAudience;
+    setAutoReplyAudience(audience);
+    setShowAudiencePicker(false);
+    try {
+      await settingsAPI.updateSettings({ auto_reply_audience: audience });
+    } catch (error) {
+      setAutoReplyAudience(previous);
+      Alert.alert('Error', 'Failed to update setting');
+    }
+  };
+
+  const handleToggleNotifications = async (value: boolean) => {
+    setNotificationsEnabled(value);
+    try {
+      await settingsAPI.updateSettings({ notification_enabled: value });
+    } catch (error) {
+      setNotificationsEnabled(!value);
+      Alert.alert('Error', 'Failed to update setting');
+    }
   };
 
   const handleLogout = () => {
@@ -198,6 +452,200 @@ export default function AccountScreen() {
           )
         }
 
+        {/* WhatsApp Business */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>WhatsApp Business</Text>
+          <View style={styles.settingsCard}>
+            {waConnected ? (
+              <View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#25D366', marginRight: 10 }} />
+                  <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '600', flex: 1 }}>Connected</Text>
+                  <TouchableOpacity onPress={handleWhatsAppDisconnect} disabled={waDisconnecting}>
+                    <Text style={{ color: '#FF4444', fontSize: 14 }}>{waDisconnecting ? 'Disconnecting...' : 'Disconnect'}</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={{ color: '#8A9BB5', fontSize: 14 }}>Number: {waNumber}</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+                  <Text style={{ color: '#8A9BB5', fontSize: 13 }}>Messages this month</Text>
+                  <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>{waMsgSent} / {waMsgLimit}</Text>
+                </View>
+                <View style={{ height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2, marginTop: 6 }}>
+                  <View style={{ height: 4, backgroundColor: waMsgSent / waMsgLimit > 0.9 ? '#FF4444' : '#25D366', borderRadius: 2, width: `${Math.min((waMsgSent / waMsgLimit) * 100, 100)}%` }} />
+                </View>
+              </View>
+            ) : waPairingCode ? (
+              <View>
+                <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Enter this code in WhatsApp</Text>
+                <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 12 }}>
+                  Open WhatsApp {'>'} Settings {'>'} Linked Devices {'>'} Link a Device {'>'} Link with phone number
+                </Text>
+                <TouchableOpacity
+                  onPress={handleCopyCode}
+                  activeOpacity={0.7}
+                  style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 12 }}
+                >
+                  <Text style={{ color: '#25D366', fontSize: 32, fontWeight: '700', letterSpacing: 8 }}>{waPairingCode}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
+                    <Ionicons name={waCopied ? 'checkmark-circle' : 'copy-outline'} size={16} color={waCopied ? '#25D366' : '#8A9BB5'} />
+                    <Text style={{ color: waCopied ? '#25D366' : '#8A9BB5', fontSize: 12, marginLeft: 6 }}>
+                      {waCopied ? 'Copied to clipboard!' : 'Tap to copy code'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={{ backgroundColor: '#25D366', borderRadius: 10, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}
+                  onPress={handleOpenWhatsApp}
+                >
+                  <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
+                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>Open WhatsApp</Text>
+                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: waCountdown > 10 ? '#25D366' : '#FF4444', marginRight: 8 }} />
+                  <Text style={{ color: waCountdown > 10 ? '#8A9BB5' : '#FF4444', fontSize: 12 }}>
+                    {waCountdown > 0 ? `Code refreshes in ${waCountdown}s` : 'Refreshing code...'}
+                  </Text>
+                </View>
+                <ActivityIndicator size="small" color="#25D366" />
+                <Text style={{ color: '#8A9BB5', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection...</Text>
+                <TouchableOpacity
+                  style={{ marginTop: 14, alignItems: 'center' }}
+                  onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaPhoneInput(''); }}
+                >
+                  <Text style={{ color: '#8A9BB5', fontSize: 14 }}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                  <Ionicons name="logo-whatsapp" size={24} color="#25D366" />
+                  <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginLeft: 10 }}>Connect WhatsApp</Text>
+                </View>
+                <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 16 }}>
+                  Link your WhatsApp number to send messages directly from the app.
+                </Text>
+                <TextInput
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.08)',
+                    borderRadius: 10,
+                    paddingHorizontal: 16,
+                    paddingVertical: 12,
+                    fontSize: 16,
+                    color: '#FFFFFF',
+                    marginBottom: 12,
+                  }}
+                  placeholder="+1234567890"
+                  placeholderTextColor="#666"
+                  value={waPhoneInput}
+                  onChangeText={setWaPhoneInput}
+                  keyboardType="phone-pad"
+                />
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: '#25D366',
+                    borderRadius: 10,
+                    paddingVertical: 14,
+                    alignItems: 'center',
+                    opacity: waConnecting ? 0.7 : 1,
+                  }}
+                  onPress={handleWhatsAppConnect}
+                  disabled={waConnecting}
+                >
+                  {waConnecting ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Get Pairing Code</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* Daily Pulse */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Daily Pulse</Text>
+          <View style={styles.settingsCard}>
+            <View style={styles.pulseHeader}>
+              <View style={styles.pulseIconContainer}>
+                <Ionicons name="pulse" size={24} color="#25D366" />
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={{ fontSize: 16, fontWeight: '600', color: '#FFFFFF' }}>Business Summary</Text>
+                <Text style={{ fontSize: 12, color: '#8A9BB5', marginTop: 2 }}>
+                  Get your daily sales, profit & insights via WhatsApp
+                </Text>
+              </View>
+              <Switch
+                value={pulseEnabled}
+                onValueChange={handleTogglePulse}
+                trackColor={{ false: '#3e3e3e', true: '#25D366' }}
+                thumbColor="#f4f3f4"
+              />
+            </View>
+
+            {pulseEnabled && (
+              <>
+                <View style={styles.pulseDivider} />
+                <TouchableOpacity
+                  style={styles.pulseTimeRow}
+                  onPress={() => setShowTimePicker(true)}
+                >
+                  <Ionicons name="time-outline" size={20} color="#8A9BB5" />
+                  <Text style={{ flex: 1, fontSize: 14, color: '#FFFFFF', marginLeft: 12 }}>
+                    Send at
+                  </Text>
+                  <View style={styles.pulseTimeBadge}>
+                    <Text style={styles.pulseTimeText}>{formatTime(pulseTime)}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color="#666" style={{ marginLeft: 8 }} />
+                </TouchableOpacity>
+
+                <View style={styles.pulseDivider} />
+                <View style={styles.pulseActions}>
+                  <TouchableOpacity
+                    style={styles.pulsePreviewButton}
+                    onPress={handlePreviewPulse}
+                  >
+                    <Ionicons name="eye-outline" size={18} color="#4A90D9" />
+                    <Text style={{ color: '#4A90D9', fontSize: 14, fontWeight: '600', marginLeft: 6 }}>Preview</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.pulseSendButton}
+                    onPress={handleSendPulseNow}
+                    disabled={sendingPulse}
+                  >
+                    <Ionicons name="send" size={16} color="#FFFFFF" />
+                    <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600', marginLeft: 6 }}>
+                      {sendingPulse ? 'Sending...' : 'Send Now'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+
+        {/* Credits Card */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>AI Credits</Text>
+          <View style={styles.creditsCard}>
+            <View style={styles.creditsLeft}>
+              <Ionicons name="flash" size={28} color="#F59E0B" />
+              <View style={{ marginLeft: 12 }}>
+                <Text style={styles.creditsValue}>{extraCredits.toLocaleString()}</Text>
+                <Text style={styles.creditsLabel}>Extra credits available</Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={styles.buyCreditsButton}
+              onPress={() => setShowCreditModal(true)}
+            >
+              <Text style={styles.buyCreditsText}>Buy More</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {/* Subscription Plans */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Subscription Plans</Text>
@@ -244,7 +692,7 @@ export default function AccountScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Settings</Text>
           <View style={styles.settingsCard}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.settingItem}
               onPress={() => router.push('../analytics' as any)}
             >
@@ -252,6 +700,16 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Follow-up Analytics</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            {(user?.role === 'owner' || user?.role === 'manager' || !user?.role) && (
+              <TouchableOpacity
+                style={styles.settingItem}
+                onPress={() => setShowTeamModal(true)}
+              >
+                <Ionicons name="people-outline" size={24} color="#25D366" />
+                <Text style={styles.settingText}>Team Management</Text>
+                <Ionicons name="chevron-forward" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.settingItem}>
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>
@@ -262,26 +720,52 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Business Knowledge</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.settingItem}>
+            <View style={styles.settingItem}>
               <Ionicons name="chatbubble-outline" size={24} color="#666" />
-              <Text style={styles.settingText}>Auto Reply</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingText}>Auto Reply</Text>
+                {autoReplyEnabled && (
+                  <Text style={{ fontSize: 12, color: '#8A9BB5', marginTop: 2, marginLeft: 12 }}>
+                    {autoReplyAudience === 'everyone' ? 'Replying to everyone' :
+                     autoReplyAudience === 'customers_only' ? 'Customers only' :
+                     'New contacts only'}
+                  </Text>
+                )}
+              </View>
               <Switch
-                value={false}
-                onValueChange={() => {}}
+                value={autoReplyEnabled}
+                onValueChange={handleToggleAutoReply}
                 trackColor={{ false: '#3e3e3e', true: '#25D366' }}
                 thumbColor="#f4f3f4"
               />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.settingItem}>
+            </View>
+            {autoReplyEnabled && (
+              <TouchableOpacity
+                style={styles.settingItem}
+                onPress={() => setShowAudiencePicker(true)}
+              >
+                <Ionicons name="people-outline" size={24} color="#666" />
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={[styles.settingText, { marginLeft: 0 }]}>Reply Audience</Text>
+                  <Text style={{ fontSize: 12, color: '#8A9BB5', marginTop: 2 }}>
+                    {autoReplyAudience === 'everyone' ? 'Everyone who messages' :
+                     autoReplyAudience === 'customers_only' ? 'Only saved customers' :
+                     'Only new / first-time contacts'}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
+            <View style={styles.settingItem}>
               <Ionicons name="notifications-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Notifications</Text>
               <Switch
-                value={true}
-                onValueChange={() => {}}
+                value={notificationsEnabled}
+                onValueChange={handleToggleNotifications}
                 trackColor={{ false: '#3e3e3e', true: '#25D366' }}
                 thumbColor="#f4f3f4"
               />
-            </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -292,9 +776,132 @@ export default function AccountScreen() {
         </TouchableOpacity>
 
         <Text style={styles.version}>Version 1.0.0</Text>
-      </ScrollView >
+      </ScrollView>
+
+      {/* Daily Pulse Time Picker */}
+      {showTimePicker && (
+        <DateTimePicker
+          value={(() => {
+            const [h, m] = pulseTime.split(':');
+            const d = new Date();
+            d.setHours(parseInt(h), parseInt(m), 0, 0);
+            return d;
+          })()}
+          mode="time"
+          display="default"
+          onChange={handlePulseTimeChange}
+        />
+      )}
+
+      {/* Auto Reply Audience Picker Modal */}
+      <Modal
+        visible={showAudiencePicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowAudiencePicker(false)}
+      >
+        <SafeAreaView style={styles.container}>
+          <View style={styles.pulseModalHeader}>
+            <TouchableOpacity onPress={() => setShowAudiencePicker(false)}>
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 18, fontWeight: '600', color: '#FFFFFF' }}>Reply Audience</Text>
+            <View style={{ width: 24 }} />
+          </View>
+          <ScrollView style={{ flex: 1, padding: 16 }}>
+            <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 16 }}>
+              Choose who the AI auto-reply responds to. Individual contact overrides always take priority.
+            </Text>
+            {([
+              { value: 'everyone', label: 'Everyone', desc: 'Reply to all incoming messages' },
+              { value: 'customers_only', label: 'Customers Only', desc: 'Only reply to contacts you have saved as customers' },
+              { value: 'new_contacts_only', label: 'New Contacts Only', desc: 'Only reply to first-time or uncontacted messages' },
+            ] as const).map((opt) => (
+              <TouchableOpacity
+                key={opt.value}
+                style={[
+                  styles.audienceOption,
+                  autoReplyAudience === opt.value && styles.audienceOptionActive,
+                ]}
+                onPress={() => handleSelectAudience(opt.value)}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 15 }}>{opt.label}</Text>
+                  <Text style={{ color: '#8A9BB5', fontSize: 13, marginTop: 4 }}>{opt.desc}</Text>
+                </View>
+                {autoReplyAudience === opt.value && (
+                  <Ionicons name="checkmark-circle" size={24} color="#25D366" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Daily Pulse Preview Modal */}
+      <Modal
+        visible={previewVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setPreviewVisible(false)}
+      >
+        <SafeAreaView style={styles.container}>
+          <View style={styles.pulseModalHeader}>
+            <TouchableOpacity onPress={() => setPreviewVisible(false)}>
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 18, fontWeight: '600', color: '#FFFFFF' }}>Daily Pulse Preview</Text>
+            <View style={{ width: 24 }} />
+          </View>
+          <ScrollView style={{ flex: 1, padding: 20 }}>
+            {loadingPreview ? (
+              <View style={{ alignItems: 'center', paddingTop: 40 }}>
+                <ActivityIndicator size="large" color="#25D366" />
+                <Text style={{ color: '#8A9BB5', marginTop: 12 }}>Generating your pulse...</Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.pulsePreviewCard}>
+                  <View style={styles.pulsePreviewWhatsApp}>
+                    <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+                    <Text style={{ color: '#25D366', fontSize: 12, marginLeft: 6 }}>WhatsApp Message Preview</Text>
+                  </View>
+                  <Text style={styles.pulsePreviewText}>{pulsePreview}</Text>
+                </View>
+                <Text style={{ color: '#8A9BB5', fontSize: 12, textAlign: 'center', marginTop: 16 }}>
+                  This is what you'll receive every day at {formatTime(pulseTime)}
+                </Text>
+              </>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
 
       {/* Modals */}
+      <CreditBundleModal
+        visible={showCreditModal}
+        onClose={() => setShowCreditModal(false)}
+        onSuccess={(added) => {
+          setExtraCredits(prev => prev + added);
+          setShowCreditModal(false);
+        }}
+        currentCredits={extraCredits}
+      />
+      <SubscriptionModal
+        visible={showSubModal}
+        onClose={() => setShowSubModal(false)}
+        onSuccess={() => {
+          setShowSubModal(false);
+          refreshUser();
+        }}
+        currentPlan={user?.subscription_plan}
+      />
+      <TeamManagementModal
+        visible={showTeamModal}
+        onClose={() => setShowTeamModal(false)}
+        userRole={user?.role || 'owner'}
+        userId={user?.id || ''}
+      />
     </SafeAreaView>
   );
 }
@@ -598,5 +1205,142 @@ const styles = StyleSheet.create({
     color: '#999',
     fontSize: 14,
     paddingVertical: 20,
+  },
+  creditsCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1.5,
+    borderColor: '#2A3F5A',
+  },
+  creditsLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  creditsValue: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  creditsLabel: {
+    fontSize: 12,
+    color: '#8A9BB5',
+    marginTop: 2,
+  },
+  buyCreditsButton: {
+    backgroundColor: '#F59E0B',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  buyCreditsText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  // Daily Pulse styles
+  pulseHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+  },
+  pulseIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#1A3A2A',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pulseDivider: {
+    height: 1,
+    backgroundColor: '#0A1628',
+    marginHorizontal: 16,
+  },
+  pulseTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+  },
+  pulseTimeBadge: {
+    backgroundColor: '#0A1628',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  pulseTimeText: {
+    color: '#25D366',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pulseActions: {
+    flexDirection: 'row',
+    padding: 16,
+    gap: 12,
+  },
+  pulsePreviewButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#4A90D9',
+  },
+  pulseSendButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#25D366',
+  },
+  pulseModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1A2942',
+  },
+  pulsePreviewCard: {
+    backgroundColor: '#1A2942',
+    borderRadius: 16,
+    padding: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: '#25D366',
+  },
+  pulsePreviewWhatsApp: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#0A1628',
+  },
+  pulsePreviewText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  // Auto Reply audience picker styles
+  audienceOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 10,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  audienceOptionActive: {
+    borderColor: '#25D366',
   },
 });

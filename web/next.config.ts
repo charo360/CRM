@@ -25,6 +25,12 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
+        // /proxy/rex/:path* → http://localhost:8000/api/rex/:path*
+        // Rex routes are mounted at /api/rex on the backend
+        source: "/proxy/rex/:path*",
+        destination: `${BACKEND_ORIGIN}/api/rex/:path*`,
+      },
+      {
         // /proxy/:path* → http://localhost:8000/api/:path*
         // Browser calls /proxy/... (same origin, no mixed-content issue).
         // Next.js server makes the HTTP call internally.

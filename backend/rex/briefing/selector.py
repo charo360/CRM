@@ -113,7 +113,9 @@ def calculate_action_importance(action: Action) -> float:
     cat_name = action.category
 
     # 1. Base importance by category tier
-    if is_category(cat_name):
+    if cat_name == "strategy":
+        base = 0.92
+    elif is_category(cat_name):
         cat = _lookup_category(cat_name)
         if cat.tier is Tier.CORE:
             base = 0.8

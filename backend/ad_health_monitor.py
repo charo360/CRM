@@ -279,7 +279,7 @@ async def _notify_owner(db, user_id: str, message: str) -> None:
 
 async def _check_campaigns_for_user(db, user_id: str, campaigns: List[Dict[str, Any]]) -> None:
     """Run health check for one user's campaigns (campaigns pre-fetched globally)."""
-    from zernio_ads_service import update_campaign_status
+    from meta_ads_service import update_campaign_status
 
     if not campaigns:
         return
@@ -358,7 +358,9 @@ async def _check_campaigns_for_user(db, user_id: str, campaigns: List[Dict[str, 
             })
 
             if action == "auto_pause":
-                pause_result = await update_campaign_status(cid, "paused", campaign.get("platform"))
+                pause_result = await update_campaign_status(
+                    cid, "paused", campaign.get("platform"), user_id=user_id,
+                )
                 if not pause_result.get("error"):
                     msg = (
                         f"🛑 *Ad Auto-Paused*\n"
@@ -394,39 +396,29 @@ async def _check_campaigns_for_user(db, user_id: str, campaigns: List[Dict[str, 
 
 async def check_all_users(db) -> None:
     """Run a single health-check pass across all users who have ad alert rules."""
-    from zernio_ads_service import list_campaigns
-
-    # Fetch campaigns ONCE globally — Zernio uses a single API key, not per-user
-    try:
-        campaigns_result = await list_campaigns(days=7)
-    except Exception as e:
-        logger.error("[ad_health_monitor] Failed to fetch campaigns: %s", e)
-        return
-
-    if campaigns_result.get("error"):
-        logger.warning("[ad_health_monitor] Zernio API error: %s", campaigns_result["error"])
-        return
-
-    campaigns: List[Dict[str, Any]] = (
-        campaigns_result.get("campaigns")
-        or campaigns_result.get("data")
-        or []
-    )
-
-    if not campaigns:
-        logger.info("[ad_health_monitor] No campaigns returned — skipping pass.")
-        return
+    from meta_ads_service import list_campaigns_with_metrics
 
     try:
         users = await db.users.find(
             {"is_active": {"$ne": False}},
-            {"_id": 1}
+            {"_id": 1, "business_id": 1},
         ).to_list(500)
 
         for user in users:
             uid = str(user["_id"])
+            business_id = str(user.get("business_id") or uid)
             try:
                 await ensure_default_rules(db, uid)
+                campaigns_result = await list_campaigns_with_metrics(days=7, user_id=business_id)
+                if campaigns_result.get("error") and not campaigns_result.get("campaigns"):
+                    continue
+                campaigns: List[Dict[str, Any]] = (
+                    campaigns_result.get("campaigns")
+                    or campaigns_result.get("data")
+                    or []
+                )
+                if not campaigns:
+                    continue
                 await _check_campaigns_for_user(db, uid, campaigns)
             except Exception as e:
                 logger.error("[ad_health_monitor] Error checking user %s: %s", uid, e)

@@ -5,8 +5,7 @@ import { MessageCircle, Plus, Trash2, RefreshCw, ThumbsUp, Minus, ThumbsDown, St
 import { toast } from "sonner";
 
 type SurveyQuestion = { id: string; text: string; type: "nps" | "rating" | "text" | "choice"; options?: string[] };
-type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string; questions?: SurveyQuestion[] };
-type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string; form_id?: string; slug?: string };
+type Survey = { id: string; title: string; description: string; active: boolean; response_count: number; created_at: string; questions?: SurveyQuestion[]; form_id?: string; slug?: string };
 type NPSData = { nps_score: number; total_responses: number; promoters: number; passives: number; detractors: number; promoter_pct: number; detractor_pct: number; recent_comments: { name: string; score: number; comment: string }[] };
 type Response = { id: string; customer_name: string; nps_score?: number; nps_category?: string; comment: string; created_at: string };
 type SurveyForm = { title: string; description: string; active: boolean; questions: SurveyQuestion[] };

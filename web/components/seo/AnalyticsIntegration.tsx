@@ -84,7 +84,7 @@ function ConnectButton({
       if (toolkit === "googleads" && customerId) extraBody.customer_id = customerId;
       const url = await composioConnect(toolkit, extraBody);
       if (!url) { setWorking(false); return; }
-      const popup = window.open(url, "composio-connect", "width=980,height=760,noopener,noreferrer");
+      const popup = window.open(url, "composio-connect", "width=980,height=760");
       if (!popup) { window.location.href = url; return; }
       let popupClosed = false;
       const poll = window.setInterval(async () => {

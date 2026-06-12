@@ -39,6 +39,12 @@ MAX_CONVERSATIONS_PER_CYCLE = 15
 # "live" and answered even with no prior state. Older = backlog, baseline only (no reply).
 NEW_MESSAGE_WINDOW_MINUTES = 10
 
+# LinkedIn-specific safety limits. LinkedIn (via Unipile session automation) is not officially
+# sanctioned for auto-messaging, so keep the footprint small: a conservative per-account daily
+# reply cap and fewer conversations scanned per cycle than Instagram.
+MAX_LINKEDIN_AUTOREPLIES_PER_DAY = 15
+MAX_LINKEDIN_CONVERSATIONS_PER_CYCLE = 10
+
 
 def _parse_ts(value: str) -> Optional[datetime]:
     """Parse the ISO-ish timestamps composio_inbox emits (e.g. '2026-05-07T12:49:51Z')."""
@@ -51,10 +57,17 @@ def _parse_ts(value: str) -> Optional[datetime]:
 
 
 async def run_social_autoreply_poll(db) -> None:
-    """Entry point — invoked on an interval by the scheduler."""
+    """Entry point — invoked on an interval by the scheduler.
+
+    Polls Instagram (Composio) and/or LinkedIn (Unipile) per user, each gated by its own
+    opt-in flag. LinkedIn is a separate flag because its automation carries account risk.
+    """
     try:
         users = await db.users.find(
-            {"settings.social_dm_autoreply_enabled": True}
+            {"$or": [
+                {"settings.social_dm_autoreply_enabled": True},
+                {"settings.linkedin_dm_autoreply_enabled": True},
+            ]}
         ).to_list(MAX_USERS_PER_CYCLE)
     except Exception as exc:
         logger.error(f"[SocialAutoReply] user query failed: {exc}")
@@ -63,14 +76,23 @@ async def run_social_autoreply_poll(db) -> None:
     if not users:
         return
 
-    logger.info(f"[SocialAutoReply] polling {len(users)} user(s) with IG DM auto-reply enabled")
+    logger.info(f"[SocialAutoReply] polling {len(users)} user(s) for social DM auto-reply")
     for user in users:
-        try:
-            await _poll_user_instagram(db, user)
-        except Exception as exc:
-            logger.error(
-                f"[SocialAutoReply] user {user.get('_id')} failed: {exc}", exc_info=True
-            )
+        settings = user.get("settings") or {}
+        if settings.get("social_dm_autoreply_enabled"):
+            try:
+                await _poll_user_instagram(db, user)
+            except Exception as exc:
+                logger.error(
+                    f"[SocialAutoReply] IG user {user.get('_id')} failed: {exc}", exc_info=True
+                )
+        if settings.get("linkedin_dm_autoreply_enabled"):
+            try:
+                await _poll_user_linkedin(db, user)
+            except Exception as exc:
+                logger.error(
+                    f"[SocialAutoReply] LinkedIn user {user.get('_id')} failed: {exc}", exc_info=True
+                )
 
 
 async def _poll_user_instagram(db, user: dict) -> None:
@@ -206,6 +228,194 @@ async def _maybe_reply_to_conversation(
     )
 
 
+async def _poll_user_linkedin(db, user: dict) -> None:
+    """Poll the user's LinkedIn DMs (Unipile) and auto-reply to live inbound messages."""
+    import unipile_inbox
+    from unipile_service import resolve_linkedin_account_id
+
+    if not unipile_inbox.is_available():
+        return
+
+    user_oid = user["_id"]
+    business_id = str(user.get("business_id") or user_oid)
+    account_id = await resolve_linkedin_account_id(db, user_oid, business_id)
+    if not account_id:
+        return
+
+    convs = await unipile_inbox.list_conversations(db, user_oid, business_id)
+    if not convs:
+        return
+
+    for conv in convs[:MAX_LINKEDIN_CONVERSATIONS_PER_CYCLE]:
+        try:
+            # Scope: classic 1:1 DMs + company-page (organization) inbox threads.
+            # Skip InMail / Sales Navigator / Recruiter to keep the footprint narrow.
+            if conv.get("linkedin_channel") not in (None, "", "classic", "organization"):
+                continue
+            await _maybe_reply_linkedin_conversation(
+                db, user, user_oid, business_id, account_id, conv
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[SocialAutoReply] linkedin conv {conv.get('id')} failed: {exc}"
+            )
+
+
+async def _maybe_reply_linkedin_conversation(
+    db, user: dict, user_oid: Any, business_id: str, account_id: str, conv: dict
+) -> None:
+    import unipile_inbox
+
+    conv_id = conv.get("id")
+    if not conv_id:
+        return
+
+    # The external contact's provider id. On company-page mailboxes our OWN replies come back
+    # with is_sender=0 (sender_id = the page mailbox id), so `direction`/`is_sender` cannot tell
+    # our messages from the contact's — which previously caused an auto-reply loop. The reliable
+    # signal is: a message is inbound iff its sender_id equals this external attendee id.
+    participant_id = str(conv.get("participantId") or "")
+    participant_name = conv.get("participant_name") or conv.get("participant") or ""
+    if not participant_id:
+        # No stable counterpart id (group/title-only chat) — skip to keep replies 1:1.
+        logger.warning(f"[SocialAutoReply] no participant id for LinkedIn conv {conv_id}; skipping")
+        return
+
+    messages = await unipile_inbox.get_conversation_messages(
+        db, user_oid, business_id, conv_id, account_id
+    )
+    if not messages:
+        return
+
+    latest = messages[-1]
+    # Only act when the newest message was sent BY the contact (not our own reply).
+    if str(latest.get("sender_id") or "") != participant_id:
+        return
+
+    latest_mid = str(latest.get("id") or "")
+    latest_text = (latest.get("text") or latest.get("body") or "").strip()
+    if not latest_mid or not latest_text or latest_text == "[Attachment]":
+        return
+
+    db_user_id = user["_id"]
+    state = await db.social_autoreply_state.find_one(
+        {"user_id": db_user_id, "conversation_id": conv_id}
+    )
+    if state and state.get("last_handled_mid") == latest_mid:
+        return
+
+    # First sight: only reply if the message is live; otherwise baseline (no backlog blast).
+    if not state:
+        ts = _parse_ts(latest.get("created_at") or "")
+        is_live = bool(
+            ts and (datetime.utcnow() - ts) <= timedelta(minutes=NEW_MESSAGE_WINDOW_MINUTES)
+        )
+        if not is_live:
+            await db.social_autoreply_state.update_one(
+                {"user_id": db_user_id, "conversation_id": conv_id},
+                {"$set": {
+                    "user_id": db_user_id,
+                    "conversation_id": conv_id,
+                    "last_handled_mid": latest_mid,
+                    "baseline_only": True,
+                    "updated_at": datetime.utcnow(),
+                }},
+                upsert=True,
+            )
+            return
+
+    # Ban-risk safety: stop once the per-account daily cap is hit.
+    if await _linkedin_daily_count(db, db_user_id, account_id) >= MAX_LINKEDIN_AUTOREPLIES_PER_DAY:
+        logger.info(
+            f"[SocialAutoReply] LinkedIn daily cap reached (user={db_user_id}); skipping"
+        )
+        return
+
+    customer = await _get_or_create_social_customer(
+        db, db_user_id, "linkedin", participant_id, participant_name, conv_id
+    )
+    if customer.get("auto_reply") is False:
+        await _mark_handled(db, db_user_id, conv_id, latest_mid)
+        return
+
+    await _sync_history(
+        db, db_user_id, customer["_id"], messages[:-1],
+        channel="linkedin", participant_id=participant_id,
+    )
+
+    from autoreply.engine import process_message
+
+    sender = _UnipileSender(
+        db=db,
+        user_oid=user_oid,
+        business_id=business_id,
+        conversation_id=conv_id,
+        account_id=account_id,
+    )
+
+    await process_message(
+        db=db,
+        user=user,
+        customer=customer,
+        customer_id=customer["_id"],
+        message=latest_text,
+        from_number=f"meta_linkedin_{participant_id}",
+        whatsapp_service=sender,
+    )
+
+    await _bump_linkedin_daily_count(db, db_user_id, account_id)
+    await _mark_handled(db, db_user_id, conv_id, latest_mid)
+
+    logger.info(
+        f"[SocialAutoReply] ✓ LinkedIn replied user={db_user_id} conv={conv_id} "
+        f"to={participant_name or participant_id}"
+    )
+
+
+class _UnipileSender:
+    """Adapter so autoreply.engine can send a LinkedIn reply via Unipile (send-only).
+
+    Like _ComposioSender, it does not persist to db.messages — the reply lands in Unipile
+    and is mirrored into db.messages on the next poll cycle.
+    """
+
+    def __init__(self, db, user_oid, business_id, conversation_id, account_id):
+        self.db = db
+        self.user_oid = user_oid
+        self.business_id = business_id
+        self.conversation_id = conversation_id
+        self.account_id = account_id
+
+    async def send_message(
+        self,
+        user_id=None,
+        to_number=None,
+        message="",
+        customer_name="",
+        send_context="auto_reply",
+        media_url=None,
+        media_type="image",
+        **kwargs,
+    ) -> bool:
+        import unipile_inbox
+
+        text = (message or "").strip()
+        if not text:
+            return False
+        res = await unipile_inbox.send_message(
+            self.db,
+            self.user_oid,
+            self.business_id,
+            self.conversation_id,
+            self.account_id,
+            text,
+        )
+        ok = bool(res.get("success")) and not res.get("error")
+        if not ok:
+            logger.warning(f"[SocialAutoReply] Unipile send failed: {res.get('error') or res}")
+        return ok
+
+
 class _ComposioSender:
     """Adapter so autoreply.engine can send without knowing it's Composio/Instagram.
 
@@ -291,14 +501,28 @@ async def _get_or_create_social_customer(
     return doc
 
 
-async def _sync_history(db, user_id, customer_id, messages: List[dict]) -> None:
-    """Upsert prior Composio messages into db.messages (dedup by social_mid)."""
+async def _sync_history(
+    db, user_id, customer_id, messages: List[dict],
+    channel: str = "instagram", participant_id: Optional[str] = None,
+) -> None:
+    """Upsert prior inbox messages into db.messages (dedup by social_mid).
+
+    Channel-agnostic: Composio (IG) messages carry text in `content` and direction in/out;
+    Unipile (LinkedIn) messages carry text in `text` and direction inbound/outbound — both
+    shapes are normalized here. When `participant_id` is given (LinkedIn), incoming/outgoing is
+    derived from sender_id (reliable on page mailboxes where is_sender is always 0).
+    """
+    inbound_dirs = ("in", "inbound")
     for m in messages:
         mid = str(m.get("id") or "")
-        content = (m.get("content") or "").strip()
+        content = (m.get("content") or m.get("text") or "").strip()
         if not mid or not content or content == "[Attachment]":
             continue
-        direction = "incoming" if m.get("direction") == "in" else "outgoing"
+        if participant_id is not None:
+            is_incoming = str(m.get("sender_id") or "") == participant_id
+        else:
+            is_incoming = m.get("direction") in inbound_dirs
+        direction = "incoming" if is_incoming else "outgoing"
         await db.messages.update_one(
             {"user_id": user_id, "social_mid": mid},
             {"$setOnInsert": {
@@ -306,7 +530,7 @@ async def _sync_history(db, user_id, customer_id, messages: List[dict]) -> None:
                 "customer_id": customer_id,
                 "direction": direction,
                 "content": content,
-                "channel": "instagram",
+                "channel": channel,
                 "social_mid": mid,
                 "message_type": "text",
                 "send_context": "incoming" if direction == "incoming" else "auto_reply",
@@ -326,5 +550,27 @@ async def _mark_handled(db, user_id, conv_id: str, mid: str) -> None:
             "baseline_only": False,
             "updated_at": datetime.utcnow(),
         }},
+        upsert=True,
+    )
+
+
+# ── LinkedIn daily reply cap (ban-risk mitigation) ───────────────────────────────
+
+def _utc_date_key() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+async def _linkedin_daily_count(db, user_id, account_id: str) -> int:
+    """Auto-replies already sent for this account today (UTC). Resets implicitly via date key."""
+    doc = await db.social_autoreply_limits.find_one(
+        {"user_id": user_id, "account_id": account_id, "date": _utc_date_key()}
+    )
+    return int((doc or {}).get("count") or 0)
+
+
+async def _bump_linkedin_daily_count(db, user_id, account_id: str) -> None:
+    await db.social_autoreply_limits.update_one(
+        {"user_id": user_id, "account_id": account_id, "date": _utc_date_key()},
+        {"$inc": {"count": 1}, "$set": {"updated_at": datetime.utcnow()}},
         upsert=True,
     )

@@ -62,13 +62,23 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     showCheckinCheckout: false,
   },
   services: {
-    // Covers tech/IT services, freelance, trades, repairs
+    // Covers freelance, trades, repairs
     catalogLabel: 'Services', catalogItemLabel: 'Service',
     showDuration: true, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'bookings', primaryColor: '#25D366',
     bookingMode: 'appointment', bookingLabel: 'Appointment',
     staffLabel: 'Technician', customerLabel: 'Client',
+    showCheckinCheckout: false,
+  },
+  tech: {
+    // Tech/IT services, software, consultancy
+    catalogLabel: 'Services', catalogItemLabel: 'Service',
+    showDuration: true, showStock: false,
+    bookingsTabVisible: true, salesTabLabel: 'Revenue',
+    dashboardMode: 'bookings', primaryColor: '#25D366',
+    bookingMode: 'appointment', bookingLabel: 'Appointment',
+    staffLabel: 'Consultant', customerLabel: 'Client',
     showCheckinCheckout: false,
   },
   fitness: {
@@ -248,10 +258,19 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
 
   const load = useCallback(async () => {
     if (!isAuthenticated) { setIsLoading(false); return; }
+    // Re-arm loading on every (re)load — without this, the early
+    // not-authenticated pass sets isLoading=false and the tabs mount with the
+    // default config (Bookings/Broadcast hidden) before settings arrive.
+    setIsLoading(true);
     try {
       const settings = await settingsAPI.getSettings();
-      setBusinessType((settings.business_type as BusinessType) || '');
+      // Accounts without a business_type get 'general' (hybrid): Bookings and
+      // Broadcast both visible — matches the original production app where
+      // these tabs were never hidden.
+      setBusinessType((settings.business_type as BusinessType) || 'general');
     } catch (_) {
+      // Settings fetch failed — show the full tab set rather than hiding tabs.
+      setBusinessType((prev) => prev || 'general');
     } finally {
       setIsLoading(false);
     }

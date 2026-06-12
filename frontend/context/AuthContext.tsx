@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { apiClient } from './api';
 
 interface User {
@@ -9,6 +11,9 @@ interface User {
   owner_name?: string;
   subscription_active: boolean;
   subscription_plan?: string;
+  dashboard_access?: boolean;
+  role?: string;
+  team_members_count?: number;
 }
 
 interface AuthContextType {
@@ -33,6 +38,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     loadStoredAuth();
   }, []);
+
+  useEffect(() => {
+    const initRevenueCat = async () => {
+      const isExpoGo = Constants.appOwnership === 'expo';
+      if (isExpoGo) {
+        console.log('[RevenueCat] Skipping configuration in Expo Go');
+        return;
+      }
+      if (Platform.OS !== 'android') return;
+
+      try {
+        const Purchases = require('react-native-purchases').default;
+        
+        if (__DEV__) {
+          await Purchases.setLogLevel(Purchases.LOG_LEVEL.DEBUG);
+        }
+
+        const apiKey = "goog_QgGKlpHwtYdpJXDHLTdCuGHqkmC";
+        await Purchases.configure({ apiKey });
+
+        if (user && user.id) {
+          const loginResult = await Purchases.logIn(user.id);
+          console.log('[RevenueCat] User identified:', user.id, loginResult);
+        } else {
+          await Purchases.logOut();
+          console.log('[RevenueCat] User logged out');
+        }
+      } catch (err) {
+        console.warn('[RevenueCat] Failed to initialize:', err);
+      }
+    };
+
+    initRevenueCat();
+  }, [user]);
 
   const loadStoredAuth = async () => {
     try {
