@@ -19,7 +19,6 @@ Mini-state (5 fields in conversation_states):
   escalated:        bool
 """
 from __future__ import annotations
-
 import asyncio
 import json
 import logging

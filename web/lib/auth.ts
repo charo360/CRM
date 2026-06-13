@@ -14,6 +14,8 @@ export function clearToken() {
   localStorage.removeItem("user");
 }
 
+
+
 export function getUser(): Record<string, unknown> | null {
   if (typeof window === "undefined") return null;
   try {
