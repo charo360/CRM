@@ -11,6 +11,7 @@ from collaboration.access import require_social_channel_level
 
 logger = logging.getLogger(__name__)
 
+
 ZERNIO_BASE = "https://zernio.com/api/v1"
 
 DEPRECATED_MESSAGE_TAGS = {
