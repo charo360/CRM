@@ -36,6 +36,7 @@ export function formatUsdMonthlyPrice(slug: PlanSlug): string {
   return `$${LANDING_USD[slug]}/mo`;
 }
 
+// TODO: this is a temporary function to redirect the user to the billing page
 export function plansCtaHref(isAuthenticated: boolean, dashboardAccess: boolean): string {
   if (!isAuthenticated) return "/plans";
   if (dashboardAccess) return "/dashboard/billing";
