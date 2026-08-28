@@ -1149,6 +1149,9 @@ class OTPVerify(BaseModel):
     phone_number: str
     code: str
 
+class FirebaseTokenRequest(BaseModel):
+    id_token: str
+
 class WhatsAppAuthStart(BaseModel):
     phone_number: str  # E.164 format: +<country_code><number>
     country_code: Optional[str] = None  # ISO 3166-1 alpha-2 e.g. 'KE'
@@ -2475,6 +2478,7 @@ async def whatsapp_auth_refresh(request: WhatsAppAuthCheck):
 
 _otp_send_rate: dict = {}
 _otp_verify_rate: dict = {}
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
 
 # Dev OTP fallback (code returned in the API response when SMS fails) is only
 # allowed when explicitly enabled — never silently in production.
@@ -2577,46 +2581,13 @@ async def send_otp(request: OTPRequest):
     return response_data
 
 
-@api_router.post("/auth/verify-otp")
-async def verify_otp(request: OTPVerify):
-    """
-    Verify the 6-digit OTP code.
-    If valid:
-      1. Finds or creates the user doc (reusing the new user creation logic).
-      2. Generates a JWT token.
-      3. Returns token, is_new_user, and user object.
-    """
+async def _complete_verified_phone_login(phone: str, auth_provider: str):
+    """Create or sign in a Zilo user after a trusted provider proves phone ownership."""
     from country_utils import detect_country_from_phone, get_payment_methods_for_country
-    
-    phone = request.phone_number.strip()
-    code = request.code.strip()
-
-    if not phone or not code:
-        raise HTTPException(status_code=400, detail="Phone number and code are required")
-
-    # Rate limit: max 8 verification attempts per phone per 10 minutes
-    # (a 6-digit code is brute-forceable without this)
-    if not _rate_limit(_otp_verify_rate, phone, max_attempts=8, window_seconds=600):
-        raise HTTPException(status_code=429, detail="Too many attempts. Please request a new code in a few minutes.")
-
-    # Find the OTP code in MongoDB
-    otp_doc = await db.otp_codes.find_one({"_id": phone})
-    if not otp_doc:
-        raise HTTPException(status_code=400, detail="Invalid verification code or code expired")
-
-    if otp_doc["code"] != code:
-        raise HTTPException(status_code=400, detail="Invalid verification code")
-
-    if datetime.utcnow() > otp_doc["expires_at"]:
-        await db.otp_codes.delete_one({"_id": phone})
-        raise HTTPException(status_code=400, detail="Verification code has expired")
-
-    # OTP is valid! Delete it so it cannot be reused
-    await db.otp_codes.delete_one({"_id": phone})
 
     # ── TEAM MEMBER LOGIN ────────────────────────────────────────────────────
     # If this phone number was pre-added as a team member, log them into the
-    # owner's business directly (the OTP already proved phone ownership).
+    # owner's business directly (the auth provider already proved ownership).
     # Mirrors the team fast-login in /auth/whatsapp-start.
     team_member = await db.team_members.find_one({
         "phone_number": phone,
@@ -2644,7 +2615,7 @@ async def verify_otp(request: OTPVerify):
                 "business_id": business_id,
                 "subscription_active": True,  # Inherits from business
                 "setup_complete": True,
-                "auth_provider": "phone_otp",
+                "auth_provider": auth_provider,
                 "created_at": datetime.utcnow(),
             })
         else:
@@ -2655,6 +2626,7 @@ async def verify_otp(request: OTPVerify):
                     "role": team_member["role"],
                     "business_id": business_id,
                     "setup_complete": True,
+                    "auth_provider": auth_provider,
                 }}
             )
 
@@ -2668,7 +2640,7 @@ async def verify_otp(request: OTPVerify):
         )
 
         token = create_token(emp_user_id, phone)
-        logging.info(f"Team member {phone} logged in via OTP")
+        logging.info(f"Team member {phone} logged in via {auth_provider}")
         return serialize_doc({
             "status": "success",
             "token": token,
@@ -2684,7 +2656,7 @@ async def verify_otp(request: OTPVerify):
                 "business_id": business_id,
                 "role": team_member["role"],
                 "settings": {},
-                "auth_provider": "phone_otp",
+                "auth_provider": auth_provider,
             }
         })
     # ── END TEAM MEMBER LOGIN ────────────────────────────────────────────────
@@ -2713,7 +2685,7 @@ async def verify_otp(request: OTPVerify):
             "setup_complete": False,
             "role": TeamMemberRole.OWNER,
             "business_id": user_id,
-            "auth_provider": "phone_otp",
+            "auth_provider": auth_provider,
             "settings": {"business_type": "retail", "onboarding_v1_completed": False},
         }
         await db.users.insert_one(user_doc)
@@ -2722,6 +2694,11 @@ async def verify_otp(request: OTPVerify):
         user = user_doc
     else:
         user_id = user["_id"]
+        if user.get("auth_provider") != auth_provider:
+            await db.users.update_one(
+                {"_id": user_id}, {"$set": {"auth_provider": auth_provider}}
+            )
+            user["auth_provider"] = auth_provider
 
     token = create_token(user_id, phone)
     
@@ -2743,9 +2720,71 @@ async def verify_otp(request: OTPVerify):
             "business_id": user.get("business_id", user_id),
             "role": user.get("role", TeamMemberRole.OWNER),
             "settings": user.get("settings", {}),
-            "auth_provider": user.get("auth_provider", "phone_otp"),
+            "auth_provider": user.get("auth_provider", auth_provider),
         }
     })
+
+
+async def _verify_firebase_id_token(id_token: str) -> dict:
+    """Verify a Firebase ID token against Google's signing keys and this project."""
+    if not FIREBASE_PROJECT_ID:
+        raise HTTPException(status_code=503, detail="Firebase sign-in is not configured")
+    if not id_token or not id_token.strip():
+        raise HTTPException(status_code=400, detail="Firebase ID token is required")
+
+    try:
+        from google.auth.transport.requests import Request as GoogleRequest
+        from google.oauth2 import id_token as google_id_token
+
+        # google-auth verifies the Google signature, expiry, audience, and issuer.
+        return await asyncio.to_thread(
+            google_id_token.verify_firebase_token,
+            id_token,
+            GoogleRequest(),
+            FIREBASE_PROJECT_ID,
+        )
+    except Exception as exc:
+        logging.warning("Firebase ID token rejected: %s", exc)
+        raise HTTPException(status_code=401, detail="Your Firebase sign-in could not be verified")
+
+
+@api_router.post("/auth/firebase")
+async def verify_firebase_sign_in(request: FirebaseTokenRequest):
+    """Exchange a verified Firebase Phone Auth token for a Zilo session."""
+    decoded_token = await _verify_firebase_id_token(request.id_token)
+    provider = (decoded_token.get("firebase") or {}).get("sign_in_provider")
+    phone = str(decoded_token.get("phone_number") or "").strip()
+    if provider != "phone" or not phone.startswith("+") or len(phone) < 8:
+        raise HTTPException(status_code=401, detail="A verified Firebase phone sign-in is required")
+
+    return await _complete_verified_phone_login(phone, "firebase_phone")
+
+
+@api_router.post("/auth/verify-otp")
+async def verify_otp(request: OTPVerify):
+    """Legacy custom-code verification kept temporarily for existing installed clients."""
+    phone = request.phone_number.strip()
+    code = request.code.strip()
+
+    if not phone or not code:
+        raise HTTPException(status_code=400, detail="Phone number and code are required")
+
+    if not _rate_limit(_otp_verify_rate, phone, max_attempts=8, window_seconds=600):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please request a new code in a few minutes.")
+
+    otp_doc = await db.otp_codes.find_one({"_id": phone})
+    if not otp_doc:
+        raise HTTPException(status_code=400, detail="Invalid verification code or code expired")
+
+    if otp_doc["code"] != code:
+        raise HTTPException(status_code=400, detail="Invalid verification code")
+
+    if datetime.utcnow() > otp_doc["expires_at"]:
+        await db.otp_codes.delete_one({"_id": phone})
+        raise HTTPException(status_code=400, detail="Verification code has expired")
+
+    await db.otp_codes.delete_one({"_id": phone})
+    return await _complete_verified_phone_login(phone, "phone_otp")
 
 
 @api_router.post("/auth/register-web")

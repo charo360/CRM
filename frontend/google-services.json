@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "100694021373",
+    "project_id": "zilo-auth",
+    "storage_bucket": "zilo-auth.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:100694021373:android:f68e015c903aa60472da94",
+        "android_client_info": {
+          "package_name": "com.zilo.reply"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyARc-TOEIQsmkN_LTwoT9IiqkNAwTGpmd0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

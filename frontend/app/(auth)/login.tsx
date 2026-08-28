@@ -34,7 +34,7 @@ export default function LoginScreen() {
       if (result.success) {
         router.push({
           pathname: '/(auth)/verify',
-          params: { phone: cleaned, devOtp: result.devOtp || '' },
+          params: { phone: cleaned },
         });
       } else {
         Alert.alert('Error', result.message || 'Failed to send OTP');

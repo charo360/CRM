@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,7 @@ import { useAuth } from '../../context/AuthContext';
 const RESEND_COOLDOWN = 30; // seconds
 
 export default function VerifyScreen() {
-  const { phone, devOtp } = useLocalSearchParams<{ phone: string; devOtp: string }>();
+  const { phone } = useLocalSearchParams<{ phone: string }>();
   const [code, setCode] = useState(['', '', '', '', '', '']);
   const [loading, setLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(RESEND_COOLDOWN);
@@ -75,7 +75,7 @@ export default function VerifyScreen() {
 
     setLoading(true);
     try {
-      const result = await verifyOTP(phone!, fullCode);
+      const result = await verifyOTP(fullCode);
       if (result.success) {
         if (result.isNewUser) {
           router.replace({
@@ -189,14 +189,6 @@ export default function VerifyScreen() {
             </TouchableOpacity>
           )}
         </View>
-
-        {/* Dev sandbox box — only shown when SMS was NOT sent (no real Vonage keys) */}
-        {devOtp ? (
-          <View style={styles.devBox}>
-            <Ionicons name="flask-outline" size={16} color="#F59E0B" />
-            <Text style={styles.devText}>Dev mode — code: <Text style={styles.devCode}>{devOtp}</Text></Text>
-          </View>
-        ) : null}
       </View>
     </KeyboardAvoidingView>
   );
@@ -310,24 +302,5 @@ const styles = StyleSheet.create({
   resendCooldown: {
     color: '#4A5A72',
     fontSize: 14,
-  },
-  devBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1F1A0D',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 32,
-    borderWidth: 1,
-    borderColor: '#F59E0B',
-    gap: 8,
-  },
-  devText: {
-    color: '#F59E0B',
-    fontSize: 13,
-  },
-  devCode: {
-    fontWeight: 'bold',
-    letterSpacing: 2,
   },
 });

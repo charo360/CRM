@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getAuth, signInWithPhoneNumber, type ConfirmationResult } from '@react-native-firebase/auth';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { apiClient } from './api';
@@ -21,8 +22,8 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  sendOTP: (phone: string) => Promise<{ success: boolean; message?: string; devOtp?: string }>;
-  verifyOTP: (phone: string, code: string) => Promise<{ success: boolean; message?: string; isNewUser?: boolean }>;
+  sendOTP: (phone: string) => Promise<{ success: boolean; message?: string }>;
+  verifyOTP: (code: string) => Promise<{ success: boolean; message?: string; isNewUser?: boolean }>;
   register: (phone: string, businessName: string, ownerName?: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -34,6 +35,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const confirmationRef = useRef<ConfirmationResult | null>(null);
 
   useEffect(() => {
     loadStoredAuth();
@@ -100,25 +102,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const sendOTP = async (phone: string) => {
     try {
-      const response = await apiClient.post('/auth/send-otp', { phone_number: phone });
-      return {
-        success: true,
-        devOtp: response.data.dev_otp // For development testing
-      };
+      confirmationRef.current = await signInWithPhoneNumber(getAuth(), phone);
+      return { success: true };
     } catch (error: any) {
+      const errorMessage = error?.message || 'Failed to send verification code';
+      console.warn('[FirebaseAuth] SMS sign-in failed:', error);
       return {
         success: false,
-        message: error.response?.data?.detail || 'Failed to send OTP',
+        message: errorMessage,
       };
     }
   };
 
-  const verifyOTP = async (phone: string, code: string) => {
+  const verifyOTP = async (code: string) => {
     try {
-      const response = await apiClient.post('/auth/verify-otp', {
-        phone_number: phone,
-        code: code,
-      });
+      if (!confirmationRef.current) {
+        return {
+          success: false,
+          message: 'Your verification session expired. Please request a new code.',
+        };
+      }
+
+      const credential = await confirmationRef.current.confirm(code);
+      const idToken = await credential.user.getIdToken();
+      confirmationRef.current = null;
+
+      const response = await apiClient.post('/auth/firebase', { id_token: idToken });
 
       const { token: newToken, is_new_user, user: userData } = response.data;
 
@@ -135,6 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isNewUser: is_new_user,
       };
     } catch (error: any) {
+      console.warn('[FirebaseAuth] Code verification failed:', error);
       return {
         success: false,
         message: error.response?.data?.detail || 'Verification failed',

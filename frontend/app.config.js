@@ -25,8 +25,9 @@ export default {
       }
     },
     android: {
+      googleServicesFile: "./google-services.json",
       package: "com.zilo.reply",
-      versionCode: 11,
+      versionCode: 12,
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#2DB843"
@@ -42,6 +43,8 @@ export default {
     },
     plugins: [
       "expo-router",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
       "expo-font",
       "expo-web-browser",
       "@react-native-community/datetimepicker",
