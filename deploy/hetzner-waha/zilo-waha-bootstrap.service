@@ -1,0 +1,12 @@
+[Unit]
+Description=Install and start Zilo WAHA on first boot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zilo-waha-bootstrap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
