@@ -207,6 +207,18 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  /** Refresh an expiring pairing code without resetting the linked-device session. */
+  refreshPairingCode: async (phoneNumber: string) => {
+    const response = await apiClient.post('/whatsapp/refresh', { phone_number: phoneNumber });
+    return response.data;
+  },
+
+  /** Fetch the current QR fallback for a pending WhatsApp link. */
+  getQr: async () => {
+    const response = await apiClient.get('/whatsapp/qr');
+    return response.data;
+  },
+
   /**
    * Get WhatsApp connection status and message usage
    */

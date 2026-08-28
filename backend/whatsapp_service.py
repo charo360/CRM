@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 EVOLUTION_API_URL: str = os.environ.get("EVOLUTION_API_URL", "http://localhost:8080")
 EVOLUTION_API_KEY: str = os.environ.get("EVOLUTION_API_KEY", "")
 EVOLUTION_API_VERIFY_SSL: bool = os.environ.get("EVOLUTION_API_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+WHATSAPP_PROVIDER: str = os.environ.get("WHATSAPP_PROVIDER", "evolution").strip().lower()
 
 # Randomized pause between consecutive broadcast/bulk sends (min, max) seconds.
 # Human-like pacing is the single most important anti-ban measure for bulk
@@ -46,7 +47,10 @@ def whatsapp_owner_id(user: dict) -> str:
 
 
 def evolution_config_error() -> Optional[str]:
-    """Human-readable message when Evolution API is not configured; None if OK."""
+    """Backward-compatible provider configuration check used by existing routes."""
+    if WHATSAPP_PROVIDER == "waha":
+        from waha_service import waha_config_error
+        return waha_config_error()
     if not EVOLUTION_API_KEY.strip():
         return "WhatsApp linking is not configured on this server. Please contact support."
     return None
@@ -670,7 +674,10 @@ class WhatsAppService:
                     pass
 
             return {
-                "status": "success",
+                # Do not report a failed provider call as a successful send.
+                # Mobile optimistic UI relies on this status to offer a retry.
+                "status": "error" if delivery_error and not evo_msg_id else "success",
+                "message": "Message was not sent. Please try again." if delivery_error and not evo_msg_id else None,
                 "delivered": evo_msg_id is not None,
                 "delivery_error": delivery_error if not evo_msg_id else None,
                 "customer_id": customer_id,
@@ -1223,8 +1230,20 @@ _whatsapp_service: Optional[WhatsAppService] = None
 
 
 def get_whatsapp_service(db) -> WhatsAppService:
-    """Return singleton WhatsAppService, recreating if db changes."""
+    """Return the configured provider without changing callers across the app."""
     global _whatsapp_service
-    if _whatsapp_service is None or _whatsapp_service.db is not db:
-        _whatsapp_service = WhatsAppService(db)
+    provider = os.environ.get("WHATSAPP_PROVIDER", WHATSAPP_PROVIDER).strip().lower()
+    service_class = WhatsAppService
+    if provider == "waha":
+        from waha_service import WahaWhatsAppService
+        service_class = WahaWhatsAppService
+    elif provider != "evolution":
+        logger.warning("Unknown WHATSAPP_PROVIDER=%r; using Evolution API", provider)
+
+    if (
+        _whatsapp_service is None
+        or _whatsapp_service.db is not db
+        or not isinstance(_whatsapp_service, service_class)
+    ):
+        _whatsapp_service = service_class(db)
     return _whatsapp_service

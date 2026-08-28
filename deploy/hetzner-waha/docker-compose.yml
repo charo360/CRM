@@ -1,0 +1,51 @@
+services:
+  waha:
+    # Pin upgrades deliberately. Test a newer WAHA release on the second node
+    # before rolling it across all customer sessions.
+    image: devlikeapro/waha:gows-2026.8.1
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      WAHA_PRINT_QR: "False"
+      WAHA_NAMESPACE: all
+      WAHA_WORKER_ID: ${WAHA_WORKER_ID}
+      WAHA_DASHBOARD_ENABLED: "false"
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      WHATSAPP_FILES_FOLDER: /app/.media
+      WHATSAPP_FILES_LIFETIME: "0"
+      # The CRM fetches the recent history it needs after linking. Avoid a
+      # multi-year initial sync unexpectedly consuming disk and bandwidth.
+      WAHA_GOWS_DEVICE_REQUIRE_FULL_SYNC: "false"
+      WAHA_GOWS_DEVICE_HISTORY_SYNC_RECENT_SYNC_DAYS_LIMIT: "30"
+      WAHA_GOWS_DEVICE_HISTORY_SYNC_INITIAL_SYNC_MAX_MESSAGES_PER_CHAT: "100"
+      WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_SIZE_MB_LIMIT: "512"
+    volumes:
+      - ./data/sessions:/app/.sessions
+      - ./data/media:/app/.media
+    expose:
+      - "3000"
+    networks:
+      - waha
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      - waha
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      WAHA_DOMAIN: ${WAHA_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./config/caddy:/config
+    networks:
+      - waha
+
+networks:
+  waha:
+    driver: bridge

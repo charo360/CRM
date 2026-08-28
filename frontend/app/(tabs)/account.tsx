@@ -11,6 +11,7 @@ import {
   Switch,
   TextInput,
   Modal,
+  Image,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -65,6 +66,7 @@ export default function AccountScreen() {
   const [waNumber, setWaNumber] = useState('');
   const [waPhoneInput, setWaPhoneInput] = useState('');
   const [waPairingCode, setWaPairingCode] = useState('');
+  const [waQrBase64, setWaQrBase64] = useState('');
   const [waConnecting, setWaConnecting] = useState(false);
   const [waDisconnecting, setWaDisconnecting] = useState(false);
   const [waMsgSent, setWaMsgSent] = useState(0);
@@ -175,10 +177,11 @@ export default function AccountScreen() {
       });
     }, 1000);
 
-    // Auto-refresh code at 50s (before 60s expiry)
+    // Auto-refresh code at 50s (before 60s expiry). This endpoint intentionally
+    // keeps the existing WhatsApp session instead of recreating it.
     waRefreshRef.current = setTimeout(async () => {
       try {
-        const res = await whatsappAPI.connect(phone);
+        const res = await whatsappAPI.refreshPairingCode(phone);
         if (res.pairing_code) {
           startPairingTimers(res.pairing_code, phone);
         }
@@ -205,6 +208,39 @@ export default function AccountScreen() {
     }, 5000);
   }, [clearWaTimers]);
 
+  const startQrTimers = useCallback((qrBase64: string) => {
+    clearWaTimers();
+    setWaPairingCode('');
+    setWaQrBase64(qrBase64);
+
+    // WhatsApp rotates QR codes. Refresh the image without recreating the
+    // WAHA session, while polling connection state as with phone pairing.
+    waRefreshRef.current = setTimeout(async () => {
+      try {
+        const res = await whatsappAPI.getQr();
+        if (res.qr_base64) startQrTimers(res.qr_base64);
+      } catch (e) {
+        console.log('QR refresh failed');
+      }
+    }, 20000);
+
+    waPollingRef.current = setInterval(async () => {
+      try {
+        const waRes = await whatsappAPI.getStatus();
+        if (waRes.connected) {
+          clearWaTimers();
+          setWaConnected(true);
+          setWaStatus(waRes.status);
+          setWaNumber(waRes.number || '');
+          setWaQrBase64('');
+          setWaMsgSent(waRes.messages_sent || 0);
+          setWaMsgLimit(waRes.messages_limit || 50);
+          Alert.alert('Connected!', 'WhatsApp linked successfully.');
+        }
+      } catch (e) { /* ignore a transient status poll failure */ }
+    }, 5000);
+  }, [clearWaTimers]);
+
   const handleCopyCode = async () => {
     if (!waPairingCode) return;
     await Clipboard.setStringAsync(waPairingCode);
@@ -226,12 +262,15 @@ export default function AccountScreen() {
     }
     setWaConnecting(true);
     setWaPairingCode('');
+    setWaQrBase64('');
     try {
       const res = await whatsappAPI.connect(waPhoneInput.trim());
       if (res.pairing_code) {
         startPairingTimers(res.pairing_code, waPhoneInput.trim());
+      } else if (res.qr_base64) {
+        startQrTimers(res.qr_base64);
       } else {
-        Alert.alert('Error', res.message || 'Failed to get pairing code');
+        Alert.alert('Error', res.message || 'Failed to get a WhatsApp link code');
       }
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to connect WhatsApp');
@@ -258,6 +297,7 @@ export default function AccountScreen() {
               setWaStatus('not_connected');
               setWaNumber('');
               setWaPairingCode('');
+              setWaQrBase64('');
               setWaPhoneInput('');
             } catch (error: any) {
               Alert.alert('Error', error.response?.data?.detail || 'Failed to disconnect');
@@ -474,25 +514,39 @@ export default function AccountScreen() {
                   <View style={{ height: 4, backgroundColor: waMsgSent / waMsgLimit > 0.9 ? '#FF4444' : '#25D366', borderRadius: 2, width: `${Math.min((waMsgSent / waMsgLimit) * 100, 100)}%` }} />
                 </View>
               </View>
-            ) : waPairingCode ? (
+            ) : (waPairingCode || waQrBase64) ? (
               <View>
-                <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Enter this code in WhatsApp</Text>
-                <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 12 }}>
-                  Open WhatsApp {'>'} Settings {'>'} Linked Devices {'>'} Link a Device {'>'} Link with phone number
-                </Text>
-                <TouchableOpacity
-                  onPress={handleCopyCode}
-                  activeOpacity={0.7}
-                  style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 12 }}
-                >
-                  <Text style={{ color: '#25D366', fontSize: 32, fontWeight: '700', letterSpacing: 8 }}>{waPairingCode}</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
-                    <Ionicons name={waCopied ? 'checkmark-circle' : 'copy-outline'} size={16} color={waCopied ? '#25D366' : '#8A9BB5'} />
-                    <Text style={{ color: waCopied ? '#25D366' : '#8A9BB5', fontSize: 12, marginLeft: 6 }}>
-                      {waCopied ? 'Copied to clipboard!' : 'Tap to copy code'}
+                {waPairingCode ? (
+                  <>
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Enter this code in WhatsApp</Text>
+                    <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 12 }}>
+                      Open WhatsApp {'>'} Settings {'>'} Linked Devices {'>'} Link a Device {'>'} Link with phone number
                     </Text>
-                  </View>
-                </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={handleCopyCode}
+                      activeOpacity={0.7}
+                      style={{ backgroundColor: 'rgba(37,211,102,0.1)', borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 12 }}
+                    >
+                      <Text style={{ color: '#25D366', fontSize: 32, fontWeight: '700', letterSpacing: 8 }}>{waPairingCode}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
+                        <Ionicons name={waCopied ? 'checkmark-circle' : 'copy-outline'} size={16} color={waCopied ? '#25D366' : '#8A9BB5'} />
+                        <Text style={{ color: waCopied ? '#25D366' : '#8A9BB5', fontSize: 12, marginLeft: 6 }}>
+                          {waCopied ? 'Copied to clipboard!' : 'Tap to copy code'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 8 }}>Scan this QR code in WhatsApp</Text>
+                    <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 12 }}>
+                      WhatsApp {'>'} Settings {'>'} Linked Devices {'>'} Link a Device
+                    </Text>
+                    <View style={{ backgroundColor: '#FFFFFF', borderRadius: 12, padding: 12, alignItems: 'center', marginBottom: 12 }}>
+                      <Image source={{ uri: waQrBase64 }} style={{ width: 220, height: 220 }} resizeMode="contain" />
+                    </View>
+                  </>
+                )}
                 <TouchableOpacity
                   style={{ backgroundColor: '#25D366', borderRadius: 10, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}
                   onPress={handleOpenWhatsApp}
@@ -500,17 +554,17 @@ export default function AccountScreen() {
                   <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
                   <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>Open WhatsApp</Text>
                 </TouchableOpacity>
-                <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
+                {waPairingCode && <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
                   <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: waCountdown > 10 ? '#25D366' : '#FF4444', marginRight: 8 }} />
                   <Text style={{ color: waCountdown > 10 ? '#8A9BB5' : '#FF4444', fontSize: 12 }}>
                     {waCountdown > 0 ? `Code refreshes in ${waCountdown}s` : 'Refreshing code...'}
                   </Text>
-                </View>
+                </View>}
                 <ActivityIndicator size="small" color="#25D366" />
                 <Text style={{ color: '#8A9BB5', fontSize: 11, textAlign: 'center', marginTop: 6 }}>Waiting for connection...</Text>
                 <TouchableOpacity
                   style={{ marginTop: 14, alignItems: 'center' }}
-                  onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaPhoneInput(''); }}
+                  onPress={() => { clearWaTimers(); setWaPairingCode(''); setWaQrBase64(''); setWaPhoneInput(''); }}
                 >
                   <Text style={{ color: '#8A9BB5', fontSize: 14 }}>Cancel</Text>
                 </TouchableOpacity>

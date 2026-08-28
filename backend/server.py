@@ -742,6 +742,7 @@ async def _backfill_all_users_names():
     """Fix fallback names (Customer XXXX / Contact XXXX / raw phone) for all users"""
     from whatsapp_service import get_whatsapp_service, EVOLUTION_API_URL, EVOLUTION_API_KEY
     import httpx as _httpx, re as _re
+    whatsapp_service = get_whatsapp_service(db)
     try:
         users = await db.users.find(
             {"whatsapp.instance_name": {"$exists": True, "$ne": ""}},
@@ -755,6 +756,12 @@ async def _backfill_all_users_names():
             uid = u["_id"]
             instance_name = u.get("whatsapp", {}).get("instance_name")
             if not instance_name:
+                continue
+            # WAHA has its own contacts endpoint. Besides backfilling names it
+            # safely creates any missing contacts, matching the user-triggered
+            # WhatsApp sync behaviour.
+            if getattr(whatsapp_service, "provider", "evolution") == "waha":
+                await whatsapp_service.fetch_contacts(uid)
                 continue
             base_url = EVOLUTION_API_URL.rstrip("/")
             headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
@@ -8615,6 +8622,23 @@ async def force_cleanup_evolution_instance(request: Request, user = Depends(get_
         instance_name = f"user_{target_user_id.replace('-', '_')}"
 
     results = {}
+    whatsapp_service = get_whatsapp_service(db)
+    if getattr(whatsapp_service, "provider", "evolution") == "waha":
+        if not target_user_id:
+            linked_user = await whatsapp_service.find_user_by_instance(instance_name)
+            target_user_id = linked_user.get("_id") if linked_user else None
+        if not target_user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="For WAHA cleanup, provide the linked user_id so the correct WAHA node can be selected.",
+            )
+        result = await whatsapp_service.disconnect_instance(str(target_user_id))
+        return {
+            "instance_name": instance_name,
+            "success": result.get("status") == "success",
+            "results": result.get("results", result),
+            "note": "WAHA session logged out and deleted.",
+        }
     try:
         import httpx as _httpx
         evo_base = os.environ.get('EVOLUTION_API_URL', 'http://localhost:8080').rstrip('/')
@@ -8677,12 +8701,12 @@ async def export_account_data(user = Depends(get_current_user)):
 
     return export
 
-# ============ WHATSAPP (EVOLUTION API) ENDPOINTS ============
+# ============ WHATSAPP ENDPOINTS ============
 
 @api_router.post("/whatsapp/connect")
 async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     """
-    Start WhatsApp pairing: creates Evolution API instance and returns pairing code.
+    Start WhatsApp pairing and return a phone pairing code.
     User enters the code in WhatsApp > Linked Devices > Link with phone number.
     """
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
@@ -8708,12 +8732,32 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
         ) from e
 
     if result.get("status") == "error":
-        logging.warning(f"[whatsapp/connect] Evolution error: {result.get('message', '')[:300]}")
+        logging.warning(f"[whatsapp/connect] provider error: {result.get('message', '')[:300]}")
         raise HTTPException(
             status_code=503,
             detail="Could not start WhatsApp pairing. Check your number and try again, or use QR link on Integrations.",
         )
 
+    return result
+
+
+@api_router.post("/whatsapp/refresh")
+async def whatsapp_refresh_pairing_code(request: Request, user = Depends(get_current_user)):
+    """Refresh a phone pairing code without recreating the WhatsApp session."""
+    from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    if cfg_err := evolution_config_error():
+        raise HTTPException(status_code=503, detail=cfg_err)
+    body = await request.json()
+    phone_number = body.get("phone_number", "").strip()
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="Phone number is required")
+
+    result = await get_whatsapp_service(db).refresh_pairing_code(
+        whatsapp_owner_id(user), phone_number
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=503, detail="Could not refresh the pairing code. Use QR linking instead.")
     return result
 
 @api_router.post("/whatsapp/qr-start")
@@ -8734,6 +8778,14 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
     user_id = whatsapp_owner_id(user)
     if not user_id:
         raise HTTPException(status_code=400, detail="Could not resolve account for WhatsApp linking.")
+
+    # WAHA owns its session lifecycle. It creates/starts the named session
+    # without deleting prior auth state, then returns a fresh QR image.
+    if getattr(wa_service, "provider", "evolution") == "waha":
+        result = await wa_service.create_qr_instance(user_id)
+        if result.get("status") == "error":
+            raise HTTPException(status_code=503, detail="Could not prepare WhatsApp for QR scan. Please try again shortly.")
+        return result
 
     extra_names: list[str] = []
     stored_name = (user.get("whatsapp") or {}).get("instance_name")
@@ -8891,7 +8943,7 @@ def _extract_qr(data: dict) -> str:
 @api_router.get("/whatsapp/qr")
 async def whatsapp_qr_fetch(user = Depends(get_current_user)):
     """Fetch a refreshed QR code for an existing pending instance."""
-    import httpx as _httpx
+    import httpx as _httpx, os as _os
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
 
     cfg_err = evolution_config_error()
@@ -8900,6 +8952,13 @@ async def whatsapp_qr_fetch(user = Depends(get_current_user)):
 
     wa_service = get_whatsapp_service(db)
     user_id = whatsapp_owner_id(user)
+
+    if getattr(wa_service, "provider", "evolution") == "waha":
+        result = await wa_service.get_qr_code(user_id)
+        return {
+            "qr_base64": result.get("qr_base64", ""),
+            "connection_state": result.get("connection_state", ""),
+        }
     instance_name = wa_service._instance_name(user_id)
 
     _verify_ssl = _os.environ.get("EVOLUTION_API_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
@@ -9113,6 +9172,13 @@ async def backfill_contact_names(user = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="WhatsApp not connected")
 
     instance_name = wa["instance_name"]
+
+    whatsapp_service = get_whatsapp_service(db)
+    if getattr(whatsapp_service, "provider", "evolution") == "waha":
+        result = await whatsapp_service.fetch_contacts(uid)
+        if result.get("status") != "success":
+            raise HTTPException(status_code=502, detail="Could not fetch WhatsApp contacts for name backfill.")
+        return result
 
     async def _backfill(uid, instance_name):
         updated = 0
@@ -9396,6 +9462,8 @@ async def send_whatsapp_media(
         )
         if send_result.get("status") == "limit_reached":
             raise HTTPException(status_code=429, detail=send_result.get("message"))
+        if send_result.get("status") == "error":
+            raise HTTPException(status_code=502, detail=send_result.get("message") or "WhatsApp did not accept the message")
         return send_result
     except HTTPException:
         raise
@@ -9463,6 +9531,8 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
         )
         if result.get("status") == "limit_reached":
             raise HTTPException(status_code=429, detail=result.get("message"))
+        if result.get("status") == "error":
+            raise HTTPException(status_code=502, detail=result.get("message") or "WhatsApp did not accept the message")
         return result
     except HTTPException:
         raise
@@ -9621,15 +9691,20 @@ async def evolution_webhook(request: Request):
 
     log_trace("Webhook received")
 
-    # Verify webhook authenticity via API key header or query param
-    incoming_key = (
-        request.headers.get("apikey")
-        or request.headers.get("x-webhook-secret")
-        or request.query_params.get("key")
-    )
-    if WEBHOOK_SECRET and incoming_key and incoming_key != WEBHOOK_SECRET:
-        logging.warning(f"Webhook auth failed: got key={incoming_key!r}")
-        raise HTTPException(status_code=401, detail="Unauthorized webhook")
+    # Verify webhook authenticity via API key header or query param. Missing
+    # credentials must fail closed; accepting them allowed forged CRM messages.
+    if not getattr(request, "_zilo_provider_verified", False):
+        incoming_key = (
+            request.headers.get("apikey")
+            or request.headers.get("x-webhook-secret")
+            or request.query_params.get("key")
+        )
+        if not WEBHOOK_SECRET:
+            logging.error("Evolution webhook rejected because WEBHOOK_SECRET is not configured")
+            raise HTTPException(status_code=503, detail="Webhook authentication is not configured")
+        if not incoming_key or not hmac.compare_digest(incoming_key, WEBHOOK_SECRET):
+            logging.warning("Evolution webhook authentication failed")
+            raise HTTPException(status_code=401, detail="Unauthorized webhook")
 
     try:
         payload = await request.json()
@@ -11136,6 +11211,72 @@ async def evolution_webhook(request: Request):
         return {"status": "error", "message": str(e)}
 
 
+class _VerifiedProviderWebhookRequest:
+    """Small request adapter for dispatching an already HMAC-verified WAHA event.
+
+    The mature inbound-message workflow above is provider-neutral after parsing;
+    this adapter lets WAHA reuse it without exposing an authentication bypass to
+    a real HTTP request.
+    """
+
+    _zilo_provider_verified = True
+    query_params: dict = {}
+    headers: dict = {}
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    async def json(self) -> dict:
+        return self._payload
+
+
+@api_router.post("/webhooks/waha")
+async def waha_webhook(request: Request):
+    """Verify a WAHA webhook and normalize it into Zilo's existing event flow."""
+    secret = os.environ.get("WAHA_WEBHOOK_SECRET", "")
+    if not secret:
+        logging.error("WAHA webhook rejected because WAHA_WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=503, detail="Webhook authentication is not configured")
+
+    raw_body = await request.body()
+    signature = (request.headers.get("x-webhook-hmac") or "").strip().lower()
+    if signature.startswith("sha512="):
+        signature = signature.split("=", 1)[1]
+    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha512).hexdigest()
+    if not signature or not hmac.compare_digest(signature, expected):
+        logging.warning("WAHA webhook authentication failed")
+        raise HTTPException(status_code=401, detail="Unauthorized webhook")
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload") from exc
+
+    event = str(payload.get("event") or "")
+    session = str(payload.get("session") or "")
+    provider_data = payload.get("payload") or {}
+    if not session or not isinstance(provider_data, dict):
+        raise HTTPException(status_code=400, detail="Invalid WAHA webhook event")
+
+    if event == "session.status":
+        status = str(provider_data.get("status") or "").upper()
+        state = "open" if status == "WORKING" else ("connecting" if status in ("STARTING", "SCAN_QR_CODE") else "close")
+        data = dict(provider_data)
+        data["state"] = state
+        data["me"] = payload.get("me") or {}
+        normalized = {"event": "CONNECTION_UPDATE", "instance": session, "data": data}
+    elif event == "message":
+        normalized = {"event": "MESSAGES_UPSERT", "instance": session, "data": provider_data}
+    elif event == "message.ack":
+        normalized = {"event": "MESSAGES_UPDATE", "instance": session, "data": provider_data}
+    else:
+        # WAHA can deliver optional events not needed by Zilo. Acknowledge them
+        # so they do not create retries or a load spike.
+        return {"status": "ignored", "event": event}
+
+    return await evolution_webhook(_VerifiedProviderWebhookRequest(normalized))
+
+
 async def webhook_replay_loop():
     """Retry failed Evolution webhook payloads by re-POSTing to our own
     endpoint (re-enters the exact same processing path). Max 5 attempts with
@@ -11374,6 +11515,16 @@ async def delete_message_for_everyone(message_id: str, user = Depends(get_curren
     instance_name = wa.get("instance_name")
     if not instance_name:
         raise HTTPException(status_code=400, detail="WhatsApp not connected")
+
+    whatsapp_service = get_whatsapp_service(db)
+    if getattr(whatsapp_service, "provider", "evolution") == "waha":
+        result = await whatsapp_service.delete_message_for_everyone(
+            business_id, instance_name, remote_jid, evo_msg_id
+        )
+        if result.get("status") != "success":
+            raise HTTPException(status_code=502, detail="WhatsApp delete failed. The message may be too old to revoke.")
+        await db.messages.delete_one({"_id": message_id})
+        return {"status": "success", "message": "Message deleted for everyone"}
 
     import os as _os, httpx as _httpx
     base_url = _os.environ.get("EVOLUTION_API_URL", "http://localhost:8080")

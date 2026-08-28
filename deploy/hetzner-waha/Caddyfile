@@ -1,0 +1,4 @@
+{$WAHA_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy waha:3000
+}
