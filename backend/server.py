@@ -8486,37 +8486,44 @@ def _revenuecat_datetime(value: object) -> Optional[datetime]:
 async def revenuecat_subscription_webhook(request: Request):
     """Synchronise the authoritative Google Play subscription lifecycle.
 
-    RevenueCat signs the *raw* payload as ``timestamp.payload``. This keeps
-    WhatsApp access in sync for trial conversion, renewals, cancellations and
-    expiry without trusting a mobile client to tell us it has paid.
+    RevenueCat can authenticate callbacks with either its signed raw-payload
+    HMAC header or the static ``Authorization`` header configured in its
+    webhook UI. This keeps WhatsApp access in sync for trial conversion,
+    renewals, cancellations and expiry without trusting a mobile client to
+    tell us it has paid.
     """
     import hashlib
     import hmac
     import json
     import time
 
-    signing_secret = os.environ.get("REVENUECAT_WEBHOOK_SIGNING_SECRET", "")
-    if not signing_secret:
-        logging.error("RevenueCat webhook received but signing is not configured")
-        raise HTTPException(status_code=503, detail="Subscription webhook is not configured")
-
     raw_body = await request.body()
+    signing_secret = os.environ.get("REVENUECAT_WEBHOOK_SIGNING_SECRET", "")
+    expected_authorization = os.environ.get("REVENUECAT_WEBHOOK_AUTHORIZATION", "")
     signature_header = request.headers.get("X-RevenueCat-Webhook-Signature", "")
-    try:
-        signature_parts = dict(part.split("=", 1) for part in signature_header.split(",") if "=" in part)
-        timestamp = signature_parts["t"]
-        received_signature = signature_parts["v1"]
-        expected_signature = hmac.new(
-            signing_secret.encode(),
-            f"{timestamp}.".encode() + raw_body,
-            hashlib.sha256,
-        ).hexdigest()
-        timestamp_is_fresh = abs(time.time() - int(timestamp)) <= 300
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(status_code=401, detail="Invalid RevenueCat webhook signature")
+    if signing_secret and signature_header:
+        try:
+            signature_parts = dict(part.split("=", 1) for part in signature_header.split(",") if "=" in part)
+            timestamp = signature_parts["t"]
+            received_signature = signature_parts["v1"]
+            expected_signature = hmac.new(
+                signing_secret.encode(),
+                f"{timestamp}.".encode() + raw_body,
+                hashlib.sha256,
+            ).hexdigest()
+            timestamp_is_fresh = abs(time.time() - int(timestamp)) <= 300
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=401, detail="Invalid RevenueCat webhook signature")
 
-    if not timestamp_is_fresh or not hmac.compare_digest(expected_signature, received_signature):
-        raise HTTPException(status_code=401, detail="Invalid RevenueCat webhook signature")
+        if not timestamp_is_fresh or not hmac.compare_digest(expected_signature, received_signature):
+            raise HTTPException(status_code=401, detail="Invalid RevenueCat webhook signature")
+    elif expected_authorization:
+        received_authorization = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(expected_authorization, received_authorization):
+            raise HTTPException(status_code=401, detail="Invalid RevenueCat webhook authorization")
+    else:
+        logging.error("RevenueCat webhook received but authentication is not configured")
+        raise HTTPException(status_code=503, detail="Subscription webhook is not configured")
 
     try:
         payload = json.loads(raw_body)
