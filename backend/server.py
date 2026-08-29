@@ -14501,6 +14501,12 @@ async def send_product_to_customer(
         raise HTTPException(status_code=404, detail="Customer not found")
     
     currency = user.get("settings", {}).get("currency", "USD")
+    try:
+        from storefront_routes import public_storefront_url_for_user
+        storefront_url = await public_storefront_url_for_user(db, user)
+    except Exception as exc:
+        logging.warning("[storefront] could not add catalog link to product send: %s", exc)
+        storefront_url = None
     stock_label = "✅ In Stock" if product.get("in_stock", True) else "❌ Out of Stock"
     desc = f"\n_{product.get('description', '')}_" if product.get("description") else ""
     price = product.get('price') or 0
@@ -14510,6 +14516,8 @@ async def send_product_to_customer(
         f"{stock_label}{desc}\n\n"
         f"👉 Reply *Yes* or *Order* to buy!"
     )
+    if storefront_url:
+        message_text += f"\n\n🛍️ Browse the full catalog & pay online:\n{storefront_url}"
     
     # Collect all product images (deduplicated, preserving order)
     server_url = os.environ.get("SERVER_URL", "").rstrip("/")
@@ -14584,7 +14592,8 @@ async def send_product_to_customer(
     return {
         "status": "success",
         "message_id": result.get("message_id"),
-        "customer_name": result.get("customer_name")
+        "customer_name": result.get("customer_name"),
+        "storefront_url": storefront_url,
     }
 
 class AIDescriptionRequest(BaseModel):
@@ -14866,6 +14875,12 @@ async def send_catalog_to_customer(
         raise HTTPException(status_code=400, detail="No valid products found")
     
     currency = user.get("settings", {}).get("currency", "USD")
+    try:
+        from storefront_routes import public_storefront_url_for_user
+        storefront_url = await public_storefront_url_for_user(db, user)
+    except Exception as exc:
+        logging.warning("[storefront] could not add catalog link to customer send: %s", exc)
+        storefront_url = None
     
     from whatsapp_service import get_whatsapp_service
     whatsapp_service = get_whatsapp_service(db)
@@ -14883,6 +14898,8 @@ async def send_catalog_to_customer(
             f"{stock_label}{desc}\n\n"
             f"👉 Reply *{i+1}* to order!"
         )
+        if storefront_url and i == len(products) - 1:
+            message_text += f"\n\n🛍️ Browse the full catalog & pay online:\n{storefront_url}"
         
         # Collect all product images (deduplicated, preserving order)
         all_images = []
@@ -14935,7 +14952,8 @@ async def send_catalog_to_customer(
     return {
         "status": "success",
         "products_sent": len(products),
-        "message_id": result.get("message_id")
+        "message_id": result.get("message_id"),
+        "storefront_url": storefront_url,
     }
 
 @api_router.post("/products/broadcast-catalog")
@@ -14976,6 +14994,12 @@ async def broadcast_catalog(
 
     currency = user.get("settings", {}).get("currency", "USD")
     business_name = user.get("business_name", "Our Store")
+    try:
+        from storefront_routes import public_storefront_url_for_user
+        storefront_url = await public_storefront_url_for_user(db, user)
+    except Exception as exc:
+        logging.warning("[storefront] could not add catalog link to broadcast: %s", exc)
+        storefront_url = None
     server_url = os.environ.get("SERVER_URL", "").rstrip("/")
 
     def _resolve_img(img: str) -> Optional[str]:
@@ -14995,6 +15019,8 @@ async def broadcast_catalog(
             f"💰 {currency} {p.get('price', 0):,.0f}\n\n"
             f"👉 Reply *{i}* to order!"
         )
+        if storefront_url and i == len(catalog_products):
+            caption += f"\n\n🛍️ Browse the full catalog & pay online:\n{storefront_url}"
         imgs = p.get("images") or ([p["image_url"]] if p.get("image_url") else [])
         resolved_imgs = [u for u in (_resolve_img(u) for u in imgs) if u]
         product_messages.append({"caption": caption, "images": resolved_imgs})
@@ -15003,6 +15029,8 @@ async def broadcast_catalog(
     summary_lines = [f"🛍️ *{business_name}* Catalog\n"]
     for i, p in enumerate(catalog_products, 1):
         summary_lines.append(f"*{i}.* {p['name']} — {currency} {p.get('price', 0):,.0f}")
+    if storefront_url:
+        summary_lines.append(f"\n🛍️ Browse & pay online: {storefront_url}")
     message_text = "\n".join(summary_lines)
     first_image = product_messages[0]["images"][0] if product_messages and product_messages[0]["images"] else None
     product_index_list = [{"id": p["_id"], "name": p["name"], "price": p.get("price", 0), "index": i} for i, p in enumerate(catalog_products, 1)]

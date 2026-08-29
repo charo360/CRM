@@ -60,6 +60,23 @@ async def _ensure_store_slug(db, user_doc: dict) -> str:
     raise HTTPException(503, "Could not create a public catalog link. Please try again.")
 
 
+async def public_storefront_url_for_user(db, user_doc: dict) -> Optional[str]:
+    """Return a business's public shop URL, creating its stable slug when needed.
+
+    Catalog messages must never point to a personal staff account. Resolve the
+    actual business record first, and only return a link while the storefront is
+    enabled.
+    """
+    business_id = user_doc.get("business_id", user_doc.get("_id"))
+    if not business_id:
+        return None
+    business = await db.users.find_one({"_id": business_id})
+    if not business or business.get("storefront_enabled", True) is False:
+        return None
+    slug = await _ensure_store_slug(db, business)
+    return f"{_public_origin()}/s/{slug}"
+
+
 async def _business_doc(db, slug: str) -> dict:
     normalized = _text(slug, 80).lower()
     if not _SLUG_RE.fullmatch(normalized):

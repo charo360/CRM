@@ -312,10 +312,27 @@ async def process_message(
                         except Exception as img_err:
                             logger.warning(f"[AutoReplyV2] Failed to send catalog image: {img_err}")
 
-        # 9. Send text reply — append order number if a new order was created
+        # 9. Send text reply — append checkout link after catalog/product cards.
+        # The WhatsApp conversation still supports numbered replies, while the
+        # same customer can switch to the full browser catalog and checkout.
+        storefront_url = None
+        catalog_was_shared = any(
+            action.get("type") in {"send_catalog_images", "send_product_image"}
+            for action in actions
+            if isinstance(action, dict)
+        )
+        if catalog_was_shared:
+            try:
+                from storefront_routes import public_storefront_url_for_user
+                storefront_url = await public_storefront_url_for_user(db, user)
+            except Exception as exc:
+                logger.warning("[AutoReplyV2] Could not add storefront link: %s", exc)
+
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY
         if action_results.get("order_number"):
             reply_text += f"\n\n🧾 *Order #:* {action_results['order_number']}"
+        if storefront_url:
+            reply_text += f"\n\n🛍️ Browse the full catalog & pay online:\n{storefront_url}"
         is_fallback = response_data.get("_is_fallback", False)
         await whatsapp_service.send_message(
             user_id=user_id,
