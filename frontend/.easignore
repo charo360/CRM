@@ -5,3 +5,6 @@ Temp/
 *.temp
 node_modules/
 .git/
+.expo/
+.metro-cache/
+dist/
