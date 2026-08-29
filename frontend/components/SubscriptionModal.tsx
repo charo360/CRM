@@ -168,11 +168,34 @@ export default function SubscriptionModal({
         try {
           const purchaseToken = transaction?.purchaseToken || transaction?.transactionIdentifier || transaction?.revenueCatId || '';
           const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
-          await apiClient.post('/subscription/verify-purchase', {
+          const verificationResponse = await apiClient.post('/subscription/verify-purchase', {
             plan_id: plan.id,
             purchase_token: purchaseToken,
             platform,
           });
+
+          // If direct Google verification is intentionally unavailable, wait
+          // for the signed RevenueCat webhook to mark this authenticated user
+          // active. This never grants access from client-side purchase data.
+          if (verificationResponse.data?.status === 'pending') {
+            const deadline = Date.now() + 60000;
+            let confirmed = false;
+            while (Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              const statusResponse = await apiClient.get('/subscription/status');
+              if (statusResponse.data?.subscription_active) {
+                confirmed = true;
+                break;
+              }
+            }
+            if (!confirmed) {
+              Alert.alert(
+                'Confirming your subscription',
+                'Google Play accepted your trial. Zilo is waiting for the secure confirmation, which can take up to a minute. Please try connecting WhatsApp again shortly.'
+              );
+              return;
+            }
+          }
         } catch (syncErr) {
           console.warn('Backend subscription sync failed:', syncErr);
           Alert.alert(

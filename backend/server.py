@@ -8427,6 +8427,25 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
         raise HTTPException(status_code=400, detail="Invalid platform")
 
     if not verification.get("valid"):
+        # RevenueCat is our authoritative subscription lifecycle source. When
+        # direct Android Publisher verification has not been configured yet,
+        # do not treat a client purchase as valid and do not unlock access.
+        # Instead, let the signed RevenueCat webhook confirm the transaction;
+        # the mobile app polls the authenticated subscription-status endpoint
+        # until that confirmation arrives.
+        if (
+            request.platform == "android"
+            and verification.get("reason") == "Google Play subscription verification is not configured"
+        ):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "pending",
+                    "message": "Waiting for RevenueCat purchase confirmation",
+                    "plan": request.plan_id,
+                },
+            )
         logging.warning(f"IAP verification failed for user {user['_id']}: {verification.get('reason')}")
         raise HTTPException(status_code=403, detail=f"Purchase verification failed: {verification.get('reason', 'unknown')}")
 
