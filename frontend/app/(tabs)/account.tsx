@@ -248,11 +248,29 @@ export default function AccountScreen() {
     setTimeout(() => setWaCopied(false), 2000);
   };
 
-  const handleOpenWhatsApp = () => {
-    Linking.openURL('whatsapp://')
-      .catch(() => {
-        Alert.alert('Error', 'Could not open WhatsApp. Please open it manually and go to Linked Devices.');
-      });
+  const handleOpenWhatsApp = async () => {
+    // The bare `whatsapp://` URI is not handled by some Android WhatsApp
+    // installations. Try WhatsApp's send route first, then the two Android
+    // package variants before showing the manual instructions.
+    const launchUrls = [
+      'whatsapp://send',
+      'intent://send/#Intent;scheme=whatsapp;package=com.whatsapp;end',
+      'intent://send/#Intent;scheme=whatsapp;package=com.whatsapp.w4b;end',
+    ];
+
+    for (const url of launchUrls) {
+      try {
+        await Linking.openURL(url);
+        return;
+      } catch {
+        // Try the next supported WhatsApp app route.
+      }
+    }
+
+    Alert.alert(
+      'Open WhatsApp manually',
+      'Your pairing code is copied. In WhatsApp, go to Settings > Linked Devices > Link a Device > Link with phone number.'
+    );
   };
 
   const handleWhatsAppConnect = async () => {
