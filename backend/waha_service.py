@@ -142,6 +142,41 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             raise RuntimeError(f"WAHA session start failed ({response.status_code})")
         return response.json()
 
+    async def _clear_failed_session(self, base_url: str, instance_name: str) -> bool:
+        """Remove a session only when WAHA has already marked it as failed.
+
+        A failed, unlinked WAHA session cannot be paired again and can make the
+        next start request return 422.  Never delete a working, pending, or
+        otherwise unknown session: those may still contain a customer's valid
+        linked-device state.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
+                status = await client.get(
+                    f"{base_url}/api/sessions/{quote(instance_name, safe='')}",
+                    headers=self._headers(),
+                )
+                if status.status_code != 200:
+                    return False
+                data = status.json()
+                if str(data.get("status") or "").upper() != "FAILED":
+                    return False
+                deleted = await client.delete(
+                    f"{base_url}/api/sessions/{quote(instance_name, safe='')}",
+                    headers=self._headers(),
+                )
+            if deleted.status_code in (200, 204, 404):
+                logger.info("[waha] removed failed pairing session %s", instance_name)
+                return True
+            logger.warning(
+                "[waha] could not remove failed pairing session %s (HTTP %s)",
+                instance_name,
+                deleted.status_code,
+            )
+        except Exception as exc:
+            logger.warning("[waha] failed-session cleanup %s: %s", instance_name, exc)
+        return False
+
     async def _request_pairing_code(self, base_url: str, instance_name: str, phone: str) -> dict:
         async with httpx.AsyncClient(timeout=25, verify=self.verify_ssl) as client:
             response = await client.post(
@@ -162,7 +197,18 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         instance_name = self._instance_name(user_id)
         try:
             node, base_url = await self._node_for_user(user_id)
-            session = await self._start_session(base_url, instance_name)
+            # A previous aborted attempt leaves WAHA in FAILED.  Remove only
+            # that failed session before creating a new pairing attempt.
+            recovered_failed_session = await self._clear_failed_session(base_url, instance_name)
+            try:
+                session = await self._start_session(base_url, instance_name)
+            except RuntimeError:
+                # WAHA can transition to FAILED between the pre-check and the
+                # start call.  Recover once, then surface any real failure.
+                if not recovered_failed_session and await self._clear_failed_session(base_url, instance_name):
+                    session = await self._start_session(base_url, instance_name)
+                else:
+                    raise
             await self.db.users.update_one(
                 {"_id": user_id},
                 {"$set": {
@@ -183,6 +229,10 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             qr = await self.get_qr_code(user_id)
             if qr.get("qr_base64"):
                 return {"status": "qr_ready", **qr}
+            # If WAHA has already given up, remove the unusable session so the
+            # customer can immediately start a clean attempt instead of being
+            # trapped behind a 422 on their next tap.
+            await self._clear_failed_session(base_url, instance_name)
             return {
                 "status": "error",
                 "message": result.get("message") or f"Session is {session.get('status', 'starting')}. Try QR linking.",
