@@ -186,3 +186,7 @@ class PaystackClient:
     async def create_subaccount(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = await self._request("POST", "/subaccount", json=payload)
         return data.get("data") or {}
+
+    async def update_subaccount(self, subaccount_code: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = await self._request("PUT", f"/subaccount/{subaccount_code}", json=payload)
+        return data.get("data") or {}

@@ -23,6 +23,7 @@ import { NotificationHandler } from '../../utils/notification-handler';
 import CreditBundleModal from '../../components/CreditBundleModal';
 import SubscriptionModal from '../../components/SubscriptionModal';
 import TeamManagementModal from '../../components/TeamManagementModal';
+import PaymentSetupModal from '../../components/PaymentSetupModal';
 
 interface SubscriptionPlan {
   id: string;
@@ -57,6 +58,7 @@ export default function AccountScreen() {
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
   const [showTeamModal, setShowTeamModal] = useState(false);
+  const [showPaymentSetup, setShowPaymentSetup] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
 
   // WhatsApp connection state
@@ -623,6 +625,34 @@ export default function AccountScreen() {
           </View>
         </View>
 
+        {/* Online payments — Kenya is deliberately app-first. */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Online Payments</Text>
+          <View style={styles.settingsCard}>
+            <View style={styles.paymentSetupHeader}>
+              <View style={styles.paymentSetupIcon}>
+                <Ionicons name="wallet-outline" size={24} color="#25D366" />
+              </View>
+              <View style={styles.paymentSetupCopy}>
+                <Text style={styles.paymentSetupTitle}>Receive customer payments</Text>
+                <Text style={styles.paymentSetupText}>
+                  Set up M-Pesa or a bank payout for your shared product catalog.
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={styles.paymentSetupButton}
+              onPress={() => setShowPaymentSetup(true)}
+            >
+              <Text style={styles.paymentSetupButtonText}>Set up payments</Text>
+              <Ionicons name="chevron-forward" size={18} color="#062414" />
+            </TouchableOpacity>
+            <Text style={styles.paymentSetupFootnote}>
+              No website or Paystack login required. Paid catalog orders appear in Sales.
+            </Text>
+          </View>
+        </View>
+
         {/* Daily Pulse */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Daily Pulse</Text>
@@ -963,6 +993,12 @@ export default function AccountScreen() {
         userRole={user?.role || 'owner'}
         userId={user?.id || ''}
       />
+      <PaymentSetupModal
+        visible={showPaymentSetup}
+        businessName={user?.business_name}
+        onClose={() => setShowPaymentSetup(false)}
+        onConnectionChanged={fetchData}
+      />
     </SafeAreaView>
   );
 }
@@ -1137,6 +1173,58 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  paymentSetupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    paddingBottom: 12,
+  },
+  paymentSetupIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#113727',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  paymentSetupCopy: {
+    flex: 1,
+  },
+  paymentSetupTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 3,
+  },
+  paymentSetupText: {
+    color: '#8A9BB5',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  paymentSetupButton: {
+    marginHorizontal: 16,
+    backgroundColor: '#25D366',
+    borderRadius: 10,
+    minHeight: 46,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  paymentSetupButtonText: {
+    color: '#062414',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  paymentSetupFootnote: {
+    color: '#8A9BB5',
+    fontSize: 11,
+    lineHeight: 16,
+    padding: 16,
+    paddingTop: 11,
   },
   settingsCard: {
     backgroundColor: '#1A2942',

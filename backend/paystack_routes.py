@@ -73,6 +73,13 @@ def _parse_subaccount_payload(body: dict) -> dict:
     }
 
 
+def _require_payments_manager(user: dict) -> None:
+    """Only an owner or manager may change a business payout destination."""
+    role = _clean_text(user.get("role"), max_len=32).lower()
+    if role and role not in {"owner", "manager"}:
+        raise HTTPException(403, "Only the business owner or a manager can change payment settings.")
+
+
 def register_paystack_routes(
     api_router: APIRouter,
     db,
@@ -191,6 +198,7 @@ def register_paystack_routes(
 
     @api_router.post("/paystack/connect")
     async def paystack_connect(body: dict, user=Depends(get_current_user)):
+        _require_payments_manager(user)
         body = body or {}
         secret_in_body = (body.get("secret_key") or "").strip()
         requested_currency = _clean_text(
@@ -297,23 +305,25 @@ def register_paystack_routes(
         if not secret:
             raise HTTPException(503, "Paystack platform secret key is not configured.")
 
-        try:
-            biz = await PaystackClient(secret).fetch_business()
-            fields["paystack_business_name"] = (
-                (biz.get("name") or biz.get("business_name") or "Paystack")[:120]
-            )
-        except PaystackApiError as e:
-            msg = str(e).strip() or "Invalid key"
-            if msg.lower() in ("paystack http 404", "paystack http 401"):
-                msg = (
-                    "Paystack rejected the platform key — check PAYSTACK_PLATFORM_SECRET_KEY"
-                    if use_platform
-                    else "Invalid Paystack secret key — use sk_test_ or sk_live_ from your dashboard"
+        if use_platform:
+            # The Paystack platform account belongs to Zilo. Keep the actual
+            # merchant's supplied business name on their workspace instead of
+            # overwriting it with the platform account name.
+            fields["paystack_business_name"] = sub["business_name"]
+        else:
+            try:
+                biz = await PaystackClient(secret).fetch_business()
+                fields["paystack_business_name"] = (
+                    (biz.get("name") or biz.get("business_name") or "Paystack")[:120]
                 )
-            raise HTTPException(status_code=400, detail=msg) from e
-        except Exception as e:
-            logger.exception("[Paystack] connect verify failed")
-            raise HTTPException(status_code=502, detail=f"Paystack unreachable: {e}") from e
+            except PaystackApiError as e:
+                msg = str(e).strip() or "Invalid key"
+                if msg.lower() in ("paystack http 404", "paystack http 401"):
+                    msg = "Invalid Paystack secret key — use sk_test_ or sk_live_ from your dashboard"
+                raise HTTPException(status_code=400, detail=msg) from e
+            except Exception as e:
+                logger.exception("[Paystack] connect verify failed")
+                raise HTTPException(status_code=502, detail=f"Paystack unreachable: {e}") from e
 
         owner_id = business_owner_id(user)
         update: dict = {"$set": fields}
@@ -342,6 +352,26 @@ def register_paystack_routes(
 
     @api_router.delete("/paystack/connect")
     async def paystack_disconnect(user=Depends(get_current_user)):
+        _require_payments_manager(user)
+        current = await db.users.find_one(
+            user_id_filter(business_owner_id(user)),
+            {"paystack_auth_mode": 1, "paystack_subaccount_code": 1},
+        )
+        if (
+            paystack_auth_mode(current) == PAYSTACK_AUTH_PLATFORM
+            and (current or {}).get("paystack_subaccount_code")
+            and platform_configured()
+        ):
+            try:
+                await PaystackClient(platform_secret_key() or "").update_subaccount(
+                    _clean_text(current["paystack_subaccount_code"], max_len=64),
+                    {"active": False},
+                )
+            except Exception as e:
+                # Do not keep a merchant locked into Zilo because an upstream
+                # deactivation request is temporarily unavailable. The local
+                # connection is still removed; the event is recorded for review.
+                logger.warning("[Paystack] could not deactivate subaccount on disconnect: %s", e)
         await db.users.update_one(
             user_id_filter(business_owner_id(user)),
             {

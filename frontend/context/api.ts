@@ -520,6 +520,79 @@ export const storefrontAPI = {
   },
 };
 
+// ============ Paystack (Kenya merchant payouts) ============
+
+export type PaystackPayoutType = 'bank' | 'mobile_money';
+
+export interface PaystackPayoutOption {
+  code: string;
+  name: string;
+}
+
+export interface PaystackConnection {
+  connected: boolean;
+  business_name: string | null;
+  default_currency: string | null;
+  payout_type: PaystackPayoutType | null;
+  subaccount_code: string | null;
+  subaccount_name: string | null;
+  settlement_bank: string | null;
+  account_number: string | null;
+  auth_mode: string | null;
+  platform_managed: boolean;
+  platform_available: boolean;
+}
+
+export const paystackAPI = {
+  getSetup: async () => {
+    const response = await apiClient.get('/paystack/setup');
+    return response.data as {
+      platform_available: boolean;
+      platform_country: string;
+      currencies: string[];
+      default_currency: string;
+      payout_types: PaystackPayoutType[];
+      mobile_money_currencies: string[];
+    };
+  },
+
+  getConnection: async () => {
+    const response = await apiClient.get('/paystack/connection');
+    return response.data as PaystackConnection;
+  },
+
+  getPayoutOptions: async (payoutType: PaystackPayoutType) => {
+    const response = await apiClient.get('/paystack/payout-options', {
+      params: { currency: 'KES', payout_type: payoutType },
+    });
+    return response.data as {
+      currency: string;
+      payout_type: PaystackPayoutType;
+      options: PaystackPayoutOption[];
+      supported: boolean;
+      hint?: string;
+    };
+  },
+
+  connectKenya: async (payload: {
+    business_name: string;
+    payout_type: PaystackPayoutType;
+    settlement_bank: string;
+    account_number: string;
+  }) => {
+    const response = await apiClient.post('/paystack/connect', {
+      ...payload,
+      currency: 'KES',
+    });
+    return response.data as PaystackConnection;
+  },
+
+  disconnect: async () => {
+    const response = await apiClient.delete('/paystack/connect');
+    return response.data as { connected: boolean; status: string };
+  },
+};
+
 // ============ DASHBOARD API ============
 export const dashboardAPI = {
   getSummary: async () => {
