@@ -162,10 +162,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const { token: newToken, user: userData } = response.data;
 
-      setToken(newToken);
-      await AsyncStorage.setItem('auth_token', newToken);
-      apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
-      setUser(userData);
+      // Registration completes the profile for the authenticated user.  The
+      // backend intentionally keeps the session that was issued after phone
+      // verification, so it does not always return a replacement token here.
+      if (newToken) {
+        setToken(newToken);
+        await AsyncStorage.setItem('auth_token', newToken);
+        apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+      }
+      if (userData) {
+        setUser(userData);
+      }
 
       return { success: true };
     } catch (error: any) {
