@@ -534,7 +534,10 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
     mobile_money_currencies?: string[];
   } | null>(null);
   const [setupLoading, setSetupLoading] = useState(false);
-  const [currency, setCurrency] = useState("NGN");
+  const [connectionMode, setConnectionMode] = useState<"kenya" | "own">("kenya");
+  const [currency, setCurrency] = useState("KES");
+  const [ownCurrency, setOwnCurrency] = useState("NGN");
+  const [merchantSecretKey, setMerchantSecretKey] = useState("");
   const [payoutType, setPayoutType] = useState<"bank" | "mobile_money">("bank");
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [payoutOptions, setPayoutOptions] = useState<Array<{ code: string; name: string }>>([]);
@@ -561,7 +564,7 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
     () =>
       setup?.mobile_money_currencies?.length
         ? setup.mobile_money_currencies
-        : ["KES", "GHS", "XOF"],
+        : ["KES"],
     [setup?.mobile_money_currencies],
   );
   const mobileMoneySupported = mobileMoneyCurrencies.includes(currency);
@@ -573,7 +576,7 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
   }, [currency, payoutType, mobileMoneySupported]);
 
   useEffect(() => {
-    if (!setup?.platform_available) return;
+    if (connectionMode !== "kenya" || !setup?.platform_available) return;
     if (payoutType === "mobile_money" && !mobileMoneySupported) {
       setPayoutOptions([]);
       setSelectedSettlement("");
@@ -610,9 +613,29 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
         setErr(e instanceof Error ? e.message : "Could not load Paystack payout options");
       })
       .finally(() => setOptionsLoading(false));
-  }, [setup?.platform_available, currency, payoutType, mobileMoneySupported, mobileMoneyCurrencies]);
+  }, [connectionMode, setup?.platform_available, currency, payoutType, mobileMoneySupported, mobileMoneyCurrencies]);
 
   async function handleConnect() {
+    if (connectionMode === "own") {
+      if (!merchantSecretKey.trim().startsWith("sk_")) {
+        setErr("Enter the secret key from your own Paystack dashboard (it starts with sk_).");
+        return;
+      }
+      setBusy(true);
+      setErr(null);
+      try {
+        await paystackApi.connect({
+          secret_key: merchantSecretKey.trim(),
+          currency: ownCurrency,
+        });
+        onChanged();
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Could not connect");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (payoutType === "mobile_money" && !mobileMoneySupported) {
       setErr(
         `Mobile money is not available for ${currency}. Switch to Bank or use ${mobileMoneyCurrencies.join(", ")}.`,
@@ -644,7 +667,7 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
   async function handleDisconnect() {
     const ok = await confirmDialog({
       title: "Disconnect Paystack?",
-      text: "Payments across Africa (NGN, KES, GHS and more) will no longer run through your Paystack account in this CRM. Checkout links and payment webhooks will stop until you connect again.",
+      text: "Your Paystack storefront checkout and payment webhooks will stop until you connect an account again.",
       confirmText: "Yes, disconnect",
       cancelText: "Keep connected",
     });
@@ -669,8 +692,10 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
     payoutOptions.length > 0 &&
     !optionsLoading &&
     (payoutType !== "mobile_money" || mobileMoneySupported);
+  const canSubmit = connectionMode === "own" ? merchantSecretKey.trim().startsWith("sk_") : canSubmitPlatform;
 
   if (connection?.connected) {
+    const ziloManaged = Boolean(connection.platform_managed || connection.auth_mode === "platform");
     const payoutLabel =
       connection.payout_type === "mobile_money" ? "M-Pesa" : payoutBankLabel(connection.settlement_bank);
     return (
@@ -682,11 +707,19 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
           </p>
         </div>
         <IntegrationDetailCard>
-          <IntegrationDetailRow label="Payout" value={payoutLabel} />
           <IntegrationDetailRow
-            label={connection.payout_type === "mobile_money" ? "Phone" : "Account"}
-            value={maskAccountEnding(connection.account_number)}
+            label="Connection"
+            value={ziloManaged ? "Zilo Paystack — Kenya" : "Your own Paystack account"}
           />
+          {ziloManaged ? (
+            <>
+              <IntegrationDetailRow label="Payout" value={payoutLabel} />
+              <IntegrationDetailRow
+                label={connection.payout_type === "mobile_money" ? "Phone" : "Account"}
+                value={maskAccountEnding(connection.account_number)}
+              />
+            </>
+          ) : null}
           {connection.default_currency ? (
             <IntegrationDetailRow label="Currency" value={connection.default_currency} />
           ) : null}
@@ -710,10 +743,26 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
 
   return (
     <div className="space-y-1.5">
-      {platformAvailable ? (
+      <div className="grid grid-cols-2 gap-1 rounded-md bg-slate-100 p-1 text-[9px] font-medium">
+        <button
+          type="button"
+          onClick={() => { setConnectionMode("kenya"); setErr(null); }}
+          className={`rounded px-1.5 py-1 ${connectionMode === "kenya" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+        >
+          Kenya: bank / M-Pesa
+        </button>
+        <button
+          type="button"
+          onClick={() => { setConnectionMode("own"); setErr(null); }}
+          className={`rounded px-1.5 py-1 ${connectionMode === "own" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+        >
+          Nigeria / other
+        </button>
+      </div>
+      {connectionMode === "kenya" ? platformAvailable ? (
         <>
           <p className="text-[10px] leading-snug text-slate-500">
-            Create your Paystack subaccount for payouts in Zilo.
+            Connect a Kenyan bank account or M-Pesa payout. Zilo takes no commission; Paystack’s processing fee is paid by your business.
           </p>
           <label className="text-[9px] font-medium text-slate-500">Currency</label>
           <select
@@ -728,7 +777,7 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
             disabled={setupLoading || !setup?.currencies?.length}
             className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#00C3F7] disabled:opacity-60"
           >
-            {(setup?.currencies?.length ? setup.currencies : ["NGN", "KES", "GHS", "ZAR", "USD"]).map((c) => (
+            {(setup?.currencies?.length ? setup.currencies : ["KES"]).map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>
@@ -791,18 +840,43 @@ function PaystackStatus({ connection, onChanged }: { connection?: PaystackConnec
         </>
       ) : (
         <p className="text-[10px] leading-snug text-slate-500">
-          Paystack is not enabled on this server yet. Ask your administrator to set{" "}
+          Zilo Paystack for Kenya is not enabled on this server yet. Ask your administrator to set{" "}
           <span className="font-mono text-[9px]">PAYSTACK_PLATFORM_SECRET_KEY</span>.
         </p>
+      ) : (
+        <>
+          <p className="text-[10px] leading-snug text-slate-500">
+            Use the secret key from your own Paystack account. This keeps your payments and settlement under your business’s Paystack account.
+          </p>
+          <label className="text-[9px] font-medium text-slate-500">Settlement currency</label>
+          <select
+            value={ownCurrency}
+            onChange={(e) => setOwnCurrency(e.target.value)}
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] outline-none focus:border-[#00C3F7]"
+          >
+            {["NGN", "GHS", "ZAR", "USD", "XOF"].map((code) => (
+              <option key={code} value={code}>{code}</option>
+            ))}
+          </select>
+          <label className="text-[9px] font-medium text-slate-500">Paystack secret key</label>
+          <input
+            type="password"
+            value={merchantSecretKey}
+            onChange={(e) => setMerchantSecretKey(e.target.value)}
+            placeholder="sk_live_..."
+            autoComplete="off"
+            className="w-full rounded-md border border-slate-200 px-2 py-1 text-[10px] font-mono outline-none focus:border-[#00C3F7]"
+          />
+        </>
       )}
-      {platformAvailable ? (
+      {(connectionMode === "own" || platformAvailable) ? (
       <button
         type="button"
         onClick={handleConnect}
-        disabled={busy || !canSubmitPlatform}
+        disabled={busy || !canSubmit}
         className="flex w-full items-center justify-center gap-1 rounded-lg bg-[#00C3F7] px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-[#00a8d6] disabled:opacity-50"
       >
-        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect
+        {busy ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Connect Paystack
       </button>
       ) : null}
       {err && (
@@ -3949,7 +4023,7 @@ function IntegrationsPageInner() {
           </SmallTile>
 
           <SmallTile
-            title="Paystack" subtitle="Payments across Africa — NGN, KES, GHS &amp; more"
+            title="Paystack" subtitle="Kenya bank / M-Pesa, or your own Paystack account"
             borderClass="border-[#00C3F7]/20 bg-[#00C3F7]/5"
             icon={<PaystackGlyph className="h-5 w-5 text-[#00C3F7]" />}
           >

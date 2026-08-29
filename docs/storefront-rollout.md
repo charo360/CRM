@@ -10,35 +10,38 @@ WordPress or WooCommerce catalog in this flow.
    such as `https://zilo.pro/s/business-abc123` and opens the phone's share
    sheet. The same link appears in the web Shop dashboard.
 3. The customer chooses products and options, adds them to a cart, gives their
-   contact details, and is sent to the merchant's selected payment provider.
-4. The provider's webhook, not the customer's return to the browser, marks the
+   contact details, and is sent to secure Paystack checkout.
+4. Paystack's webhook, not the customer's return to the browser, marks the
    Zilo order **Paid**. The order confirmation screen keeps polling until that
    happens, and offers a retry link if a checkout session could not start.
 
 ## Payment behaviour
 
-- **Kenya / Zilo Paystack:** the existing Paystack platform subaccount flow is
-  used. Zilo passes the merchant subaccount to every checkout and uses
-  `bearer=subaccount`, so the merchant—not Zilo—pays Paystack's processing
-  fee. The configured Zilo commission remains zero.
-- **Own Paystack account:** businesses outside that flow can connect their own
-  Paystack secret key through Integrations. Checkout uses that account instead
-  of Zilo's platform account.
-- **Other existing connections:** Flutterwave, Stripe Connect, and PayHero are
-  recognized automatically when they are ready. Flutterwave and Stripe use
-  hosted checkout; PayHero sends the M-Pesa STK prompt to the buyer's phone.
-- If more than one provider is connected, `PUT /api/storefront/settings` can
-  set `payment_provider` to `paystack`, `flutterwave`, `stripe`, `payhero`,
-  `manual`, or `auto`.
+- **Kenya / Zilo Paystack:** businesses select a Kenyan bank account or M-Pesa
+  payout provider. Zilo creates a Paystack subaccount in KES and passes it to
+  each checkout using `bearer=subaccount`. The merchant pays Paystack's
+  processing fee and Zilo's commission is zero.
+- **Nigeria and other supported Paystack countries:** businesses connect their
+  own Paystack account with its `sk_test_` or `sk_live_` secret key. Their
+  payments and settlement then stay in that Paystack account; no Zilo
+  subaccount is created.
+- **Storefront checkout:** uses Paystack only for now. PayHero is deliberately
+  not offered in this flow because it requires the merchant to maintain a
+  PayHero balance. It can be reconsidered as a separate future integration.
+- `PUT /api/storefront/settings` accepts `payment_provider` as `paystack`,
+  `manual`, or `auto`. The live storefront automatically chooses Paystack when
+  it is connected.
 
 ## Required production configuration
 
 - `FRONTEND_URL=https://zilo.pro` on the backend. This controls catalog URLs
   and the safe payment return URL.
 - `PAYSTACK_PLATFORM_SECRET_KEY` for Zilo-managed Paystack subaccounts.
-- `BACKEND_URL` when PayHero is enabled, so its STK callback reaches
-  `/api/webhooks/payhero`.
-- Keep each provider's existing verified webhook configuration enabled. A
+- The business's Zilo catalog currency must match the Paystack connection:
+  **KES** for the Zilo-managed Kenya flow, or the merchant-selected currency
+  for an own Paystack account. Zilo rejects a checkout if they do not match,
+  rather than charging the wrong currency.
+- Keep Paystack's verified webhook configuration enabled. A
   payment return URL alone must never be treated as proof of payment.
 
 ## Test checklist before advertising

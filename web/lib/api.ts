@@ -1200,10 +1200,12 @@ export interface PaystackConnection {
 
 export interface PaystackSetup {
   platform_available: boolean;
+  platform_country?: string;
   currencies: string[];
   default_currency: string;
   payout_types?: Array<"bank" | "mobile_money">;
   mobile_money_currencies?: string[];
+  own_account_supported?: boolean;
 }
 
 export interface PaystackPayoutOption {

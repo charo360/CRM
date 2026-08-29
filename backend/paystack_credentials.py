@@ -18,8 +18,12 @@ PAYSTACK_PAYOUT_BANK = "bank"
 PAYSTACK_PAYOUT_MOBILE_MONEY = "mobile_money"
 PAYSTACK_PAYOUT_TYPES = (PAYSTACK_PAYOUT_BANK, PAYSTACK_PAYOUT_MOBILE_MONEY)
 
-# Paystack List Banks returns mobile_money providers only for these currencies.
-PAYSTACK_MOBILE_MONEY_CURRENCIES = frozenset({"KES", "GHS", "XOF"})
+# Zilo's platform flow is deliberately Kenya-only. Other Paystack countries
+# connect their own merchant account rather than being placed below Zilo's
+# Paystack account.
+PAYSTACK_PLATFORM_COUNTRY = "KE"
+PAYSTACK_PLATFORM_CURRENCY = "KES"
+PAYSTACK_MOBILE_MONEY_CURRENCIES = frozenset({PAYSTACK_PLATFORM_CURRENCY})
 
 
 def platform_configured() -> bool:
@@ -73,9 +77,16 @@ def paystack_connected(doc: Optional[dict]) -> bool:
 
 def platform_connect_fields(body: dict) -> Dict[str, Any]:
     """Merchant-facing connect — no API keys."""
-    currency = (body.get("currency") or body.get("default_currency") or "NGN").strip().upper()
+    currency = (
+        body.get("currency") or body.get("default_currency") or PAYSTACK_PLATFORM_CURRENCY
+    ).strip().upper()
     if currency not in CURRENCY_SUBUNIT:
         raise ValueError(f"Unsupported currency '{currency}'")
+    if currency != PAYSTACK_PLATFORM_CURRENCY:
+        raise ValueError(
+            "Zilo-managed Paystack payouts are available only in Kenya (KES). "
+            "For other countries, connect your own Paystack account with its secret key."
+        )
     payout_type = (body.get("payout_type") or body.get("payoutType") or "").strip().lower()
     if payout_type and payout_type not in PAYSTACK_PAYOUT_TYPES:
         raise ValueError("Invalid payout type. Use 'bank' or 'mobile_money'.")
@@ -97,8 +108,10 @@ def platform_connect_fields(body: dict) -> Dict[str, Any]:
 def public_setup_card() -> Dict[str, Any]:
     return {
         "platform_available": platform_configured(),
-        "currencies": sorted(CURRENCY_SUBUNIT.keys()),
-        "default_currency": "NGN",
+        "platform_country": PAYSTACK_PLATFORM_COUNTRY,
+        "currencies": [PAYSTACK_PLATFORM_CURRENCY],
+        "default_currency": PAYSTACK_PLATFORM_CURRENCY,
         "payout_types": list(PAYSTACK_PAYOUT_TYPES),
         "mobile_money_currencies": sorted(PAYSTACK_MOBILE_MONEY_CURRENCIES),
+        "own_account_supported": True,
     }

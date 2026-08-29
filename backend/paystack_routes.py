@@ -14,6 +14,7 @@ from payhero_auth import business_owner_id, user_id_filter
 from paystack_auth import parse_connect_body
 from paystack_credentials import (
     PAYSTACK_AUTH_PLATFORM,
+    PAYSTACK_PLATFORM_CURRENCY,
     PAYSTACK_MOBILE_MONEY_CURRENCIES,
     PAYSTACK_PAYOUT_BANK,
     PAYSTACK_PAYOUT_MOBILE_MONEY,
@@ -48,7 +49,10 @@ def _parse_subaccount_payload(body: dict) -> dict:
     if payout_type not in (PAYSTACK_PAYOUT_BANK, PAYSTACK_PAYOUT_MOBILE_MONEY):
         raise ValueError("Invalid payout type. Use 'bank' or 'mobile_money'.")
 
-    currency = _clean_text(body.get("currency") or body.get("default_currency") or "NGN", max_len=8).upper()
+    currency = _clean_text(
+        body.get("currency") or body.get("default_currency") or PAYSTACK_PLATFORM_CURRENCY,
+        max_len=8,
+    ).upper()
     settlement_bank = _clean_text(body.get("settlement_bank") or body.get("bank_code") or body.get("bank"), max_len=64)
     account_number = _clean_text(body.get("account_number"), max_len=64)
     business_name = _clean_text(body.get("business_name") or body.get("subaccount_name"), max_len=80)
@@ -113,11 +117,25 @@ def register_paystack_routes(
         }
 
     @api_router.get("/paystack/payout-options")
-    async def paystack_payout_options(currency: str = "NGN", payout_type: str = PAYSTACK_PAYOUT_BANK):
+    async def paystack_payout_options(
+        currency: str = PAYSTACK_PLATFORM_CURRENCY,
+        payout_type: str = PAYSTACK_PAYOUT_BANK,
+    ):
         if not platform_configured():
             raise HTTPException(503, "Paystack platform secret key is not configured.")
-        cur = (currency or "NGN").upper()
+        cur = (currency or PAYSTACK_PLATFORM_CURRENCY).upper()
         kind = (payout_type or PAYSTACK_PAYOUT_BANK).strip().lower()
+        if cur != PAYSTACK_PLATFORM_CURRENCY:
+            return {
+                "currency": cur,
+                "payout_type": kind,
+                "options": [],
+                "supported": False,
+                "hint": (
+                    "Zilo-managed bank and mobile-money payouts are available only in Kenya (KES). "
+                    "For this country, connect your own Paystack account instead."
+                ),
+            }
         if kind == PAYSTACK_PAYOUT_MOBILE_MONEY and cur not in PAYSTACK_MOBILE_MONEY_CURRENCIES:
             return {
                 "currency": cur,
@@ -175,7 +193,43 @@ def register_paystack_routes(
     async def paystack_connect(body: dict, user=Depends(get_current_user)):
         body = body or {}
         secret_in_body = (body.get("secret_key") or "").strip()
-        use_platform = platform_configured() and not secret_in_body
+        requested_currency = _clean_text(
+            body.get("currency") or body.get("default_currency") or "", max_len=8
+        ).upper()
+        country_code = _clean_text(
+            user.get("country_code") or (user.get("settings") or {}).get("country_code"),
+            max_len=16,
+        ).upper()
+        kenya_currency = requested_currency == PAYSTACK_PLATFORM_CURRENCY
+        kenya_business = not country_code or country_code in {"KE", "KENYA"}
+        use_platform = (
+            platform_configured()
+            and not secret_in_body
+            and kenya_currency
+            and kenya_business
+        )
+
+        if not secret_in_body and not use_platform:
+            if kenya_currency and not kenya_business:
+                raise HTTPException(
+                    400,
+                    detail=(
+                        "Zilo-managed Paystack bank and M-Pesa payouts are for Kenyan businesses only. "
+                        "Connect your own Paystack account for this business."
+                    ),
+                )
+            if kenya_currency and not platform_configured():
+                raise HTTPException(
+                    503,
+                    detail="Zilo Paystack for Kenya is not enabled on this server yet. Contact support.",
+                )
+            raise HTTPException(
+                400,
+                detail=(
+                    "For Nigeria and other supported countries, connect your own Paystack account "
+                    "by entering its sk_test_ or sk_live_ secret key."
+                ),
+            )
 
         try:
             if use_platform:

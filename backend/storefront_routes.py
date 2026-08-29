@@ -17,13 +17,13 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from paystack_credentials import PAYSTACK_AUTH_PLATFORM, paystack_auth_mode, paystack_connected
+from paystack_credentials import paystack_connected
 from paystack_service import initialize_checkout_for_user as initialize_paystack_checkout
 
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 _PHONE_RE = re.compile(r"^[+0-9][0-9 .()\-]{6,31}$")
-_ONLINE_PROVIDERS = ("paystack", "flutterwave", "stripe", "payhero")
+_ONLINE_PROVIDERS = ("paystack",)
 
 
 def _text(value: Any, maximum: int = 200) -> str:
@@ -95,29 +95,7 @@ def _public_product(product: dict) -> Dict[str, Any]:
 
 
 def _connected_providers(user_doc: dict) -> List[str]:
-    providers: List[str] = []
-    if paystack_connected(user_doc):
-        providers.append("paystack")
-
-    try:
-        from flutterwave_credentials import flutterwave_connected
-        if flutterwave_connected(user_doc):
-            providers.append("flutterwave")
-    except Exception:
-        pass
-    try:
-        from stripe_credentials import stripe_checkout_ready
-        if stripe_checkout_ready(user_doc):
-            providers.append("stripe")
-    except Exception:
-        pass
-    try:
-        from payhero_credentials import payhero_connected
-        if payhero_connected(user_doc) and user_doc.get("payhero_channel_id"):
-            providers.append("payhero")
-    except Exception:
-        pass
-    return providers
+    return ["paystack"] if paystack_connected(user_doc) else []
 
 
 def _selected_provider(user_doc: dict) -> Optional[str]:
@@ -126,6 +104,20 @@ def _selected_provider(user_doc: dict) -> Optional[str]:
     if preferred in connected:
         return preferred
     return connected[0] if connected else None
+
+
+def _ensure_paystack_currency_matches_catalog(user_doc: dict, catalog_currency: str) -> None:
+    """Never send a catalog price to Paystack in a different currency."""
+    paystack_currency = _text(user_doc.get("paystack_default_currency"), 8).upper()
+    if paystack_currency and paystack_currency != catalog_currency.upper():
+        raise HTTPException(
+            409,
+            (
+                f"This catalog is priced in {catalog_currency}, but the business's Paystack account is "
+                f"configured for {paystack_currency}. The business must use matching Zilo and Paystack "
+                "currencies before accepting online payments."
+            ),
+        )
 
 
 def _store_payload(user_doc: dict, products: Iterable[dict]) -> Dict[str, Any]:
@@ -310,62 +302,26 @@ async def _start_online_payment(db, business: dict, order: dict) -> Dict[str, An
     if not provider:
         return {"provider": None, "payment_action": "manual"}
 
+    _ensure_paystack_currency_matches_catalog(business, _text(order.get("currency") or "USD", 8))
     user_id = str(business["_id"])
     callback = f"{_public_origin()}/s/{business['public_store_slug']}/checkout?order={order['public_token']}"
     email = _text(order.get("customer_email"), 254)
-    if provider in ("paystack", "flutterwave", "stripe") and not email:
+    if not email:
         raise HTTPException(400, "An email address is required for secure online payment")
 
     try:
-        if provider == "paystack":
-            result = await initialize_paystack_checkout(
-                db, business, user_id=user_id, email=email, amount_major=float(order["total_amount"]),
-                currency=order["currency"], external_reference=order["order_number"],
-                order_id=order["_id"], customer_id=order["customer_id"],
-                customer_name=order["customer_name"], callback_url=callback,
-            )
-            return {"provider": provider, "payment_action": "redirect", "checkout_url": result.get("authorization_url"), "reference": result.get("reference")}
-        if provider == "flutterwave":
-            from flutterwave_service import initialize_checkout_for_user as initialize_flutterwave_checkout
-            result = await initialize_flutterwave_checkout(
-                db, business, user_id=user_id, email=email, amount_major=float(order["total_amount"]),
-                currency=order["currency"], external_reference=order["order_number"],
-                order_id=order["_id"], customer_id=order["customer_id"],
-                customer_name=order["customer_name"], redirect_url=callback,
-            )
-            return {"provider": provider, "payment_action": "redirect", "checkout_url": result.get("authorization_url"), "reference": result.get("reference")}
-        if provider == "stripe":
-            from stripe_service import initialize_checkout_for_user as initialize_stripe_checkout
-            result = await initialize_stripe_checkout(
-                db, business, user_id=user_id, email=email, amount_major=float(order["total_amount"]),
-                currency=order["currency"], external_reference=order["order_number"],
-                order_id=order["_id"], customer_id=order["customer_id"],
-                customer_name=order["customer_name"], success_url=callback, cancel_url=callback + "&cancelled=1",
-            )
-            return {"provider": provider, "payment_action": "redirect", "checkout_url": result.get("checkout_url"), "reference": result.get("reference")}
-        if provider == "payhero":
-            from payhero_billing import create_payment_intent, mark_intent_failed, mark_intent_stk_sent
-            from payhero_service import stk_push_for_user
-            phone = order["customer_phone"]
-            intent = await create_payment_intent(
-                db, user_id=user_id, amount=float(order["total_amount"]), phone=phone,
-                external_reference=order["order_number"], order_id=order["_id"],
-                customer_name=order["customer_name"], channel_id=int(business["payhero_channel_id"]),
-            )
-            backend_url = (os.environ.get("BACKEND_URL") or "").rstrip("/")
-            if not backend_url:
-                raise ValueError("Payment callback is not configured")
-            try:
-                raw = await stk_push_for_user(
-                    business, channel_id=int(business["payhero_channel_id"]), phone=phone,
-                    amount=float(order["total_amount"]), external_reference=order["order_number"],
-                    callback_url=f"{backend_url}/api/webhooks/payhero", customer_name=order["customer_name"],
-                )
-                await mark_intent_stk_sent(db, intent["_id"], raw)
-            except Exception as exc:
-                await mark_intent_failed(db, intent["_id"], str(exc))
-                raise
-            return {"provider": provider, "payment_action": "awaiting_mobile_money", "reference": str(intent["_id"])}
+        result = await initialize_paystack_checkout(
+            db, business, user_id=user_id, email=email, amount_major=float(order["total_amount"]),
+            currency=order["currency"], external_reference=order["order_number"],
+            order_id=order["_id"], customer_id=order["customer_id"],
+            customer_name=order["customer_name"], callback_url=callback,
+        )
+        return {
+            "provider": "paystack",
+            "payment_action": "redirect",
+            "checkout_url": result.get("authorization_url"),
+            "reference": result.get("reference"),
+        }
     except HTTPException:
         raise
     except Exception as exc:
@@ -412,7 +368,10 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             raise HTTPException(404, "Business account not found")
         preferred = _text(body.get("payment_provider"), 32).lower()
         if preferred and preferred not in (*_ONLINE_PROVIDERS, "auto", "manual"):
-            raise HTTPException(400, "Unsupported payment provider")
+            raise HTTPException(
+                400,
+                "Storefront checkout currently supports Paystack only. Other providers are not enabled yet.",
+            )
         connected = _connected_providers(business)
         if preferred in _ONLINE_PROVIDERS and preferred not in connected:
             raise HTTPException(400, "Connect that payment provider before selecting it")
@@ -449,8 +408,10 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             raise HTTPException(404, "Store not found")
         provider = _selected_provider(business)
         email = _text(body.get("email"), 254)
-        if provider in ("paystack", "flutterwave", "stripe") and not email:
+        if provider == "paystack" and not email:
             raise HTTPException(400, "An email address is required for secure online payment")
+        if provider == "paystack":
+            _ensure_paystack_currency_matches_catalog(business, _currency(business))
         raw_items = body.get("items")
         if not isinstance(raw_items, list) or not raw_items or len(raw_items) > 20:
             raise HTTPException(400, "Add between 1 and 20 products to your order")

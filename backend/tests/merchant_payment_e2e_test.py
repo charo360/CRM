@@ -416,6 +416,17 @@ def test_paystack_platform_subaccount_makes_merchant_bear_processing_fee(monkeyp
     run(scenario())
 
 
+def test_zilo_paystack_platform_payouts_are_kenya_only():
+    from paystack_credentials import platform_connect_fields
+
+    kenya = platform_connect_fields({"currency": "KES", "payout_type": "mobile_money"})
+    assert kenya["paystack_auth_mode"] == PAYSTACK_AUTH_PLATFORM
+    assert kenya["paystack_default_currency"] == "KES"
+
+    with pytest.raises(ValueError, match="only in Kenya"):
+        platform_connect_fields({"currency": "NGN", "payout_type": "bank"})
+
+
 def test_stripe_checkout_payment_creates_transaction_and_provider_refund(monkeypatch):
     class FakeStripeClient:
         checkout_payload: Dict[str, Any] = {}
