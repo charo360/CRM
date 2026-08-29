@@ -1,10 +1,23 @@
-# Ignore everything except frontend for EAS builds
-/*
-!/frontend
-**/node_modules/
-**/.git/
-**/.expo/
-**/venv/
-**/.venv/
-**/AppData/
-**/Temp/
+# EAS archives from the Git repository root, but the mobile app lives in
+# frontend/. Keep unrelated services out of the Android build upload.
+backend/
+web/
+CRM/
+crm-prod/
+EB2/
+
+# Local mobile outputs and caches are rebuilt by EAS.
+frontend/.expo/
+frontend/.metro-cache/
+frontend/dist/
+frontend/web-build/
+frontend/.cache/
+
+# Development-only files and machine-specific artifacts.
+.pytest_cache/
+backend/.pytest_cache/
+*.log
+*.tmp
+*.temp
+AppData/
+Temp/
