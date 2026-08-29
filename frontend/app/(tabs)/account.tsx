@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  Linking,
   Switch,
   TextInput,
   Modal,
@@ -248,28 +247,10 @@ export default function AccountScreen() {
     setTimeout(() => setWaCopied(false), 2000);
   };
 
-  const handleOpenWhatsApp = async () => {
-    // The bare `whatsapp://` URI is not handled by some Android WhatsApp
-    // installations. Try WhatsApp's send route first, then the two Android
-    // package variants before showing the manual instructions.
-    const launchUrls = [
-      'whatsapp://send',
-      'intent://send/#Intent;scheme=whatsapp;package=com.whatsapp;end',
-      'intent://send/#Intent;scheme=whatsapp;package=com.whatsapp.w4b;end',
-    ];
-
-    for (const url of launchUrls) {
-      try {
-        await Linking.openURL(url);
-        return;
-      } catch {
-        // Try the next supported WhatsApp app route.
-      }
-    }
-
+  const handleShowWhatsAppGuide = () => {
     Alert.alert(
-      'Open WhatsApp manually',
-      'Your pairing code is copied. In WhatsApp, go to Settings > Linked Devices > Link a Device > Link with phone number.'
+      'How to link WhatsApp',
+      '1. Open WhatsApp yourself.\n\n2. Tap Settings (or the three-dot menu) > Linked devices.\n\n3. Tap Link a device, then Link with phone number instead.\n\n4. Enter the code shown in Zilo.\n\nThe code is already copied for you.'
     );
   };
 
@@ -567,10 +548,10 @@ export default function AccountScreen() {
                 )}
                 <TouchableOpacity
                   style={{ backgroundColor: '#25D366', borderRadius: 10, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}
-                  onPress={handleOpenWhatsApp}
+                  onPress={handleShowWhatsAppGuide}
                 >
-                  <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
-                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>Open WhatsApp</Text>
+                  <Ionicons name="help-circle-outline" size={18} color="#FFFFFF" />
+                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>Show linking steps</Text>
                 </TouchableOpacity>
                 {waPairingCode && <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 }}>
                   <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: waCountdown > 10 ? '#25D366' : '#FF4444', marginRight: 8 }} />
