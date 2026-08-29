@@ -29,10 +29,9 @@ normal web link; it does not need WhatsApp's official Commerce API.
 - `web/app/dashboard/shop/page.tsx` already advertises a public
   `/shop/{business_slug}` link, but there is no matching public route yet. This
   is the gap to complete.
-- `web/app/dashboard/store/page.tsx` is a separate WordPress/WooCommerce
-  website feature. It remains useful for merchants who want a full branded
-  website, but it is not the right default because it duplicates the Zilo
-  catalog and needs product synchronisation.
+- The current WordPress/WooCommerce generator is **out of scope**. It duplicates
+  catalog, product and payment behaviour that Zilo should own directly, so it
+  should be retired rather than extended.
 
 ## First release: catalogue and orders
 
@@ -95,8 +94,9 @@ refunds and compliance are correct.
 3. Enable Flutterwave or PayHero checkout for that business and test payment
    webhooks in sandbox.
 4. Add merchant onboarding, analytics, promo codes and abandoned-cart follow-up.
-5. Keep the WordPress/WooCommerce site generator as an optional premium
-   website, later syncing Zilo products into it if needed.
+5. Retire the WordPress/WooCommerce generator and remove its web navigation,
+   provisioning and promotion only after a focused dependency audit. No new
+   feature should be built on it.
 
 ## Product decision
 
