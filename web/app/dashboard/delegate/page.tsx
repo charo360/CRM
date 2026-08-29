@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { api, settingsApi, customersApi, type Customer } from "@/lib/api";
@@ -1816,7 +1816,7 @@ function ActiveCard({
 
 // ── Page ────────────────────────────────────────────────────────────────────
 
-export default function DelegatePage() {
+function DelegatePageContent() {
   const searchParams = useSearchParams();
   const presetTask = searchParams.get("task") || "";
   const [delegations, setDelegations] = useState<Delegation[]>([]);
@@ -2180,6 +2180,14 @@ export default function DelegatePage() {
         </main>
       </div>
     </div>
+  );
+}
+
+export default function DelegatePage() {
+  return (
+    <Suspense fallback={<div className="flex-1 flex items-center justify-center"><span className="text-slate-400 text-sm">Loading…</span></div>}>
+      <DelegatePageContent />
+    </Suspense>
   );
 }
 

@@ -246,6 +246,21 @@ export interface AdminUser {
   last_login?: string;
 }
 
+export interface AdminWhatsAppConnection {
+  business_id: string;
+  business_name: string;
+  owner_name: string;
+  email: string;
+  account_phone: string;
+  whatsapp_number: string;
+  session_name: string;
+  provider: string;
+  node: number | null;
+  connected: boolean;
+  status: string;
+  last_change_at: string | null;
+}
+
 export interface FollowUp {
   id: string;
   customer_id: string;
@@ -820,6 +835,20 @@ export const adminApi = {
     const raw = await res.text();
     if (!res.ok) throw new Error(formatErrorBody(res, raw));
     return (raw ? JSON.parse(raw) : {}) as { users: AdminUser[]; total: number; limit: number; skip: number };
+  },
+  listWhatsAppConnections: async () => {
+    const res = await fetch("/api/admin/whatsapp-connections", {
+      headers: adminHeaders(),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as {
+      provider: string;
+      connections: AdminWhatsAppConnection[];
+      total: number;
+      connected: number;
+      refreshed_at: string;
+    };
   },
   updateUser: async (id: string, body: Partial<AdminUser>) => {
     const res = await fetch(`/api/admin/users/${id}`, {

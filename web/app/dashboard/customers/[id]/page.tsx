@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { api, Customer, Message, Sale, Order, FollowUp } from "@/lib/api";
 import { getToken } from "@/lib/auth";
@@ -89,7 +89,7 @@ interface EmailThread {
   messages?: EmailMessage[];
 }
 
-export default function CustomerProfilePage() {
+function CustomerProfilePageContent() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -744,6 +744,14 @@ export default function CustomerProfilePage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function CustomerProfilePage() {
+  return (
+    <Suspense fallback={<div className="flex-1 flex items-center justify-center"><span className="text-slate-400 text-sm">Loading…</span></div>}>
+      <CustomerProfilePageContent />
+    </Suspense>
   );
 }
 

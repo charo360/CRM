@@ -577,6 +577,8 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             me = me.get("id") or ""
         if me:
             update["whatsapp.phone_number"] = _jid_to_phone(str(me))
+        if connected:
+            update["whatsapp.connected_at"] = datetime.utcnow()
         if state == "FAILED":
             update["whatsapp.disconnected_at"] = datetime.utcnow()
         await self.db.users.update_one({"_id": user["_id"]}, {"$set": update})

@@ -16116,6 +16116,91 @@ async def admin_access(_actor=Depends(get_admin_actor)):
         return {"access": False}
 
 
+@api_router.get("/admin/whatsapp-connections")
+async def admin_whatsapp_connections(_actor=Depends(get_admin_actor)):
+    """Return a read-only, platform-wide view of WhatsApp connection health."""
+    from whatsapp_service import get_whatsapp_service, whatsapp_owner_id
+
+    projection = {
+        "_id": 1,
+        "business_id": 1,
+        "owner_name": 1,
+        "business_name": 1,
+        "email": 1,
+        "phone_number": 1,
+        "whatsapp": 1,
+    }
+    cursor = db.users.find(
+        {
+            "$or": [
+                {"whatsapp.instance_name": {"$exists": True, "$ne": ""}},
+                {"whatsapp.status": {"$exists": True, "$ne": ""}},
+            ]
+        },
+        projection,
+    )
+    candidates = await cursor.to_list(length=500)
+
+    # Team members can share their owner's WhatsApp connection. Show each connection once.
+    businesses: dict[str, dict] = {}
+    for candidate in candidates:
+        owner_id = whatsapp_owner_id(candidate)
+        if owner_id and owner_id not in businesses:
+            businesses[owner_id] = candidate
+
+    service = get_whatsapp_service(db)
+    semaphore = asyncio.Semaphore(10)
+
+    def as_iso(value):
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    async def inspect_connection(owner_id: str, business: dict) -> dict:
+        stored = business.get("whatsapp") or {}
+        try:
+            async with semaphore:
+                live = await service.get_instance_status(owner_id)
+        except Exception:
+            live = {"connected": False, "status": "error"}
+
+        connected = bool(live.get("connected"))
+        live_status = str(live.get("status") or "").lower()
+        stored_status = str(stored.get("status") or stored.get("connection_state") or "").lower()
+        status = "connected" if connected else ("unreachable" if live_status == "error" else live_status or stored_status or "pending")
+        disconnected_states = {"failed", "disconnected", "not_found", "unreachable", "error"}
+        last_change = (
+            stored.get("disconnected_at")
+            if status in disconnected_states
+            else stored.get("connected_at") or stored.get("created_at")
+        )
+
+        return {
+            "business_id": owner_id,
+            "business_name": business.get("business_name") or business.get("owner_name") or "Unnamed business",
+            "owner_name": business.get("owner_name") or "",
+            "email": business.get("email") or "",
+            "account_phone": business.get("phone_number") or "",
+            "whatsapp_number": live.get("number") or stored.get("phone_number") or "",
+            "session_name": stored.get("instance_name") or "",
+            "provider": getattr(service, "provider", "unknown"),
+            "node": stored.get("waha_node"),
+            "connected": connected,
+            "status": status,
+            "last_change_at": as_iso(last_change),
+        }
+
+    connections = await asyncio.gather(
+        *(inspect_connection(owner_id, business) for owner_id, business in businesses.items())
+    )
+    connections.sort(key=lambda item: (not item["connected"], item["business_name"].lower()))
+    return {
+        "provider": getattr(service, "provider", "unknown"),
+        "connections": connections,
+        "total": len(connections),
+        "connected": sum(1 for item in connections if item["connected"]),
+        "refreshed_at": datetime.utcnow().isoformat(),
+    }
+
+
 @api_router.patch("/admin/users/{target_user_id}")
 async def admin_update_user(target_user_id: str, body: dict, _actor=Depends(get_admin_actor)):
     existing = await db.users.find_one({"_id": target_user_id})
