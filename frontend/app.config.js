@@ -27,7 +27,7 @@ export default {
     android: {
       googleServicesFile: "./google-services.json",
       package: "com.zilo.reply",
-      versionCode: 13,
+      versionCode: 14,
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#2DB843"
@@ -77,6 +77,7 @@ export default {
     },
     extra: {
       backendUrl: process.env.EXPO_PUBLIC_BACKEND_URL || "https://crm-1-pnfo.onrender.com",
+      buildChannel: process.env.EXPO_PUBLIC_BUILD_CHANNEL || "development",
       eas: {
         projectId: "a548a1a8-7dac-4a37-9a14-9b7667ccd1dc"
       }

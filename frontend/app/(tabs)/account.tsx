@@ -496,12 +496,20 @@ export default function AccountScreen() {
           <Text style={styles.sectionTitle}>WhatsApp Business</Text>
           <View style={styles.settingsCard}>
             {waConnected ? (
-              <View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#25D366', marginRight: 10 }} />
-                  <Text style={{ color: '#25D366', fontSize: 16, fontWeight: '600', flex: 1 }}>Connected</Text>
-                  <TouchableOpacity onPress={handleWhatsAppDisconnect} disabled={waDisconnecting}>
-                    <Text style={{ color: '#FF4444', fontSize: 14 }}>{waDisconnecting ? 'Disconnecting...' : 'Disconnect'}</Text>
+              <View style={styles.whatsappConnectedContent}>
+                <View style={styles.whatsappConnectedHeader}>
+                  <View style={styles.whatsappStatus}>
+                    <View style={styles.whatsappStatusDot} />
+                    <Text style={styles.whatsappStatusText}>Connected</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={handleWhatsAppDisconnect}
+                    disabled={waDisconnecting}
+                    style={[styles.disconnectButton, waDisconnecting && styles.disconnectButtonDisabled]}
+                  >
+                    <Text style={styles.disconnectButtonText} numberOfLines={1}>
+                      {waDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+                    </Text>
                   </TouchableOpacity>
                 </View>
                 <Text style={{ color: '#8A9BB5', fontSize: 14 }}>Number: {waNumber}</Text>
@@ -1134,6 +1142,51 @@ const styles = StyleSheet.create({
     backgroundColor: '#1A2942',
     borderRadius: 16,
     overflow: 'hidden',
+  },
+  whatsappConnectedContent: {
+    padding: 16,
+  },
+  whatsappConnectedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    gap: 12,
+  },
+  whatsappStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+  },
+  whatsappStatusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#25D366',
+    marginRight: 10,
+  },
+  whatsappStatusText: {
+    color: '#25D366',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  disconnectButton: {
+    backgroundColor: 'rgba(255, 68, 68, 0.12)',
+    borderColor: 'rgba(255, 68, 68, 0.35)',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    flexShrink: 0,
+  },
+  disconnectButtonDisabled: {
+    opacity: 0.65,
+  },
+  disconnectButtonText: {
+    color: '#FF7373',
+    fontSize: 13,
+    fontWeight: '600',
   },
   settingItem: {
     flexDirection: 'row',

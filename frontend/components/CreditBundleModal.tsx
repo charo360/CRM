@@ -39,6 +39,7 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState<string | null>(null); // bundle_id being purchased
+  const isPreviewBuild = Constants.expoConfig?.extra?.buildChannel === 'preview';
 
   useEffect(() => {
     if (visible) loadBundles();
@@ -58,10 +59,10 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
 
   const handleBuy = async (bundle: Bundle) => {
     const isExpoGo = Constants.appOwnership === 'expo';
-    if (isExpoGo) {
+    if (isExpoGo || isPreviewBuild) {
       Alert.alert(
-        'Not Available Yet',
-        'Purchasing credits requires the full Play Store version of the app.',
+        'Payments unavailable in this test app',
+        'This direct preview APK is for testing Zilo features. To test a real payment, install Zilo through a Google Play internal test track or from the Play Store.',
         [{ text: 'OK' }]
       );
       return;

@@ -52,6 +52,7 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
   const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
+  const isPreviewBuild = Constants.expoConfig?.extra?.buildChannel === 'preview';
 
   useEffect(() => {
     if (visible) {
@@ -77,7 +78,7 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
   // are actually charged. Show its localized prices when available; the
   // backend amounts are only a fallback for builds without IAP (e.g. Expo Go).
   const loadStorePrices = async () => {
-    if (Constants.appOwnership === 'expo') return;
+    if (Constants.appOwnership === 'expo' || isPreviewBuild) return;
     try {
       const Purchases = require('react-native-purchases').default;
       const offerings = await Purchases.getOfferings();
@@ -108,10 +109,10 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
 
   const handlePurchase = async (plan: Plan) => {
     const isExpoGo = Constants.appOwnership === 'expo';
-    if (isExpoGo) {
+    if (isExpoGo || isPreviewBuild) {
       Alert.alert(
-        'Not Available Yet',
-        'Subscriptions are available in the full Play Store version of the app. Coming soon!',
+        'Payments unavailable in this test app',
+        'This direct preview APK is for testing Zilo features. To test a real payment, install Zilo through a Google Play internal test track or from the Play Store.',
         [{ text: 'OK' }]
       );
       return;
@@ -169,8 +170,8 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
 
   const restorePurchases = async () => {
     const isExpoGo = Constants.appOwnership === 'expo';
-    if (isExpoGo) {
-      Alert.alert('Not Available Yet', 'Restore purchases requires the full Play Store version.', [{ text: 'OK' }]);
+    if (isExpoGo || isPreviewBuild) {
+      Alert.alert('Payments unavailable in this test app', 'Restore purchases works from the Google Play test or released app, not a direct preview APK.', [{ text: 'OK' }]);
       return;
     }
     try {
