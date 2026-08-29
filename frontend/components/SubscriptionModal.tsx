@@ -16,8 +16,9 @@ import { apiClient } from '../context/api';
 interface SubscriptionModalProps {
   visible: boolean;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: () => void | Promise<void>;
   currentPlan?: string | null;
+  entryPoint?: 'upgrade' | 'whatsapp_trial';
 }
 
 interface Plan {
@@ -47,12 +48,19 @@ function formatPrice(amount: number, currencyCode: string): string {
   }
 }
 
-export default function SubscriptionModal({ visible, onClose, onSuccess, currentPlan }: SubscriptionModalProps) {
+export default function SubscriptionModal({
+  visible,
+  onClose,
+  onSuccess,
+  currentPlan,
+  entryPoint = 'upgrade',
+}: SubscriptionModalProps) {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
   const isPreviewBuild = Constants.expoConfig?.extra?.buildChannel === 'preview';
+  const isWhatsAppTrial = entryPoint === 'whatsapp_trial';
 
   useEffect(() => {
     if (visible) {
@@ -142,10 +150,23 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
         return;
       }
 
+      // The WhatsApp gate must never silently charge a customer. The matching
+      // Play subscription needs a zero-cost introductory phase configured in
+      // Play Console / RevenueCat before it can be presented as a free trial.
+      const introductoryPrice = pkg.product?.introPrice;
+      const hasFreeTrial = introductoryPrice && Number(introductoryPrice.price) === 0;
+      if (isWhatsAppTrial && !hasFreeTrial) {
+        Alert.alert(
+          'Free trial not ready',
+          'This plan needs its 14-day free trial configured in Google Play before WhatsApp can be linked. Please choose another plan or try again shortly.'
+        );
+        return;
+      }
+
       const { customerInfo, transaction } = await Purchases.purchasePackage(pkg);
       if (customerInfo.entitlements.active['premium']) {
         try {
-          const purchaseToken = transaction?.transactionIdentifier || transaction?.revenueCatId || '';
+          const purchaseToken = transaction?.purchaseToken || transaction?.transactionIdentifier || transaction?.revenueCatId || '';
           const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
           await apiClient.post('/subscription/verify-purchase', {
             plan_id: plan.id,
@@ -153,10 +174,20 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
             platform,
           });
         } catch (syncErr) {
-          console.warn('Backend subscription sync failed (non-fatal):', syncErr);
+          console.warn('Backend subscription sync failed:', syncErr);
+          Alert.alert(
+            'Subscription needs verification',
+            'Google Play confirmed your purchase, but Zilo could not verify it yet. Please try Restore Purchases in a moment.'
+          );
+          return;
         }
-        Alert.alert('Success! 🎉', 'Your subscription is now active!');
-        onSuccess();
+        Alert.alert(
+          isWhatsAppTrial ? 'Trial started' : 'Subscription active',
+          isWhatsAppTrial
+            ? 'Your payment method is verified. Your Google Play free trial has started.'
+            : 'Your subscription is now active!'
+        );
+        await onSuccess();
         onClose();
       }
     } catch (error: any) {
@@ -211,7 +242,7 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
       <View style={styles.overlay}>
         <View style={styles.modal}>
           <View style={styles.header}>
-            <Text style={styles.title}>Upgrade to Premium</Text>
+            <Text style={styles.title}>{isWhatsAppTrial ? 'Start your WhatsApp trial' : 'Upgrade to Premium'}</Text>
             <TouchableOpacity onPress={onClose} disabled={purchasing}>
               <Ionicons name="close" size={28} color="#fff" />
             </TouchableOpacity>
@@ -229,15 +260,23 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
             >
               {/* ── Intro Offer Banner ── */}
               <View style={styles.introBanner}>
-                <Text style={styles.introEmoji}>🎉</Text>
+                <Text style={styles.introEmoji}>{isWhatsAppTrial ? '🔒' : '🎉'}</Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.introTitle}>50% OFF — First 3 Months</Text>
-                  <Text style={styles.introSub}>Limited-time launch offer for new subscribers</Text>
+                  <Text style={styles.introTitle}>
+                    {isWhatsAppTrial ? '14-DAY FREE TRIAL' : '50% OFF — First 3 Months'}
+                  </Text>
+                  <Text style={styles.introSub}>
+                    {isWhatsAppTrial
+                      ? 'Google Play will securely verify a payment method. No charge today.'
+                      : 'Limited-time launch offer for new subscribers'}
+                  </Text>
                 </View>
               </View>
 
               <Text style={styles.subtitle}>
-                Choose the plan that fits your business needs
+                {isWhatsAppTrial
+                  ? 'Choose a plan to link WhatsApp. Cancel in Google Play before the trial ends to avoid a charge.'
+                  : 'Choose the plan that fits your business needs'}
               </Text>
 
               <View style={styles.packages}>
@@ -276,18 +315,27 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
                       
                       <Text style={styles.packageTitle}>{plan.name}</Text>
 
-                      <View style={styles.priceContainer}>
-                        <Text style={styles.packagePriceStrike}>
-                          {fullPrice}
-                        </Text>
-                        <Text style={styles.packagePrice}>
-                          {introPrice}
-                        </Text>
-                        <Text style={styles.priceInterval}>/mo · first 3 months</Text>
-                      </View>
-                      <Text style={styles.afterIntro}>
-                        then {fullPrice}/month
-                      </Text>
+                      {isWhatsAppTrial ? (
+                        <>
+                          <Text style={styles.trialPrice}>Free for 14 days</Text>
+                          <Text style={styles.afterIntro}>then {fullPrice}/month</Text>
+                        </>
+                      ) : (
+                        <>
+                          <View style={styles.priceContainer}>
+                            <Text style={styles.packagePriceStrike}>
+                              {fullPrice}
+                            </Text>
+                            <Text style={styles.packagePrice}>
+                              {introPrice}
+                            </Text>
+                            <Text style={styles.priceInterval}>/mo · first 3 months</Text>
+                          </View>
+                          <Text style={styles.afterIntro}>
+                            then {fullPrice}/month
+                          </Text>
+                        </>
+                      )}
 
                       <View style={styles.featuresContainer}>
                         {plan.features.map((feature, idx) => (
@@ -306,7 +354,13 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
                           styles.selectButtonText,
                           isCurrentPlan && styles.selectButtonTextDisabled
                         ]}>
-                          {isCurrentPlan ? 'Active' : purchasing ? 'Processing...' : 'Claim 50% Off'}
+                          {isCurrentPlan
+                            ? 'Active'
+                            : purchasing
+                              ? 'Processing...'
+                              : isWhatsAppTrial
+                                ? 'Start 14-day free trial'
+                                : 'Claim 50% Off'}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -323,9 +377,9 @@ export default function SubscriptionModal({ visible, onClose, onSuccess, current
               </TouchableOpacity>
 
               <Text style={styles.disclaimer}>
-                • 50% discount applied to first 3 billing months{`\n`}
-                • Full price resumes from month 4 automatically{`\n`}
-                • Cancel anytime from Play Store / App Store
+                {isWhatsAppTrial
+                  ? '• A payment method is required by Google Play to activate the trial\n• No charge is made today\n• Cancel anytime in Google Play before the trial ends'
+                  : '• 50% discount applied to first 3 billing months\n• Full price resumes from month 4 automatically\n• Cancel anytime from Play Store / App Store'}
               </Text>
             </ScrollView>
           )}
@@ -458,6 +512,12 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: 'bold',
     color: '#2DB843',
+  },
+  trialPrice: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#2DB843',
+    marginBottom: 8,
   },
   afterIntro: {
     fontSize: 11,

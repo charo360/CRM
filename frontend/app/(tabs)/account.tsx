@@ -57,6 +57,7 @@ export default function AccountScreen() {
   const [subscribing, setSubscribing] = useState(false);
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
+  const [subscriptionEntryPoint, setSubscriptionEntryPoint] = useState<'upgrade' | 'whatsapp_trial'>('upgrade');
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
@@ -256,11 +257,7 @@ export default function AccountScreen() {
     );
   };
 
-  const handleWhatsAppConnect = async () => {
-    if (!waPhoneInput.trim()) {
-      Alert.alert('Error', 'Please enter your WhatsApp phone number');
-      return;
-    }
+  const beginWhatsAppPairing = async () => {
     setWaConnecting(true);
     setWaPairingCode('');
     setWaQrBase64('');
@@ -278,6 +275,19 @@ export default function AccountScreen() {
     } finally {
       setWaConnecting(false);
     }
+  };
+
+  const handleWhatsAppConnect = async () => {
+    if (!waPhoneInput.trim()) {
+      Alert.alert('Error', 'Please enter your WhatsApp phone number');
+      return;
+    }
+    if (!user?.subscription_active) {
+      setSubscriptionEntryPoint('whatsapp_trial');
+      setShowSubModal(true);
+      return;
+    }
+    await beginWhatsAppPairing();
   };
 
   const handleWhatsAppDisconnect = async () => {
@@ -456,7 +466,7 @@ export default function AccountScreen() {
               user?.subscription_active && styles.subscriptionActive,
             ]}>
               <Text style={styles.subscriptionText}>
-                {user?.subscription_active ? user?.subscription_plan || 'Active' : 'Free Trial'}
+                {user?.subscription_active ? user?.subscription_plan || 'Active' : 'Trial available'}
               </Text>
             </View>
           </View>
@@ -585,7 +595,7 @@ export default function AccountScreen() {
                   <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginLeft: 10 }}>Connect WhatsApp</Text>
                 </View>
                 <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 16 }}>
-                  Link your WhatsApp number to send messages directly from the app.
+                  Start a Google Play free trial before linking your number. A payment method is required, but you will not be charged today.
                 </Text>
                 <TextInput
                   style={{
@@ -617,7 +627,9 @@ export default function AccountScreen() {
                   {waConnecting ? (
                     <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
-                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>Get Pairing Code</Text>
+                    <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>
+                      {user?.subscription_active ? 'Get Pairing Code' : 'Start free trial to connect'}
+                    </Text>
                   )}
                 </TouchableOpacity>
               </View>
@@ -980,12 +992,21 @@ export default function AccountScreen() {
       />
       <SubscriptionModal
         visible={showSubModal}
-        onClose={() => setShowSubModal(false)}
-        onSuccess={() => {
+        onClose={() => {
           setShowSubModal(false);
-          refreshUser();
+          setSubscriptionEntryPoint('upgrade');
+        }}
+        onSuccess={async () => {
+          const shouldStartPairing = subscriptionEntryPoint === 'whatsapp_trial';
+          setShowSubModal(false);
+          setSubscriptionEntryPoint('upgrade');
+          await refreshUser();
+          if (shouldStartPairing) {
+            await beginWhatsAppPairing();
+          }
         }}
         currentPlan={user?.subscription_plan}
+        entryPoint={subscriptionEntryPoint}
       />
       <TeamManagementModal
         visible={showTeamModal}

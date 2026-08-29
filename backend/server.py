@@ -2303,9 +2303,6 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
             "setup_complete": False,
         }
         await db.users.insert_one(user_doc)
-        from entitlements import provision_signup_trial
-
-        await provision_signup_trial(db, user_id)
         user = user_doc
     else:
         user_id = user["_id"]
@@ -2689,8 +2686,6 @@ async def _complete_verified_phone_login(phone: str, auth_provider: str):
             "settings": {"business_type": "retail", "onboarding_v1_completed": False},
         }
         await db.users.insert_one(user_doc)
-        from entitlements import provision_signup_trial
-        await provision_signup_trial(db, user_id)
         user = user_doc
     else:
         user_id = user["_id"]
@@ -2826,10 +2821,6 @@ async def register_web(req: WebRegisterRequest):
         "settings": {"business_type": "retail", "onboarding_v1_completed": False},
     }
     await db.users.insert_one(user_doc)
-
-    from entitlements import provision_signup_trial
-
-    await provision_signup_trial(db, user_id)
 
     existing_member = await db.team_members.find_one({
         "business_id": user_id,
@@ -8285,34 +8276,47 @@ async def get_subscription_plans(user = Depends(get_current_user)):
 
 async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dict:
     """Verify a Google Play purchase token with the Android Publisher API."""
-    # Google Play product IDs follow the pattern: crm_{plan}_monthly
+    # Google Play subscription product IDs follow this convention. Unlike a
+    # consumable product, subscription purchases must be checked through the
+    # subscriptionsv2 endpoint, which also covers a free trial with a payment
+    # method on file.
     product_id = f"crm_{plan_id}_monthly"
     package_name = GOOGLE_PLAY_PACKAGE_NAME
     sa_key_path = os.environ.get('GOOGLE_SA_KEY_PATH', '')
+    sa_key_json = os.environ.get('GOOGLE_PLAY_SERVICE_ACCOUNT_JSON', '')
 
     if not package_name:
-        logging.warning("GOOGLE_PLAY_PACKAGE_NAME not set — skipping server verification")
-        return {"valid": True, "reason": "no_server_config"}
+        logging.error("GOOGLE_PLAY_PACKAGE_NAME not set — refusing to verify an IAP subscription")
+        return {"valid": False, "reason": "Google Play subscription verification is not configured"}
 
-    if not sa_key_path or not os.path.exists(sa_key_path):
-        logging.warning("GOOGLE_SA_KEY_PATH not set or file missing — skipping server verification")
-        return {"valid": True, "reason": "no_server_config"}
+    if not sa_key_json and (not sa_key_path or not os.path.exists(sa_key_path)):
+        logging.error("Google Play service account credentials are missing — refusing to verify an IAP subscription")
+        return {"valid": False, "reason": "Google Play subscription verification is not configured"}
 
     try:
         from google.oauth2 import service_account
         from google.auth.transport.requests import Request as GRequest
         import httpx
+        import json
 
-        creds = service_account.Credentials.from_service_account_file(
-            sa_key_path,
-            scopes=["https://www.googleapis.com/auth/androidpublisher"],
-        )
+        if sa_key_json:
+            creds = service_account.Credentials.from_service_account_info(
+                json.loads(sa_key_json),
+                scopes=["https://www.googleapis.com/auth/androidpublisher"],
+            )
+        else:
+            creds = service_account.Credentials.from_service_account_file(
+                sa_key_path,
+                scopes=["https://www.googleapis.com/auth/androidpublisher"],
+            )
         creds.refresh(GRequest())
+
+        from urllib.parse import quote
 
         url = (
             f"https://androidpublisher.googleapis.com/androidpublisher/v3"
-            f"/applications/{package_name}/purchases/products/{product_id}"
-            f"/tokens/{purchase_token}"
+            f"/applications/{package_name}/purchases/subscriptionsv2/tokens/"
+            f"{quote(purchase_token, safe='')}"
         )
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {creds.token}"})
@@ -8321,14 +8325,49 @@ async def _verify_google_play_purchase(purchase_token: str, plan_id: str) -> dic
             return {"valid": False, "reason": f"Google API error: {resp.status_code}"}
 
         data = resp.json()
-        # purchaseState 0 = purchased, 1 = canceled
-        if data.get("purchaseState", -1) != 0:
-            return {"valid": False, "reason": "Purchase not completed"}
+        line_items = data.get("lineItems") or []
+        matching_items = [item for item in line_items if item.get("productId") == product_id]
+        if not matching_items:
+            return {"valid": False, "reason": "Purchase does not match the selected Zilo plan"}
 
-        return {"valid": True, "order_id": data.get("orderId")}
+        # A cancelled subscription remains valid through its already-paid (or
+        # trial) period. Pending, paused, expired and on-hold subscriptions do
+        # not permit WhatsApp linking.
+        subscription_state = data.get("subscriptionState")
+        valid_states = {
+            "SUBSCRIPTION_STATE_ACTIVE",
+            "SUBSCRIPTION_STATE_IN_GRACE_PERIOD",
+            "SUBSCRIPTION_STATE_CANCELED",
+        }
+        if subscription_state not in valid_states:
+            return {"valid": False, "reason": f"Subscription is not active ({subscription_state or 'unknown'})"}
+
+        expires_at = None
+        for item in matching_items:
+            expires_value = item.get("expiryTime")
+            if not expires_value:
+                continue
+            try:
+                parsed = datetime.fromisoformat(expires_value.replace("Z", "+00:00"))
+                expires_at = parsed.replace(tzinfo=None)
+                break
+            except (TypeError, ValueError):
+                logging.warning("Google Play returned an unparseable expiry time: %r", expires_value)
+
+        if subscription_state == "SUBSCRIPTION_STATE_CANCELED" and (
+            not expires_at or expires_at <= datetime.utcnow()
+        ):
+            return {"valid": False, "reason": "Subscription has ended"}
+
+        return {
+            "valid": True,
+            "order_id": data.get("latestOrderId"),
+            "expires_at": expires_at,
+            "subscription_state": subscription_state,
+        }
     except ImportError:
-        logging.warning("google-auth not installed — skipping Google Play verification")
-        return {"valid": True, "reason": "no_google_auth_lib"}
+        logging.error("google-auth not installed — refusing to verify an IAP subscription")
+        return {"valid": False, "reason": "Google Play subscription verification is unavailable"}
     except Exception as e:
         logging.error(f"Google Play verification error: {e}")
         return {"valid": False, "reason": str(e)}
@@ -8399,6 +8438,7 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
                 "subscription_plan": request.plan_id,
                 "subscription_active": True,
                 "subscription_date": datetime.utcnow(),
+                "subscription_current_period_end": verification.get("expires_at"),
                 "billing_provider": "iap",
             }
         }
@@ -8421,6 +8461,150 @@ async def verify_iap_purchase(request: IAPVerifyRequest, user = Depends(get_curr
         "message": "Subscription activated",
         "plan": request.plan_id
     }
+
+
+def _revenuecat_plan_id(product_id: object) -> Optional[str]:
+    """Map a RevenueCat / Play product id to one of Zilo's app plan ids."""
+    base_product_id = str(product_id or "").split(":", 1)[0]
+    for plan_id in PLAN_FEATURES:
+        if base_product_id == f"crm_{plan_id}_monthly":
+            return plan_id
+    return None
+
+
+def _revenuecat_datetime(value: object) -> Optional[datetime]:
+    """Convert RevenueCat's millisecond timestamp to our UTC-naive convention."""
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.utcfromtimestamp(int(value) / 1000)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+@api_router.post("/subscription/revenuecat-webhook")
+async def revenuecat_subscription_webhook(request: Request):
+    """Synchronise the authoritative Google Play subscription lifecycle.
+
+    RevenueCat signs the *raw* payload as ``timestamp.payload``. This keeps
+    WhatsApp access in sync for trial conversion, renewals, cancellations and
+    expiry without trusting a mobile client to tell us it has paid.
+    """
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    signing_secret = os.environ.get("REVENUECAT_WEBHOOK_SIGNING_SECRET", "")
+    if not signing_secret:
+        logging.error("RevenueCat webhook received but signing is not configured")
+        raise HTTPException(status_code=503, detail="Subscription webhook is not configured")
+
+    raw_body = await request.body()
+    signature_header = request.headers.get("X-RevenueCat-Webhook-Signature", "")
+    try:
+        signature_parts = dict(part.split("=", 1) for part in signature_header.split(",") if "=" in part)
+        timestamp = signature_parts["t"]
+        received_signature = signature_parts["v1"]
+        expected_signature = hmac.new(
+            signing_secret.encode(),
+            f"{timestamp}.".encode() + raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        timestamp_is_fresh = abs(time.time() - int(timestamp)) <= 300
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid RevenueCat webhook signature")
+
+    if not timestamp_is_fresh or not hmac.compare_digest(expected_signature, received_signature):
+        raise HTTPException(status_code=401, detail="Invalid RevenueCat webhook signature")
+
+    try:
+        payload = json.loads(raw_body)
+        event = payload.get("event") or payload
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid RevenueCat webhook payload")
+
+    event_id = str(event.get("id") or "")
+    if event_id and await db.revenuecat_webhook_events.find_one({"_id": event_id}):
+        return {"status": "duplicate"}
+
+    event_type = str(event.get("type") or "").upper()
+    identities = [
+        value for value in [event.get("app_user_id"), event.get("original_app_user_id")]
+        if value
+    ]
+    identities.extend(value for value in (event.get("aliases") or []) if value)
+    user = await db.users.find_one({"_id": {"$in": identities}}) if identities else None
+
+    event_record = {
+        "_id": event_id or str(uuid.uuid4()),
+        "event_type": event_type,
+        "app_user_id": event.get("app_user_id"),
+        "product_id": event.get("new_product_id") or event.get("product_id"),
+        "event_timestamp_ms": event.get("event_timestamp_ms"),
+        "received_at": datetime.utcnow(),
+        "processed_user_id": user.get("_id") if user else None,
+    }
+    await db.revenuecat_webhook_events.update_one(
+        {"_id": event_record["_id"]}, {"$setOnInsert": event_record}, upsert=True
+    )
+
+    if not user:
+        logging.warning("RevenueCat webhook has no matching Zilo user: %s", event.get("app_user_id"))
+        return {"status": "ignored", "reason": "unknown_user"}
+
+    incoming_timestamp = int(event.get("event_timestamp_ms") or 0)
+    if incoming_timestamp and incoming_timestamp < int(user.get("revenuecat_last_event_ms") or 0):
+        return {"status": "ignored", "reason": "out_of_order"}
+
+    plan_id = _revenuecat_plan_id(event.get("new_product_id") or event.get("product_id"))
+    expires_at = _revenuecat_datetime(event.get("expiration_at_ms"))
+    common = {
+        "revenuecat_last_event_ms": incoming_timestamp or int(time.time() * 1000),
+        "revenuecat_last_event_type": event_type,
+        "billing_provider": "iap",
+    }
+
+    # A cancellation or a scheduled pause does not remove access immediately:
+    # the user remains entitled until the expiration event. RevenueCat sends
+    # EXPIRATION when access must actually be removed.
+    if event_type == "EXPIRATION":
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {
+                **common,
+                "subscription_active": False,
+                "subscription_cancel_at_period_end": False,
+                "subscription_current_period_end": expires_at or datetime.utcnow(),
+            }},
+        )
+    elif event_type in {"INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION", "PRODUCT_CHANGE", "SUBSCRIPTION_EXTENDED"}:
+        if not plan_id:
+            logging.warning("RevenueCat event %s has an unknown product %r", event_type, event.get("product_id"))
+            return {"status": "ignored", "reason": "unknown_product"}
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {
+                **common,
+                "subscription_plan": plan_id,
+                "subscription_active": True,
+                "subscription_date": _revenuecat_datetime(event.get("purchased_at_ms")) or datetime.utcnow(),
+                "subscription_current_period_end": expires_at,
+                "subscription_cancel_at_period_end": False,
+            }},
+        )
+    elif event_type in {"CANCELLATION", "SUBSCRIPTION_PAUSED", "BILLING_ISSUE"}:
+        update_fields = {
+            **common,
+            "subscription_cancel_at_period_end": event_type in {"CANCELLATION", "SUBSCRIPTION_PAUSED"},
+        }
+        if expires_at:
+            update_fields["subscription_current_period_end"] = expires_at
+        if event_type == "BILLING_ISSUE":
+            update_fields["subscription_billing_issue"] = True
+        await db.users.update_one({"_id": user["_id"]}, {"$set": update_fields})
+
+    return {"status": "ok"}
 
 @api_router.get("/subscription/status")
 async def get_subscription_status(user = Depends(get_current_user)):
@@ -8748,7 +8932,15 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     Start WhatsApp pairing and return a phone pairing code.
     User enters the code in WhatsApp > Linked Devices > Link with phone number.
     """
+    from entitlements import build_entitlements
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    entitlements = await build_entitlements(db, user)
+    if not entitlements.get("paid_active"):
+        raise HTTPException(
+            status_code=402,
+            detail="Start your Google Play subscription before connecting WhatsApp. Your free trial begins after Google Play confirms your payment method.",
+        )
 
     cfg_err = evolution_config_error()
     if cfg_err:
@@ -8783,7 +8975,12 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
 @api_router.post("/whatsapp/refresh")
 async def whatsapp_refresh_pairing_code(request: Request, user = Depends(get_current_user)):
     """Refresh a phone pairing code without recreating the WhatsApp session."""
+    from entitlements import build_entitlements
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    entitlements = await build_entitlements(db, user)
+    if not entitlements.get("paid_active"):
+        raise HTTPException(status_code=402, detail="An active Zilo subscription is required to link WhatsApp.")
 
     if cfg_err := evolution_config_error():
         raise HTTPException(status_code=503, detail=cfg_err)
@@ -8807,7 +9004,12 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
     QR is taken directly from the create response so it is fresh (no expiry delay).
     """
     import httpx as _httpx, os as _os
+    from entitlements import build_entitlements
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    entitlements = await build_entitlements(db, user)
+    if not entitlements.get("paid_active"):
+        raise HTTPException(status_code=402, detail="Start your Google Play subscription before connecting WhatsApp.")
 
     cfg_err = evolution_config_error()
     if cfg_err:
