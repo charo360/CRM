@@ -20228,6 +20228,15 @@ async def facebook_data_deletion(body: _DataDeletionRequest):
     return {"status": "queued", "confirmation_code": code}
 
 
+# ── Public storefront (catalogs shared from the mobile product list) ──────────
+try:
+    from storefront_routes import register_storefront_routes
+    register_storefront_routes(api_router, db, get_current_user)
+    logging.info("[storefront] public catalog and checkout routes mounted")
+except Exception as _storefront_error:
+    logging.error("[storefront] failed to mount routes: %s", _storefront_error)
+
+
 # Mount API after entire module is defined (critical for /api/auth/register-web etc. with --reload)
 app.include_router(api_router)
 

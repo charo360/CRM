@@ -506,6 +506,20 @@ export const productsAPI = {
   }
 };
 
+// ============ Public Storefront API Methods ============
+
+export const storefrontAPI = {
+  getMyStorefront: async () => {
+    const response = await apiClient.get('/storefront/me');
+    return response.data as {
+      slug: string;
+      public_url: string;
+      payment_provider: string;
+      available_payment_providers: string[];
+    };
+  },
+};
+
 // ============ DASHBOARD API ============
 export const dashboardAPI = {
   getSummary: async () => {

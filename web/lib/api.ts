@@ -684,6 +684,23 @@ export const productsApi = {
   }) => api.post<{ status: string; description: string }>("/products/ai-description", body),
 };
 
+/** Public catalog settings for the products managed in Zilo (not WordPress). */
+export const storefrontApi = {
+  mine: () => api.get<{
+    slug: string;
+    public_url: string;
+    payment_provider: string;
+    available_payment_providers: string[];
+  }>("/storefront/me"),
+  updateSettings: (body: { payment_provider?: string; enabled?: boolean }) =>
+    api.put<{
+      slug: string;
+      public_url: string;
+      payment_provider: string;
+      enabled: boolean;
+    }>("/storefront/settings", body),
+};
+
 /** Design library — same multipart pattern as `productsApi.addImages` (`files` field). */
 export const designTemplatesApi = {
   uploadBrandKitImages: async (

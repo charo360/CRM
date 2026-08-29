@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { productsApi, Product, ProductModifierGroup, ProductVariant } from "@/lib/api";
+import { productsApi, storefrontApi, Product, ProductModifierGroup, ProductVariant } from "@/lib/api";
 import { formatCurrency, resolveMediaUrl } from "@/lib/utils";
 import {
   Plus,
@@ -177,10 +177,16 @@ export default function ShopPage() {
   }
 
   useEffect(() => {
-    const userJson = localStorage.getItem("user");
-    const slug = userJson ? JSON.parse(userJson).business_slug || "my-shop" : "my-shop";
-    setShopUrl(`${window.location.origin}/shop/${encodeURIComponent(slug)}`);
-    load();
+    async function loadStorefront() {
+      try {
+        const store = await storefrontApi.mine();
+        setShopUrl(store.public_url);
+      } catch (error) {
+        console.error("Could not load public catalog link", error);
+      }
+    }
+    void loadStorefront();
+    void load();
   }, []);
 
   async function load() {
@@ -585,7 +591,8 @@ export default function ShopPage() {
         <button
           type="button"
           onClick={() => navigator.clipboard.writeText(shopUrl)}
-          className="text-xs font-medium text-brand-dark hover:underline shrink-0"
+          disabled={!shopUrl}
+          className="text-xs font-medium text-brand-dark hover:underline shrink-0 disabled:opacity-40"
         >
           Copy
         </button>

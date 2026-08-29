@@ -17,6 +17,7 @@ from paystack_auth import (
     secret_key_from_doc,
     subunit_to_major,
 )
+from paystack_credentials import PAYSTACK_AUTH_PLATFORM, paystack_auth_mode
 from paystack_billing import (
     create_payment_intent,
     find_intent_by_reference,
@@ -137,6 +138,11 @@ async def initialize_checkout_for_user(
     subaccount_code = (user_doc.get("paystack_subaccount_code") or "").strip()
     if subaccount_code:
         payload["subaccount"] = subaccount_code
+        # Zilo's Kenya flow uses a Paystack platform subaccount with no Zilo
+        # commission.  The merchant should therefore bear Paystack's processing
+        # fee, instead of quietly charging it to the platform account.
+        if paystack_auth_mode(user_doc) == PAYSTACK_AUTH_PLATFORM:
+            payload["bearer"] = "subaccount"
     if callback_url:
         payload["callback_url"] = callback_url
 

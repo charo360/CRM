@@ -26,7 +26,7 @@ from payhero_service import parse_webhook as parse_payhero_webhook
 from payhero_service import process_payment as process_payhero_payment
 from paystack_billing import LEDGER as PAYSTACK_LEDGER
 from paystack_client import PaystackClient
-from paystack_credentials import PAYSTACK_AUTH_MERCHANT
+from paystack_credentials import PAYSTACK_AUTH_MERCHANT, PAYSTACK_AUTH_PLATFORM
 from paystack_service import initialize_checkout_for_user, parse_webhook_event
 from paystack_service import process_charge_success
 from stripe_billing import LEDGER as STRIPE_LEDGER
@@ -355,6 +355,63 @@ def test_paystack_subaccount_payment_creates_transaction_and_provider_refund(mon
         refunded_ledger = await db[PAYSTACK_LEDGER].find_one({"_id": ledger["_id"]})
         assert refunded_ledger["status"] == "refunded"
         assert refunded_ledger["provider_refund_id"] == "refund_123"
+
+    run(scenario())
+
+
+def test_paystack_platform_subaccount_makes_merchant_bear_processing_fee(monkeypatch):
+    """A zero-Zilo-commission platform checkout must not charge Zilo Paystack fees."""
+    class FakePaystackClient:
+        initialized_payload: Dict[str, Any] = {}
+
+        def __init__(self, secret_key: str):
+            self.secret_key = secret_key
+
+        async def initialize_transaction(self, payload):
+            self.__class__.initialized_payload = payload
+            return {
+                "authorization_url": "https://checkout.paystack.test/platform",
+                "access_code": "access_platform",
+                "reference": payload["reference"],
+            }
+
+    monkeypatch.setenv("PAYSTACK_PLATFORM_SECRET_KEY", "sk_test_platform")
+    monkeypatch.setattr(paystack_service, "PaystackClient", FakePaystackClient)
+
+    async def scenario():
+        db = FakeDB()
+        user_id = ObjectId()
+        order_id = ObjectId()
+        user_doc = {
+            "_id": user_id,
+            "paystack_auth_mode": PAYSTACK_AUTH_PLATFORM,
+            "paystack_default_currency": "KES",
+            "paystack_subaccount_code": "ACCT_merchant_123",
+        }
+        await db.users.insert_one(user_doc)
+        await db.orders.insert_one(
+            {
+                "_id": order_id,
+                "user_id": user_id,
+                "order_number": "ORD-PLATFORM-1",
+                "total_amount": 400,
+                "payment_status": "Pending",
+            }
+        )
+
+        await initialize_checkout_for_user(
+            db,
+            user_doc,
+            user_id=str(user_id),
+            email="buyer@example.test",
+            amount_major=400,
+            currency="KES",
+            external_reference="ORD-PLATFORM-1",
+            order_id=str(order_id),
+        )
+
+        assert FakePaystackClient.initialized_payload["subaccount"] == "ACCT_merchant_123"
+        assert FakePaystackClient.initialized_payload["bearer"] == "subaccount"
 
     run(scenario())
 

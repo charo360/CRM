@@ -1,0 +1,546 @@
+"""Public Zilo catalog and checkout routes.
+
+The mobile product catalog remains the source of truth.  A business gets a
+stable public link (``/s/<slug>``) that shows only products it has not
+explicitly hidden, creates normal Zilo orders, and starts the merchant's
+configured checkout.  Prices and stock are always recalculated on the server;
+the browser never supplies a price that is trusted.
+"""
+from __future__ import annotations
+
+import os
+import re
+import secrets
+import uuid
+from datetime import datetime
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from paystack_credentials import PAYSTACK_AUTH_PLATFORM, paystack_auth_mode, paystack_connected
+from paystack_service import initialize_checkout_for_user as initialize_paystack_checkout
+
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
+_PHONE_RE = re.compile(r"^[+0-9][0-9 .()\-]{6,31}$")
+_ONLINE_PROVIDERS = ("paystack", "flutterwave", "stripe", "payhero")
+
+
+def _text(value: Any, maximum: int = 200) -> str:
+    return str(value or "").strip()[:maximum]
+
+
+def _currency(user: dict) -> str:
+    return _text(
+        user.get("currency") or (user.get("settings") or {}).get("currency") or "USD",
+        8,
+    ).upper()
+
+
+def _slug_base(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return (normalized or "store")[:60].strip("-") or "store"
+
+
+async def _ensure_store_slug(db, user_doc: dict) -> str:
+    existing = _text(user_doc.get("public_store_slug"), 80).lower()
+    if _SLUG_RE.fullmatch(existing):
+        return existing
+
+    base = _slug_base(_text(user_doc.get("business_name"), 100))
+    for _ in range(8):
+        candidate = f"{base}-{secrets.token_hex(3)}"
+        duplicate = await db.users.find_one({"public_store_slug": candidate}, {"_id": 1})
+        if not duplicate:
+            await db.users.update_one(
+                {"_id": user_doc["_id"]}, {"$set": {"public_store_slug": candidate}}
+            )
+            user_doc["public_store_slug"] = candidate
+            return candidate
+    raise HTTPException(503, "Could not create a public catalog link. Please try again.")
+
+
+async def _business_doc(db, slug: str) -> dict:
+    normalized = _text(slug, 80).lower()
+    if not _SLUG_RE.fullmatch(normalized):
+        raise HTTPException(404, "Store not found")
+    business = await db.users.find_one({"public_store_slug": normalized})
+    if not business:
+        raise HTTPException(404, "Store not found")
+    return business
+
+
+def _public_product(product: dict) -> Dict[str, Any]:
+    images = list(product.get("images") or [])
+    image_url = _text(product.get("image_url"), 2000)
+    if image_url and image_url not in images:
+        images.insert(0, image_url)
+    return {
+        "id": str(product["_id"]),
+        "name": _text(product.get("name"), 200),
+        "description": _text(product.get("description"), 2000),
+        "price": float(product.get("price") or 0),
+        "discount_price": product.get("discount_price"),
+        "category": _text(product.get("category") or "Other", 100),
+        "image_url": image_url or (images[0] if images else ""),
+        "images": images[:5],
+        "in_stock": bool(product.get("in_stock", True)),
+        "stock_quantity": product.get("stock_quantity"),
+        "unit": _text(product.get("unit"), 80),
+        "moq": max(1, int(product.get("moq") or 1)),
+        "pricing_tiers": product.get("pricing_tiers") or [],
+        "variants": product.get("variants") or [],
+        "modifier_groups": product.get("modifier_groups") or [],
+    }
+
+
+def _connected_providers(user_doc: dict) -> List[str]:
+    providers: List[str] = []
+    if paystack_connected(user_doc):
+        providers.append("paystack")
+
+    try:
+        from flutterwave_credentials import flutterwave_connected
+        if flutterwave_connected(user_doc):
+            providers.append("flutterwave")
+    except Exception:
+        pass
+    try:
+        from stripe_credentials import stripe_checkout_ready
+        if stripe_checkout_ready(user_doc):
+            providers.append("stripe")
+    except Exception:
+        pass
+    try:
+        from payhero_credentials import payhero_connected
+        if payhero_connected(user_doc) and user_doc.get("payhero_channel_id"):
+            providers.append("payhero")
+    except Exception:
+        pass
+    return providers
+
+
+def _selected_provider(user_doc: dict) -> Optional[str]:
+    connected = _connected_providers(user_doc)
+    preferred = _text(user_doc.get("storefront_payment_provider"), 32).lower()
+    if preferred in connected:
+        return preferred
+    return connected[0] if connected else None
+
+
+def _store_payload(user_doc: dict, products: Iterable[dict]) -> Dict[str, Any]:
+    provider = _selected_provider(user_doc)
+    return {
+        "slug": user_doc.get("public_store_slug"),
+        "business_name": _text(user_doc.get("business_name") or "Zilo Store", 120),
+        "currency": _currency(user_doc),
+        "products": [_public_product(product) for product in products],
+        "checkout": {
+            "online_payment_available": bool(provider),
+            "provider": provider,
+            "payment_label": "Pay securely" if provider else "Place order",
+        },
+    }
+
+
+def _requested_option_names(raw: Any) -> List[Tuple[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    selected: List[Tuple[str, str]] = []
+    for value in raw[:20]:
+        if not isinstance(value, dict):
+            continue
+        group = _text(value.get("group") or value.get("group_name"), 100)
+        option = _text(value.get("option") or value.get("option_name"), 100)
+        if group and option:
+            selected.append((group, option))
+    return selected
+
+
+def _tier_price(product: dict, quantity: int, base_price: float) -> float:
+    applicable: List[Tuple[int, float]] = []
+    for tier in product.get("pricing_tiers") or []:
+        if not isinstance(tier, dict):
+            continue
+        try:
+            minimum = int(tier.get("min_qty") or 0)
+            price = float(tier.get("price"))
+        except (TypeError, ValueError):
+            continue
+        if minimum > 0 and minimum <= quantity and price >= 0:
+            applicable.append((minimum, price))
+    return max(applicable, default=(0, base_price), key=lambda row: row[0])[1]
+
+
+def _price_item(product: dict, requested: dict) -> Dict[str, Any]:
+    try:
+        quantity = int(requested.get("quantity") or 1)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Each quantity must be a whole number") from exc
+    if quantity < 1 or quantity > 100:
+        raise HTTPException(400, "Each quantity must be between 1 and 100")
+
+    minimum = max(1, int(product.get("moq") or 1))
+    if quantity < minimum:
+        raise HTTPException(400, f"{product.get('name', 'This product')} has a minimum order of {minimum}")
+
+    base_price = float(product.get("discount_price") or product.get("price") or 0)
+    variant_name = _text(requested.get("variant_name") or requested.get("variant"), 120)
+    if variant_name:
+        variant = next(
+            (v for v in product.get("variants") or [] if _text(v.get("name"), 120) == variant_name),
+            None,
+        )
+        if not variant:
+            raise HTTPException(400, f"That variant is no longer available for {product.get('name', 'this product')}")
+        try:
+            base_price = float(variant.get("price"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "This variant has an invalid price") from exc
+
+    unit_price = _tier_price(product, quantity, base_price)
+    selected_modifiers = _requested_option_names(requested.get("modifiers"))
+    modifier_labels: List[str] = []
+    selected_by_group: Dict[str, List[str]] = {}
+    for group_name, option_name in selected_modifiers:
+        selected_by_group.setdefault(group_name, []).append(option_name)
+
+    for group in product.get("modifier_groups") or []:
+        group_name = _text(group.get("name"), 100)
+        selections = selected_by_group.pop(group_name, [])
+        if group.get("required") and not selections:
+            raise HTTPException(400, f"Choose an option for {group_name}")
+        if not group.get("multi_select") and len(selections) > 1:
+            raise HTTPException(400, f"Choose only one option for {group_name}")
+        options = { _text(option.get("name"), 100): option for option in group.get("options") or [] }
+        for option_name in selections:
+            option = options.get(option_name)
+            if not option:
+                raise HTTPException(400, f"{option_name} is no longer available")
+            try:
+                unit_price += float(option.get("price_delta") or 0)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "A modifier has an invalid price") from exc
+            modifier_labels.append(f"{group_name}: {option_name}")
+
+    if selected_by_group:
+        raise HTTPException(400, "One or more selected options are no longer available")
+    if unit_price < 0:
+        raise HTTPException(400, "Product price is invalid")
+
+    return {
+        "product_id": str(product["_id"]),
+        "product_name": _text(product.get("name"), 200),
+        "quantity": quantity,
+        "unit_price": round(unit_price, 2),
+        "price": round(unit_price * quantity, 2),
+        "variant": variant_name or None,
+        "modifiers": modifier_labels,
+    }
+
+
+async def _create_or_update_customer(db, user_id: str, body: dict) -> dict:
+    name = _text(body.get("customer_name") or body.get("name"), 120)
+    phone = _text(body.get("phone") or body.get("phone_number"), 32)
+    email = _text(body.get("email"), 254).lower()
+    if len(name) < 2:
+        raise HTTPException(400, "Please enter your name")
+    if not _PHONE_RE.fullmatch(phone):
+        raise HTTPException(400, "Please enter a valid phone number")
+    if email and ("@" not in email or email.startswith("@") or email.endswith("@")):
+        raise HTTPException(400, "Please enter a valid email address")
+
+    existing = await db.customers.find_one({"user_id": user_id, "phone_number": phone})
+    if existing:
+        updates: Dict[str, Any] = {"name": name, "updated_at": datetime.utcnow()}
+        if email:
+            updates["email"] = email
+        await db.customers.update_one({"_id": existing["_id"]}, {"$set": updates})
+        return {**existing, **updates}
+
+    customer = {
+        "_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "name": name,
+        "phone_number": phone,
+        "email": email,
+        "source": "storefront",
+        "status": "active",
+        "total_spent": 0.0,
+        "purchase_count": 0,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+    }
+    await db.customers.insert_one(customer)
+    return customer
+
+
+async def _reserve_stock(db, user_id: str, line_items: List[dict]) -> None:
+    reserved: List[Tuple[str, int]] = []
+    try:
+        for item in line_items:
+            product = await db.products.find_one({"_id": item["product_id"], "user_id": user_id})
+            stock = product.get("stock_quantity") if product else None
+            if stock is None:
+                continue
+            result = await db.products.update_one(
+                {
+                    "_id": item["product_id"],
+                    "user_id": user_id,
+                    "in_stock": {"$ne": False},
+                    "stock_quantity": {"$gte": item["quantity"]},
+                },
+                {"$inc": {"stock_quantity": -item["quantity"]}},
+            )
+            if result.modified_count != 1:
+                raise HTTPException(409, f"{item['product_name']} is no longer available in that quantity")
+            reserved.append((item["product_id"], item["quantity"]))
+    except Exception:
+        for product_id, quantity in reserved:
+            await db.products.update_one({"_id": product_id, "user_id": user_id}, {"$inc": {"stock_quantity": quantity}})
+        raise
+
+
+def _public_origin() -> str:
+    return (os.environ.get("FRONTEND_URL") or "https://zilo.pro").rstrip("/")
+
+
+async def _start_online_payment(db, business: dict, order: dict) -> Dict[str, Any]:
+    provider = _selected_provider(business)
+    if not provider:
+        return {"provider": None, "payment_action": "manual"}
+
+    user_id = str(business["_id"])
+    callback = f"{_public_origin()}/s/{business['public_store_slug']}/checkout?order={order['public_token']}"
+    email = _text(order.get("customer_email"), 254)
+    if provider in ("paystack", "flutterwave", "stripe") and not email:
+        raise HTTPException(400, "An email address is required for secure online payment")
+
+    try:
+        if provider == "paystack":
+            result = await initialize_paystack_checkout(
+                db, business, user_id=user_id, email=email, amount_major=float(order["total_amount"]),
+                currency=order["currency"], external_reference=order["order_number"],
+                order_id=order["_id"], customer_id=order["customer_id"],
+                customer_name=order["customer_name"], callback_url=callback,
+            )
+            return {"provider": provider, "payment_action": "redirect", "checkout_url": result.get("authorization_url"), "reference": result.get("reference")}
+        if provider == "flutterwave":
+            from flutterwave_service import initialize_checkout_for_user as initialize_flutterwave_checkout
+            result = await initialize_flutterwave_checkout(
+                db, business, user_id=user_id, email=email, amount_major=float(order["total_amount"]),
+                currency=order["currency"], external_reference=order["order_number"],
+                order_id=order["_id"], customer_id=order["customer_id"],
+                customer_name=order["customer_name"], redirect_url=callback,
+            )
+            return {"provider": provider, "payment_action": "redirect", "checkout_url": result.get("authorization_url"), "reference": result.get("reference")}
+        if provider == "stripe":
+            from stripe_service import initialize_checkout_for_user as initialize_stripe_checkout
+            result = await initialize_stripe_checkout(
+                db, business, user_id=user_id, email=email, amount_major=float(order["total_amount"]),
+                currency=order["currency"], external_reference=order["order_number"],
+                order_id=order["_id"], customer_id=order["customer_id"],
+                customer_name=order["customer_name"], success_url=callback, cancel_url=callback + "&cancelled=1",
+            )
+            return {"provider": provider, "payment_action": "redirect", "checkout_url": result.get("checkout_url"), "reference": result.get("reference")}
+        if provider == "payhero":
+            from payhero_billing import create_payment_intent, mark_intent_failed, mark_intent_stk_sent
+            from payhero_service import stk_push_for_user
+            phone = order["customer_phone"]
+            intent = await create_payment_intent(
+                db, user_id=user_id, amount=float(order["total_amount"]), phone=phone,
+                external_reference=order["order_number"], order_id=order["_id"],
+                customer_name=order["customer_name"], channel_id=int(business["payhero_channel_id"]),
+            )
+            backend_url = (os.environ.get("BACKEND_URL") or "").rstrip("/")
+            if not backend_url:
+                raise ValueError("Payment callback is not configured")
+            try:
+                raw = await stk_push_for_user(
+                    business, channel_id=int(business["payhero_channel_id"]), phone=phone,
+                    amount=float(order["total_amount"]), external_reference=order["order_number"],
+                    callback_url=f"{backend_url}/api/webhooks/payhero", customer_name=order["customer_name"],
+                )
+                await mark_intent_stk_sent(db, intent["_id"], raw)
+            except Exception as exc:
+                await mark_intent_failed(db, intent["_id"], str(exc))
+                raise
+            return {"provider": provider, "payment_action": "awaiting_mobile_money", "reference": str(intent["_id"])}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Could not start {provider.title()} checkout. Please try again.") from exc
+
+    return {"provider": None, "payment_action": "manual"}
+
+
+def _order_payload(order: dict) -> Dict[str, Any]:
+    return {
+        "order_token": order["public_token"],
+        "order_number": order["order_number"],
+        "payment_status": order.get("payment_status", "Pending"),
+        "payment_provider": order.get("payment_provider"),
+        "total_amount": float(order.get("total_amount") or 0),
+        "currency": order.get("currency") or "USD",
+        "items": order.get("items") or [],
+        "created_at": order.get("created_at").isoformat() if order.get("created_at") else None,
+    }
+
+
+def register_storefront_routes(api_router: APIRouter, db, get_current_user: Callable) -> None:
+    """Attach public catalog routes and authenticated store settings to the API."""
+
+    @api_router.get("/storefront/me")
+    async def storefront_me(user=Depends(get_current_user)):
+        business_id = user.get("business_id", user["_id"])
+        business = await db.users.find_one({"_id": business_id})
+        if not business:
+            raise HTTPException(404, "Business account not found")
+        slug = await _ensure_store_slug(db, business)
+        return {
+            "slug": slug,
+            "public_url": f"{_public_origin()}/s/{slug}",
+            "payment_provider": _selected_provider(business) or "manual",
+            "available_payment_providers": _connected_providers(business),
+        }
+
+    @api_router.put("/storefront/settings")
+    async def update_storefront_settings(body: dict, user=Depends(get_current_user)):
+        business_id = user.get("business_id", user["_id"])
+        business = await db.users.find_one({"_id": business_id})
+        if not business:
+            raise HTTPException(404, "Business account not found")
+        preferred = _text(body.get("payment_provider"), 32).lower()
+        if preferred and preferred not in (*_ONLINE_PROVIDERS, "auto", "manual"):
+            raise HTTPException(400, "Unsupported payment provider")
+        connected = _connected_providers(business)
+        if preferred in _ONLINE_PROVIDERS and preferred not in connected:
+            raise HTTPException(400, "Connect that payment provider before selecting it")
+        update: Dict[str, Any] = {}
+        if preferred:
+            update["storefront_payment_provider"] = "" if preferred == "auto" else preferred
+        if "enabled" in body:
+            update["storefront_enabled"] = bool(body.get("enabled"))
+        if update:
+            await db.users.update_one({"_id": business_id}, {"$set": update})
+            business.update(update)
+        slug = await _ensure_store_slug(db, business)
+        return {
+            "slug": slug,
+            "public_url": f"{_public_origin()}/s/{slug}",
+            "payment_provider": _selected_provider(business) or "manual",
+            "enabled": business.get("storefront_enabled", True),
+        }
+
+    @api_router.get("/storefront/public/{slug}")
+    async def public_storefront(slug: str):
+        business = await _business_doc(db, slug)
+        if business.get("storefront_enabled", True) is False:
+            raise HTTPException(404, "Store not found")
+        products = await db.products.find(
+            {"user_id": business["_id"], "public_visible": {"$ne": False}}
+        ).sort("created_at", -1).to_list(250)
+        return _store_payload(business, products)
+
+    @api_router.post("/storefront/public/{slug}/orders")
+    async def create_public_order(slug: str, body: dict, request: Request):
+        business = await _business_doc(db, slug)
+        if business.get("storefront_enabled", True) is False:
+            raise HTTPException(404, "Store not found")
+        provider = _selected_provider(business)
+        email = _text(body.get("email"), 254)
+        if provider in ("paystack", "flutterwave", "stripe") and not email:
+            raise HTTPException(400, "An email address is required for secure online payment")
+        raw_items = body.get("items")
+        if not isinstance(raw_items, list) or not raw_items or len(raw_items) > 20:
+            raise HTTPException(400, "Add between 1 and 20 products to your order")
+
+        product_ids = [_text(item.get("product_id") or item.get("id"), 80) for item in raw_items if isinstance(item, dict)]
+        if len(product_ids) != len(raw_items) or len(set(product_ids)) != len(product_ids):
+            raise HTTPException(400, "Each order item must be a unique product")
+        products = await db.products.find({
+            "_id": {"$in": product_ids}, "user_id": business["_id"],
+            "public_visible": {"$ne": False}, "in_stock": {"$ne": False},
+        }).to_list(len(product_ids))
+        products_by_id = {str(product["_id"]): product for product in products}
+        if len(products_by_id) != len(product_ids):
+            raise HTTPException(409, "One or more products are out of stock or no longer available")
+        lines = [_price_item(products_by_id[product_id], item) for product_id, item in zip(product_ids, raw_items)]
+
+        customer = await _create_or_update_customer(db, str(business["_id"]), body)
+        total = round(sum(float(line["price"]) for line in lines), 2)
+        if total <= 0:
+            raise HTTPException(400, "This order does not have a valid total")
+        now = datetime.utcnow()
+        order = {
+            "_id": str(uuid.uuid4()),
+            "user_id": str(business["_id"]),
+            "customer_id": customer["_id"],
+            "customer_name": customer["name"],
+            "customer_phone": customer["phone_number"],
+            "customer_email": customer.get("email") or "",
+            "product": ", ".join(line["product_name"] for line in lines)[:500],
+            "product_name": ", ".join(line["product_name"] for line in lines)[:500],
+            "quantity": sum(int(line["quantity"]) for line in lines),
+            "price": float(lines[0]["unit_price"]),
+            "items": lines,
+            "total_amount": total,
+            "total": total,
+            "currency": _currency(business),
+            "payment_status": "Pending",
+            "payment_provider": _selected_provider(business) or "manual",
+            "delivery_status": "Pending",
+            "delivery_type": _text(body.get("delivery_type"), 32) or "pickup",
+            "delivery_address": _text(body.get("delivery_address"), 500),
+            "notes": _text(body.get("notes"), 1000),
+            "status": "pending",
+            "created_by": "storefront",
+            "recorded_by": "storefront",
+            "order_number": f"ZILO-{now.strftime('%y%m%d')}-{secrets.token_hex(3).upper()}",
+            "public_token": secrets.token_urlsafe(24),
+            "created_at": now,
+            "storefront_ip": _text(request.client.host if request.client else "", 64),
+        }
+        await _reserve_stock(db, str(business["_id"]), lines)
+        await db.orders.insert_one(order)
+        try:
+            payment = await _start_online_payment(db, business, order)
+        except HTTPException as exc:
+            # The order is still useful to the merchant if a provider has a
+            # short outage.  Return its safe public token so the customer can
+            # retry payment instead of losing the basket or duplicating stock.
+            payment = {
+                "provider": provider,
+                "payment_action": "payment_unavailable",
+                "payment_error": str(exc.detail),
+            }
+        await db.orders.update_one(
+            {"_id": order["_id"]},
+            {"$set": {"payment_provider": payment.get("provider") or "manual", "payment_reference": payment.get("reference") or ""}},
+        )
+        order["payment_provider"] = payment.get("provider") or "manual"
+        return {**_order_payload(order), **payment}
+
+    @api_router.get("/storefront/public/orders/{order_token}")
+    async def public_order_status(order_token: str):
+        order = await db.orders.find_one({"public_token": _text(order_token, 128)})
+        if not order:
+            raise HTTPException(404, "Order not found")
+        return _order_payload(order)
+
+    @api_router.post("/storefront/public/orders/{order_token}/payment")
+    async def retry_public_order_payment(order_token: str):
+        order = await db.orders.find_one({"public_token": _text(order_token, 128)})
+        if not order:
+            raise HTTPException(404, "Order not found")
+        if _text(order.get("payment_status"), 32).lower() == "paid":
+            return {**_order_payload(order), "payment_action": "paid"}
+        business = await db.users.find_one({"_id": order["user_id"]})
+        if not business or business.get("storefront_enabled", True) is False:
+            raise HTTPException(404, "Store not found")
+        payment = await _start_online_payment(db, business, order)
+        await db.orders.update_one(
+            {"_id": order["_id"]},
+            {"$set": {"payment_provider": payment.get("provider") or "manual", "payment_reference": payment.get("reference") or ""}},
+        )
+        return {**_order_payload(order), **payment}

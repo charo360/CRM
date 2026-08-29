@@ -13,11 +13,12 @@ import {
     Switch,
     Dimensions,
     FlatList,
+    Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { productsAPI, settingsAPI } from '../context/api';
+import { productsAPI, settingsAPI, storefrontAPI } from '../context/api';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_GAP = 10;
@@ -105,6 +106,20 @@ export default function ProductCatalogModal({
             console.error('Error fetching products:', error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleShareCatalog = async () => {
+        try {
+            const storefront = await storefrontAPI.getMyStorefront();
+            await Share.share({
+                message: `Browse and order from my catalog: ${storefront.public_url}`,
+                url: storefront.public_url,
+                title: 'My Zilo catalog',
+            });
+        } catch (error) {
+            console.error('Catalog share error:', error);
+            Alert.alert('Could not share catalog', 'Please check your connection and try again.');
         }
     };
 
@@ -857,9 +872,14 @@ export default function ProductCatalogModal({
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
                     <Text style={styles.headerTitle}>Product Catalog</Text>
-                    <TouchableOpacity onPress={startAddProduct}>
-                        <Ionicons name="add-circle-outline" size={26} color="#25D366" />
-                    </TouchableOpacity>
+                    <View style={styles.headerActions}>
+                        <TouchableOpacity onPress={handleShareCatalog} accessibilityLabel="Share catalog">
+                            <Ionicons name="share-social-outline" size={23} color="#25D366" />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={startAddProduct} accessibilityLabel="Add product">
+                            <Ionicons name="add-circle-outline" size={26} color="#25D366" />
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
                 {/* Search Bar */}
@@ -1016,6 +1036,11 @@ const styles = StyleSheet.create({
         fontSize: 20,
         fontWeight: '700',
         color: '#FFFFFF',
+    },
+    headerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 16,
     },
 
     // Search
