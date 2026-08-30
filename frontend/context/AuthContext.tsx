@@ -30,6 +30,14 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AUTH_TOKEN_KEY = 'auth_token';
+const AUTH_USER_KEY = 'auth_user';
+
+const isInvalidSessionError = (error: any) => {
+  const status = error?.response?.status;
+  const accountDeleted = error?.response?.headers?.['x-account-deleted'] === 'true';
+  return status === 401 || accountDeleted;
+};
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -40,6 +48,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     loadStoredAuth();
   }, []);
+
+  const storeUser = async (nextUser: User) => {
+    setUser(nextUser);
+    await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(nextUser));
+  };
+
+  const clearStoredAuth = async () => {
+    setUser(null);
+    setToken(null);
+    await AsyncStorage.multiRemove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
+    delete apiClient.defaults.headers.common['Authorization'];
+  };
 
   useEffect(() => {
     const initRevenueCat = async () => {
@@ -77,21 +97,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadStoredAuth = async () => {
     try {
-      const storedToken = await AsyncStorage.getItem('auth_token');
+      const [[, storedToken], [, storedUser]] = await AsyncStorage.multiGet([
+        AUTH_TOKEN_KEY,
+        AUTH_USER_KEY,
+      ]);
+
       if (storedToken) {
         setToken(storedToken);
         apiClient.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
 
-        // Fetch current user
+        // A cached profile means a brief network failure cannot make the user
+        // appear signed out at app launch.
+        if (storedUser) {
+          try {
+            setUser(JSON.parse(storedUser) as User);
+          } catch {
+            await AsyncStorage.removeItem(AUTH_USER_KEY);
+          }
+        }
+
         try {
           const response = await apiClient.get('/auth/me');
-          setUser(response.data);
-        } catch (error) {
-          // Token invalid, clear it
-          await AsyncStorage.removeItem('auth_token');
-          setToken(null);
-          delete apiClient.defaults.headers.common['Authorization'];
+          await storeUser(response.data);
+        } catch (error: any) {
+          // Only a confirmed invalid session should require another SMS sign-in.
+          // Render deployments, timeouts, and short connectivity issues are
+          // temporary and must preserve the saved session.
+          if (isInvalidSessionError(error)) {
+            await clearStoredAuth();
+          } else {
+            console.warn('[Auth] Keeping saved session after a temporary /auth/me failure');
+          }
         }
+      } else if (storedUser) {
+        // A profile without its matching token cannot be authenticated.
+        await AsyncStorage.removeItem(AUTH_USER_KEY);
       }
     } catch (error) {
       console.error('Error loading auth:', error);
@@ -132,11 +172,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { token: newToken, is_new_user, user: userData } = response.data;
 
       setToken(newToken);
-      await AsyncStorage.setItem('auth_token', newToken);
+      await AsyncStorage.setItem(AUTH_TOKEN_KEY, newToken);
       apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
 
       if (!is_new_user && userData) {
-        setUser(userData);
+        await storeUser(userData);
       }
 
       return {
@@ -167,11 +207,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // verification, so it does not always return a replacement token here.
       if (newToken) {
         setToken(newToken);
-        await AsyncStorage.setItem('auth_token', newToken);
+        await AsyncStorage.setItem(AUTH_TOKEN_KEY, newToken);
         apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
       }
       if (userData) {
-        setUser(userData);
+        await storeUser(userData);
       }
 
       return { success: true };
@@ -184,16 +224,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
-    setUser(null);
-    setToken(null);
-    await AsyncStorage.removeItem('auth_token');
-    delete apiClient.defaults.headers.common['Authorization'];
+    await clearStoredAuth();
   };
 
   const refreshUser = async () => {
     try {
       const response = await apiClient.get('/auth/me');
-      setUser(response.data);
+      await storeUser(response.data);
     } catch (error) {
       console.error('Error refreshing user:', error);
     }
