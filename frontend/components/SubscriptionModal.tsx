@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { apiClient } from '../context/api';
+import { useAuth } from '../context/AuthContext';
 
 interface SubscriptionModalProps {
   visible: boolean;
@@ -55,6 +56,7 @@ export default function SubscriptionModal({
   currentPlan,
   entryPoint = 'upgrade',
 }: SubscriptionModalProps) {
+  const { user } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
   const [loading, setLoading] = useState(true);
@@ -128,6 +130,29 @@ export default function SubscriptionModal({
     try {
       setPurchasing(true);
       const Purchases = require('react-native-purchases').default;
+
+      // RevenueCat has to be identified as this Zilo user before money moves.
+      // The SDK starts anonymous and is only named by the effect in
+      // AuthContext, which logs out whenever `user` is briefly null and
+      // swallows its own failures — so a purchase can reach Google Play while
+      // the SDK still holds an $RCAnonymousID. The webhook then reports that
+      // id, it matches no account, and the subscription silently never
+      // activates while the caller waits on a confirmation that cannot arrive.
+      if (!user?.id) {
+        Alert.alert('Sign in required', 'Please sign in again before subscribing.');
+        return;
+      }
+      if ((await Purchases.getAppUserID()) !== user.id) {
+        await Purchases.logIn(user.id);
+        if ((await Purchases.getAppUserID()) !== user.id) {
+          Alert.alert(
+            'Could not start checkout',
+            'Zilo could not link this purchase to your account. Please check your connection and try again.'
+          );
+          return;
+        }
+      }
+
       const offerings = await Purchases.getOfferings();
 
       // Search all offerings for a matching product
