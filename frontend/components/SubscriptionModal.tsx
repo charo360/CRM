@@ -178,8 +178,17 @@ export default function SubscriptionModal({
       // The WhatsApp gate must never silently charge a customer. The matching
       // Play subscription needs a zero-cost introductory phase configured in
       // Play Console / RevenueCat before it can be presented as a free trial.
+      // Google Play carries a free trial as a zero-cost pricing phase on a
+      // subscription option (`freePhase`), not as `introPrice` — that field is
+      // the *paid* introductory phase, defined as amountMicros > 0, so
+      // `introPrice.price === 0` is never true for a Play trial and this gate
+      // rejected plans whose trial was configured correctly. Check the Play
+      // shape first; `introPrice` still covers StoreKit.
       const introductoryPrice = pkg.product?.introPrice;
-      const hasFreeTrial = introductoryPrice && Number(introductoryPrice.price) === 0;
+      const hasFreeTrial =
+        !!pkg.product?.defaultOption?.freePhase ||
+        (pkg.product?.subscriptionOptions ?? []).some((option: any) => option?.freePhase) ||
+        (!!introductoryPrice && Number(introductoryPrice.price) === 0);
       if (isWhatsAppTrial && !hasFreeTrial) {
         Alert.alert(
           'Free trial not ready',
