@@ -44,6 +44,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const confirmationRef = useRef<ConfirmationResult | null>(null);
+  // A confirmed SMS code is single-use, so the Firebase token it produced is
+  // held here until the Zilo exchange succeeds. Without it, a failed exchange
+  // would strand the sign-in: the code is already spent, but the session is not
+  // yet established, and every retry would need a fresh SMS.
+  const verifiedTokenRef = useRef<string | null>(null);
 
   useEffect(() => {
     loadStoredAuth();
@@ -143,6 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const sendOTP = async (phone: string) => {
     try {
       confirmationRef.current = await signInWithPhoneNumber(getAuth(), phone);
+      verifiedTokenRef.current = null;
       return { success: true };
     } catch (error: any) {
       const errorMessage = error?.message || 'Failed to send verification code';
@@ -156,18 +162,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const verifyOTP = async (code: string) => {
     try {
-      if (!confirmationRef.current) {
+      if (!confirmationRef.current && !verifiedTokenRef.current) {
         return {
           success: false,
           message: 'Your verification session expired. Please request a new code.',
         };
       }
 
-      const credential = await confirmationRef.current.confirm(code);
-      const idToken = await credential.user.getIdToken();
-      confirmationRef.current = null;
+      // Only spend the code when it has not been confirmed yet. A retry after a
+      // failed exchange reuses the token from the first confirmation, so a slow
+      // backend no longer costs the user another SMS.
+      if (!verifiedTokenRef.current) {
+        const credential = await confirmationRef.current!.confirm(code);
+        verifiedTokenRef.current = await credential.user.getIdToken();
+      }
 
-      const response = await apiClient.post('/auth/firebase', { id_token: idToken });
+      const response = await apiClient.post('/auth/firebase', {
+        id_token: verifiedTokenRef.current,
+      });
 
       const { token: newToken, is_new_user, user: userData } = response.data;
 
@@ -179,15 +191,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await storeUser(userData);
       }
 
+      // Cleared only once the session is actually established.
+      confirmationRef.current = null;
+      verifiedTokenRef.current = null;
+
       return {
         success: true,
         isNewUser: is_new_user,
       };
     } catch (error: any) {
       console.warn('[FirebaseAuth] Code verification failed:', error);
+      const detail = error.response?.data?.detail;
+      if (detail) {
+        return { success: false, message: detail };
+      }
+      // The code itself was accepted if it produced a token, so a failure past
+      // that point is the exchange, not the code — say so, and let them retry.
       return {
         success: false,
-        message: error.response?.data?.detail || 'Verification failed',
+        message: verifiedTokenRef.current
+          ? 'Could not reach Zilo to finish signing in. Tap Verify again.'
+          : 'Verification failed',
       };
     }
   };
