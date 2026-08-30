@@ -58,6 +58,11 @@ export default function AccountScreen() {
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [showSubModal, setShowSubModal] = useState(false);
   const [subscriptionEntryPoint, setSubscriptionEntryPoint] = useState<'upgrade' | 'whatsapp_trial'>('upgrade');
+  // This is deliberately separate from user.subscription_active. The latter
+  // may be stale after an expired trial; WhatsApp needs a Google Play payment
+  // method that has been confirmed by the server.
+  const [paidSubscriptionActive, setPaidSubscriptionActive] = useState(false);
+  const [checkingWhatsAppAccess, setCheckingWhatsAppAccess] = useState(false);
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
@@ -111,6 +116,7 @@ export default function AccountScreen() {
       setPlans(plansRes.data);
       setStats(statsRes.data);
       setExtraCredits(statusRes.data.extra_credits || 0);
+      setPaidSubscriptionActive(Boolean(statusRes.data.paid_active));
 
       // Load user settings (daily pulse, auto reply, notifications)
       try {
@@ -257,6 +263,11 @@ export default function AccountScreen() {
     );
   };
 
+  const showWhatsAppTrial = () => {
+    setSubscriptionEntryPoint('whatsapp_trial');
+    setShowSubModal(true);
+  };
+
   const beginWhatsAppPairing = async () => {
     setWaConnecting(true);
     setWaPairingCode('');
@@ -271,6 +282,14 @@ export default function AccountScreen() {
         Alert.alert('Error', res.message || 'Failed to get a WhatsApp link code');
       }
     } catch (error: any) {
+      // A server-side entitlement check is the final authority. If the local
+      // state has gone stale, send the customer into the Google Play trial
+      // flow instead of leaving them at an error alert.
+      if (error.response?.status === 402) {
+        setPaidSubscriptionActive(false);
+        showWhatsAppTrial();
+        return;
+      }
       Alert.alert('Error', error.response?.data?.detail || 'Failed to connect WhatsApp');
     } finally {
       setWaConnecting(false);
@@ -282,12 +301,27 @@ export default function AccountScreen() {
       Alert.alert('Error', 'Please enter your WhatsApp phone number');
       return;
     }
-    if (!user?.subscription_active) {
-      setSubscriptionEntryPoint('whatsapp_trial');
-      setShowSubModal(true);
-      return;
+    setCheckingWhatsAppAccess(true);
+    try {
+      // Read the live entitlement before creating a WAHA pairing session.
+      // This avoids treating an old account flag as a completed Play payment.
+      const statusResponse = await apiClient.get('/subscription/status');
+      const hasConfirmedPaymentMethod = Boolean(statusResponse.data?.paid_active);
+      setPaidSubscriptionActive(hasConfirmedPaymentMethod);
+
+      if (!hasConfirmedPaymentMethod) {
+        showWhatsAppTrial();
+        return;
+      }
+
+      await beginWhatsAppPairing();
+    } catch (error: any) {
+      // If the status check itself is temporarily unavailable, the pairing
+      // endpoint will still enforce the same entitlement safely.
+      await beginWhatsAppPairing();
+    } finally {
+      setCheckingWhatsAppAccess(false);
     }
-    await beginWhatsAppPairing();
   };
 
   const handleWhatsAppDisconnect = async () => {
@@ -622,13 +656,17 @@ export default function AccountScreen() {
                     opacity: waConnecting ? 0.7 : 1,
                   }}
                   onPress={handleWhatsAppConnect}
-                  disabled={waConnecting}
+                  disabled={waConnecting || checkingWhatsAppAccess}
                 >
-                  {waConnecting ? (
+                  {waConnecting || checkingWhatsAppAccess ? (
                     <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
                     <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600' }}>
-                      {user?.subscription_active ? 'Get Pairing Code' : 'Start free trial to connect'}
+                      {checkingWhatsAppAccess
+                        ? 'Checking payment method...'
+                        : paidSubscriptionActive
+                          ? 'Get Pairing Code'
+                          : 'Verify payment method to connect'}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -1001,6 +1039,7 @@ export default function AccountScreen() {
           setShowSubModal(false);
           setSubscriptionEntryPoint('upgrade');
           await refreshUser();
+          await fetchData();
           if (shouldStartPairing) {
             await beginWhatsAppPairing();
           }

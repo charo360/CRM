@@ -265,7 +265,7 @@ export default function SubscriptionModal({
       <View style={styles.overlay}>
         <View style={styles.modal}>
           <View style={styles.header}>
-            <Text style={styles.title}>{isWhatsAppTrial ? 'Start your WhatsApp trial' : 'Upgrade to Premium'}</Text>
+            <Text style={styles.title}>{isWhatsAppTrial ? 'Verify payment method' : 'Upgrade to Premium'}</Text>
             <TouchableOpacity onPress={onClose} disabled={purchasing}>
               <Ionicons name="close" size={28} color="#fff" />
             </TouchableOpacity>
@@ -286,11 +286,11 @@ export default function SubscriptionModal({
                 <Text style={styles.introEmoji}>{isWhatsAppTrial ? '🔒' : '🎉'}</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.introTitle}>
-                    {isWhatsAppTrial ? '14-DAY FREE TRIAL' : '50% OFF — First 3 Months'}
+                    {isWhatsAppTrial ? 'VERIFY BEFORE CONNECTING WHATSAPP' : '50% OFF — First 3 Months'}
                   </Text>
                   <Text style={styles.introSub}>
                     {isWhatsAppTrial
-                      ? 'Google Play will securely verify a payment method. No charge today.'
+                      ? 'Google Play will securely verify your payment method. No charge today.'
                       : 'Limited-time launch offer for new subscribers'}
                   </Text>
                 </View>
@@ -298,7 +298,7 @@ export default function SubscriptionModal({
 
               <Text style={styles.subtitle}>
                 {isWhatsAppTrial
-                  ? 'Choose a plan to link WhatsApp. Cancel in Google Play before the trial ends to avoid a charge.'
+                  ? 'Choose a plan, verify your payment method in Google Play, then Zilo will connect WhatsApp automatically.'
                   : 'Choose the plan that fits your business needs'}
               </Text>
 
@@ -382,7 +382,7 @@ export default function SubscriptionModal({
                             : purchasing
                               ? 'Processing...'
                               : isWhatsAppTrial
-                                ? 'Start 14-day free trial'
+                                ? 'Verify & start 14-day free trial'
                                 : 'Claim 50% Off'}
                         </Text>
                       </View>
