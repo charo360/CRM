@@ -827,7 +827,7 @@ export const loyaltyAPI = {
 
   addPoints: async (customerId: string, amount: number, reason?: string) => {
     const response = await apiClient.post(`/loyalty/${customerId}/add`, {
-      amount,
+      points: amount,
       reason,
     });
     return response.data;

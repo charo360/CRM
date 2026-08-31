@@ -49,7 +49,9 @@ class LoyaltySettingsUpdate(BaseModel):
 
 
 class ManualPointsAdd(BaseModel):
-    points: float
+    points: Optional[float] = None
+    # Keep existing installed app builds working while they receive the update.
+    amount: Optional[float] = None
     reason: str = "manual"
 
 def make_loyalty_router(db, user_dep):
@@ -230,13 +232,14 @@ def make_loyalty_router(db, user_dep):
 
     @router.post("/{customer_id}/add")
     async def add_customer_points(customer_id: str, payload: ManualPointsAdd, user=user_dep):
-        if payload.points <= 0 or payload.points > 1_000_000:
+        points = payload.points if payload.points is not None else payload.amount
+        if points is None or points <= 0 or points > 1_000_000:
             raise HTTPException(400, "Points must be between 1 and 1,000,000")
         return await add_transaction(
             PointsTransaction(
                 customer_id=customer_id,
                 type="adjustment",
-                points=payload.points,
+                points=points,
                 reason=payload.reason.strip() or "manual",
             ),
             user,
