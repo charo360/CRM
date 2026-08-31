@@ -433,9 +433,19 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         if not isinstance(raw_items, list) or not raw_items or len(raw_items) > 20:
             raise HTTPException(400, "Add between 1 and 20 products to your order")
 
-        product_ids = [_text(item.get("product_id") or item.get("id"), 80) for item in raw_items if isinstance(item, dict)]
-        if len(product_ids) != len(raw_items) or len(set(product_ids)) != len(product_ids):
-            raise HTTPException(400, "Each order item must be a unique product")
+        requested_items: List[Tuple[str, dict]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                raise HTTPException(400, "Each order item must be valid")
+            product_id = _text(item.get("product_id") or item.get("id"), 80)
+            if not product_id:
+                raise HTTPException(400, "Each order item must include a product")
+            requested_items.append((product_id, item))
+
+        # A buyer can purchase more than one configuration of the same product
+        # (for example, one small and one large).  Preserve those separate cart
+        # lines while using the de-duplicated IDs only for the database lookup.
+        product_ids = list(dict.fromkeys(product_id for product_id, _ in requested_items))
         products = await db.products.find({
             "_id": {"$in": product_ids}, "user_id": business["_id"],
             "public_visible": {"$ne": False}, "in_stock": {"$ne": False},
@@ -443,7 +453,10 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         products_by_id = {str(product["_id"]): product for product in products}
         if len(products_by_id) != len(product_ids):
             raise HTTPException(409, "One or more products are out of stock or no longer available")
-        lines = [_price_item(products_by_id[product_id], item) for product_id, item in zip(product_ids, raw_items)]
+        lines = [
+            _price_item(products_by_id[product_id], item)
+            for product_id, item in requested_items
+        ]
 
         customer = await _create_or_update_customer(db, str(business["_id"]), body)
         total = round(sum(float(line["price"]) for line in lines), 2)
