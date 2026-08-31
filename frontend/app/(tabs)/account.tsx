@@ -24,6 +24,8 @@ import CreditBundleModal from '../../components/CreditBundleModal';
 import SubscriptionModal from '../../components/SubscriptionModal';
 import TeamManagementModal from '../../components/TeamManagementModal';
 import PaymentSetupModal from '../../components/PaymentSetupModal';
+import ProductCatalogModal from '../../components/ProductCatalogModal';
+import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 
 interface SubscriptionPlan {
   id: string;
@@ -74,6 +76,8 @@ export default function AccountScreen() {
   const [checkingWhatsAppAccess, setCheckingWhatsAppAccess] = useState(false);
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
+  const [showProductCatalog, setShowProductCatalog] = useState(false);
+  const [showBusinessKnowledge, setShowBusinessKnowledge] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
 
@@ -906,12 +910,22 @@ export default function AccountScreen() {
                 <Ionicons name="chevron-forward" size={20} color="#666" />
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.settingItem}>
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => setShowProductCatalog(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Open product catalog"
+            >
               <Ionicons name="cube-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Product Catalog</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.settingItem}>
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => setShowBusinessKnowledge(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Open business knowledge"
+            >
               <Ionicons name="book-outline" size={24} color="#666" />
               <Text style={styles.settingText}>Business Knowledge</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
@@ -1113,6 +1127,14 @@ export default function AccountScreen() {
         businessName={user?.business_name}
         onClose={() => setShowPaymentSetup(false)}
         onConnectionChanged={fetchData}
+      />
+      <ProductCatalogModal
+        visible={showProductCatalog}
+        onClose={() => setShowProductCatalog(false)}
+      />
+      <BusinessKnowledgeModal
+        visible={showBusinessKnowledge}
+        onClose={() => setShowBusinessKnowledge(false)}
       />
     </SafeAreaView>
   );
