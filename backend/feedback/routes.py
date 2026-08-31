@@ -76,6 +76,10 @@ class FeedbackResponse(BaseModel):
 def make_feedback_router(db, user_dep):
     router = APIRouter(prefix="/feedback", tags=["feedback"])
 
+    def _phone_key(value: Optional[str]) -> str:
+        """Compare phone numbers reliably across +, spaces, and dashes."""
+        return "".join(character for character in (value or "") if character.isdigit())
+
     def _public_survey_url(survey_id: str, request_token: Optional[str] = None) -> str:
         base_url = (
             os.environ.get("PUBLIC_WEB_URL")
@@ -119,14 +123,19 @@ def make_feedback_router(db, user_dep):
         # the token-aware update. The recipient's phone is still required by
         # that page and lets us safely match the most recent delivery.
         if not delivery and payload.customer_phone:
-            delivery = await db.feedback_deliveries.find_one(
-                {
-                    "survey_id": payload.survey_id,
-                    "user_id": tid,
-                    "customer_phone": payload.customer_phone.strip(),
-                },
-                sort=[("created_at", -1)],
-            )
+            submitted_phone = _phone_key(payload.customer_phone)
+            if submitted_phone:
+                recent_deliveries = await db.feedback_deliveries.find(
+                    {"survey_id": payload.survey_id, "user_id": tid},
+                    sort=[("created_at", -1)],
+                ).to_list(100)
+                delivery = next(
+                    (
+                        item for item in recent_deliveries
+                        if _phone_key(item.get("customer_phone")) == submitted_phone
+                    ),
+                    None,
+                )
 
         now = datetime.utcnow()
         nps_score = _derive_nps_score(survey, payload.answers, payload.nps_score)
