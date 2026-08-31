@@ -7980,6 +7980,7 @@ async def add_product_images(
         raise HTTPException(status_code=400, detail=f"Maximum 5 images per product. Currently has {len(existing_images)}.")
     
     new_image_urls = []
+    upload_errors = []
     for file in files:
         try:
             result = await ImageUploadHandler.save_image(file)
@@ -7987,6 +7988,14 @@ async def add_product_images(
                 new_image_urls.append(result["image_url"])
         except Exception as e:
             logging.error(f"Failed to save image: {e}")
+            upload_errors.append(str(e))
+
+    # Never report a successful image upload when nothing reached storage. The
+    # mobile app can then give the merchant a useful next step instead of silently
+    # leaving the product unchanged.
+    if not new_image_urls:
+        reason = upload_errors[0] if upload_errors else "No image files were received"
+        raise HTTPException(status_code=400, detail=f"Could not add product photo: {reason}")
     
     if new_image_urls:
         all_images = existing_images + new_image_urls
@@ -7997,7 +8006,12 @@ async def add_product_images(
             {"$set": update_data}
         )
     
-    return {"status": "success", "images_added": len(new_image_urls), "total_images": len(existing_images) + len(new_image_urls)}
+    return {
+        "status": "success",
+        "images_added": len(new_image_urls),
+        "total_images": len(existing_images) + len(new_image_urls),
+        "failed_uploads": len(upload_errors),
+    }
 
 @api_router.delete("/products/{product_id}/images/{image_index}")
 async def delete_product_image(

@@ -101,7 +101,12 @@ export default function ProductCatalogModal({
         setLoading(true);
         try {
             const data = await productsAPI.getProducts();
-            setProducts(data);
+            setProducts(data.map((product: Product) => ({
+                ...product,
+                // The list endpoint only needs the cover image. Keep that image in
+                // the gallery too so existing products can always accept new photos.
+                images: product.images?.length ? product.images : (product.image_url ? [product.image_url] : []),
+            })));
         } catch (error) {
             console.error('Error fetching products:', error);
         } finally {
@@ -120,6 +125,30 @@ export default function ProductCatalogModal({
         } catch (error) {
             console.error('Catalog share error:', error);
             Alert.alert('Could not share catalog', 'Please check your connection and try again.');
+        }
+    };
+
+    const errorMessage = (error: unknown, fallback: string) => {
+        if (error instanceof Error && error.message) return error.message;
+        const detail = (error as any)?.response?.data?.detail;
+        return typeof detail === 'string' && detail ? detail : fallback;
+    };
+
+    const loadFullProduct = async (product: Product) => {
+        try {
+            const fullProduct = await productsAPI.getProduct(product.id);
+            return {
+                ...fullProduct,
+                images: fullProduct.images?.length
+                    ? fullProduct.images
+                    : (fullProduct.image_url ? [fullProduct.image_url] : []),
+            } as Product;
+        } catch (error) {
+            console.warn('Could not load all product photos:', error);
+            return {
+                ...product,
+                images: product.images?.length ? product.images : (product.image_url ? [product.image_url] : []),
+            };
         }
     };
 
@@ -216,7 +245,7 @@ export default function ProductCatalogModal({
                     }
                 } catch (error) {
                     console.error('Upload error:', error);
-                    Alert.alert('Upload Failed', 'Could not upload products. Please try again.');
+                    Alert.alert('Upload Failed', errorMessage(error, 'Could not upload products. Please try again.'));
                 } finally {
                     setUploading(false);
                 }
@@ -265,10 +294,17 @@ export default function ProductCatalogModal({
     };
 
     const openProductDetail = (product: Product) => {
-        setSelectedProduct(product);
+        const productWithCover = {
+            ...product,
+            images: product.images?.length ? product.images : (product.image_url ? [product.image_url] : []),
+        };
+        setSelectedProduct(productWithCover);
         setEditMode(false);
         setActiveImageIndex(0);
         setDetailVisible(true);
+        // Load the complete gallery in the background. This keeps product details
+        // fast while still showing every saved image on an existing product.
+        void loadFullProduct(productWithCover).then(setSelectedProduct);
     };
 
     const startEdit = (product: Product) => {
@@ -435,8 +471,8 @@ export default function ProductCatalogModal({
                         // Refresh selected product
                         const updated = await productsAPI.getProduct(product.id);
                         setSelectedProduct(updated);
-                    } catch (error: any) {
-                        Alert.alert('Error', error.response?.data?.detail || 'Failed to add photos');
+                    } catch (error: unknown) {
+                        Alert.alert('Could not add photos', errorMessage(error, 'Please try again.'));
                     } finally {
                         setAddingPhotos(false);
                     }

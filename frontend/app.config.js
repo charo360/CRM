@@ -34,7 +34,10 @@ export default {
       },
       edgeToEdgeEnabled: true,
       softwareKeyboardLayoutMode: "resize",
-      permissions: ["android.permission.READ_CONTACTS"]
+      permissions: [
+        "android.permission.READ_CONTACTS",
+        "android.permission.CAMERA"
+      ]
     },
     web: {
       bundler: "metro",
@@ -47,6 +50,14 @@ export default {
       "@react-native-firebase/auth",
       "expo-font",
       "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          photosPermission: "Allow Zilo to access your photos so you can add product images.",
+          cameraPermission: "Allow Zilo to use your camera so you can take product photos.",
+          microphonePermission: false
+        }
+      ],
       "@react-native-community/datetimepicker",
       [
         "expo-splash-screen",
