@@ -27,7 +27,7 @@ export default {
     android: {
       googleServicesFile: "./google-services.json",
       package: "com.zilo.reply",
-      versionCode: 16,
+      versionCode: 17,
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#2DB843"
