@@ -50,6 +50,15 @@ interface Product {
   in_stock: boolean;
 }
 
+interface SubscriptionStatus {
+  subscription_plan?: string | null;
+  subscription_active?: boolean;
+  paid_active?: boolean;
+  subscription_is_trial?: boolean;
+  subscription_date?: string | null;
+  subscription_current_period_end?: string | null;
+}
+
 export default function AccountScreen() {
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -66,6 +75,7 @@ export default function AccountScreen() {
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
 
   // WhatsApp connection state
   const [waConnected, setWaConnected] = useState(false);
@@ -117,6 +127,7 @@ export default function AccountScreen() {
       setStats(statsRes.data);
       setExtraCredits(statusRes.data.extra_credits || 0);
       setPaidSubscriptionActive(Boolean(statusRes.data.paid_active));
+      setSubscriptionStatus(statusRes.data);
 
       // Load user settings (daily pulse, auto reply, notifications)
       try {
@@ -476,6 +487,49 @@ export default function AccountScreen() {
     );
   }
 
+  const isSubscriptionActive = Boolean(
+    subscriptionStatus?.paid_active ?? user?.subscription_active
+  );
+  const activePlanId = String(
+    subscriptionStatus?.subscription_plan || user?.subscription_plan || ''
+  ).toLowerCase();
+  const activePlanName = ({
+    starter: 'Starter',
+    standard: 'Growth',
+    growth: 'Growth',
+    pro: 'Pro',
+  } as Record<string, string>)[activePlanId] || 'Zilo';
+  const subscriptionStartedAt = subscriptionStatus?.subscription_date
+    ? new Date(subscriptionStatus.subscription_date)
+    : null;
+  const hasSubscriptionStart = Boolean(
+    subscriptionStartedAt && !Number.isNaN(subscriptionStartedAt.getTime())
+  );
+  // Older verified purchases did not retain the period type. A live purchase
+  // with no end date is the legacy free-trial record, so label it clearly too.
+  const isGooglePlayTrial = Boolean(subscriptionStatus?.subscription_is_trial)
+    || (isSubscriptionActive && !subscriptionStatus?.subscription_current_period_end && hasSubscriptionStart);
+  const renewalDate = subscriptionStatus?.subscription_current_period_end
+    ? new Date(subscriptionStatus.subscription_current_period_end)
+    : isGooglePlayTrial && subscriptionStartedAt
+      ? new Date(subscriptionStartedAt.getTime() + (14 * 24 * 60 * 60 * 1000))
+      : null;
+  const renewalLabel = renewalDate && !Number.isNaN(renewalDate.getTime())
+    ? isGooglePlayTrial
+      ? `Trial ends ${renewalDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+      : `Renews ${renewalDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+    : 'Google Play payment verified';
+  const subscriptionBadgeLabel = !isSubscriptionActive
+    ? 'Start 14-day trial'
+    : isGooglePlayTrial
+      ? '14-day trial active'
+      : `${activePlanName} active`;
+  const subscriptionDetail = !isSubscriptionActive
+    ? 'Add a payment method in Google Play to start your free trial.'
+    : isGooglePlayTrial
+      ? `${renewalLabel} • Then ${activePlanName} continues unless you cancel in Google Play.`
+      : renewalLabel;
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -491,16 +545,17 @@ export default function AccountScreen() {
             <View style={styles.businessInfo}>
               <Text style={styles.businessName}>{user?.business_name || 'Your Business'}</Text>
               <Text style={styles.businessPhone}>{user?.phone_number}</Text>
+              <Text style={styles.subscriptionDetail} numberOfLines={2}>{subscriptionDetail}</Text>
               {user?.owner_name && (
                 <Text style={styles.ownerName}>{user.owner_name}</Text>
               )}
             </View>
             <View style={[
               styles.subscriptionBadge,
-              user?.subscription_active && styles.subscriptionActive,
+              isSubscriptionActive && styles.subscriptionActive,
             ]}>
               <Text style={styles.subscriptionText}>
-                {user?.subscription_active ? user?.subscription_plan || 'Active' : 'Trial available'}
+                {subscriptionBadgeLabel}
               </Text>
             </View>
           </View>
@@ -1128,6 +1183,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 2,
+  },
+  subscriptionDetail: {
+    fontSize: 11,
+    color: '#8A9BB5',
+    marginTop: 4,
+    lineHeight: 15,
   },
   ownerName: {
     fontSize: 12,

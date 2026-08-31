@@ -8586,6 +8586,7 @@ async def revenuecat_subscription_webhook(request: Request):
         "purchased_at_ms": event_purchased_at_ms or None,
         "expiration_at_ms": event_expiration_at_ms or None,
         "expiration_reason": event.get("expiration_reason") or None,
+        "period_type": event.get("period_type") or None,
         "received_at": datetime.utcnow(),
         "processed_user_id": user.get("_id") if user else None,
     }
@@ -8603,6 +8604,7 @@ async def revenuecat_subscription_webhook(request: Request):
 
     plan_id = _revenuecat_plan_id(event.get("new_product_id") or event.get("product_id"))
     expires_at = _revenuecat_datetime(event.get("expiration_at_ms"))
+    is_trial_period = str(event.get("period_type") or "").upper() == "TRIAL"
     common = {
         "revenuecat_last_event_ms": incoming_timestamp or int(time.time() * 1000),
         "revenuecat_last_event_type": event_type,
@@ -8658,6 +8660,8 @@ async def revenuecat_subscription_webhook(request: Request):
                 "subscription_date": _revenuecat_datetime(event.get("purchased_at_ms")) or datetime.utcnow(),
                 "subscription_current_period_end": expires_at,
                 "subscription_cancel_at_period_end": False,
+                "subscription_is_trial": is_trial_period,
+                "subscription_trial_ends_at": expires_at if is_trial_period else None,
                 "revenuecat_transaction_id": event_transaction_id or None,
                 "revenuecat_original_transaction_id": event_original_transaction_id or None,
                 "revenuecat_subscription_purchased_at_ms": event_purchased_at_ms or None,

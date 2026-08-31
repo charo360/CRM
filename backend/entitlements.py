@@ -182,6 +182,7 @@ async def build_entitlements(db, user: dict) -> Dict[str, Any]:
         "effective_plan": effective_plan,
         "subscription_plan": record.get("subscription_plan"),
         "subscription_active": bool(record.get("subscription_active")),
+        "subscription_is_trial": bool(record.get("subscription_is_trial")),
         "paid_active": paid_active,
         "trial_active": trial_entitled,
         "trial_started_at": trial_started_at,
