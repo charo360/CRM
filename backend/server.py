@@ -8616,7 +8616,66 @@ async def revenuecat_subscription_webhook(request: Request):
     if incoming_timestamp and incoming_timestamp < int(user.get("revenuecat_last_event_ms") or 0):
         return {"status": "ignored", "reason": "out_of_order"}
 
-    plan_id = _revenuecat_plan_id(event.get("new_product_id") or event.get("product_id"))
+    product_id = str(event.get("new_product_id") or event.get("product_id") or "").split(":", 1)[0]
+
+    # Credit bundles are Google Play consumables, not subscription
+    # entitlements. RevenueCat delivers them as NON_RENEWING_PURCHASE events.
+    # Grant them here, from the authenticated RevenueCat event, instead of
+    # trusting a purchase token supplied by the mobile client.  The event and
+    # transaction ids make retries from RevenueCat safe and prevent a bundle
+    # from ever being added twice.
+    credit_bundle = CREDIT_BUNDLES.get(product_id)
+    if event_type == "NON_RENEWING_PURCHASE" and credit_bundle:
+        transaction_id = event_transaction_id or event_original_transaction_id
+        existing_credit = None
+        if transaction_id:
+            existing_credit = await db.transactions.find_one({
+                "revenuecat_transaction_id": transaction_id,
+                "type": "credit_topup",
+            })
+
+        if existing_credit:
+            return {
+                "status": "duplicate",
+                "type": "credit_topup",
+                "credits_added": 0,
+            }
+
+        credits_to_add = int(credit_bundle["credits"])
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$inc": {"extra_credits": credits_to_add}},
+        )
+        await db.transactions.insert_one({
+            "_id": str(uuid.uuid4()),
+            "user_id": user["_id"],
+            "revenuecat_transaction_id": transaction_id or None,
+            "revenuecat_event_id": event_record["_id"],
+            "bundle_id": product_id,
+            "credits": credits_to_add,
+            "platform": event.get("store") or "android",
+            "type": "credit_topup",
+            "verification": {"provider": "revenuecat", "event_type": event_type},
+            "status": "success",
+            "created_at": datetime.utcnow(),
+        })
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {
+                "revenuecat_last_event_ms": incoming_timestamp or int(time.time() * 1000),
+                "revenuecat_last_event_type": event_type,
+                "billing_provider": "iap",
+            }},
+        )
+        updated_user = await db.users.find_one({"_id": user["_id"]}, {"extra_credits": 1})
+        return {
+            "status": "ok",
+            "type": "credit_topup",
+            "credits_added": credits_to_add,
+            "total_extra_credits": updated_user.get("extra_credits", 0),
+        }
+
+    plan_id = _revenuecat_plan_id(product_id)
     expires_at = _revenuecat_datetime(event.get("expiration_at_ms"))
     is_trial_period = str(event.get("period_type") or "").upper() == "TRIAL"
     common = {

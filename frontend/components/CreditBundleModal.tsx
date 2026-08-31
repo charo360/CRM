@@ -11,8 +11,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
-import { Platform } from 'react-native';
 import { apiClient } from '../context/api';
+import { useAuth } from '../context/AuthContext';
 
 interface Bundle {
   bundle_id: string;
@@ -36,6 +36,7 @@ const BUNDLE_ICONS: Record<string, string> = {
 };
 
 export default function CreditBundleModal({ visible, onClose, onSuccess, currentCredits = 0 }: CreditBundleModalProps) {
+  const { user } = useAuth();
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState<string | null>(null); // bundle_id being purchased
@@ -72,6 +73,36 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
       setPurchasing(bundle.bundle_id);
       const Purchases = require('react-native-purchases').default;
 
+      // A RevenueCat purchase is only useful when it is associated with the
+      // signed-in Zilo account.  Otherwise the secure webhook cannot know
+      // which customer should receive the purchased credits.
+      if (!user?.id) {
+        Alert.alert('Sign in required', 'Please sign in again before buying credits.');
+        return;
+      }
+      if ((await Purchases.getAppUserID()) !== user.id) {
+        await Purchases.logIn(user.id);
+      }
+      if ((await Purchases.getAppUserID()) !== user.id) {
+        Alert.alert(
+          'Could not start checkout',
+          'Zilo could not link this purchase to your account. Please check your connection and try again.'
+        );
+        return;
+      }
+
+      // Keep the balance from the server, not the value currently rendered in
+      // the Account tab, so the confirmation below remains correct after a
+      // prior top-up or an app refresh.
+      let balanceBefore = currentCredits;
+      try {
+        const status = await apiClient.get('/subscription/status');
+        balanceBefore = Number(status.data?.extra_credits ?? balanceBefore);
+      } catch {
+        // The secure webhook will still be the source of truth. A cached
+        // balance only affects the number shown in the success message.
+      }
+
       // Fetch all available products (consumables)
       const offerings = await Purchases.getOfferings();
       const allPackages = [
@@ -89,36 +120,52 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
 
       if (!pkg) {
         Alert.alert(
-          'Coming Soon',
-          `The "${bundle.label}" bundle is being set up in the Play Store and will be available very soon!`,
+          'Credit bundle unavailable',
+          `"${bundle.label}" is not yet available from Google Play for this app account. Please try another bundle or contact Zilo support.`,
           [{ text: 'OK' }]
         );
         return;
       }
 
-      // Purchase the consumable package
-      const { customerInfo, transaction } = await Purchases.purchasePackage(pkg);
-      const purchaseToken =
-        transaction?.transactionIdentifier ||
-        transaction?.revenueCatId ||
-        transaction?.purchaseToken ||
-        '';
+      // RevenueCat sends the verified NON_RENEWING_PURCHASE event to Zilo.
+      // We deliberately do not grant credits from a client-provided purchase
+      // token: a retry could otherwise add the same consumable twice.
+      await Purchases.purchasePackage(pkg);
+      await Purchases.syncPurchases().catch(() => undefined);
 
-      // Sync purchase to backend to add credits
-      const platform = Platform.OS === 'ios' ? 'ios' : 'android';
-      const res = await apiClient.post('/subscription/add-credits', {
-        bundle_id: bundle.bundle_id,
-        purchase_token: purchaseToken,
-        platform,
-      });
+      const deadline = Date.now() + 60000;
+      let confirmedBalance: number | null = null;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        try {
+          const status = await apiClient.get('/subscription/status');
+          const latestBalance = Number(status.data?.extra_credits ?? balanceBefore);
+          if (latestBalance > balanceBefore) {
+            confirmedBalance = latestBalance;
+            break;
+          }
+        } catch {
+          // A short network interruption should not turn a completed Play
+          // purchase into an error. Keep waiting for the secure confirmation.
+        }
+      }
 
-      Alert.alert(
-        '✅ Credits Added!',
-        `${bundle.label} have been added to your account.\n\nNew balance: ${res.data.total_extra_credits} credits`,
-        [{ text: 'Great!' }]
-      );
-      onSuccess(bundle.credits);
-      onClose();
+      if (confirmedBalance !== null) {
+        const creditsAdded = confirmedBalance - balanceBefore;
+        Alert.alert(
+          'Credits added',
+          `${creditsAdded.toLocaleString()} extra credits were added.\n\nNew balance: ${confirmedBalance.toLocaleString()} credits`,
+          [{ text: 'Great!' }]
+        );
+        onSuccess(creditsAdded);
+        onClose();
+      } else {
+        Alert.alert(
+          'Payment received',
+          'Google Play accepted your payment. Zilo is confirming it securely and your credits will appear shortly. Please reopen Account in a minute before trying again.',
+          [{ text: 'OK', onPress: onClose }]
+        );
+      }
     } catch (error: any) {
       if (!error.userCancelled) {
         const msg = error?.response?.data?.detail || error.message || 'Purchase failed. Please try again.';
@@ -161,7 +208,7 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
               <View style={styles.bundleList}>
                 {bundles.map((bundle) => {
                   const isBuying = purchasing === bundle.bundle_id;
-                  const isPopular = bundle.bundle_id === 'credits_2500';
+                  const isPopular = bundle.bundle_id === 'charo360_credits_2500';
                   return (
                     <TouchableOpacity
                       key={bundle.bundle_id}
