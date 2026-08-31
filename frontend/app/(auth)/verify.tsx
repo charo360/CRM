@@ -86,7 +86,11 @@ export default function VerifyScreen() {
           router.replace('/(tabs)/customers');
         }
       } else {
-        Alert.alert('Invalid Code', result.message || 'The code you entered is incorrect. Please try again.');
+        const connectionProblem = result.message?.includes('Could not reach Zilo');
+        Alert.alert(
+          connectionProblem ? 'Sign-in not finished' : 'Invalid Code',
+          result.message || 'The code you entered is incorrect. Please try again.'
+        );
       }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Verification failed');

@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+// Expo public variables are embedded when an update is bundled.  A missing
+// value must never send a production install to its own localhost instance.
+const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://crm-1-pnfo.onrender.com';
 
 export const apiClient = axios.create({
   baseURL: `${API_URL}/api`,
