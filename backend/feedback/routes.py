@@ -328,11 +328,14 @@ def make_feedback_router(db, user_dep):
 
     @router.post("/surveys/{survey_id}/send")
     async def send_survey_link(survey_id: str, payload: Dict[str, str], user=user_dep):
-        """Send one customer a private, tracked feedback link over WhatsApp."""
+        """Send one customer a link, or a reply-based survey entirely in WhatsApp."""
         tid = _tid(user)
         customer_id = (payload.get("customer_id") or "").strip()
+        delivery_mode = (payload.get("delivery_mode") or "link").strip().lower()
         if not customer_id:
             raise HTTPException(400, "Customer is required")
+        if delivery_mode not in {"link", "whatsapp_chat"}:
+            raise HTTPException(400, "Delivery mode must be link or whatsapp_chat")
 
         survey = await db.feedback_surveys.find_one({"_id": survey_id, "user_id": tid, "active": True})
         if not survey:
@@ -343,6 +346,27 @@ def make_feedback_router(db, user_dep):
         phone = (customer.get("phone_number") or customer.get("phone") or "").strip()
         if not phone:
             raise HTTPException(400, "This customer does not have a WhatsApp phone number")
+
+        if delivery_mode == "whatsapp_chat":
+            try:
+                from feedback.conversation import start_conversation
+                from whatsapp_service import get_whatsapp_service
+
+                started = await start_conversation(
+                    db,
+                    user_id=tid,
+                    survey=survey,
+                    customer=customer,
+                    whatsapp_service=get_whatsapp_service(db),
+                )
+                return {"status": "sent", "delivery_mode": "whatsapp_chat", **started}
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            except RuntimeError as exc:
+                raise HTTPException(502, str(exc)) from exc
+            except Exception as exc:
+                logger.exception("Failed to start WhatsApp feedback conversation")
+                raise HTTPException(502, "Could not start the WhatsApp survey") from exc
 
         now = datetime.utcnow()
         token = uuid.uuid4().hex

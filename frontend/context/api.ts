@@ -809,9 +809,10 @@ export const feedbackAPI = {
     return response.data;
   },
 
-  sendSurveyLink: async (surveyId: string, customerId: string) => {
+  sendSurveyLink: async (surveyId: string, customerId: string, deliveryMode: 'link' | 'whatsapp_chat' = 'link') => {
     const response = await apiClient.post(`/feedback/surveys/${surveyId}/send`, {
       customer_id: customerId,
+      delivery_mode: deliveryMode,
     });
     return response.data;
   },

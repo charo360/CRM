@@ -10497,6 +10497,24 @@ async def evolution_webhook(request: Request):
                     msg_doc["remote_jid"] = remote_jid
                 await db.messages.insert_one(msg_doc)
 
+                # A customer currently completing a feedback survey should get
+                # the next survey question, not a competing AI auto-reply.
+                # This runs only for a tracked, active survey conversation.
+                if not from_me and customer_id and body:
+                    try:
+                        from feedback.conversation import handle_incoming_reply as _handle_feedback_reply
+
+                        if await _handle_feedback_reply(
+                            db,
+                            user=user,
+                            from_number=from_number,
+                            body=body,
+                            whatsapp_service=whatsapp_service,
+                        ):
+                            return {"status": "ok", "handled_by": "feedback_survey"}
+                    except Exception as _feedback_exc:
+                        logging.exception("[feedback] inbound survey handler failed: %s", _feedback_exc)
+
                 # Delegate automations — all inbound client messages
                 if not from_me and customer_id and body:
                     async def _delegate_inbound(uid, cid, msg_body, msg_id):

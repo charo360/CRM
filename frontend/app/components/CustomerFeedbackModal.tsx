@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, FlatList, TextInput, Linking, Modal, Share, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, FlatList, TextInput, Linking, Modal, Share, Alert, ScrollView } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { feedbackAPI } from '../../context/api';
@@ -10,12 +10,33 @@ type Props = {
   onClose: () => void;
 };
 
+type QuestionType = 'nps' | 'rating' | 'choice' | 'text';
+type SurveyQuestionDraft = { id: string; text: string; type: QuestionType; optionsText?: string };
+
+const QUESTION_TYPES: Array<{ type: QuestionType; label: string; hint: string }> = [
+  { type: 'nps', label: '0–10 score', hint: 'Customer replies with a score from 0 to 10.' },
+  { type: 'rating', label: '1–5 rating', hint: 'Customer replies with a score from 1 to 5.' },
+  { type: 'choice', label: 'Choice', hint: 'Customer replies with one of your options.' },
+  { type: 'text', label: 'Text answer', hint: 'Customer can type a short answer.' },
+];
+
+const makeQuestion = (type: QuestionType = 'rating'): SurveyQuestionDraft => ({
+  id: `question_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+  text: '',
+  type,
+  optionsText: type === 'choice' ? '' : undefined,
+});
+
 export default function CustomerFeedbackModal({ customerId, visible, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [surveys, setSurveys] = useState<any[]>([]);
   const [responses, setResponses] = useState<any[]>([]);
   const [sending, setSending] = useState(false);
   const [creatingSurvey, setCreatingSurvey] = useState(false);
+  const [builderVisible, setBuilderVisible] = useState(false);
+  const [draftTitle, setDraftTitle] = useState('Customer satisfaction');
+  const [draftDescription, setDraftDescription] = useState('A quick survey to help us improve.');
+  const [draftQuestions, setDraftQuestions] = useState<SurveyQuestionDraft[]>([]);
   const [lastLink, setLastLink] = useState<string | null>(null);
   const [loggingSurveyId, setLoggingSurveyId] = useState<string | null>(null);
   const [logRating, setLogRating] = useState('');
@@ -71,13 +92,11 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
     }
   };
 
-  const onSend = async (surveyId: string) => {
+  const onSendWhatsApp = async (surveyId: string) => {
     setSending(true);
     try {
-      const res = await feedbackAPI.sendSurveyLink(surveyId, customerId);
-      if (!res?.url) throw new Error('Zilo did not return a survey link');
-      setLastLink(res.url);
-      Alert.alert('Survey sent', 'A private feedback link was sent to this customer on WhatsApp.');
+      await feedbackAPI.sendSurveyLink(surveyId, customerId, 'whatsapp_chat');
+      Alert.alert('Survey started', 'The first question was sent in WhatsApp. Zilo will send each next question after the customer replies.');
     } catch (err: any) {
       console.error('Send survey error', err);
       const msg = err?.response?.data?.detail || err?.message || 'Could not send the survey on WhatsApp';
@@ -87,20 +106,66 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
     }
   };
 
-  const createDefaultSurvey = async () => {
+  const onSendLink = async (surveyId: string) => {
+    setSending(true);
+    try {
+      const res = await feedbackAPI.sendSurveyLink(surveyId, customerId, 'link');
+      if (!res?.url) throw new Error('Zilo did not return a survey link');
+      setLastLink(res.url);
+      Alert.alert('Link sent', 'A private feedback link was sent to this customer on WhatsApp.');
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || err?.message || 'Could not send the survey link';
+      Alert.alert('Could not send link', String(msg));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const openBuilder = () => {
+    setDraftTitle('Customer satisfaction');
+    setDraftDescription('A quick survey to help us improve.');
+    setDraftQuestions([
+      { id: 'recommend', text: 'How likely are you to recommend us to a friend?', type: 'nps' },
+      { id: 'comment', text: 'What could we do better?', type: 'text' },
+    ]);
+    setBuilderVisible(true);
+  };
+
+  const createSurvey = async () => {
+    const title = draftTitle.trim();
+    const questions = draftQuestions
+      .map((question) => ({
+        ...question,
+        text: question.text.trim(),
+        options: question.type === 'choice'
+          ? (question.optionsText || '').split(/[\n,]/).map((option) => option.trim()).filter(Boolean)
+          : undefined,
+      }))
+      .filter((question) => question.text);
+    if (!title) {
+      Alert.alert('Add a title', 'Give this survey a name first.');
+      return;
+    }
+    if (!questions.length) {
+      Alert.alert('Add a question', 'A WhatsApp survey needs at least one question.');
+      return;
+    }
+    const incompleteChoice = questions.find((question) => question.type === 'choice' && (question.options || []).length < 2);
+    if (incompleteChoice) {
+      Alert.alert('Add choices', 'Choice questions need at least two options.');
+      return;
+    }
     setCreatingSurvey(true);
     try {
       await feedbackAPI.createSurvey({
-        title: 'Customer satisfaction',
-        description: 'A quick survey to help us improve.',
+        title,
+        description: draftDescription.trim(),
         active: true,
-        questions: [
-          { id: 'recommend', text: 'How likely are you to recommend us to a friend?', type: 'nps' },
-          { id: 'comment', text: 'What could we do better?', type: 'text' },
-        ],
+        questions: questions.map(({ id, text, type, options }) => ({ id, text, type, options })),
       });
       await load();
-      Alert.alert('Survey ready', 'You can now send the survey to this customer on WhatsApp.');
+      setBuilderVisible(false);
+      Alert.alert('Survey ready', 'Send it in WhatsApp when you are ready.');
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Could not create the survey';
       Alert.alert('Could not create survey', String(msg));
@@ -192,13 +257,80 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
     <View style={styles.overlay}>
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.title}>Customer Feedback</Text>
-          <TouchableOpacity onPress={onClose}>
-            <Ionicons name="close" size={22} color="#8696A0" />
-          </TouchableOpacity>
+          <Text style={styles.title}>{builderVisible ? 'Create survey' : 'Customer Feedback'}</Text>
+          <View style={styles.headerActions}>
+            {!builderVisible && (
+              <TouchableOpacity style={styles.newSurveyButton} onPress={openBuilder}>
+                <Ionicons name="add" size={18} color="#00A884" />
+                <Text style={styles.newSurveyText}>New</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity onPress={() => builderVisible ? setBuilderVisible(false) : onClose()}>
+              <Ionicons name={builderVisible ? 'arrow-back' : 'close'} size={22} color="#8696A0" />
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {loading ? (
+        {builderVisible ? (
+          <ScrollView contentContainerStyle={styles.builderContent} keyboardShouldPersistTaps="handled">
+            <Text style={styles.builderIntro}>Create a short survey that customers answer directly in WhatsApp, one question at a time.</Text>
+            <Text style={styles.fieldLabel}>Survey name</Text>
+            <TextInput value={draftTitle} onChangeText={setDraftTitle} placeholder="e.g. After-purchase feedback" placeholderTextColor="#8696A0" style={styles.logInput} />
+            <Text style={styles.fieldLabel}>Description (optional)</Text>
+            <TextInput value={draftDescription} onChangeText={setDraftDescription} placeholder="Why you are asking" placeholderTextColor="#8696A0" style={styles.logInput} />
+
+            <Text style={styles.builderSectionTitle}>Questions</Text>
+            {draftQuestions.map((question, index) => (
+              <View key={question.id} style={styles.questionCard}>
+                <View style={styles.questionCardHeader}>
+                  <Text style={styles.questionCount}>Question {index + 1}</Text>
+                  <TouchableOpacity onPress={() => setDraftQuestions((items) => items.filter((item) => item.id !== question.id))}>
+                    <Ionicons name="trash-outline" size={19} color="#EF5350" />
+                  </TouchableOpacity>
+                </View>
+                <TextInput
+                  value={question.text}
+                  onChangeText={(text) => setDraftQuestions((items) => items.map((item) => item.id === question.id ? { ...item, text } : item))}
+                  placeholder="Write your question"
+                  placeholderTextColor="#8696A0"
+                  style={styles.logInput}
+                />
+                <View style={styles.typeRow}>
+                  {QUESTION_TYPES.map((option) => (
+                    <TouchableOpacity
+                      key={option.type}
+                      onPress={() => setDraftQuestions((items) => items.map((item) => item.id === question.id ? { ...item, type: option.type, optionsText: option.type === 'choice' ? (item.optionsText || '') : undefined } : item))}
+                      style={[styles.typeButton, question.type === option.type && styles.typeButtonSelected]}
+                    >
+                      <Text style={[styles.typeButtonText, question.type === option.type && styles.typeButtonTextSelected]}>{option.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.questionHint}>{QUESTION_TYPES.find((option) => option.type === question.type)?.hint}</Text>
+                {question.type === 'choice' && (
+                  <TextInput
+                    value={question.optionsText || ''}
+                    onChangeText={(optionsText) => setDraftQuestions((items) => items.map((item) => item.id === question.id ? { ...item, optionsText } : item))}
+                    placeholder="Options, separated by commas or new lines"
+                    placeholderTextColor="#8696A0"
+                    multiline
+                    style={[styles.logInput, styles.choiceInput]}
+                  />
+                )}
+              </View>
+            ))}
+            <View style={styles.addQuestionRow}>
+              {QUESTION_TYPES.map((option) => (
+                <TouchableOpacity key={option.type} style={styles.addQuestionButton} onPress={() => setDraftQuestions((items) => [...items, makeQuestion(option.type)])}>
+                  <Text style={styles.addQuestionText}>+ {option.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={styles.createButton} onPress={createSurvey} disabled={creatingSurvey}>
+              {creatingSurvey ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.createButtonText}>Save survey</Text>}
+            </TouchableOpacity>
+          </ScrollView>
+        ) : loading ? (
           <ActivityIndicator size="large" color="#00A884" />
         ) : (
           <FlatList
@@ -210,14 +342,14 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
                   <View style={{ flex: 1 }}>
                     <Text style={styles.surveyTitle}>{item.title || item.name || 'Survey'}</Text>
                     <Text style={styles.surveySubtitle}>{item.description || ''}</Text>
-                    <Text style={styles.surveyLink}>{derivedSurveyLink(item)}</Text>
+                    <Text style={styles.surveyLink}>{(item.questions || []).length} question{(item.questions || []).length === 1 ? '' : 's'} · replies stay in WhatsApp</Text>
                   </View>
                   <View style={styles.surveyActions}>
-                    <TouchableOpacity style={styles.sendButton} onPress={() => onSend(item.id || item._id)} disabled={sending}>
-                      <Text style={styles.sendButtonText}>{sending ? 'Sending...' : 'Send WhatsApp'}</Text>
+                    <TouchableOpacity style={styles.sendButton} onPress={() => onSendWhatsApp(item.id || item._id)} disabled={sending}>
+                      <Text style={styles.sendButtonText}>{sending ? 'Sending...' : 'Send in WhatsApp'}</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027' }]} onPress={() => onCopy(derivedSurveyLink(item))}>
-                      <Text style={styles.sendButtonText}>Copy link</Text>
+                    <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027' }]} onPress={() => onSendLink(item.id || item._id)} disabled={sending}>
+                      <Text style={styles.sendButtonText}>Send link</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027' }]} onPress={() => onShare(derivedSurveyLink(item))}>
                       <Text style={styles.sendButtonText}>Share</Text>
@@ -318,9 +450,9 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
               <View style={styles.emptyState}>
                 <Ionicons name="chatbubbles-outline" size={34} color="#8696A0" />
                 <Text style={styles.emptyTitle}>No feedback survey yet</Text>
-                <Text style={styles.emptyText}>Create a short customer-satisfaction survey, then send it through WhatsApp.</Text>
-                <TouchableOpacity style={styles.createButton} onPress={createDefaultSurvey} disabled={creatingSurvey}>
-                  {creatingSurvey ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.createButtonText}>Create survey</Text>}
+                <Text style={styles.emptyText}>Create your questions, then send the survey directly in WhatsApp.</Text>
+                <TouchableOpacity style={styles.createButton} onPress={openBuilder}>
+                  <Text style={styles.createButtonText}>Create survey</Text>
                 </TouchableOpacity>
               </View>
             }
@@ -366,7 +498,27 @@ const styles = StyleSheet.create({
   overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
   container: { width: '92%', maxHeight: '86%', backgroundColor: '#0B141A', borderRadius: 12, padding: 12 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  newSurveyButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  newSurveyText: { color: '#00A884', fontWeight: '700' },
   title: { color: '#E9EDEF', fontSize: 18, fontWeight: '700' },
+  builderContent: { paddingBottom: 8 },
+  builderIntro: { color: '#B8C5CC', lineHeight: 19, marginBottom: 14 },
+  builderSectionTitle: { color: '#E9EDEF', fontSize: 16, fontWeight: '700', marginTop: 18, marginBottom: 8 },
+  fieldLabel: { color: '#B8C5CC', fontSize: 12, marginBottom: 6, marginTop: 10 },
+  questionCard: { backgroundColor: '#102027', borderRadius: 10, padding: 10, marginBottom: 10 },
+  questionCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  questionCount: { color: '#E9EDEF', fontWeight: '700' },
+  typeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 9 },
+  typeButton: { borderWidth: 1, borderColor: '#2A3942', borderRadius: 14, paddingHorizontal: 8, paddingVertical: 5 },
+  typeButtonSelected: { borderColor: '#00A884', backgroundColor: '#113C35' },
+  typeButtonText: { color: '#B8C5CC', fontSize: 11 },
+  typeButtonTextSelected: { color: '#53D89B', fontWeight: '700' },
+  questionHint: { color: '#8696A0', fontSize: 11, marginTop: 8, lineHeight: 15 },
+  choiceInput: { minHeight: 60, marginTop: 9, textAlignVertical: 'top' },
+  addQuestionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 2 },
+  addQuestionButton: { borderWidth: 1, borderColor: '#00A884', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 7 },
+  addQuestionText: { color: '#00A884', fontSize: 12, fontWeight: '700' },
   surveyRow: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(134,150,160,0.05)' },
   surveyActions: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
   surveyTitle: { color: '#E9EDEF', fontWeight: '700' },
