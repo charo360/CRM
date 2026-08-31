@@ -8,3 +8,4 @@ node_modules/
 .expo/
 .metro-cache/
 dist/
+*.aab
