@@ -41,6 +41,23 @@ interface Sale {
   created_at: string;
 }
 
+interface OrderItem {
+  product_id?: string;
+  product_name?: string;
+  name?: string;
+  quantity?: number;
+  unit_price?: number;
+  price?: number;
+  variant?: string | null;
+}
+
+interface DisplayOrderItem extends OrderItem {
+  product_name: string;
+  quantity: number;
+  unit_price: number;
+  price: number;
+}
+
 interface Order {
   id: string;
   customer_id: string;
@@ -55,6 +72,8 @@ interface Order {
   notes?: string;
   due_date?: string;
   created_at: string;
+  currency?: string;
+  items?: OrderItem[];
 }
 
 interface Expense {
@@ -67,6 +86,57 @@ interface Expense {
 
 const DATE_FILTERS = ['Today', 'This Week', 'This Month', 'All Time'];
 const EXPENSE_CATEGORIES = ['Inventory', 'Rent', 'Transport', 'Utilities', 'Salaries', 'Other'];
+
+const asAmount = (value: unknown, fallback = 0) => {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : fallback;
+};
+
+const getOrderItems = (order: Order): DisplayOrderItem[] => {
+  const rawItems = Array.isArray(order.items) && order.items.length > 0
+    ? order.items
+    : [{
+        product_name: order.product,
+        quantity: order.quantity,
+        unit_price: order.price,
+        price: order.total_amount,
+      }];
+
+  return rawItems.map((item) => {
+    const quantity = Math.max(1, asAmount(item.quantity, 1));
+    const lineTotal = asAmount(item.price, asAmount(item.unit_price) * quantity);
+    const unitPrice = asAmount(item.unit_price, lineTotal / quantity);
+    return {
+      ...item,
+      product_name: item.product_name || item.name || 'Product',
+      quantity,
+      unit_price: unitPrice,
+      price: lineTotal,
+    };
+  });
+};
+
+function OrderItemsSummary({ order, currency }: { order: Order; currency: string }) {
+  const items = getOrderItems(order);
+
+  return (
+    <View style={styles.orderItemsSection}>
+      <Text style={[styles.detailsLabel, styles.orderItemsHeading]}>Items</Text>
+      {items.map((item, index) => (
+        <View key={`${item.product_id || item.product_name}-${index}`} style={styles.orderItemRow}>
+          <View style={styles.orderItemInfo}>
+            <Text style={styles.orderItemName}>{item.product_name}</Text>
+            {!!item.variant && <Text style={styles.orderItemVariant}>{item.variant}</Text>}
+            <Text style={styles.orderItemMeta}>
+              {item.quantity} × {currency} {item.unit_price.toLocaleString()}
+            </Text>
+          </View>
+          <Text style={styles.orderItemAmount}>{currency} {item.price.toLocaleString()}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
 
 export default function SalesScreen() {
   const router = useRouter();
@@ -730,6 +800,8 @@ export default function SalesScreen() {
   );
 
   const renderOrder = ({ item: order }: { item: Order }) => {
+    const orderItems = getOrderItems(order);
+    const orderCurrency = order.currency || currency;
     const getPaymentStatusColor = (status: string) => {
       switch (status) {
         case 'Paid': return '#25D366';
@@ -773,7 +845,7 @@ export default function SalesScreen() {
               </Text>
             </View>
           </View>
-          <Text style={[styles.amount, { flexShrink: 0 }]}>{currency} {order.total_amount.toLocaleString()}</Text>
+          <Text style={[styles.amount, { flexShrink: 0 }]}>{orderCurrency} {order.total_amount.toLocaleString()}</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
           <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(order.payment_status) }]}>
@@ -784,8 +856,16 @@ export default function SalesScreen() {
           </View>
         </View>
         <View style={styles.saleDetails}>
-          <Text style={styles.itemText}>{order.product} (x{order.quantity})</Text>
-          <Text style={styles.paymentText}>@ {currency} {order.price.toLocaleString()} each</Text>
+          <Text style={styles.itemText} numberOfLines={2}>
+            {orderItems.length === 1
+              ? orderItems[0].product_name
+              : `${orderItems.length} products · ${order.quantity} items`}
+          </Text>
+          <Text style={styles.paymentText}>
+            {orderItems.length === 1
+              ? `${orderItems[0].quantity} × ${orderCurrency} ${orderItems[0].unit_price.toLocaleString()}`
+              : 'View order for item breakdown'}
+          </Text>
         </View>
         {order.payment_status === 'Paid' && (
           <View style={{ backgroundColor: '#1A3A2A', borderRadius: 8, padding: 8, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
@@ -1779,25 +1859,15 @@ export default function SalesScreen() {
 
                 <View style={styles.detailsDivider} />
 
-                <View style={styles.detailsRow}>
-                  <Text style={styles.detailsLabel}>Product</Text>
-                  <Text style={styles.detailsValue}>{selectedOrder.product}</Text>
-                </View>
-
-                <View style={styles.detailsRow}>
-                  <Text style={styles.detailsLabel}>Quantity</Text>
-                  <Text style={styles.detailsValue}>{selectedOrder.quantity}</Text>
-                </View>
-
-                <View style={styles.detailsRow}>
-                  <Text style={styles.detailsLabel}>Price per unit</Text>
-                  <Text style={styles.detailsValue}>{currency} {selectedOrder.price.toLocaleString()}</Text>
-                </View>
+                <OrderItemsSummary
+                  order={selectedOrder}
+                  currency={selectedOrder.currency || currency}
+                />
 
                 <View style={styles.detailsRow}>
                   <Text style={styles.detailsLabel}>Total Amount</Text>
                   <Text style={[styles.detailsValue, { fontSize: 18, fontWeight: 'bold', color: '#25D366' }]}>
-                    {currency} {selectedOrder.total_amount.toLocaleString()}
+                    {selectedOrder.currency || currency} {selectedOrder.total_amount.toLocaleString()}
                   </Text>
                 </View>
 
@@ -1825,7 +1895,11 @@ export default function SalesScreen() {
                           }
                         }}
                       >
-                        <Text style={[
+                        <Text
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          minimumFontScale={0.8}
+                          style={[
                           styles.statusOptionText,
                           selectedOrder.payment_status === status && styles.statusOptionTextActive,
                         ]}>
@@ -1858,7 +1932,11 @@ export default function SalesScreen() {
                           }
                         }}
                       >
-                        <Text style={[
+                        <Text
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          minimumFontScale={0.8}
+                          style={[
                           styles.statusOptionText,
                           selectedOrder.delivery_status === status && styles.statusOptionTextActive,
                         ]}>
@@ -2392,6 +2470,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  orderItemsSection: {
+    marginBottom: 16,
+  },
+  orderItemsHeading: {
+    marginBottom: 10,
+  },
+  orderItemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2A3952',
+  },
+  orderItemInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  orderItemName: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    lineHeight: 21,
+  },
+  orderItemVariant: {
+    color: '#B7C2D4',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  orderItemMeta: {
+    color: '#888',
+    fontSize: 13,
+    marginTop: 4,
+  },
+  orderItemAmount: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'right',
+    flexShrink: 0,
+  },
   detailsLabel: {
     fontSize: 14,
     color: '#888',
@@ -2911,11 +3031,12 @@ const styles = StyleSheet.create({
   statusUpdateContainer: {
     flexDirection: 'row',
     gap: 8,
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
   },
   statusOption: {
     flex: 1,
-    paddingHorizontal: 12,
+    minWidth: 0,
+    paddingHorizontal: 6,
     paddingVertical: 8,
     borderRadius: 8,
     backgroundColor: '#1A2942',
