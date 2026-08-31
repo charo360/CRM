@@ -175,29 +175,19 @@ export default function SubscriptionModal({
         return;
       }
 
-      // The WhatsApp gate must never silently charge a customer. The matching
-      // Play subscription needs a zero-cost introductory phase configured in
-      // Play Console / RevenueCat before it can be presented as a free trial.
-      // Google Play carries a free trial as a zero-cost pricing phase on a
-      // subscription option (`freePhase`), not as `introPrice` — that field is
-      // the *paid* introductory phase, defined as amountMicros > 0, so
-      // `introPrice.price === 0` is never true for a Play trial and this gate
-      // rejected plans whose trial was configured correctly. Check the Play
-      // shape first; `introPrice` still covers StoreKit.
-      const introductoryPrice = pkg.product?.introPrice;
-      const hasFreeTrial =
-        !!pkg.product?.defaultOption?.freePhase ||
-        (pkg.product?.subscriptionOptions ?? []).some((option: any) => option?.freePhase) ||
-        (!!introductoryPrice && Number(introductoryPrice.price) === 0);
-      if (isWhatsAppTrial && !hasFreeTrial) {
-        Alert.alert(
-          'Free trial not ready',
-          'This plan needs its 14-day free trial configured in Google Play before WhatsApp can be linked. Please choose another plan or try again shortly.'
-        );
-        return;
-      }
-
-      const { customerInfo, transaction } = await Purchases.purchasePackage(pkg);
+      // Google Play is the authority for trial eligibility and the exact terms
+      // shown before checkout. RevenueCat can briefly return cached product
+      // metadata after an offer is changed in Play Console; blocking on that
+      // cache made valid trial offers appear unavailable. Prefer the explicit
+      // zero-cost option when it is present, otherwise let the Play checkout
+      // present the eligible offer and require the customer's confirmation.
+      const trialOption = [
+        pkg.product?.defaultOption,
+        ...(pkg.product?.subscriptionOptions ?? []),
+      ].find((option: any) => option?.freePhase);
+      const { customerInfo, transaction } = isWhatsAppTrial && trialOption
+        ? await Purchases.purchaseSubscriptionOption(trialOption)
+        : await Purchases.purchasePackage(pkg);
       if (customerInfo.entitlements.active['premium']) {
         try {
           const purchaseToken = transaction?.purchaseToken || transaction?.transactionIdentifier || transaction?.revenueCatId || '';
