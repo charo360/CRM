@@ -8501,6 +8501,14 @@ def _revenuecat_datetime(value: object) -> Optional[datetime]:
         return None
 
 
+def _revenuecat_milliseconds(value: object) -> int:
+    """Return a RevenueCat millisecond timestamp, or ``0`` when absent/invalid."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 @api_router.post("/subscription/revenuecat-webhook")
 async def revenuecat_subscription_webhook(request: Request):
     """Synchronise the authoritative Google Play subscription lifecycle.
@@ -8562,12 +8570,22 @@ async def revenuecat_subscription_webhook(request: Request):
     identities.extend(value for value in (event.get("aliases") or []) if value)
     user = await db.users.find_one({"_id": {"$in": identities}}) if identities else None
 
+    event_transaction_id = str(event.get("transaction_id") or "")
+    event_original_transaction_id = str(event.get("original_transaction_id") or "")
+    event_purchased_at_ms = _revenuecat_milliseconds(event.get("purchased_at_ms"))
+    event_expiration_at_ms = _revenuecat_milliseconds(event.get("expiration_at_ms"))
+
     event_record = {
         "_id": event_id or str(uuid.uuid4()),
         "event_type": event_type,
         "app_user_id": event.get("app_user_id"),
         "product_id": event.get("new_product_id") or event.get("product_id"),
         "event_timestamp_ms": event.get("event_timestamp_ms"),
+        "transaction_id": event_transaction_id or None,
+        "original_transaction_id": event_original_transaction_id or None,
+        "purchased_at_ms": event_purchased_at_ms or None,
+        "expiration_at_ms": event_expiration_at_ms or None,
+        "expiration_reason": event.get("expiration_reason") or None,
         "received_at": datetime.utcnow(),
         "processed_user_id": user.get("_id") if user else None,
     }
@@ -8579,7 +8597,7 @@ async def revenuecat_subscription_webhook(request: Request):
         logging.warning("RevenueCat webhook has no matching Zilo user: %s", event.get("app_user_id"))
         return {"status": "ignored", "reason": "unknown_user"}
 
-    incoming_timestamp = int(event.get("event_timestamp_ms") or 0)
+    incoming_timestamp = _revenuecat_milliseconds(event.get("event_timestamp_ms"))
     if incoming_timestamp and incoming_timestamp < int(user.get("revenuecat_last_event_ms") or 0):
         return {"status": "ignored", "reason": "out_of_order"}
 
@@ -8595,6 +8613,29 @@ async def revenuecat_subscription_webhook(request: Request):
     # the user remains entitled until the expiration event. RevenueCat sends
     # EXPIRATION when access must actually be removed.
     if event_type == "EXPIRATION":
+        # Google Play can deliver the INITIAL_PURCHASE of a new subscription
+        # immediately before the EXPIRATION of an older, cancelled one. The
+        # expiration event has the newer delivery timestamp, so timestamp-only
+        # ordering would incorrectly turn off the just-purchased subscription.
+        active_transaction_id = str(user.get("revenuecat_transaction_id") or "")
+        active_purchased_at_ms = _revenuecat_milliseconds(
+            user.get("revenuecat_subscription_purchased_at_ms")
+        )
+        is_different_transaction = (
+            bool(active_transaction_id and event_transaction_id)
+            and active_transaction_id != event_transaction_id
+        )
+        predates_active_subscription = (
+            bool(active_purchased_at_ms and event_purchased_at_ms)
+            and event_purchased_at_ms < active_purchased_at_ms
+        )
+        if is_different_transaction or predates_active_subscription:
+            logging.info(
+                "Ignoring RevenueCat expiration for older transaction %s; active transaction is %s",
+                event_transaction_id or "unknown",
+                active_transaction_id or "unknown",
+            )
+            return {"status": "ignored", "reason": "older_transaction"}
         await db.users.update_one(
             {"_id": user["_id"]},
             {"$set": {
@@ -8617,6 +8658,9 @@ async def revenuecat_subscription_webhook(request: Request):
                 "subscription_date": _revenuecat_datetime(event.get("purchased_at_ms")) or datetime.utcnow(),
                 "subscription_current_period_end": expires_at,
                 "subscription_cancel_at_period_end": False,
+                "revenuecat_transaction_id": event_transaction_id or None,
+                "revenuecat_original_transaction_id": event_original_transaction_id or None,
+                "revenuecat_subscription_purchased_at_ms": event_purchased_at_ms or None,
             }},
         )
     elif event_type in {"CANCELLATION", "SUBSCRIPTION_PAUSED", "BILLING_ISSUE"}:
@@ -8632,10 +8676,75 @@ async def revenuecat_subscription_webhook(request: Request):
 
     return {"status": "ok"}
 
+
+async def _repair_revenuecat_expiration_race(user: dict) -> bool:
+    """Repair the one-time ordering race caused by older Play subscriptions.
+
+    Before transaction identifiers were stored, an old subscription's
+    EXPIRATION could land milliseconds after a new INITIAL_PURCHASE and
+    overwrite the active state. The webhook ledger lets us repair only that
+    narrow sequence for accounts that were affected before the fix shipped.
+    """
+    if user.get("subscription_active"):
+        return False
+    if str(user.get("revenuecat_last_event_type") or "").upper() != "EXPIRATION":
+        return False
+
+    expiration_event_ms = _revenuecat_milliseconds(user.get("revenuecat_last_event_ms"))
+    if not expiration_event_ms:
+        return False
+
+    # A new purchase and the old expiry in the observed Play sequence were
+    # less than one second apart. Five minutes permits normal delivery delay
+    # without ever reviving a genuinely expired subscription days later.
+    recent_purchase = await db.revenuecat_webhook_events.find_one(
+        {
+            "processed_user_id": user["_id"],
+            "event_type": {"$in": ["INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION", "PRODUCT_CHANGE"]},
+            "event_timestamp_ms": {
+                "$gte": expiration_event_ms - (5 * 60 * 1000),
+                "$lt": expiration_event_ms,
+            },
+        },
+        sort=[("event_timestamp_ms", -1)],
+    )
+    if not recent_purchase:
+        return False
+
+    plan_id = _revenuecat_plan_id(recent_purchase.get("product_id"))
+    if not plan_id:
+        return False
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "subscription_plan": plan_id,
+            "subscription_active": True,
+            # The old expiry timestamp must not be used to evaluate the new
+            # subscription. A future authoritative webhook will populate it.
+            "subscription_current_period_end": _revenuecat_datetime(
+                recent_purchase.get("expiration_at_ms")
+            ),
+            "subscription_cancel_at_period_end": False,
+            "revenuecat_last_event_type": "INITIAL_PURCHASE_RECOVERED",
+            "revenuecat_recovered_at": datetime.utcnow(),
+            "revenuecat_recovered_from_event_id": recent_purchase.get("_id"),
+        }},
+    )
+    logging.info(
+        "Recovered RevenueCat subscription for user %s after an old transaction expiration race",
+        user["_id"],
+    )
+    return True
+
 @api_router.get("/subscription/status")
 async def get_subscription_status(user = Depends(get_current_user)):
     """Get current user subscription status (includes entitlements)."""
     from entitlements import build_entitlements
+    owner_id = str(user.get("business_id") or user["_id"])
+    billing_owner = user if owner_id == user["_id"] else await db.users.find_one({"_id": owner_id})
+    if billing_owner:
+        await _repair_revenuecat_expiration_race(billing_owner)
     ent = await build_entitlements(db, user)
     return {
         "subscription_plan": user.get("subscription_plan"),
