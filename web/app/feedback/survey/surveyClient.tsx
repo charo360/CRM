@@ -31,6 +31,7 @@ type FeedbackAnswer = {
 
 type FeedbackPayload = {
   survey_id: string;
+  request_token?: string;
   customer_name?: string;
   customer_phone?: string;
   nps_score?: number;
@@ -88,6 +89,10 @@ export default function SurveyClient({ surveyId }: { surveyId: string }) {
         customer_phone: phone || undefined,
         answers: [],
       };
+      const requestToken = typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search).get("request")
+        : null;
+      if (requestToken) payload.request_token = requestToken;
       // push survey answers
       for (const q of (survey.questions || [])) {
         const qid = questionId(q);

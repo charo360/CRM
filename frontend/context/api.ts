@@ -776,10 +776,24 @@ export const feedbackAPI = {
     return response.data;
   },
 
+  createSurvey: async (payload: {
+    title: string;
+    description?: string;
+    active?: boolean;
+    questions: Array<{ id: string; text: string; type: 'nps' | 'rating' | 'text' | 'choice'; options?: string[] }>;
+  }) => {
+    const response = await apiClient.post('/feedback/surveys', payload);
+    return response.data;
+  },
+
   submitResponse: async (payload: {
     survey_id: string;
     customer_id?: string;
-    answers: Record<string, any>;
+    answers: Array<{ question_id: string; answer: any }>;
+    customer_name?: string;
+    customer_phone?: string;
+    nps_score?: number;
+    comment?: string;
   }) => {
     const response = await apiClient.post('/feedback/responses', payload);
     return response.data;

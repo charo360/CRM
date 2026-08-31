@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, FlatList, TextInput, Linking, Share, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, FlatList, TextInput, Linking, Modal, Share, Alert } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { feedbackAPI } from '../../context/api';
@@ -15,6 +15,7 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
   const [surveys, setSurveys] = useState<any[]>([]);
   const [responses, setResponses] = useState<any[]>([]);
   const [sending, setSending] = useState(false);
+  const [creatingSurvey, setCreatingSurvey] = useState(false);
   const [lastLink, setLastLink] = useState<string | null>(null);
   const [loggingSurveyId, setLoggingSurveyId] = useState<string | null>(null);
   const [logRating, setLogRating] = useState('');
@@ -74,23 +75,37 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
     setSending(true);
     try {
       const res = await feedbackAPI.sendSurveyLink(surveyId, customerId);
-      const url = res?.url || res?.share_url || res?.link || (res?.response_id ? `${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/feedback/response/${res.response_id}` : null);
-      if (url) {
-        setLastLink(url);
-        Alert.alert('Sent', 'Survey link sent');
-      } else {
-        const derived = `${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/feedback/survey/${surveyId}`;
-        setLastLink(derived);
-        Alert.alert('Sent (local)', 'Survey link derived locally');
-      }
-    } catch (err) {
+      if (!res?.url) throw new Error('Zilo did not return a survey link');
+      setLastLink(res.url);
+      Alert.alert('Survey sent', 'A private feedback link was sent to this customer on WhatsApp.');
+    } catch (err: any) {
       console.error('Send survey error', err);
-      const derived = `${process.env.EXPO_PUBLIC_APP_URL || 'http://localhost:3000'}/feedback/survey/${surveyId}`;
-      setLastLink(derived);
-      const msg = (err as any)?.response?.data?.detail || (err as any)?.message || 'Failed to call send endpoint; derived link shown';
-      Alert.alert('Send failed', String(msg));
+      const msg = err?.response?.data?.detail || err?.message || 'Could not send the survey on WhatsApp';
+      Alert.alert('Could not send survey', String(msg));
     } finally {
       setSending(false);
+    }
+  };
+
+  const createDefaultSurvey = async () => {
+    setCreatingSurvey(true);
+    try {
+      await feedbackAPI.createSurvey({
+        title: 'Customer satisfaction',
+        description: 'A quick survey to help us improve.',
+        active: true,
+        questions: [
+          { id: 'recommend', text: 'How likely are you to recommend us to a friend?', type: 'nps' },
+          { id: 'comment', text: 'What could we do better?', type: 'text' },
+        ],
+      });
+      await load();
+      Alert.alert('Survey ready', 'You can now send the survey to this customer on WhatsApp.');
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || err?.message || 'Could not create the survey';
+      Alert.alert('Could not create survey', String(msg));
+    } finally {
+      setCreatingSurvey(false);
     }
   };
 
@@ -172,9 +187,8 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
     }
   };
 
-  if (!visible) return null;
-
   return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
     <View style={styles.overlay}>
       <View style={styles.container}>
         <View style={styles.header}>
@@ -197,27 +211,21 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
                     <Text style={styles.surveyTitle}>{item.title || item.name || 'Survey'}</Text>
                     <Text style={styles.surveySubtitle}>{item.description || ''}</Text>
                     <Text style={styles.surveyLink}>{derivedSurveyLink(item)}</Text>
-                    <View style={{ flexDirection: 'row', marginTop: 6 }}>
-                      <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027' }]} onPress={() => onCopy(derivedSurveyLink(item))}>
-                        <Text style={styles.sendButtonText}>Copy link</Text>
-                      </TouchableOpacity>
-                    </View>
                   </View>
-                  <TouchableOpacity style={styles.sendButton} onPress={() => onSend(item.id || item._id)} disabled={sending}>
-                    <Text style={styles.sendButtonText}>{sending ? 'Sending...' : 'Send link'}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027', marginLeft: 8 }]} onPress={() => {
-                    const url = derivedSurveyLink(item);
-                    setLastLink(url);
-                  }}>
-                    <Text style={styles.sendButtonText}>View link</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027', marginLeft: 8 }]} onPress={() => onShare(derivedSurveyLink(item))}>
-                    <Text style={styles.sendButtonText}>Share</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#0B141A', borderWidth: 1, borderColor: '#00A884', marginLeft: 8 }]} onPress={() => setLoggingSurveyId(item.id || item._id)}>
-                    <Text style={[styles.sendButtonText, { color: '#00A884' }]}>Log response</Text>
-                  </TouchableOpacity>
+                  <View style={styles.surveyActions}>
+                    <TouchableOpacity style={styles.sendButton} onPress={() => onSend(item.id || item._id)} disabled={sending}>
+                      <Text style={styles.sendButtonText}>{sending ? 'Sending...' : 'Send WhatsApp'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027' }]} onPress={() => onCopy(derivedSurveyLink(item))}>
+                      <Text style={styles.sendButtonText}>Copy link</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#102027' }]} onPress={() => onShare(derivedSurveyLink(item))}>
+                      <Text style={styles.sendButtonText}>Share</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.sendButton, { backgroundColor: '#0B141A', borderWidth: 1, borderColor: '#00A884' }]} onPress={() => setLoggingSurveyId(item.id || item._id)}>
+                      <Text style={[styles.sendButtonText, { color: '#00A884' }]}>Log response</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 {loggingSurveyId === (item.id || item._id) && (
                   <View style={styles.logForm}>
@@ -306,7 +314,16 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
                 )}
               </>
             )}
-            ListEmptyComponent={<Text style={{ color: '#8696A0', padding: 12 }}>No surveys available</Text>}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <Ionicons name="chatbubbles-outline" size={34} color="#8696A0" />
+                <Text style={styles.emptyTitle}>No feedback survey yet</Text>
+                <Text style={styles.emptyText}>Create a short customer-satisfaction survey, then send it through WhatsApp.</Text>
+                <TouchableOpacity style={styles.createButton} onPress={createDefaultSurvey} disabled={creatingSurvey}>
+                  {creatingSurvey ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.createButtonText}>Create survey</Text>}
+                </TouchableOpacity>
+              </View>
+            }
             ListFooterComponent={() => (
               <>
                 {lastLink && (
@@ -341,6 +358,7 @@ export default function CustomerFeedbackModal({ customerId, visible, onClose }: 
         )}
       </View>
     </View>
+    </Modal>
   );
 }
 
@@ -349,10 +367,11 @@ const styles = StyleSheet.create({
   container: { width: '92%', maxHeight: '86%', backgroundColor: '#0B141A', borderRadius: 12, padding: 12 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   title: { color: '#E9EDEF', fontSize: 18, fontWeight: '700' },
-  surveyRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(134,150,160,0.05)' },
+  surveyRow: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(134,150,160,0.05)' },
+  surveyActions: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
   surveyTitle: { color: '#E9EDEF', fontWeight: '700' },
   surveySubtitle: { color: '#8696A0', fontSize: 12 },
-  sendButton: { backgroundColor: '#00A884', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, marginLeft: 10 },
+  sendButton: { backgroundColor: '#00A884', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, marginRight: 8, marginTop: 6 },
   sendButtonText: { color: '#fff', fontWeight: '700' },
   logForm: { marginTop: 8, backgroundColor: '#102027', padding: 10, borderRadius: 8 },
   logInput: { backgroundColor: '#0B141A', color: '#E9EDEF', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8 },
@@ -361,6 +380,11 @@ const styles = StyleSheet.create({
   linkText: { color: '#00A884', marginTop: 6 },
   surveyLink: { color: '#00A884', marginTop: 6, fontSize: 12 },
   responsesSection: { marginTop: 12 },
+  emptyState: { alignItems: 'center', padding: 24 },
+  emptyTitle: { color: '#E9EDEF', fontWeight: '700', fontSize: 16, marginTop: 12 },
+  emptyText: { color: '#8696A0', textAlign: 'center', marginTop: 6, lineHeight: 19 },
+  createButton: { backgroundColor: '#00A884', paddingHorizontal: 16, paddingVertical: 11, borderRadius: 8, marginTop: 16, minWidth: 132, alignItems: 'center' },
+  createButtonText: { color: '#FFFFFF', fontWeight: '700' },
   sectionTitle: { color: '#E9EDEF', fontWeight: '700', marginBottom: 8 },
   responseRow: { backgroundColor: '#1F2C34', padding: 10, borderRadius: 8, marginBottom: 8, flexDirection: 'row', justifyContent: 'space-between' },
   responseText: { color: '#E9EDEF', flex: 1, marginRight: 8 },

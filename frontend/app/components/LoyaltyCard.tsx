@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, TextInput } from 'react-native';
+import { Alert, View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { loyaltyAPI } from '../../context/api';
 
@@ -7,24 +7,21 @@ type Props = {
   customerId: string;
 };
 
-const TIERS = [
-  { name: 'Bronze', min: 0, next: 1000, color: '#CD7F32' },
-  { name: 'Silver', min: 1000, next: 5000, color: '#C0C0C0' },
-  { name: 'Gold', min: 5000, next: 15000, color: '#FFD700' },
-  { name: 'Premium', min: 15000, next: null, color: '#9B59B6' },
-];
+type LoyaltyTier = { name: string; min_points: number; color?: string };
 
-const getTier = (points: number) => {
-  for (let i = TIERS.length - 1; i >= 0; i--) {
-    if (points >= TIERS[i].min) return TIERS[i];
-  }
-  return TIERS[0];
-};
+const FALLBACK_TIERS: LoyaltyTier[] = [
+  { name: 'Bronze', min_points: 0, color: '#CD7F32' },
+  { name: 'Silver', min_points: 500, color: '#C0C0C0' },
+  { name: 'Gold', min_points: 1500, color: '#FFD700' },
+  { name: 'Platinum', min_points: 5000, color: '#6366F1' },
+];
 
 export default function LoyaltyCard({ customerId }: Props) {
   const [loading, setLoading] = useState(true);
   const [points, setPoints] = useState<number>(0);
   const [history, setHistory] = useState<any[]>([]);
+  const [tiers, setTiers] = useState<LoyaltyTier[]>(FALLBACK_TIERS);
+  const [savedTier, setSavedTier] = useState<string>('Bronze');
   const [adding, setAdding] = useState(false);
   const [addAmount, setAddAmount] = useState('');
   const [saving, setSaving] = useState(false);
@@ -41,8 +38,13 @@ export default function LoyaltyCard({ customerId }: Props) {
       const h = await loyaltyAPI.getHistory(customerId);
       setPoints(p?.points ?? 0);
       setHistory(Array.isArray(h) ? h : []);
-    } catch (err) {
+      if (Array.isArray(p?.tiers) && p.tiers.length > 0) {
+        setTiers([...p.tiers].sort((a, b) => a.min_points - b.min_points));
+      }
+      if (p?.tier) setSavedTier(p.tier);
+    } catch (err: any) {
       console.error('Loyalty load error', err);
+      Alert.alert('Could not load loyalty', err?.response?.data?.detail || err?.message || 'Please try again.');
     } finally {
       setLoading(false);
     }
@@ -50,15 +52,19 @@ export default function LoyaltyCard({ customerId }: Props) {
 
   const onAddPoints = async () => {
     const amt = Number(addAmount);
-    if (!amt || amt <= 0) return;
+    if (!amt || amt <= 0) {
+      Alert.alert('Enter points', 'Enter a number greater than zero.');
+      return;
+    }
     setSaving(true);
     try {
       await loyaltyAPI.addPoints(customerId, amt, 'manual');
       setAddAmount('');
       setAdding(false);
       await load();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Add points error', err);
+      Alert.alert('Could not add points', err?.response?.data?.detail || err?.message || 'Please try again.');
     } finally {
       setSaving(false);
     }
@@ -66,9 +72,12 @@ export default function LoyaltyCard({ customerId }: Props) {
 
   if (loading) return <ActivityIndicator size="small" color="#00A884" />;
 
-  const tier = getTier(points);
-  const next = tier.next;
-  const progress = next ? Math.min(1, (points - tier.min) / (next - tier.min)) : 1;
+  const activeIndex = Math.max(0, tiers.reduce((match, item, index) => (
+    points >= item.min_points ? index : match
+  ), 0));
+  const tier = tiers.find(item => item.name === savedTier) || tiers[activeIndex] || FALLBACK_TIERS[0];
+  const next = tiers[activeIndex + 1];
+  const progress = next ? Math.min(1, (points - tier.min_points) / (next.min_points - tier.min_points)) : 1;
 
   return (
     <View style={styles.card}>
@@ -86,7 +95,7 @@ export default function LoyaltyCard({ customerId }: Props) {
         <View style={[styles.progressBarFill, { width: `${progress * 100}%`, backgroundColor: tier.color }]} />
       </View>
       {next ? (
-        <Text style={styles.progressText}>{Math.floor(progress * 100)}% to {next.toLocaleString()} pts ({tier.name} → next)</Text>
+        <Text style={styles.progressText}>{Math.floor(progress * 100)}% to {next.min_points.toLocaleString()} pts ({tier.name} → {next.name})</Text>
       ) : (
         <Text style={styles.progressText}>Top tier reached</Text>
       )}
@@ -128,7 +137,7 @@ export default function LoyaltyCard({ customerId }: Props) {
           <Text style={styles.historyTitle}>Recent activity</Text>
           {history.slice(0, 5).map((h, i) => (
             <View key={i} style={styles.historyRow}>
-              <Text style={styles.historyText}>{h.description || h.type || 'Points'}</Text>
+              <Text style={styles.historyText}>{h.reason || h.description || h.type || 'Points'}</Text>
               <Text style={styles.historyPoints}>{(h.amount ?? h.points ?? 0) > 0 ? `+${h.amount ?? h.points}` : `${h.amount ?? h.points}`}</Text>
             </View>
           ))}

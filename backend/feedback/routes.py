@@ -1,6 +1,6 @@
 """NPS / Customer Feedback — surveys, NPS score, sentiment tracking."""
 from __future__ import annotations
-import logging, uuid
+import logging, os, uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
@@ -71,9 +71,20 @@ class FeedbackResponse(BaseModel):
     nps_score: Optional[int] = None   # 0-10
     answers: List[Dict] = []          # [{question_id, answer}]
     comment: str = ""
+    request_token: Optional[str] = None
 
 def make_feedback_router(db, user_dep):
     router = APIRouter(prefix="/feedback", tags=["feedback"])
+
+    def _public_survey_url(survey_id: str, request_token: Optional[str] = None) -> str:
+        base_url = (
+            os.environ.get("PUBLIC_WEB_URL")
+            or os.environ.get("WEB_APP_URL")
+            or os.environ.get("FRONTEND_URL")
+            or "https://zilo.pro"
+        ).rstrip("/")
+        url = f"{base_url}/feedback/survey/{survey_id}"
+        return f"{url}?request={request_token}" if request_token else url
 
     # --- Public survey links ---
     @router.get("/public/surveys/{survey_id}")
@@ -91,15 +102,41 @@ def make_feedback_router(db, user_dep):
         if not survey:
             raise HTTPException(404, "Survey not found or inactive")
         tid = survey["user_id"]
+
+        # A link sent from a Customer Profile contains a private token. Resolve
+        # the customer server-side so a public form response is recorded against
+        # the right CRM customer without exposing or trusting a customer id.
+        delivery = None
+        if payload.request_token:
+            delivery = await db.feedback_deliveries.find_one({
+                "token": payload.request_token,
+                "survey_id": payload.survey_id,
+                "user_id": tid,
+            })
+            if not delivery:
+                raise HTTPException(404, "Survey link is invalid or expired")
+        # Compatibility for an already-deployed survey page while it receives
+        # the token-aware update. The recipient's phone is still required by
+        # that page and lets us safely match the most recent delivery.
+        if not delivery and payload.customer_phone:
+            delivery = await db.feedback_deliveries.find_one(
+                {
+                    "survey_id": payload.survey_id,
+                    "user_id": tid,
+                    "customer_phone": payload.customer_phone.strip(),
+                },
+                sort=[("created_at", -1)],
+            )
+
         now = datetime.utcnow()
         nps_score = _derive_nps_score(survey, payload.answers, payload.nps_score)
         doc = {
             "_id": str(uuid.uuid4()),
             "user_id": tid,
             "survey_id": payload.survey_id,
-            "customer_id": payload.customer_id,
-            "customer_name": payload.customer_name,
-            "customer_phone": payload.customer_phone,
+            "customer_id": delivery.get("customer_id") if delivery else payload.customer_id,
+            "customer_name": delivery.get("customer_name", "") if delivery else payload.customer_name,
+            "customer_phone": delivery.get("customer_phone", "") if delivery else payload.customer_phone,
             "nps_score": nps_score,
             "nps_category": _nps_category(nps_score) if nps_score is not None else None,
             "answers": payload.answers,
@@ -111,6 +148,11 @@ def make_feedback_router(db, user_dep):
         await db.feedback_surveys.update_one(
             {"_id": payload.survey_id}, {"$inc": {"response_count": 1}}
         )
+        if delivery:
+            await db.feedback_deliveries.update_one(
+                {"_id": delivery["_id"]},
+                {"$set": {"responded_at": now, "response_id": doc["_id"]}},
+            )
         return _ser(doc)
 
     # --- Surveys ---
@@ -262,6 +304,89 @@ def make_feedback_router(db, user_dep):
             {"_id": payload.survey_id}, {"$inc": {"response_count": 1}}
         )
         return _ser(doc)
+
+    @router.get("/customer/{customer_id}")
+    async def get_customer_responses(customer_id: str, user=user_dep):
+        tid = _tid(user)
+        customer = await db.customers.find_one({"_id": customer_id, "user_id": tid})
+        if not customer:
+            raise HTTPException(404, "Customer not found")
+        docs = await db.feedback_responses.find(
+            {"user_id": tid, "customer_id": customer_id},
+            sort=[("created_at", -1)],
+        ).to_list(100)
+        return [_ser(d) for d in docs]
+
+    @router.post("/surveys/{survey_id}/send")
+    async def send_survey_link(survey_id: str, payload: Dict[str, str], user=user_dep):
+        """Send one customer a private, tracked feedback link over WhatsApp."""
+        tid = _tid(user)
+        customer_id = (payload.get("customer_id") or "").strip()
+        if not customer_id:
+            raise HTTPException(400, "Customer is required")
+
+        survey = await db.feedback_surveys.find_one({"_id": survey_id, "user_id": tid, "active": True})
+        if not survey:
+            raise HTTPException(404, "Active survey not found")
+        customer = await db.customers.find_one({"_id": customer_id, "user_id": tid})
+        if not customer:
+            raise HTTPException(404, "Customer not found")
+        phone = (customer.get("phone_number") or customer.get("phone") or "").strip()
+        if not phone:
+            raise HTTPException(400, "This customer does not have a WhatsApp phone number")
+
+        now = datetime.utcnow()
+        token = uuid.uuid4().hex
+        url = _public_survey_url(survey_id, token)
+        delivery = {
+            "_id": str(uuid.uuid4()),
+            "token": token,
+            "user_id": tid,
+            "survey_id": survey_id,
+            "customer_id": customer_id,
+            "customer_name": customer.get("name", ""),
+            "customer_phone": phone,
+            "url": url,
+            "status": "sending",
+            "created_at": now,
+        }
+        await db.feedback_deliveries.insert_one(delivery)
+
+        business = await db.users.find_one({"_id": tid}, {"business_name": 1, "owner_name": 1}) or {}
+        business_name = business.get("business_name") or business.get("owner_name") or "us"
+        greeting = customer.get("name") or "there"
+        message = (
+            f"Hi {greeting}, thank you for choosing {business_name}. "
+            f"We would appreciate your feedback: {url}"
+        )
+        try:
+            from whatsapp_service import get_whatsapp_service
+            result = await get_whatsapp_service(db).send_message(
+                user_id=tid,
+                to_number=phone,
+                message=message,
+                customer_name=customer.get("name"),
+                send_context="feedback_survey",
+            )
+        except Exception as exc:
+            await db.feedback_deliveries.update_one(
+                {"_id": delivery["_id"]}, {"$set": {"status": "failed", "error": str(exc), "updated_at": datetime.utcnow()}},
+            )
+            logger.exception("Failed to send feedback survey")
+            raise HTTPException(502, "Could not send the survey over WhatsApp")
+
+        if result.get("status") in {"error", "limit_reached"}:
+            detail = result.get("message") or "WhatsApp did not accept the survey message"
+            await db.feedback_deliveries.update_one(
+                {"_id": delivery["_id"]}, {"$set": {"status": "failed", "error": detail, "updated_at": datetime.utcnow()}},
+            )
+            raise HTTPException(429 if result.get("status") == "limit_reached" else 502, detail)
+
+        await db.feedback_deliveries.update_one(
+            {"_id": delivery["_id"]},
+            {"$set": {"status": "sent", "sent_at": datetime.utcnow(), "message_id": result.get("message_id")}},
+        )
+        return {"status": "sent", "url": url, "delivery_id": delivery["_id"], "message_id": result.get("message_id")}
 
     @router.delete("/responses/{response_id}")
     async def delete_response(response_id: str, user=user_dep):

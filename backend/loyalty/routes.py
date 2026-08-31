@@ -47,6 +47,11 @@ class LoyaltySettingsUpdate(BaseModel):
     tiers: Optional[List[Dict]] = None
     enabled: Optional[bool] = None
 
+
+class ManualPointsAdd(BaseModel):
+    points: float
+    reason: str = "manual"
+
 def make_loyalty_router(db, user_dep):
     router = APIRouter(prefix="/loyalty", tags=["loyalty"])
 
@@ -101,16 +106,21 @@ def make_loyalty_router(db, user_dep):
         settings = await _get_settings(tid)
         tiers = settings.get("tiers", DEFAULT_TIERS)
 
-        # Get or create member
+        # Get or create a member. Customer Profile passes an id from the
+        # `customers` collection; older web flows may still pass a contact id.
+        customer = await db.customers.find_one({"_id": payload.customer_id, "user_id": tid})
+        if not customer:
+            customer = await db.contacts.find_one({"_id": payload.customer_id, "user_id": tid})
+        if not customer:
+            raise HTTPException(404, "Customer not found")
+
         member = await db.loyalty_members.find_one({"customer_id": payload.customer_id, "user_id": tid})
         if not member:
-            # Try to get customer name from contacts
-            contact = await db.contacts.find_one({"_id": payload.customer_id, "user_id": tid})
             member = {
                 "_id": str(uuid.uuid4()),
                 "user_id": tid,
                 "customer_id": payload.customer_id,
-                "customer_name": contact.get("name", "") if contact else "",
+                "customer_name": customer.get("name", ""),
                 "points": 0,
                 "lifetime_points": 0,
                 "tier": tiers[0]["name"] if tiers else "Bronze",
@@ -178,5 +188,58 @@ def make_loyalty_router(db, user_dep):
             "total_active_points": round(total_points, 0),
             "members_by_tier": by_tier,
         }
+
+    # Mobile Customer Profile convenience endpoints.  These keep the mobile
+    # app deliberately small while reusing the same ledger used by the web.
+    # They must be registered after the named routes above, so `/settings`,
+    # `/members`, and `/transactions` are never captured as customer ids.
+    @router.get("/{customer_id}")
+    async def get_customer_points(customer_id: str, user=user_dep):
+        tid = _tid(user)
+        customer = await db.customers.find_one({"_id": customer_id, "user_id": tid})
+        if not customer:
+            customer = await db.contacts.find_one({"_id": customer_id, "user_id": tid})
+        if not customer:
+            raise HTTPException(404, "Customer not found")
+
+        settings = await _get_settings(tid)
+        member = await db.loyalty_members.find_one({"customer_id": customer_id, "user_id": tid})
+        if not member:
+            tiers = settings.get("tiers", DEFAULT_TIERS)
+            return {
+                "customer_id": customer_id,
+                "customer_name": customer.get("name", ""),
+                "points": 0,
+                "lifetime_points": 0,
+                "tier": tiers[0]["name"] if tiers else "Bronze",
+                "tiers": tiers,
+            }
+
+        result = _ser(member)
+        result["tiers"] = settings.get("tiers", DEFAULT_TIERS)
+        return result
+
+    @router.get("/{customer_id}/history")
+    async def get_customer_history(customer_id: str, user=user_dep):
+        tid = _tid(user)
+        docs = await db.loyalty_transactions.find(
+            {"customer_id": customer_id, "user_id": tid},
+            sort=[("created_at", -1)],
+        ).to_list(100)
+        return [_ser(d) for d in docs]
+
+    @router.post("/{customer_id}/add")
+    async def add_customer_points(customer_id: str, payload: ManualPointsAdd, user=user_dep):
+        if payload.points <= 0 or payload.points > 1_000_000:
+            raise HTTPException(400, "Points must be between 1 and 1,000,000")
+        return await add_transaction(
+            PointsTransaction(
+                customer_id=customer_id,
+                type="adjustment",
+                points=payload.points,
+                reason=payload.reason.strip() or "manual",
+            ),
+            user,
+        )
 
     return router
