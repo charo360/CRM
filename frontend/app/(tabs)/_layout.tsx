@@ -107,12 +107,6 @@ export default function TabsLayout() {
                     color: '#25D366'
                   }] : []),
                   {
-                    icon: 'search-outline',
-                    label: 'Group Scout',
-                    onPress: () => router.push('../group-scout' as any),
-                    color: '#25D366'
-                  },
-                  {
                     icon: 'analytics-outline',
                     label: 'Follow-up Analytics',
                     onPress: () => router.push('../analytics' as any),
