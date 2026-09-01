@@ -8011,6 +8011,10 @@ async def add_product_images(
         "images_added": len(new_image_urls),
         "total_images": len(existing_images) + len(new_image_urls),
         "failed_uploads": len(upload_errors),
+        # Return the saved public URLs so the mobile app can display the newly
+        # uploaded photo immediately without waiting to reload the catalog.
+        "images": all_images,
+        "image_url": all_images[0],
     }
 
 @api_router.delete("/products/{product_id}/images/{image_index}")

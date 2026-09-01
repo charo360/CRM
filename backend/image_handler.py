@@ -7,6 +7,7 @@ import os
 import uuid
 import aiofiles
 import base64
+import time
 from pathlib import Path
 from typing import List, Dict, Optional
 from fastapi import UploadFile
@@ -84,7 +85,7 @@ class ImageUploadHandler:
             aws_secret = os.environ.get('AWS_SECRET_ACCESS_KEY')
             aws_bucket = os.environ.get('AWS_BUCKET_NAME')
             
-            if aws_key and aws_secret and aws_bucket:
+            if aws_key and aws_secret and aws_bucket and S3Handler.should_attempt_upload():
                 try:
                     logger.info("Using AWS S3 for product image")
                     base64_data = base64.b64encode(content).decode('utf-8')
@@ -97,6 +98,7 @@ class ImageUploadHandler:
                     # An expired or rotated AWS key must not stop merchants
                     # uploading product photos when the configured backup image
                     # service is healthy.
+                    S3Handler.pause_upload_attempts()
                     logger.warning("S3 product image upload failed; trying backup storage: %s", s3_error)
             
             # Check ImgBB
@@ -214,7 +216,7 @@ class ImageUploadHandler:
             aws_secret = os.environ.get('AWS_SECRET_ACCESS_KEY')
             aws_bucket = os.environ.get('AWS_BUCKET_NAME')
             
-            if aws_key and aws_secret and aws_bucket:
+            if aws_key and aws_secret and aws_bucket and S3Handler.should_attempt_upload():
                 try:
                     logger.info("AWS S3 Configured, using S3 for upload")
                     # Convert upload file to base64 for S3Handler compatible input
@@ -231,6 +233,7 @@ class ImageUploadHandler:
                         "filename": file.filename
                     }
                 except Exception as s3_error:
+                    S3Handler.pause_upload_attempts()
                     logger.warning("S3 image upload failed; trying configured backup storage: %s", s3_error)
 
             # Check if Cloudinary is configured
@@ -364,6 +367,20 @@ class ImageUploadHandler:
 
 class S3Handler:
     """Handle AWS S3 Image Uploads"""
+
+    # Avoid making every merchant wait on the same broken credentials. A single
+    # failed upload switches the process to the configured backup host for a
+    # short period, then retries S3 later in case credentials were fixed.
+    _retry_s3_after = 0.0
+    _s3_backoff_seconds = 600
+
+    @classmethod
+    def should_attempt_upload(cls) -> bool:
+        return time.monotonic() >= cls._retry_s3_after
+
+    @classmethod
+    def pause_upload_attempts(cls) -> None:
+        cls._retry_s3_after = time.monotonic() + cls._s3_backoff_seconds
     
     @staticmethod
     def get_s3_client():
@@ -378,7 +395,12 @@ class S3Handler:
                 region_name=region,
                 config=Config(
                     signature_version='s3v4',
-                    s3={'addressing_style': 'virtual'}
+                    s3={'addressing_style': 'virtual'},
+                    # A bad key should fail quickly and allow the backup image
+                    # service to handle the upload instead of blocking the app.
+                    connect_timeout=3,
+                    read_timeout=8,
+                    retries={'max_attempts': 1, 'mode': 'standard'},
                 ),
             )
         except Exception as e:

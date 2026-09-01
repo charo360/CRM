@@ -466,11 +466,25 @@ export default function ProductCatalogModal({
                 } else if (product) {
                     setAddingPhotos(true);
                     try {
-                        await productsAPI.addProductImages(product.id, result.assets);
-                        await fetchProducts();
-                        // Refresh selected product
-                        const updated = await productsAPI.getProduct(product.id);
-                        setSelectedProduct(updated);
+                        const response = await productsAPI.addProductImages(product.id, result.assets);
+                        const existingImages = product.images?.length
+                            ? product.images
+                            : (product.image_url ? [product.image_url] : []);
+                        const savedImages = Array.isArray(response?.images) && response.images.length
+                            ? response.images
+                            : existingImages;
+                        const updatedProduct: Product = {
+                            ...product,
+                            image_url: response?.image_url || savedImages[0] || product.image_url,
+                            images: savedImages,
+                        };
+
+                        // The upload endpoint already returns the public image
+                        // URLs. Update the detail screen immediately instead of
+                        // waiting for a catalog reload and a second API request.
+                        setProducts(prev => prev.map(item => item.id === product.id ? updatedProduct : item));
+                        setSelectedProduct(updatedProduct);
+                        setActiveImageIndex(Math.min(existingImages.length, Math.max(savedImages.length - 1, 0)));
                     } catch (error: unknown) {
                         Alert.alert('Could not add photos', errorMessage(error, 'Please try again.'));
                     } finally {
