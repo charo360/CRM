@@ -85,13 +85,19 @@ class ImageUploadHandler:
             aws_bucket = os.environ.get('AWS_BUCKET_NAME')
             
             if aws_key and aws_secret and aws_bucket:
-                logger.info("Using AWS S3 for product image")
-                base64_data = base64.b64encode(content).decode('utf-8')
-                s3_url = await S3Handler.upload_file(base64_data, file.filename)
-                return {
-                    "image_url": s3_url,
-                    "filename": file.filename
-                }
+                try:
+                    logger.info("Using AWS S3 for product image")
+                    base64_data = base64.b64encode(content).decode('utf-8')
+                    s3_url = await S3Handler.upload_file(base64_data, file.filename)
+                    return {
+                        "image_url": s3_url,
+                        "filename": file.filename
+                    }
+                except Exception as s3_error:
+                    # An expired or rotated AWS key must not stop merchants
+                    # uploading product photos when the configured backup image
+                    # service is healthy.
+                    logger.warning("S3 product image upload failed; trying backup storage: %s", s3_error)
             
             # Check ImgBB
             imgbb_key = os.environ.get('IMGBB_API_KEY')
@@ -209,20 +215,23 @@ class ImageUploadHandler:
             aws_bucket = os.environ.get('AWS_BUCKET_NAME')
             
             if aws_key and aws_secret and aws_bucket:
-                logger.info("AWS S3 Configured, using S3 for upload")
-                # Convert upload file to base64 for S3Handler compatible input
-                await file.seek(0)
-                content = await file.read()
-                base64_data = base64.b64encode(content).decode('utf-8')
-                
-                # Upload to S3
-                s3_url = await S3Handler.upload_file(base64_data, file.filename)
-                
-                return {
-                    "image_url": s3_url,
-                    "public_id": str(uuid.uuid4()), # Mock public_id for S3
-                    "filename": file.filename
-                }
+                try:
+                    logger.info("AWS S3 Configured, using S3 for upload")
+                    # Convert upload file to base64 for S3Handler compatible input
+                    await file.seek(0)
+                    content = await file.read()
+                    base64_data = base64.b64encode(content).decode('utf-8')
+
+                    # Upload to S3
+                    s3_url = await S3Handler.upload_file(base64_data, file.filename)
+
+                    return {
+                        "image_url": s3_url,
+                        "public_id": str(uuid.uuid4()), # Mock public_id for S3
+                        "filename": file.filename
+                    }
+                except Exception as s3_error:
+                    logger.warning("S3 image upload failed; trying configured backup storage: %s", s3_error)
 
             # Check if Cloudinary is configured
             cloud_name = os.environ.get('CLOUDINARY_CLOUD_NAME', '').strip()
