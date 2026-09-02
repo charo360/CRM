@@ -6,7 +6,6 @@ import {
     StyleSheet,
     TouchableOpacity,
     ScrollView,
-    Image,
     Alert,
     ActivityIndicator,
     TextInput,
@@ -16,6 +15,7 @@ import {
     Share,
 } from 'react-native';
 import { EdgeInsets, SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { productsAPI, settingsAPI, storefrontAPI } from '../context/api';
@@ -83,6 +83,9 @@ export default function ProductCatalogModal({
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
     const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
     const [subscriptionPlan, setSubscriptionPlan] = useState('free');
+    // A photo the merchant just picked is already on the device, so show that
+    // file instead of waiting to download the copy the server stored remotely.
+    const [localImages, setLocalImages] = useState<Record<string, string>>({});
 
     const maxProducts = planLimits.products;
     const maxImages = planLimits.images;
@@ -222,6 +225,21 @@ export default function ProductCatalogModal({
                 setUploading(true);
                 try {
                     const response = await productsAPI.uploadProducts(result.assets);
+                    // Show the photos straight from the device rather than
+                    // re-downloading them. The server drops any file it could
+                    // not store, so the lists only line up when every upload
+                    // succeeded — otherwise a product would show another
+                    // product's photo.
+                    if (response.products?.length === result.assets.length) {
+                        setLocalImages(current => {
+                            const next = { ...current };
+                            response.products.forEach((product: { id: string }, index: number) => {
+                                next[product.id] = result.assets[index].uri;
+                            });
+                            return next;
+                        });
+                    }
+
                     // Refresh product list first
                     await fetchProducts();
 
@@ -421,7 +439,18 @@ export default function ProductCatalogModal({
         }
     };
 
+    // The picked file lives in a cache the OS can clear, so fall back to the
+    // stored copy as soon as it stops loading.
+    const forgetLocalImage = (productId: string) => {
+        setLocalImages(current => {
+            if (!current[productId]) return current;
+            const { [productId]: _dropped, ...rest } = current;
+            return rest;
+        });
+    };
+
     const getImageUri = (product: Product) => {
+        if (localImages[product.id]) return localImages[product.id];
         if (product.image_url) {
             if (product.image_url.startsWith('http')) return product.image_url;
             return `${process.env.EXPO_PUBLIC_BACKEND_URL}${product.image_url}`;
@@ -567,7 +596,14 @@ export default function ProductCatalogModal({
                 activeOpacity={0.7}
             >
                 {imageUri ? (
-                    <Image source={{ uri: imageUri }} style={styles.productImage} resizeMode="cover" />
+                    <Image
+                        source={{ uri: imageUri }}
+                        style={styles.productImage}
+                        contentFit="cover"
+                        transition={200}
+                        cachePolicy="memory-disk"
+                        onError={() => forgetLocalImage(product.id)}
+                    />
                 ) : (
                     <View style={[styles.productImage, styles.noImagePlaceholder]}>
                         <Ionicons name="image-outline" size={32} color="#3A4A5C" />
@@ -771,7 +807,7 @@ export default function ProductCatalogModal({
                                             {addMode ? (
                                                 pendingAssets.map((img, idx) => (
                                                     <View key={idx} style={styles.editThumbnailWrapper}>
-                                                        <Image source={{ uri: img.uri }} style={styles.editThumbnail} />
+                                                        <Image source={{ uri: img.uri }} style={styles.editThumbnail} transition={200} />
                                                         <TouchableOpacity
                                                             style={styles.deleteThumbnailBtn}
                                                             onPress={() => handleDeletePhoto(null, idx)}
@@ -783,7 +819,7 @@ export default function ProductCatalogModal({
                                             ) : (
                                                 selectedProduct!.images!.map((img, idx) => (
                                                     <View key={idx} style={styles.editThumbnailWrapper}>
-                                                        <Image source={{ uri: resolveImageUrl(img) }} style={styles.editThumbnail} />
+                                                        <Image source={{ uri: resolveImageUrl(img) }} style={styles.editThumbnail} transition={200} cachePolicy="memory-disk" />
                                                         <TouchableOpacity
                                                             style={styles.deleteThumbnailBtn}
                                                             onPress={() => handleDeletePhoto(selectedProduct!, idx)}
@@ -837,7 +873,9 @@ export default function ProductCatalogModal({
                                                 key={idx}
                                                 source={{ uri: resolveImageUrl(img) }}
                                                 style={[styles.detailImage, { width: SCREEN_WIDTH }]}
-                                                resizeMode="cover"
+                                                contentFit="cover"
+                                                transition={200}
+                                                cachePolicy="memory-disk"
                                             />
                                         ))}
                                     </ScrollView>
@@ -1264,7 +1302,7 @@ const styles = StyleSheet.create({
     productImage: {
         width: '100%',
         height: CARD_WIDTH * 0.85,
-        backgroundColor: '#0D1B2A',
+        backgroundColor: '#16273D',
     },
     noImagePlaceholder: {
         justifyContent: 'center',
@@ -1473,7 +1511,7 @@ const styles = StyleSheet.create({
     detailImage: {
         width: '100%',
         height: 280,
-        backgroundColor: '#0D1B2A',
+        backgroundColor: '#16273D',
     },
     detailBody: {
         padding: 20,
