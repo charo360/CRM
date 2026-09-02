@@ -28,6 +28,18 @@ _ONLINE_PROVIDERS = ("paystack",)
 
 logger = logging.getLogger(__name__)
 
+# Businesses that sell time rather than goods: the shop takes a booking
+# instead of putting things in a cart. Everything else — including
+# restaurants and bakeries, which do sell items from a menu — keeps the cart,
+# so no existing shop changes behaviour.
+_BOOKING_BUSINESS_TYPES = frozenset({
+    "salon", "spa", "fitness", "healthcare", "services", "tech",
+    "repair", "cleaning", "events", "rental", "hotel",
+})
+
+# Types whose booking is a stay across dates rather than a slot on one day.
+_STAY_BUSINESS_TYPES = frozenset({"rental", "hotel"})
+
 # Kept short and concrete so a buyer can pick one without reading a policy.
 _REPORT_REASONS = frozenset({
     "scam", "not_delivered", "counterfeit", "offensive", "other",
@@ -204,10 +216,28 @@ def _public_product(product: dict) -> Dict[str, Any]:
         "in_stock": bool(product.get("in_stock", True)),
         "stock_quantity": product.get("stock_quantity"),
         "unit": _text(product.get("unit"), 80),
+        "duration": product.get("duration"),
         "moq": max(1, int(product.get("moq") or 1)),
         "pricing_tiers": product.get("pricing_tiers") or [],
         "variants": product.get("variants") or [],
         "modifier_groups": product.get("modifier_groups") or [],
+    }
+
+
+def _business_type(user_doc: dict) -> str:
+    settings = user_doc.get("settings") or {}
+    return _text(settings.get("business_type") or user_doc.get("business_type"), 40).lower()
+
+
+def _shop_mode(user_doc: dict) -> Dict[str, Any]:
+    """Whether this shop sells goods from a cart or takes bookings."""
+    business_type = _business_type(user_doc)
+    if business_type not in _BOOKING_BUSINESS_TYPES:
+        return {"mode": "shop", "booking_kind": None, "item_label": "Products"}
+    return {
+        "mode": "booking",
+        "booking_kind": "stay" if business_type in _STAY_BUSINESS_TYPES else "appointment",
+        "item_label": "Services",
     }
 
 
@@ -257,6 +287,7 @@ def _store_payload(user_doc: dict, products: Iterable[dict]) -> Dict[str, Any]:
         "business_name": _text(user_doc.get("business_name") or "Zilo Store", 120),
         "currency": _currency(user_doc),
         "whatsapp": _public_whatsapp(user_doc),
+        **_shop_mode(user_doc),
         "products": [_public_product(product) for product in products],
         "checkout": {
             "online_payment_available": bool(provider),
@@ -582,6 +613,58 @@ async def remind_unconfirmed_storefront_orders(db, older_than_minutes: int = 120
     return reminded
 
 
+async def _announce_new_booking(db, business: dict, booking: dict) -> None:
+    """Tell the merchant a booking came in, and confirm it to the customer.
+
+    The customer has proposed a time rather than taken a confirmed slot, so
+    say so plainly. Best effort on both sides: neither message is worth
+    failing a booking over.
+    """
+    when = _text(booking.get("date"), 10)
+    if booking.get("checkout_date"):
+        when = f"{when} to {_text(booking.get('checkout_date'), 10)}"
+    elif booking.get("time"):
+        when = f"{when} at {_text(booking.get('time'), 5)}"
+    service = _text(booking.get("service_name"), 120) or "a service"
+    reference = _text(booking.get("booking_number"), 40)
+    customer_name = _text(booking.get("customer_name"), 120) or "A customer"
+    phone = _text(booking.get("customer_phone"), 40)
+
+    if phone:
+        try:
+            from whatsapp_service import get_whatsapp_service
+
+            await get_whatsapp_service(db).send_message(
+                user_id=str(business["_id"]),
+                to_number=phone,
+                message="\n".join([
+                    f"📅 *Booking request — {service}*",
+                    f"{when}",
+                    f"Reference: *{reference}*",
+                    "",
+                    "Thank you! We'll confirm this shortly.",
+                ]),
+                customer_name=customer_name,
+                send_context="storefront_booking",
+            )
+        except Exception as exc:
+            logger.error("[storefront] booking confirmation to customer failed: %s", exc)
+
+    push_token = business.get("push_token")
+    if push_token:
+        try:
+            from notification_service import get_notification_service
+
+            await get_notification_service().send_notification(
+                push_token=push_token,
+                title=f"📅 New booking — {service}",
+                body=f"{customer_name} — {when}",
+                data={"type": "storefront_booking", "booking_id": str(booking["_id"])},
+            )
+        except Exception as exc:
+            logger.error("[storefront] new booking push to merchant failed: %s", exc)
+
+
 def _public_origin() -> str:
     return (os.environ.get("FRONTEND_URL") or "https://zilo.pro").rstrip("/")
 
@@ -701,6 +784,107 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         if taken:
             return {"slug": base, "available": False, "reason": "taken"}
         return {"slug": base, "available": True, "reason": ""}
+
+    @api_router.post("/storefront/public/{slug}/bookings")
+    async def create_public_booking(slug: str, body: dict, background_tasks: BackgroundTasks):
+        """Take a booking from the shop, for businesses that sell time.
+
+        Availability is not modelled — the business keeps its hours as free
+        text — so the customer proposes a time and the business confirms, the
+        same as the WhatsApp conversation this replaces. The difference is it
+        lands as a real booking instead of a message to read and retype.
+        """
+        business = await _business_doc(db, slug)
+        if business.get("storefront_enabled", True) is False:
+            raise HTTPException(404, "Store not found")
+        shop = _shop_mode(business)
+        if shop["mode"] != "booking":
+            raise HTTPException(400, "This shop takes orders rather than bookings")
+
+        service_id = _text(body.get("service_id"), 80)
+        listable = {str(p["_id"]): p for p in await _listable_products(db, business)}
+        service = listable.get(service_id)
+        if not service:
+            raise HTTPException(409, "That service is no longer available")
+
+        date_val = _text(body.get("date"), 10)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_val):
+            raise HTTPException(400, "Choose a date for your booking")
+        time_val = _text(body.get("time"), 5)
+        checkout_date = _text(body.get("checkout_date"), 10)
+        if shop["booking_kind"] == "stay":
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", checkout_date) or checkout_date <= date_val:
+                raise HTTPException(400, "Choose a check-out date after the check-in date")
+            time_val = time_val or "00:00"
+        else:
+            if not re.fullmatch(r"[0-2]\d:[0-5]\d", time_val):
+                raise HTTPException(400, "Choose a time for your booking")
+            checkout_date = ""
+
+        customer = await _create_or_update_customer(db, str(business["_id"]), body)
+        duration = service.get("duration")
+        price = float(service.get("discount_price") or service.get("price") or 0)
+
+        # Mirror what the app writes for a booking made by hand, so one taken
+        # here is indistinguishable in the merchant's Bookings screen.
+        end_time = None
+        if duration and time_val:
+            try:
+                hours, minutes = map(int, time_val.split(":"))
+                total = hours * 60 + minutes + int(duration)
+                end_time = f"{total // 60:02d}:{total % 60:02d}"
+            except Exception:
+                end_time = None
+
+        nights = None
+        if checkout_date:
+            try:
+                from datetime import date as _date
+
+                nights = max((_date.fromisoformat(checkout_date) - _date.fromisoformat(date_val)).days, 0)
+            except Exception:
+                nights = None
+
+        now = datetime.utcnow()
+        booking = {
+            "_id": str(uuid.uuid4()),
+            "booking_number": "BK-" + secrets.token_hex(3).upper(),
+            "user_id": str(business["_id"]),
+            "customer_id": customer["_id"],
+            "customer_name": customer["name"],
+            "customer_phone": customer["phone_number"],
+            "service_id": service_id,
+            "service_name": _text(service.get("name"), 200),
+            "service_category": service.get("offering_type") or service.get("category"),
+            "staff_name": None,
+            "date": date_val,
+            "time": time_val,
+            "end_time": end_time,
+            "duration": duration,
+            "checkin_date": date_val if checkout_date else None,
+            "checkout_date": checkout_date or None,
+            "nights": nights,
+            "capacity": None,
+            "enrolled_count": 1,
+            "addons": [],
+            "total_price": price,
+            "status": "pending",
+            "payment_status": "unpaid",
+            "price": price,
+            "notes": _text(body.get("notes"), 1000),
+            "source": "storefront",
+            "created_at": now,
+        }
+        await db.bookings.insert_one(booking)
+        background_tasks.add_task(_announce_new_booking, db, business, booking)
+        return {
+            "booking_number": booking["booking_number"],
+            "service_name": booking["service_name"],
+            "date": booking["date"],
+            "time": booking["time"],
+            "checkout_date": booking["checkout_date"],
+            "status": booking["status"],
+        }
 
     @api_router.post("/storefront/public/{slug}/report")
     async def report_storefront(slug: str, body: dict, request: Request):
