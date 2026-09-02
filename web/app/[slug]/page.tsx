@@ -188,13 +188,26 @@ export default function PublicStorePage() {
   // the checkout closed.
   useEffect(() => {
     if (!orderMessage) return;
-    // Wait a frame: the checkout sheet is unmounting and the cart is emptying
-    // in this same render, and scrolling before that settles lands the buyer
-    // past the confirmation instead of on it.
-    const frame = requestAnimationFrame(() => {
-      confirmationRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-    return () => cancelAnimationFrame(frame);
+    let cancelled = false;
+    const bring = (behavior: ScrollBehavior) => {
+      const element = confirmationRef.current;
+      if (cancelled || !element) return;
+      const { top, bottom } = element.getBoundingClientRect();
+      if (top >= 0 && bottom <= window.innerHeight) return;
+      element.scrollIntoView({ behavior, block: "center" });
+    };
+    // The checkout sheet is unmounting and the cart emptying in this same
+    // render, so wait a frame before moving.
+    const frame = requestAnimationFrame(() => bring("smooth"));
+    // On a phone the keyboard used to fill the form dismisses after that,
+    // changing the viewport height and carrying the page away from where it
+    // just scrolled. Check once more and correct if it drifted.
+    const settle = setTimeout(() => bring("auto"), 700);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      clearTimeout(settle);
+    };
   }, [orderMessage]);
 
   function beginAdd(product: Product) {
