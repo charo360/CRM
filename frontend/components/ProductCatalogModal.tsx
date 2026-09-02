@@ -15,7 +15,7 @@ import {
     FlatList,
     Share,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { EdgeInsets, SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { productsAPI, settingsAPI, storefrontAPI } from '../context/api';
@@ -43,11 +43,20 @@ interface ProductCatalogModalProps {
     onClose: () => void;
 }
 
+// react-native's Modal opens a separate native window on Android, so the
+// SafeAreaProvider mounted at the app root never re-measures insets for it
+// (they read back as 0, letting content sit under the system nav bar). A
+// SafeAreaProvider nested inside the Modal fixes that, but useSafeAreaInsets
+// still needs a component under it to read the fresh value from.
+function ModalSafeAreaInsets({ children }: { children: (insets: EdgeInsets) => React.ReactElement }) {
+    const insets = useSafeAreaInsets();
+    return children(insets);
+}
+
 export default function ProductCatalogModal({
     visible,
     onClose,
 }: ProductCatalogModalProps) {
-    const insets = useSafeAreaInsets();
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -955,6 +964,9 @@ export default function ProductCatalogModal({
 
     return (
         <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+            <SafeAreaProvider>
+            <ModalSafeAreaInsets>
+            {(insets) => (
             <SafeAreaView style={styles.container}>
                 {/* Header */}
                 <View style={styles.header}>
@@ -1107,6 +1119,9 @@ export default function ProductCatalogModal({
 
                 {renderDetailModal()}
             </SafeAreaView>
+            )}
+            </ModalSafeAreaInsets>
+            </SafeAreaProvider>
         </Modal>
     );
 }
