@@ -84,6 +84,11 @@ export default function PublicStorePage() {
   const [orderMessage, setOrderMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState("scam");
+  const [reportDetail, setReportDetail] = useState("");
+  const [reportSent, setReportSent] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
 
   useEffect(() => {
     if (!slug) return;
@@ -128,6 +133,24 @@ export default function PublicStorePage() {
         .map((image) => resolveMediaUrl(image))
         .filter((image): image is string => Boolean(image))
     : [];
+
+  async function submitReport() {
+    if (!store) return;
+    setReportBusy(true);
+    try {
+      await fetch(`${API_BASE}/storefront/public/${encodeURIComponent(store.slug)}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reportReason, detail: reportDetail }),
+      });
+      setReportSent(true);
+    } catch {
+      // A failed report should not leave the buyer stuck in the dialog.
+      setReportSent(true);
+    } finally {
+      setReportBusy(false);
+    }
+  }
 
   function beginAdd(product: Product) {
     setSelected(product);
@@ -324,6 +347,56 @@ export default function PublicStorePage() {
         </section>
         <aside className="hidden h-fit rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:sticky lg:top-6 lg:block">{cart.length === 0 ? <><div className="flex items-center justify-between"><h2 className="font-bold">Your order</h2><span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">0 items</span></div><p className="py-8 text-center text-sm text-slate-500">Your bag is empty.</p></> : <CartSummary store={store} />}</aside>
       </div>
+
+      <footer className="mx-auto max-w-6xl px-4 pb-24 text-center sm:px-6 lg:pb-8">
+        <button type="button" onClick={() => { setReportOpen(true); setReportSent(false); }} className="text-xs text-slate-400 underline-offset-2 hover:text-slate-600 hover:underline">
+          Report this shop
+        </button>
+      </footer>
+
+      {reportOpen && <div className="fixed inset-0 z-50 grid place-items-end bg-slate-900/40 sm:place-items-center sm:p-4" onMouseDown={() => setReportOpen(false)}>
+        <div className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="flex items-center justify-between">
+            <h2 className="font-bold">{reportSent ? "Report sent" : "Report this shop"}</h2>
+            <button type="button" aria-label="Close" onClick={() => setReportOpen(false)} className="text-slate-400"><X /></button>
+          </div>
+          {reportSent ? (
+            <>
+              <p className="mt-3 text-sm text-slate-600">Thank you. Our team will review this shop.</p>
+              <button type="button" onClick={() => setReportOpen(false)} className="mt-5 w-full rounded-xl bg-brand-dark py-3 text-sm font-bold text-white">Close</button>
+            </>
+          ) : (
+            <>
+              <p className="mt-1 text-sm text-slate-500">Tell us what is wrong with {store.business_name}.</p>
+              <div className="mt-4 grid gap-2">
+                {[
+                  ["scam", "It looks like a scam"],
+                  ["not_delivered", "I paid and never received my order"],
+                  ["counterfeit", "The products are fake or not as described"],
+                  ["offensive", "Offensive or illegal content"],
+                  ["other", "Something else"],
+                ].map(([value, label]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    onClick={() => setReportReason(value)}
+                    className={`rounded-xl border px-4 py-3 text-left text-sm ${reportReason === value ? "border-brand-dark bg-emerald-50 text-brand-ink" : "border-slate-200 bg-white"}`}
+                  >{label}</button>
+                ))}
+              </div>
+              <textarea
+                value={reportDetail}
+                onChange={(event) => setReportDetail(event.target.value)}
+                placeholder="Anything else we should know (optional)"
+                className="mt-3 min-h-20 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm"
+              />
+              <button type="button" disabled={reportBusy} onClick={() => void submitReport()} className="mt-4 flex w-full items-center justify-center rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">
+                {reportBusy ? <Loader2 className="animate-spin" size={18} /> : "Send report"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>}
 
       {cart.length > 0 && <button type="button" onClick={() => setCartOpen(true)} className="fixed inset-x-4 bottom-4 z-40 flex items-center justify-between rounded-2xl bg-brand-dark px-5 py-4 text-sm font-bold text-white shadow-xl lg:hidden"><span className="flex items-center gap-2"><ShoppingBag size={18} />View cart <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">{itemCount}</span></span><span>{formatCurrency(total, store.currency)}</span></button>}
 

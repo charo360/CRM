@@ -16700,6 +16700,43 @@ async def admin_whatsapp_connections(_actor=Depends(get_admin_actor)):
     }
 
 
+@api_router.get("/admin/shop-reports")
+async def admin_shop_reports(reviewed: bool = False, _actor=Depends(get_admin_actor)):
+    """Shops buyers have flagged, newest first."""
+    reports = await db.shop_reports.find({"reviewed": bool(reviewed)}).sort("created_at", -1).to_list(200)
+    business_ids = list({r.get("business_id") for r in reports if r.get("business_id")})
+    businesses = await db.users.find(
+        {"_id": {"$in": business_ids}}, {"storefront_enabled": 1, "business_name": 1}
+    ).to_list(len(business_ids)) if business_ids else []
+    enabled_by_id = {str(b["_id"]): b.get("storefront_enabled", True) for b in businesses}
+    return {
+        "reports": [
+            {
+                "id": str(r["_id"]),
+                "business_id": r.get("business_id"),
+                "business_name": r.get("business_name") or "",
+                "slug": r.get("slug") or "",
+                "reason": r.get("reason") or "",
+                "detail": r.get("detail") or "",
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                "reviewed": bool(r.get("reviewed")),
+                "shop_enabled": enabled_by_id.get(str(r.get("business_id")), True),
+            }
+            for r in reports
+        ]
+    }
+
+
+@api_router.patch("/admin/shop-reports/{report_id}")
+async def admin_review_shop_report(report_id: str, body: dict, _actor=Depends(get_admin_actor)):
+    result = await db.shop_reports.update_one(
+        {"_id": report_id}, {"$set": {"reviewed": bool(body.get("reviewed", True))}}
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {"status": "ok"}
+
+
 @api_router.patch("/admin/users/{target_user_id}")
 async def admin_update_user(target_user_id: str, body: dict, _actor=Depends(get_admin_actor)):
     existing = await db.users.find_one({"_id": target_user_id})
@@ -16713,6 +16750,7 @@ async def admin_update_user(target_user_id: str, body: dict, _actor=Depends(get_
         "role",
         "subscription_active",
         "setup_complete",
+        "storefront_enabled",
     }
     update: dict = {}
     for k in allowed_keys:

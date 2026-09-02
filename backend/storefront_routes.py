@@ -28,6 +28,11 @@ _ONLINE_PROVIDERS = ("paystack",)
 
 logger = logging.getLogger(__name__)
 
+# Kept short and concrete so a buyer can pick one without reading a policy.
+_REPORT_REASONS = frozenset({
+    "scam", "not_delivered", "counterfeit", "offensive", "other",
+})
+
 # Shops sit at the site root (``/<slug>``), so a slug matching a page of the
 # web app would be shadowed by it and the shop would be unreachable. Every
 # current top-level route is listed, plus names likely to become one.
@@ -682,6 +687,44 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         if taken:
             return {"slug": base, "available": False, "reason": "taken"}
         return {"slug": base, "available": True, "reason": ""}
+
+    @api_router.post("/storefront/public/{slug}/report")
+    async def report_storefront(slug: str, body: dict, request: Request):
+        """Let a buyer flag a shop.
+
+        Public, because the people best placed to notice a bad shop are the
+        ones who got burned by it and have no account here.
+        """
+        business = await _business_doc(db, slug)
+        reason = _text(body.get("reason"), 64).lower()
+        if reason not in _REPORT_REASONS:
+            raise HTTPException(400, "Choose a reason for this report")
+
+        reporter_ip = _text(request.client.host if request.client else "", 64)
+        # One report per shop per reporter per day, so a single grudge cannot
+        # be made to look like a pattern of complaints.
+        if reporter_ip:
+            recent = await db.shop_reports.find_one({
+                "business_id": str(business["_id"]),
+                "reporter_ip": reporter_ip,
+                "created_at": {"$gt": datetime.utcnow() - timedelta(days=1)},
+            })
+            if recent:
+                return {"status": "received"}
+
+        await db.shop_reports.insert_one({
+            "_id": str(uuid.uuid4()),
+            "business_id": str(business["_id"]),
+            "slug": _text(slug, 80).lower(),
+            "business_name": _text(business.get("business_name"), 200),
+            "reason": reason,
+            "detail": _text(body.get("detail"), 1000),
+            "reporter_ip": reporter_ip,
+            "created_at": datetime.utcnow(),
+            "reviewed": False,
+        })
+        logger.warning("[storefront] shop reported: %s (%s)", slug, reason)
+        return {"status": "received"}
 
     @api_router.get("/storefront/public/{slug}")
     async def public_storefront(slug: str):

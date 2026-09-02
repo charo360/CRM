@@ -798,6 +798,18 @@ function adminHeaders(): Record<string, string> {
 
 // Admin API uses Next.js same-origin routes (/api/admin/...) so there are
 // no CORS or direct-backend reachability issues.
+export type AdminShopReport = {
+  id: string;
+  business_id: string;
+  business_name: string;
+  slug: string;
+  reason: string;
+  detail: string;
+  created_at: string | null;
+  reviewed: boolean;
+  shop_enabled: boolean;
+};
+
 export const adminApi = {
   login: async (password: string) => {
     const res = await fetch("/api/admin/auth/login", {
@@ -872,6 +884,32 @@ export const adminApi = {
       connected: number;
       refreshed_at: string;
     };
+  },
+  listShopReports: async (reviewed = false) => {
+    const res = await fetch(`/api/admin/shop-reports?reviewed=${reviewed}`, { headers: adminHeaders() });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as { reports: AdminShopReport[] };
+  },
+  reviewShopReport: async (id: string, reviewed = true) => {
+    const res = await fetch(`/api/admin/shop-reports/${id}`, {
+      method: "PATCH",
+      headers: { ...adminHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewed }),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as { status: string };
+  },
+  setShopEnabled: async (businessId: string, enabled: boolean) => {
+    const res = await fetch(`/api/admin/users/${businessId}`, {
+      method: "PATCH",
+      headers: { ...adminHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ storefront_enabled: enabled }),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(formatErrorBody(res, raw));
+    return (raw ? JSON.parse(raw) : {}) as { user: AdminUser };
   },
   updateUser: async (id: string, body: Partial<AdminUser>) => {
     const res = await fetch(`/api/admin/users/${id}`, {

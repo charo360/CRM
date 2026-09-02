@@ -12,6 +12,7 @@ import {
   Shield,
   ChevronRight,
   MessageCircle,
+  Flag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,7 @@ const NAV = [
   { href: "/admin", label: "Users", icon: Users, exact: true },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart2 },
   { href: "/admin/whatsapp", label: "WhatsApp", icon: MessageCircle },
+  { href: "/admin/shops", label: "Reported shops", icon: Flag },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 
