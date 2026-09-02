@@ -691,6 +691,12 @@ export const storefrontApi = {
     public_url: string;
     payment_provider: string;
     available_payment_providers: string[];
+    /** The link the business name alone would give. */
+    preferred_slug: string;
+    /** Another shop already holds that link, so this one fell back to a suffix. */
+    name_taken: boolean;
+    /** The business name matches a Zilo page, so it cannot be used as a link. */
+    name_reserved: boolean;
   }>("/storefront/me"),
   updateSettings: (body: { payment_provider?: string; enabled?: boolean }) =>
     api.put<{

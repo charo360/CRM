@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import { storefrontAPI } from '../../context/api';
 
 export default function RegisterScreen() {
   const { phone } = useLocalSearchParams<{ phone: string }>();
@@ -22,6 +23,32 @@ export default function RegisterScreen() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { register } = useAuth();
+  const [linkCheck, setLinkCheck] = useState<{ slug: string; available: boolean; reason: string } | null>(null);
+
+  // The business name becomes the public shop link, so say up front when
+  // another shop already holds it — the name still works, but the link would
+  // carry extra characters.
+  useEffect(() => {
+    const name = businessName.trim();
+    if (name.length < 3) {
+      setLinkCheck(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await storefrontAPI.checkNameAvailable(name);
+        if (!cancelled) setLinkCheck(result);
+      } catch {
+        // Never let a link hint get in the way of signing up.
+        if (!cancelled) setLinkCheck(null);
+      }
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [businessName]);
 
   const handleRegister = async () => {
     if (!businessName.trim()) {
@@ -75,6 +102,15 @@ export default function RegisterScreen() {
                   placeholderTextColor="#666"
                 />
               </View>
+              {linkCheck && linkCheck.reason !== 'invalid' && (
+                <Text style={linkCheck.available ? styles.linkHintOk : styles.linkHintWarn}>
+                  {linkCheck.available
+                    ? `Your shop link will be zilo.pro/${linkCheck.slug}`
+                    : linkCheck.reason === 'reserved'
+                      ? `"${linkCheck.slug}" can't be used as a shop link. Another name gives you a shorter one.`
+                      : `Another shop already uses zilo.pro/${linkCheck.slug}, so yours would have extra characters. You can still use this name.`}
+                </Text>
+              )}
             </View>
 
             <View style={styles.inputGroup}>
@@ -166,6 +202,17 @@ const styles = StyleSheet.create({
   },
   inputGroup: {
     marginBottom: 20,
+  },
+  linkHintOk: {
+    marginTop: 8,
+    fontSize: 13,
+    color: '#25D366',
+  },
+  linkHintWarn: {
+    marginTop: 8,
+    fontSize: 13,
+    color: '#F0B429',
+    lineHeight: 18,
   },
   label: {
     fontSize: 14,

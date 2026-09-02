@@ -159,6 +159,7 @@ export default function ShopPage() {
   const [form, setForm] = useState<FormState>(() => initialForm(false, false));
 
   const [shopUrl, setShopUrl] = useState("");
+  const [linkNotice, setLinkNotice] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [uploadingAI, setUploadingAI] = useState(false);
   const [aiDescBusy, setAiDescBusy] = useState(false);
@@ -181,6 +182,15 @@ export default function ShopPage() {
       try {
         const store = await storefrontApi.mine();
         setShopUrl(store.public_url);
+        // Say why the link is not simply the business name, rather than
+        // leaving the merchant to wonder where the extra characters came from.
+        if (store.name_taken) {
+          setLinkNotice(`Another shop already uses “${store.preferred_slug}”, so yours has extra characters on the end. Change your business name to claim a shorter link.`);
+        } else if (store.name_reserved) {
+          setLinkNotice(`“${store.preferred_slug}” is a Zilo page, so it cannot be used as a shop link. Change your business name to claim a shorter one.`);
+        } else {
+          setLinkNotice("");
+        }
       } catch (error) {
         console.error("Could not load public catalog link", error);
       }
@@ -587,6 +597,7 @@ export default function ShopPage() {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-brand-ink">Your shop link</p>
           <p className="text-xs text-brand truncate">{shopUrl || "Sign in to see your shop URL"}</p>
+          {linkNotice && <p className="mt-1 text-xs text-amber-700">{linkNotice}</p>}
         </div>
         <button
           type="button"

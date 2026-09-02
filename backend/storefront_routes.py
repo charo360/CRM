@@ -99,6 +99,23 @@ async def _ensure_store_slug(db, user_doc: dict) -> str:
     raise HTTPException(503, "Could not create a public catalog link. Please try again.")
 
 
+async def _name_taken_notice(db, user_doc: dict, slug: str) -> Dict[str, Any]:
+    """Explain a link that is not simply the business name.
+
+    Two businesses can genuinely share a name, so the first to claim the link
+    keeps it and the others fall back to a suffix. Say so rather than leaving
+    the merchant to wonder where the extra characters came from.
+    """
+    base = _slug_base(_text(user_doc.get("business_name"), 100))
+    if slug == base:
+        return {"preferred_slug": base, "name_taken": False, "name_reserved": False}
+    return {
+        "preferred_slug": base,
+        "name_taken": base not in _RESERVED_SLUGS,
+        "name_reserved": base in _RESERVED_SLUGS,
+    }
+
+
 async def public_storefront_url_for_user(db, user_doc: dict) -> Optional[str]:
     """Return a business's public shop URL, creating its stable slug when needed.
 
@@ -416,6 +433,7 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             "public_url": f"{_public_origin()}/{slug}",
             "payment_provider": _selected_provider(business) or "manual",
             "available_payment_providers": _connected_providers(business),
+            **await _name_taken_notice(db, business, slug),
         }
 
     @api_router.put("/storefront/settings")
@@ -447,7 +465,28 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             "public_url": f"{_public_origin()}/{slug}",
             "payment_provider": _selected_provider(business) or "manual",
             "enabled": business.get("storefront_enabled", True),
+            **await _name_taken_notice(db, business, slug),
         }
+
+    @api_router.get("/storefront/name-available")
+    async def storefront_name_available(name: str = ""):
+        """Whether a business name is still free as a shop link.
+
+        Unauthenticated because it is used while signing up, before there is an
+        account. It reveals nothing private: every shop link is public already.
+        """
+        base = _slug_base(_text(name, 100))
+        if not _text(name, 100) or not _SLUG_RE.fullmatch(base):
+            return {"slug": base, "available": False, "reason": "invalid"}
+        if base in _RESERVED_SLUGS:
+            return {"slug": base, "available": False, "reason": "reserved"}
+        taken = await db.users.find_one(
+            {"$or": [{"public_store_slug": base}, {"public_store_slug_aliases": base}]},
+            {"_id": 1},
+        )
+        if taken:
+            return {"slug": base, "available": False, "reason": "taken"}
+        return {"slug": base, "available": True, "reason": ""}
 
     @api_router.get("/storefront/public/{slug}")
     async def public_storefront(slug: str):

@@ -522,6 +522,19 @@ export const storefrontAPI = {
       public_url: string;
       payment_provider: string;
       available_payment_providers: string[];
+      preferred_slug: string;
+      name_taken: boolean;
+      name_reserved: boolean;
+    };
+  },
+
+  // Used during sign-up, before there is an account to authenticate with.
+  checkNameAvailable: async (name: string) => {
+    const response = await apiClient.get('/storefront/name-available', { params: { name } });
+    return response.data as {
+      slug: string;
+      available: boolean;
+      reason: '' | 'invalid' | 'reserved' | 'taken';
     };
   },
 };
