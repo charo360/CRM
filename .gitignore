@@ -47,6 +47,10 @@ check_*.py
 debug_*.py
 verify_*.py
 _test_*.py
+# ...but backend/tests is a real suite, not a scratch script, and
+# belongs in the repo like any other source.
+!backend/tests/
+!backend/tests/test_*.py
 _body.json
 *.ps1
 *.bat
