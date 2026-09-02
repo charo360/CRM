@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AlertCircle, Check, ChevronDown, Loader2, MessageCircle, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
 import { API_BASE } from "@/lib/api";
@@ -92,6 +92,7 @@ export default function PublicStorePage() {
   const [reportDetail, setReportDetail] = useState("");
   const [reportSent, setReportSent] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
+  const confirmationRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!slug) return;
@@ -154,6 +155,47 @@ export default function PublicStorePage() {
       setReportBusy(false);
     }
   }
+
+  const overlayOpen = Boolean(selected) || cartOpen || checkoutOpen || reportOpen;
+
+  function closeOverlays() {
+    setSelected(null);
+    setCartOpen(false);
+    setCheckoutOpen(false);
+    setReportOpen(false);
+    setFormError("");
+  }
+
+  // A product opens over the shop rather than as its own page, so the phone's
+  // back button would leave the shop entirely instead of returning to the
+  // list. Add a history entry while anything is open and close it on back.
+  useEffect(() => {
+    if (!overlayOpen) return;
+    window.history.pushState({ zilo: "overlay" }, "");
+    const handlePop = () => closeOverlays();
+    window.addEventListener("popstate", handlePop);
+    return () => {
+      window.removeEventListener("popstate", handlePop);
+      // Closed from the page instead of the back button, so drop the entry
+      // that was added or the next back press would do nothing.
+      if (window.history.state?.zilo === "overlay") window.history.back();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayOpen]);
+
+  // The order confirmation, and the WhatsApp button in it, sit above whatever
+  // the buyer was looking at. Take them to it rather than leaving them where
+  // the checkout closed.
+  useEffect(() => {
+    if (!orderMessage) return;
+    // Wait a frame: the checkout sheet is unmounting and the cart is emptying
+    // in this same render, and scrolling before that settles lands the buyer
+    // past the confirmation instead of on it.
+    const frame = requestAnimationFrame(() => {
+      confirmationRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [orderMessage]);
 
   function beginAdd(product: Product) {
     setSelected(product);
@@ -313,7 +355,7 @@ export default function PublicStorePage() {
 
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-7 pb-28 sm:px-6 lg:grid-cols-[1fr_340px] lg:pb-7">
         <section>
-          {orderMessage && <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          {orderMessage && <div ref={confirmationRef} className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
             <div className="flex gap-3"><Check className="mt-0.5 shrink-0" size={18} />{orderMessage}</div>
             {store.whatsapp && <a
               href={`https://wa.me/${store.whatsapp}?text=${encodeURIComponent(`Hi ${store.business_name}, I just placed order ${orderNumber} on your shop.`)}`}
