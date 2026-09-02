@@ -9,6 +9,7 @@ import logging
 from PIL import Image
 import io
 import base64
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,15 @@ class ProductOrganizer:
             return self._fallback_analysis(image_path)
         
         try:
-            # Load image
-            img = Image.open(image_path)
+            # A product image can be local during development or a public image
+            # URL after it has been stored in cloud storage.
+            if image_path.startswith(("https://", "http://")):
+                async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                    image_response = await client.get(image_path)
+                    image_response.raise_for_status()
+                img = Image.open(io.BytesIO(image_response.content))
+            else:
+                img = Image.open(image_path)
             
             # Convert image to base64 for OpenAI Vision API
             buffered = io.BytesIO()

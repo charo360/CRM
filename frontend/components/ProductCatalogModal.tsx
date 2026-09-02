@@ -15,7 +15,7 @@ import {
     FlatList,
     Share,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { productsAPI, settingsAPI, storefrontAPI } from '../context/api';
@@ -47,6 +47,7 @@ export default function ProductCatalogModal({
     visible,
     onClose,
 }: ProductCatalogModalProps) {
+    const insets = useSafeAreaInsets();
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -70,6 +71,7 @@ export default function ProductCatalogModal({
     const [activeImageIndex, setActiveImageIndex] = useState(0);
     const [addingPhotos, setAddingPhotos] = useState(false);
     const [aiFailedBanner, setAiFailedBanner] = useState(false);
+    const [suggestingDetails, setSuggestingDetails] = useState(false);
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
     const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
     const [subscriptionPlan, setSubscriptionPlan] = useState('free');
@@ -498,6 +500,27 @@ export default function ProductCatalogModal({
         }
     };
 
+    const handleSuggestProductDetails = async () => {
+        if (!selectedProduct || addMode) return;
+
+        setSuggestingDetails(true);
+        try {
+            const suggestions = await productsAPI.suggestProductDetails(selectedProduct.id);
+            if (suggestions.name) setEditName(suggestions.name);
+            if (suggestions.category) setEditCategory(suggestions.category);
+            if (suggestions.description) setEditDescription(suggestions.description);
+            if (suggestions.suggested_price !== undefined && suggestions.suggested_price !== null) {
+                setEditPrice(String(suggestions.suggested_price));
+            }
+            setAiFailedBanner(false);
+            Alert.alert('Suggestions added', 'Review the name, price, category and description before saving.');
+        } catch (error: unknown) {
+            Alert.alert('AI suggestions unavailable', errorMessage(error, 'Please enter the product details manually.'));
+        } finally {
+            setSuggestingDetails(false);
+        }
+    };
+
     const handleDeletePhoto = async (product: Product | null, imageIndex: number) => {
         if (addMode) {
             setPendingAssets(prev => prev.filter((_, i) => i !== imageIndex));
@@ -598,14 +621,31 @@ export default function ProductCatalogModal({
                     {editMode ? (
                         // ---- EDIT / ADD FORM ----
                         <View style={styles.editForm}>
-                            {/* AI failure banner */}
+                            {/* Fresh photo uploads are manual by default; AI is optional. */}
                             {aiFailedBanner && (
                                 <View style={styles.aiBanner}>
-                                    <Ionicons name="warning-outline" size={16} color="#92400e" />
+                                    <Ionicons name="information-circle-outline" size={16} color="#92400e" />
                                     <Text style={styles.aiBannerText}>
-                                        AI couldn't analyse this image — please fill in the name, price and category.
+                                        Add your product details yourself, or ask AI for suggestions below.
                                     </Text>
                                 </View>
+                            )}
+                            {!addMode && selectedProduct && (
+                                <TouchableOpacity
+                                    style={[styles.aiSuggestBtn, suggestingDetails && { opacity: 0.65 }]}
+                                    onPress={handleSuggestProductDetails}
+                                    disabled={suggestingDetails}
+                                >
+                                    {suggestingDetails ? (
+                                        <ActivityIndicator size="small" color="#25D366" />
+                                    ) : (
+                                        <Ionicons name="sparkles-outline" size={20} color="#25D366" />
+                                    )}
+                                    <View style={styles.aiSuggestCopy}>
+                                        <Text style={styles.aiSuggestTitle}>Suggest details with AI</Text>
+                                        <Text style={styles.aiSuggestHint}>Optional — AI is used only when you tap this.</Text>
+                                    </View>
+                                </TouchableOpacity>
                             )}
                             <View style={styles.formGroup}>
                                 <Text style={styles.formLabel}>Product Name *</Text>
@@ -1003,7 +1043,10 @@ export default function ProductCatalogModal({
                         <Text style={styles.loadingText}>Loading products...</Text>
                     </View>
                 ) : filteredProducts.length > 0 ? (
-                    <ScrollView style={styles.content} contentContainerStyle={styles.gridContainer}>
+                    <ScrollView
+                        style={styles.content}
+                        contentContainerStyle={[styles.gridContainer, { paddingBottom: Math.max(110, insets.bottom + 92) }]}
+                    >
                         <View style={styles.productGrid}>
                             {filteredProducts.map(renderProductCard)}
                         </View>
@@ -1040,7 +1083,7 @@ export default function ProductCatalogModal({
 
                 {/* FABs */}
                 {products.length > 0 && (
-                    <View style={styles.fabsContainer}>
+                    <View style={[styles.fabsContainer, { bottom: Math.max(24, insets.bottom + 20) }]}>
                         <TouchableOpacity
                             style={[styles.fab, styles.fabGallery, uploading && { opacity: 0.6 }]}
                             onPress={() => handleUploadProducts('library')}
@@ -1677,6 +1720,30 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: '500',
         lineHeight: 18,
+    },
+    aiSuggestBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        backgroundColor: '#102338',
+        borderWidth: 1,
+        borderColor: '#1A5A3A',
+        borderRadius: 12,
+        padding: 14,
+        marginBottom: 18,
+    },
+    aiSuggestCopy: {
+        flex: 1,
+    },
+    aiSuggestTitle: {
+        color: '#FFFFFF',
+        fontSize: 15,
+        fontWeight: '700',
+    },
+    aiSuggestHint: {
+        color: '#9AB0C2',
+        fontSize: 12,
+        marginTop: 3,
     },
     editThumbnailsContainer: {
         flexDirection: 'row',

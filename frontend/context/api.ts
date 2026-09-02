@@ -364,9 +364,7 @@ export const suppliersAPI = {
 // ============ Products API Methods ============
 
 export const productsAPI = {
-  /**
-   * Upload multiple product images with AI analysis
-   */
+  /** Upload product photos and create reviewable product drafts. */
   uploadProducts: async (files: any[]) => {
     const formData = new FormData();
 
@@ -384,8 +382,14 @@ export const productsAPI = {
       } as any);
     });
 
-    // Use 120s timeout — AI image analysis can take a while
+    // Allow time for remote image storage on slower mobile connections.
     return await uploadFetch('/products/upload', formData, 120000);
+  },
+
+  /** Get optional AI suggestions for one existing product photo. */
+  suggestProductDetails: async (productId: string) => {
+    const response = await apiClient.post(`/products/${productId}/suggest-details`);
+    return response.data;
   },
 
   /**

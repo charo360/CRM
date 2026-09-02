@@ -14593,6 +14593,35 @@ async def reanalyze_products(user = Depends(get_current_user)):
     
     return {"status": "success", "updated": updated, "total": len(products), "results": results}
 
+@api_router.post("/products/{product_id}/suggest-details")
+async def suggest_product_details(product_id: str, user = Depends(get_current_user)):
+    """Return optional AI product suggestions without changing the product."""
+    business_id = user.get("business_id", user["_id"])
+    product = await db.products.find_one({"_id": product_id, "user_id": business_id})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    image_url = product.get("image_url") or next(iter(product.get("images", [])), "")
+    image_url = S3Handler.resolve_accessible_url(image_url)
+    if not image_url.startswith(("https://", "http://")):
+        raise HTTPException(status_code=400, detail="Add a product photo before requesting AI suggestions")
+
+    organizer = get_organizer()
+    if not organizer.vision_available:
+        raise HTTPException(status_code=503, detail="AI suggestions are temporarily unavailable")
+
+    analysis = await organizer.analyze_product_image(image_url)
+    if not analysis or analysis.get("name", "").startswith("Product "):
+        raise HTTPException(status_code=502, detail="AI could not prepare suggestions for this photo. Please enter the details manually.")
+
+    return {
+        "name": analysis.get("name", ""),
+        "category": analysis.get("category", "Other"),
+        "description": analysis.get("description", ""),
+        "suggested_price": analysis.get("suggested_price"),
+        "confidence": analysis.get("confidence", 0),
+    }
+
 @api_router.post("/products/upload")
 async def upload_products(
     files: List[UploadFile] = File(...),
@@ -14627,25 +14656,31 @@ async def upload_products(
     if not successful_uploads:
         raise HTTPException(status_code=400, detail="No images could be saved")
     
-    # Analyze images with AI
-    organizer = get_organizer()
-    image_paths = [
-        upload_handler.get_image_path(img['filename']) 
-        for img in successful_uploads
+    # Product photos are normally stored on a remote image host in production.
+    # Do not try to reopen those remote files as local paths: that made the
+    # camera/gallery quick-add route fail after a successful image upload.
+    # Create a reviewable product in every case, and only run local AI analysis
+    # when a local image file is actually available.
+    ai_analyses = [
+        {"error": "Product photo is stored remotely; review the details before saving."}
+        for _ in successful_uploads
     ]
-    
-    # Get business context for AI
-    business_knowledge_data = user.get('business_knowledge', {})
-    business_context = ""
-    if business_knowledge_data:
-        parts = []
-        if business_knowledge_data.get('business_description'):
-            parts.append(f"Description: {business_knowledge_data['business_description']}")
-        if business_knowledge_data.get('products_services'):
-            parts.append(f"Products/Services: {business_knowledge_data['products_services']}")
-        business_context = " | ".join(parts)
-    
-    ai_analyses = await organizer.analyze_multiple_images([str(p) for p in image_paths], business_context=business_context)
+    local_uploads = []
+    for index, img in enumerate(successful_uploads):
+        image_path = upload_handler.get_image_path(img['filename'])
+        if image_path.is_file():
+            local_uploads.append((index, image_path))
+
+    if local_uploads:
+        try:
+            organizer = get_organizer()
+            local_analyses = await organizer.analyze_multiple_images(
+                [str(path) for _, path in local_uploads],
+            )
+            for (index, _), analysis in zip(local_uploads, local_analyses):
+                ai_analyses[index] = analysis
+        except Exception as analysis_error:
+            logging.warning("Product photo AI analysis skipped after upload: %s", analysis_error)
     
     # Create product documents
     products = []
