@@ -362,7 +362,7 @@ export default function PublicStorePage() {
               target="_blank"
               rel="noreferrer"
               className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-            ><MessageCircle size={16} />Message {store.business_name} on WhatsApp</a>}
+            ><MessageCircle size={16} />Continue on WhatsApp</a>}
           </div>}
           {store.products.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">This catalog does not have products available right now.</div> : filteredProducts.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">No products match your search.</div> : (
             <div className="columns-2 gap-2 sm:columns-3 sm:gap-3 xl:columns-4">
