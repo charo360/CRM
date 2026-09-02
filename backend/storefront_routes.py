@@ -136,6 +136,40 @@ async def public_storefront_url_for_user(db, user_doc: dict) -> Optional[str]:
     return f"{_public_origin()}/{slug}"
 
 
+def _catalog_limit(business: dict) -> Optional[int]:
+    """How many products this business may list publicly, or None for no cap."""
+    from entitlements import (
+        normalize_plan_id,
+        paid_subscription_active,
+        product_catalog_limit,
+        trial_window,
+    )
+
+    trial_active, _, _ = trial_window(business)
+    paid = paid_subscription_active(business)
+    if trial_active:
+        effective = "trial"
+    elif paid:
+        effective = normalize_plan_id(business.get("subscription_plan"))
+    else:
+        effective = "free"
+    return product_catalog_limit(effective, paid, trial_active)
+
+
+async def _listable_products(db, business: dict) -> List[dict]:
+    """The products a shop may show, newest first, capped to its plan.
+
+    A lapsed trial keeps its shop and its products, but lists only as many as
+    the free tier allows. The link a merchant shared over WhatsApp still
+    works — it just shows less until they subscribe.
+    """
+    products = await db.products.find(
+        {"user_id": business["_id"], "public_visible": {"$ne": False}}
+    ).sort("created_at", -1).to_list(250)
+    limit = _catalog_limit(business)
+    return products if limit is None else products[:limit]
+
+
 async def _business_doc(db, slug: str) -> dict:
     normalized = _text(slug, 80).lower()
     if not _SLUG_RE.fullmatch(normalized):
@@ -654,10 +688,7 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         business = await _business_doc(db, slug)
         if business.get("storefront_enabled", True) is False:
             raise HTTPException(404, "Store not found")
-        products = await db.products.find(
-            {"user_id": business["_id"], "public_visible": {"$ne": False}}
-        ).sort("created_at", -1).to_list(250)
-        return _store_payload(business, products)
+        return _store_payload(business, await _listable_products(db, business))
 
     @api_router.post("/storefront/public/{slug}/orders")
     async def create_public_order(slug: str, body: dict, request: Request, background_tasks: BackgroundTasks):
@@ -687,11 +718,12 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         # (for example, one small and one large).  Preserve those separate cart
         # lines while using the de-duplicated IDs only for the database lookup.
         product_ids = list(dict.fromkeys(product_id for product_id, _ in requested_items))
-        products = await db.products.find({
-            "_id": {"$in": product_ids}, "user_id": business["_id"],
-            "public_visible": {"$ne": False}, "in_stock": {"$ne": False},
-        }).to_list(len(product_ids))
-        products_by_id = {str(product["_id"]): product for product in products}
+        listable = {str(p["_id"]): p for p in await _listable_products(db, business)}
+        products_by_id = {
+            product_id: listable[product_id]
+            for product_id in product_ids
+            if product_id in listable and listable[product_id].get("in_stock") is not False
+        }
         if len(products_by_id) != len(product_ids):
             raise HTTPException(409, "One or more products are out of stock or no longer available")
         lines = [
