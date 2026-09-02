@@ -290,7 +290,7 @@ export default function PublicStorePage() {
                 const lowStock = product.in_stock && product.stock_quantity != null && product.stock_quantity > 0 && product.stock_quantity <= 5;
                 return <article key={product.id} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
                   <button type="button" onClick={() => beginAdd(product)} className="relative block w-full text-left" aria-label={`View ${product.name}`}>
-                    <div className="aspect-square overflow-hidden bg-slate-100 p-1.5">{image ? <img src={image} alt={product.name} className={`h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.03] ${!product.in_stock ? "opacity-50 grayscale" : ""}`} /> : <div className="grid h-full place-items-center text-slate-300"><ShoppingBag size={30} /></div>}</div>
+                    <div className="aspect-square overflow-hidden bg-gradient-to-b from-slate-100 to-slate-50">{image ? <img src={image} alt={product.name} className={`h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 ${!product.in_stock ? "opacity-50 grayscale" : ""}`} /> : <div className="grid h-full place-items-center text-slate-300"><ShoppingBag size={40} /></div>}</div>
                     {hasDiscount && <span className="absolute left-2 top-2 rounded-full bg-orange-500 px-2 py-0.5 text-[11px] font-bold text-white shadow-sm">-{savePercent}%</span>}
                     {!product.in_stock && <span className="absolute inset-0 grid place-items-center bg-slate-900/10"><span className="rounded-full bg-slate-900/80 px-3 py-1 text-xs font-semibold text-white">Out of stock</span></span>}
                   </button>
