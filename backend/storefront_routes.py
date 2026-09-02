@@ -1,7 +1,7 @@
 """Public Zilo catalog and checkout routes.
 
 The mobile product catalog remains the source of truth.  A business gets a
-stable public link (``/s/<slug>``) that shows only products it has not
+stable public link (``/<slug>``) that shows only products it has not
 explicitly hidden, creates normal Zilo orders, and starts the merchant's
 configured checkout.  Prices and stock are always recalculated on the server;
 the browser never supplies a price that is trusted.
@@ -25,6 +25,21 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 _PHONE_RE = re.compile(r"^[+0-9][0-9 .()\-]{6,31}$")
 _ONLINE_PROVIDERS = ("paystack",)
 
+# Shops sit at the site root (``/<slug>``), so a slug matching a page of the
+# web app would be shadowed by it and the shop would be unreachable. Every
+# current top-level route is listed, plus names likely to become one.
+_RESERVED_SLUGS = frozenset({
+    "about", "account", "admin", "api", "app", "auth", "blog", "cart",
+    "change-password", "checkout", "contact", "dashboard", "data-deletion",
+    "deal", "delete-account", "docs", "faq", "feedback", "help", "home",
+    "images", "invoice", "kds", "legal", "login", "logout", "media", "new",
+    "order", "orders", "plans", "portal", "pricing", "privacy",
+    "privacy-policy", "public", "quote", "register", "reset-password", "rex",
+    "robots", "search", "security", "settings", "shop", "shopify-install-complete",
+    "signup", "sitemap", "static", "status", "store", "support", "terms",
+    "terms-of-service", "uploads", "user", "users", "www",
+})
+
 
 def _text(value: Any, maximum: int = 200) -> str:
     return str(value or "").strip()[:maximum]
@@ -42,21 +57,45 @@ def _slug_base(value: str) -> str:
     return (normalized or "store")[:60].strip("-") or "store"
 
 
+async def _slug_is_free(db, candidate: str, user_id: Any) -> bool:
+    if candidate in _RESERVED_SLUGS:
+        return False
+    owner = await db.users.find_one(
+        {"$or": [{"public_store_slug": candidate}, {"public_store_slug_aliases": candidate}]},
+        {"_id": 1},
+    )
+    return owner is None or owner["_id"] == user_id
+
+
+async def _claim_slug(db, user_doc: dict, slug: str, keep_as_alias: str = "") -> str:
+    """Point a business at ``slug``, still answering on any link already shared."""
+    update: Dict[str, Any] = {"$set": {"public_store_slug": slug}}
+    if keep_as_alias and keep_as_alias != slug:
+        update["$addToSet"] = {"public_store_slug_aliases": keep_as_alias}
+    await db.users.update_one({"_id": user_doc["_id"]}, update)
+    user_doc["public_store_slug"] = slug
+    return slug
+
+
 async def _ensure_store_slug(db, user_doc: dict) -> str:
     existing = _text(user_doc.get("public_store_slug"), 80).lower()
+    base = _slug_base(_text(user_doc.get("business_name"), 100))
+
+    # Shops used to always get a random suffix, even when nothing else wanted
+    # the name. Take the plain business name once it is free, and answer on the
+    # old link too so anything already shared keeps working.
     if _SLUG_RE.fullmatch(existing):
+        if existing != base and _SLUG_RE.fullmatch(base) and await _slug_is_free(db, base, user_doc["_id"]):
+            return await _claim_slug(db, user_doc, base, keep_as_alias=existing)
         return existing
 
-    base = _slug_base(_text(user_doc.get("business_name"), 100))
+    if _SLUG_RE.fullmatch(base) and await _slug_is_free(db, base, user_doc["_id"]):
+        return await _claim_slug(db, user_doc, base)
+
     for _ in range(8):
         candidate = f"{base}-{secrets.token_hex(3)}"
-        duplicate = await db.users.find_one({"public_store_slug": candidate}, {"_id": 1})
-        if not duplicate:
-            await db.users.update_one(
-                {"_id": user_doc["_id"]}, {"$set": {"public_store_slug": candidate}}
-            )
-            user_doc["public_store_slug"] = candidate
-            return candidate
+        if await _slug_is_free(db, candidate, user_doc["_id"]):
+            return await _claim_slug(db, user_doc, candidate)
     raise HTTPException(503, "Could not create a public catalog link. Please try again.")
 
 
@@ -74,14 +113,16 @@ async def public_storefront_url_for_user(db, user_doc: dict) -> Optional[str]:
     if not business or business.get("storefront_enabled", True) is False:
         return None
     slug = await _ensure_store_slug(db, business)
-    return f"{_public_origin()}/s/{slug}"
+    return f"{_public_origin()}/{slug}"
 
 
 async def _business_doc(db, slug: str) -> dict:
     normalized = _text(slug, 80).lower()
     if not _SLUG_RE.fullmatch(normalized):
         raise HTTPException(404, "Store not found")
-    business = await db.users.find_one({"public_store_slug": normalized})
+    business = await db.users.find_one(
+        {"$or": [{"public_store_slug": normalized}, {"public_store_slug_aliases": normalized}]}
+    )
     if not business:
         raise HTTPException(404, "Store not found")
     return business
@@ -321,7 +362,7 @@ async def _start_online_payment(db, business: dict, order: dict) -> Dict[str, An
 
     _ensure_paystack_currency_matches_catalog(business, _text(order.get("currency") or "USD", 8))
     user_id = str(business["_id"])
-    callback = f"{_public_origin()}/s/{business['public_store_slug']}/checkout?order={order['public_token']}"
+    callback = f"{_public_origin()}/{business['public_store_slug']}/checkout?order={order['public_token']}"
     email = _text(order.get("customer_email"), 254)
     if not email:
         raise HTTPException(400, "An email address is required for secure online payment")
@@ -372,7 +413,7 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         slug = await _ensure_store_slug(db, business)
         return {
             "slug": slug,
-            "public_url": f"{_public_origin()}/s/{slug}",
+            "public_url": f"{_public_origin()}/{slug}",
             "payment_provider": _selected_provider(business) or "manual",
             "available_payment_providers": _connected_providers(business),
         }
@@ -403,7 +444,7 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         slug = await _ensure_store_slug(db, business)
         return {
             "slug": slug,
-            "public_url": f"{_public_origin()}/s/{slug}",
+            "public_url": f"{_public_origin()}/{slug}",
             "payment_provider": _selected_provider(business) or "manual",
             "enabled": business.get("storefront_enabled", True),
         }

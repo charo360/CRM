@@ -22,6 +22,22 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: TURBO_ROOT,
   },
+  async redirects() {
+    return [
+      {
+        // Shops used to live at /s/<slug> and merchants have already shared
+        // those links, so keep them pointing at the new root-level URL.
+        source: "/s/:slug/:path*",
+        destination: "/:slug/:path*",
+        permanent: true,
+      },
+      {
+        source: "/s/:slug",
+        destination: "/:slug",
+        permanent: true,
+      },
+    ];
+  },
   async rewrites() {
     return [
       {

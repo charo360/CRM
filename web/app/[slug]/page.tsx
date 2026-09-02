@@ -217,7 +217,7 @@ export default function PublicStorePage() {
         return;
       }
       if (result.payment_action === "payment_unavailable" && result.order_token) {
-        window.location.assign(`/s/${encodeURIComponent(store.slug)}/checkout?order=${encodeURIComponent(result.order_token)}&cancelled=1`);
+        window.location.assign(`/${encodeURIComponent(store.slug)}/checkout?order=${encodeURIComponent(result.order_token)}&cancelled=1`);
         return;
       }
       setCart([]);
