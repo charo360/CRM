@@ -211,6 +211,19 @@ def _public_product(product: dict) -> Dict[str, Any]:
     }
 
 
+def _public_whatsapp(user_doc: dict) -> Optional[str]:
+    """The shop's WhatsApp number, digits only, ready for a wa.me link.
+
+    Only once WhatsApp is actually linked: a button that opens a chat nobody
+    is watching is worse than no button. Publishing the number is the point
+    for these merchants — it is how their buyers already reach them.
+    """
+    if not _text((user_doc.get("whatsapp") or {}).get("instance_name"), 120):
+        return None
+    digits = re.sub(r"\D", "", _text(user_doc.get("phone_number"), 40))
+    return digits or None
+
+
 def _connected_providers(user_doc: dict) -> List[str]:
     return ["paystack"] if paystack_connected(user_doc) else []
 
@@ -243,6 +256,7 @@ def _store_payload(user_doc: dict, products: Iterable[dict]) -> Dict[str, Any]:
         "slug": user_doc.get("public_store_slug"),
         "business_name": _text(user_doc.get("business_name") or "Zilo Store", 120),
         "currency": _currency(user_doc),
+        "whatsapp": _public_whatsapp(user_doc),
         "products": [_public_product(product) for product in products],
         "checkout": {
             "online_payment_available": bool(provider),

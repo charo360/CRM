@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { AlertCircle, Check, ChevronDown, Loader2, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Loader2, MessageCircle, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import { formatCurrency, resolveMediaUrl } from "@/lib/utils";
 
@@ -30,6 +30,8 @@ type Store = {
   slug: string;
   business_name: string;
   currency: string;
+  /** Digits only, present only when the shop has WhatsApp linked. */
+  whatsapp?: string | null;
   products: Product[];
   checkout: { online_payment_available: boolean; provider?: string | null; payment_label: string };
 };
@@ -82,6 +84,7 @@ export default function PublicStorePage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [orderMessage, setOrderMessage] = useState("");
+  const [orderNumber, setOrderNumber] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [reportOpen, setReportOpen] = useState(false);
@@ -245,6 +248,7 @@ export default function PublicStorePage() {
       }
       setCart([]);
       setCheckoutOpen(false);
+      setOrderNumber(result.order_number || "");
       setOrderMessage(result.payment_action === "awaiting_mobile_money"
         ? "A payment prompt has been sent to your phone. Your order will confirm after payment."
         : `Order ${result.order_number} received. The business will confirm it shortly.`);
@@ -276,7 +280,14 @@ export default function PublicStorePage() {
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p></div></header>
+      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p>
+        {store.whatsapp && <a
+          href={`https://wa.me/${store.whatsapp}?text=${encodeURIComponent(`Hi ${store.business_name}, I have a question about your shop.`)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-4 inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/20"
+        ><MessageCircle size={16} />Message us on WhatsApp</a>}
+      </div></header>
 
       <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto max-w-6xl px-4 py-3 sm:px-6">
@@ -302,7 +313,15 @@ export default function PublicStorePage() {
 
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-7 pb-28 sm:px-6 lg:grid-cols-[1fr_340px] lg:pb-7">
         <section>
-          {orderMessage && <div className="mb-5 flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"><Check className="mt-0.5 shrink-0" size={18} />{orderMessage}</div>}
+          {orderMessage && <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+            <div className="flex gap-3"><Check className="mt-0.5 shrink-0" size={18} />{orderMessage}</div>
+            {store.whatsapp && <a
+              href={`https://wa.me/${store.whatsapp}?text=${encodeURIComponent(`Hi ${store.business_name}, I just placed order ${orderNumber} on your shop.`)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+            ><MessageCircle size={16} />Message {store.business_name} on WhatsApp</a>}
+          </div>}
           {store.products.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">This catalog does not have products available right now.</div> : filteredProducts.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">No products match your search.</div> : (
             <div className="columns-2 gap-2 sm:columns-3 sm:gap-3 xl:columns-4">
               {filteredProducts.map((product) => {
