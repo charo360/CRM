@@ -424,6 +424,12 @@ def test_a_trade_gets_its_own_word_for_a_booking(business_type, word):
     assert mode["booking_label"] == word
 
 
+def test_the_shop_shows_the_hours_the_merchant_wrote():
+    hours = "Tue-Sat 9am-6pm, closed Sunday"
+    assert sf._opening_hours({"business_knowledge": {"business_hours": hours}}) == hours
+    assert sf._opening_hours({}) == ""
+
+
 def test_a_salon_is_not_offered_a_table():
     mode = sf._shop_mode({"business_knowledge": {"business_type": "salon"}})
     assert mode["takes_table_bookings"] is False

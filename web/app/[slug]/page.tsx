@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { AlertCircle, CalendarDays, Check, ChevronDown, Loader2, MessageCircle, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
+import { AlertCircle, CalendarDays, Check, ChevronDown, Clock, Loader2, MessageCircle, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import { formatCurrency, resolveMediaUrl } from "@/lib/utils";
 
@@ -33,6 +33,8 @@ type Store = {
   currency: string;
   /** Digits only, present only when the shop has WhatsApp linked. */
   whatsapp?: string | null;
+  /** As the merchant wrote them; shown, never used to decide anything. */
+  opening_hours?: string;
   /** "shop" sells goods from a cart; "booking" sells time. */
   mode?: "shop" | "booking";
   booking_kind?: "appointment" | "stay" | null;
@@ -419,7 +421,7 @@ export default function PublicStorePage() {
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p>
+      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p>{store.opening_hours && <p className="mt-2 flex items-start gap-1.5 text-sm text-white/70"><Clock size={15} className="mt-0.5 shrink-0" />{store.opening_hours}</p>}
         {takesTables && <button
           type="button"
           onClick={() => { setBookingFor(TABLE); setBookingDate(""); setBookingTime(""); setBookingError(""); }}
@@ -557,6 +559,7 @@ export default function PublicStorePage() {
                 <input type="time" required value={bookingTime}
                   onChange={(event) => setBookingTime(event.target.value)}
                   className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+                {store.opening_hours && <span className="mt-1 block text-xs font-normal text-slate-500">Open {store.opening_hours}</span>}
               </label>
             )}
             {bookingFor === TABLE && <label className="text-sm font-medium">How many people

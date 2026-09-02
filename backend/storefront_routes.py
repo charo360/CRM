@@ -301,6 +301,16 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
     }
 
 
+def _opening_hours(user_doc: dict) -> str:
+    """The shop's hours, as the merchant wrote them.
+
+    Free text rather than a schedule, so it is shown and never used to decide
+    anything — but it stops a customer proposing a time the shop is shut.
+    """
+    knowledge = user_doc.get("business_knowledge") or {}
+    return _text(knowledge.get("business_hours"), 160)
+
+
 def _public_whatsapp(user_doc: dict) -> Optional[str]:
     """The shop's WhatsApp number, digits only, ready for a wa.me link.
 
@@ -347,6 +357,7 @@ def _store_payload(user_doc: dict, products: Iterable[dict]) -> Dict[str, Any]:
         "business_name": _text(user_doc.get("business_name") or "Zilo Store", 120),
         "currency": _currency(user_doc),
         "whatsapp": _public_whatsapp(user_doc),
+        "opening_hours": _opening_hours(user_doc),
         **_shop_mode(user_doc),
         "products": [_public_product(product) for product in products],
         "checkout": {
