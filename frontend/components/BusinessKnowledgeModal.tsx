@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import BusinessHoursEditor, { emptySchedule, summarise, WeekSchedule } from './BusinessHoursEditor';
 import { settingsAPI, apiClient } from '../context/api';
 
 interface BusinessKnowledgeModalProps {
@@ -179,6 +180,7 @@ export default function BusinessKnowledgeModal({
         faqs: '',
         special_offers: '',
     });
+    const [hoursSchedule, setHoursSchedule] = useState<WeekSchedule>(emptySchedule());
     const [creator, setCreator] = useState({
         creator_niche: '',
         creator_platforms: '',
@@ -229,6 +231,7 @@ export default function BusinessKnowledgeModal({
                     special_offers: data.special_offers || '',
                 });
                 setBusinessType(data.business_type || 'general');
+                setHoursSchedule(data.business_hours_schedule || emptySchedule());
                 setCreator({
                     creator_niche: data.creator_niche || '',
                     creator_platforms: data.creator_platforms || '',
@@ -312,6 +315,7 @@ export default function BusinessKnowledgeModal({
             faqs: faqList.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n'),
             special_offers: itemsToString(offerItems),
             business_type: businessType,
+            business_hours_schedule: hoursSchedule,
             ...creator,
             creator_platforms: selectedPlatforms.join(', '),
         };
@@ -630,18 +634,34 @@ export default function BusinessKnowledgeModal({
                         {/* Business Hours */}
                         <View style={styles.field}>
                             <Text style={styles.label}>{isCreator ? 'Response Hours' : 'Business Hours'}</Text>
-                            <Text style={styles.hint}>
-                                {isCreator
-                                    ? 'e.g. "I check DMs Mon-Fri 9am-5pm EAT"'
-                                    : 'e.g. "Mon-Sat 8am-6pm, Sunday closed"'}
-                            </Text>
-                            <TextInput
-                                style={styles.input}
-                                placeholder={isCreator ? 'When do you respond to DMs?' : 'When are you open?'}
-                                placeholderTextColor="#555"
-                                value={knowledge.business_hours}
-                                onChangeText={(text) => setKnowledge({ ...knowledge, business_hours: text })}
-                            />
+                            {isCreator ? (
+                                <>
+                                    <Text style={styles.hint}>e.g. &quot;I check DMs Mon-Fri 9am-5pm EAT&quot;</Text>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="When do you respond to DMs?"
+                                        placeholderTextColor="#555"
+                                        value={knowledge.business_hours}
+                                        onChangeText={(text) => setKnowledge({ ...knowledge, business_hours: text })}
+                                    />
+                                </>
+                            ) : (
+                                <>
+                                    <Text style={styles.hint}>
+                                        {knowledge.business_hours || 'Set the days and times you are open.'}
+                                    </Text>
+                                    <BusinessHoursEditor
+                                        schedule={hoursSchedule}
+                                        onChange={(next) => {
+                                            setHoursSchedule(next);
+                                            // Keep the readable summary in step; the shop and the
+                                            // AI both read business_hours, not the schedule.
+                                            const open = Object.values(next).some(Boolean);
+                                            if (open) setKnowledge((k) => ({ ...k, business_hours: summarise(next) }));
+                                        }}
+                                    />
+                                </>
+                            )}
                         </View>
 
                         {/* Delivery - only for non-creators */}

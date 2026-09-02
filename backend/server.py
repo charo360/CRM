@@ -2025,6 +2025,8 @@ class BusinessKnowledge(BaseModel):
     products_services: Optional[str] = None
     pricing_info: Optional[str] = None
     business_hours: Optional[str] = None
+    # Day-by-day opening times; business_hours stays the readable summary.
+    business_hours_schedule: Optional[dict] = None
     delivery_info: Optional[str] = None
     faqs: Optional[str] = None
     special_offers: Optional[str] = None
@@ -12088,7 +12090,7 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
     update_data = {}
     fields = [
         # Core fields
-        'products_services', 'pricing_info', 'business_hours', 'delivery_info',
+        'products_services', 'pricing_info', 'business_hours', 'business_hours_schedule', 'delivery_info',
         'faqs', 'special_offers', 'business_description', 'business_location', 'business_type', 'website_url',
         # Restaurant
         'restaurant_has_dine_in', 'restaurant_has_delivery', 'restaurant_has_takeout',
