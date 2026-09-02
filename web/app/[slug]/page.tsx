@@ -21,6 +21,7 @@ type Product = {
   in_stock: boolean;
   stock_quantity?: number | null;
   unit?: string;
+  duration?: number | null;
   moq?: number;
   pricing_tiers?: { min_qty: number; price: number }[];
   variants?: Variant[];
@@ -32,6 +33,10 @@ type Store = {
   currency: string;
   /** Digits only, present only when the shop has WhatsApp linked. */
   whatsapp?: string | null;
+  /** "shop" sells goods from a cart; "booking" sells time. */
+  mode?: "shop" | "booking";
+  booking_kind?: "appointment" | "stay" | null;
+  item_label?: string;
   products: Product[];
   checkout: { online_payment_available: boolean; provider?: string | null; payment_label: string };
 };
@@ -92,6 +97,12 @@ export default function PublicStorePage() {
   const [reportDetail, setReportDetail] = useState("");
   const [reportSent, setReportSent] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
+  const [bookingFor, setBookingFor] = useState<Product | null>(null);
+  const [bookingDate, setBookingDate] = useState("");
+  const [bookingTime, setBookingTime] = useState("");
+  const [bookingCheckout, setBookingCheckout] = useState("");
+  const [bookingBusy, setBookingBusy] = useState(false);
+  const [bookingError, setBookingError] = useState("");
   const confirmationRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -156,14 +167,59 @@ export default function PublicStorePage() {
     }
   }
 
-  const overlayOpen = Boolean(selected) || cartOpen || checkoutOpen || reportOpen;
+  const isBooking = store?.mode === "booking";
+  const isStay = store?.booking_kind === "stay";
+  const overlayOpen = Boolean(selected) || cartOpen || checkoutOpen || reportOpen || Boolean(bookingFor);
 
   function closeOverlays() {
     setSelected(null);
     setCartOpen(false);
     setCheckoutOpen(false);
     setReportOpen(false);
+    setBookingFor(null);
     setFormError("");
+  }
+
+  function beginBooking(service: Product) {
+    setBookingFor(service);
+    setBookingDate("");
+    setBookingTime("");
+    setBookingCheckout("");
+    setBookingError("");
+  }
+
+  async function submitBooking(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!store || !bookingFor) return;
+    setBookingBusy(true);
+    setBookingError("");
+    const data = new FormData(event.currentTarget);
+    try {
+      const response = await fetch(`${API_BASE}/storefront/public/${encodeURIComponent(store.slug)}/bookings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          service_id: bookingFor.id,
+          date: bookingDate,
+          time: isStay ? "00:00" : bookingTime,
+          checkout_date: isStay ? bookingCheckout : "",
+          customer_name: data.get("name"),
+          phone: data.get("phone"),
+          notes: data.get("notes"),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || "Could not request this booking.");
+      setBookingFor(null);
+      setOrderNumber(result.booking_number || "");
+      setOrderMessage(
+        `${result.booking_number} requested for ${result.date}${result.checkout_date ? ` to ${result.checkout_date}` : result.time ? ` at ${result.time}` : ""}. The business will confirm it shortly.`,
+      );
+    } catch (reason: unknown) {
+      setBookingError(reason instanceof Error ? reason.message : "Could not request this booking.");
+    } finally {
+      setBookingBusy(false);
+    }
   }
 
   // A product opens over the shop rather than as its own page, so the phone's
@@ -404,15 +460,20 @@ export default function PublicStorePage() {
                         <p className={`truncate text-base font-bold ${hasDiscount ? "text-orange-600" : "text-brand-dark"}`}>{formatCurrency(salePrice, store.currency)}</p>
                         {hasDiscount && <p className="shrink-0 text-[11px] text-slate-400 line-through">{formatCurrency(product.price, store.currency)}</p>}
                       </div>
-                      <button
+                      {isBooking ? <button
+                        type="button"
+                        disabled={!product.in_stock}
+                        onClick={() => beginBooking(product)}
+                        className="shrink-0 rounded-full bg-brand-dark px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                      >Book</button> : <button
                         type="button"
                         disabled={!product.in_stock}
                         onClick={() => beginAdd(product)}
                         aria-label={product.in_stock ? `Add ${product.name}` : "Out of stock"}
                         className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-dark text-white transition-colors hover:bg-brand disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-                      ><Plus size={16} /></button>
+                      ><Plus size={16} /></button>}
                     </div>
-                    {product.unit && <p className="mt-0.5 text-[11px] text-slate-400">{product.unit}</p>}
+                    {isBooking && product.duration ? <p className="mt-0.5 text-[11px] text-slate-400">{product.duration} min</p> : product.unit ? <p className="mt-0.5 text-[11px] text-slate-400">{product.unit}</p> : null}
                   </div>
                 </article>;
               })}
@@ -427,6 +488,53 @@ export default function PublicStorePage() {
           Report this shop
         </button>
       </footer>
+
+      {bookingFor && <div className="fixed inset-0 z-50 grid place-items-end bg-slate-900/40 sm:place-items-center sm:p-4" onMouseDown={() => setBookingFor(null)}>
+        <form onSubmit={submitBooking} className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="font-bold">{isStay ? "Request these dates" : "Request a time"}</h2>
+              <p className="mt-0.5 truncate text-sm text-slate-500">
+                {bookingFor.name}
+                {bookingFor.duration ? ` · ${bookingFor.duration} min` : ""}
+                {` · ${formatCurrency(displayedPrice(bookingFor), store.currency)}`}
+              </p>
+            </div>
+            <button type="button" aria-label="Close" onClick={() => setBookingFor(null)} className="shrink-0 text-slate-400"><X /></button>
+          </div>
+
+          {bookingError && <p className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{bookingError}</p>}
+
+          <div className="mt-4 grid gap-3">
+            <label className="text-sm font-medium">{isStay ? "Check in" : "Date"}
+              <input type="date" required value={bookingDate} min={new Date().toISOString().slice(0, 10)}
+                onChange={(event) => setBookingDate(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+            </label>
+            {isStay ? (
+              <label className="text-sm font-medium">Check out
+                <input type="date" required value={bookingCheckout} min={bookingDate || new Date().toISOString().slice(0, 10)}
+                  onChange={(event) => setBookingCheckout(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+              </label>
+            ) : (
+              <label className="text-sm font-medium">Preferred time
+                <input type="time" required value={bookingTime}
+                  onChange={(event) => setBookingTime(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+              </label>
+            )}
+            <input name="name" required placeholder="Your name" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+            <input name="phone" required type="tel" placeholder="Phone number with country code" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+            <textarea name="notes" placeholder="Anything they should know (optional)" className="min-h-16 rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+          </div>
+
+          <button disabled={bookingBusy} className="mt-5 flex w-full items-center justify-center rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">
+            {bookingBusy ? <Loader2 className="animate-spin" size={18} /> : "Request booking"}
+          </button>
+          <p className="mt-2 text-center text-xs text-slate-500">{store.business_name} will confirm your time. Nothing is charged now.</p>
+        </form>
+      </div>}
 
       {reportOpen && <div className="fixed inset-0 z-50 grid place-items-end bg-slate-900/40 sm:place-items-center sm:p-4" onMouseDown={() => setReportOpen(false)}>
         <div className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}>
@@ -504,7 +612,7 @@ export default function PublicStorePage() {
             {(selected.modifier_groups || []).map((group) => <div key={group.name} className="mt-6"><p className="text-sm font-semibold">{group.name}{group.required && <span className="text-rose-500"> *</span>}</p><div className="mt-2 grid gap-2">{group.options.map((option) => { const picked = modifiers.some((row) => row.group === group.name && row.option === option.name); return <button type="button" key={option.name} onClick={() => toggleModifier(group, option)} className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left text-sm ${picked ? "border-brand-dark bg-emerald-50 text-brand-ink" : "border-slate-200 bg-white"}`}><span>{option.name}</span><span>{Number(option.price_delta || 0) > 0 ? `+${formatCurrency(option.price_delta, store.currency)}` : ""}</span></button>; })}</div></div>)}
           </section>
         </div>
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-8px_24px_rgba(15,23,42,0.08)]"><div className="mx-auto flex max-w-2xl items-center gap-3"><div className="flex shrink-0 items-center rounded-xl border border-slate-200"><button type="button" onClick={() => setQuantity((current) => Math.max(Number(selected.moq || 1), current - 1))} className="p-3" aria-label="Reduce quantity"><Minus size={18} /></button><span className="w-9 text-center font-medium">{quantity}</span><button type="button" onClick={() => setQuantity((current) => current + 1)} className="p-3" aria-label="Increase quantity"><Plus size={18} /></button></div><button type="button" onClick={addSelected} className="flex-1 rounded-xl bg-brand-dark py-3.5 text-sm font-bold text-white">Add to cart · {formatCurrency(selectedPrice * quantity, store.currency)}</button></div>{formError && <p className="mx-auto mt-2 max-w-2xl text-sm text-rose-600">{formError}</p>}</div>
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-8px_24px_rgba(15,23,42,0.08)]"><div className="mx-auto flex max-w-2xl items-center gap-3">{isBooking ? <button type="button" onClick={() => { const service = selected; setSelected(null); beginBooking(service); }} className="flex-1 rounded-xl bg-brand-dark py-3.5 text-sm font-bold text-white">Book this · {formatCurrency(selectedPrice, store.currency)}</button> : <><div className="flex shrink-0 items-center rounded-xl border border-slate-200"><button type="button" onClick={() => setQuantity((current) => Math.max(Number(selected.moq || 1), current - 1))} className="p-3" aria-label="Reduce quantity"><Minus size={18} /></button><span className="w-9 text-center font-medium">{quantity}</span><button type="button" onClick={() => setQuantity((current) => current + 1)} className="p-3" aria-label="Increase quantity"><Plus size={18} /></button></div><button type="button" onClick={addSelected} className="flex-1 rounded-xl bg-brand-dark py-3.5 text-sm font-bold text-white">Add to cart · {formatCurrency(selectedPrice * quantity, store.currency)}</button></>}</div>{formError && <p className="mx-auto mt-2 max-w-2xl text-sm text-rose-600">{formError}</p>}</div>
       </div>}
 
       {checkoutOpen && <div className="fixed inset-0 z-50 grid place-items-end bg-slate-900/40 sm:place-items-center sm:p-4" onMouseDown={() => setCheckoutOpen(false)}><form onSubmit={submitOrder} className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h2 className="font-bold">Checkout</h2><button type="button" onClick={() => setCheckoutOpen(false)} className="text-slate-400"><X /></button></div><p className="mt-1 text-sm text-slate-500">{formatCurrency(total, store.currency)} · {store.business_name}</p>{formError && <p className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{formError}</p>}<div className="mt-4 grid gap-3"><input name="name" required placeholder="Your name" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/><input name="phone" required type="tel" placeholder="Phone number with country code" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/>{store.checkout.online_payment_available && <input name="email" required type="email" placeholder="Email for secure payment" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/>}<label className="text-sm font-medium">Delivery<select name="delivery_type" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm"><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></label><textarea name="delivery_address" placeholder="Delivery address (if needed)" className="min-h-20 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/><textarea name="notes" placeholder="Order note (optional)" className="min-h-16 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/></div><button disabled={submitting} className="mt-5 flex w-full items-center justify-center rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">{submitting ? <Loader2 className="animate-spin" size={18} /> : store.checkout.online_payment_available ? "Continue to secure payment" : "Place order"}</button></form></div>}
