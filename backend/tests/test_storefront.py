@@ -403,6 +403,27 @@ def test_a_restaurant_keeps_its_cart_and_can_also_hold_a_table():
     assert mode["takes_table_bookings"] is True
 
 
+@pytest.mark.parametrize(
+    "business_type, word",
+    [
+        ("salon", "Appointment"),
+        ("healthcare", "Appointment"),
+        ("spa", "Appointment"),
+        ("fitness", "Class"),
+        ("hotel", "Reservation"),
+        ("restaurant", "Reservation"),
+        ("cleaning", "Booking"),
+        ("rental", "Booking"),
+        ("retail", "Booking"),
+    ],
+)
+def test_a_trade_gets_its_own_word_for_a_booking(business_type, word):
+    # A hotel says reservation and a clinic says appointment; the customer
+    # should read the same word the merchant does.
+    mode = sf._shop_mode({"business_knowledge": {"business_type": business_type}})
+    assert mode["booking_label"] == word
+
+
 def test_a_salon_is_not_offered_a_table():
     mode = sf._shop_mode({"business_knowledge": {"business_type": "salon"}})
     assert mode["takes_table_bookings"] is False

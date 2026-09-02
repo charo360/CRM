@@ -38,6 +38,8 @@ type Store = {
   booking_kind?: "appointment" | "stay" | null;
   /** A restaurant sells from its menu and also holds tables. */
   takes_table_bookings?: boolean;
+  /** What this trade calls a booking: Appointment, Reservation, Class... */
+  booking_label?: string;
   item_label?: string;
   products: Product[];
   checkout: { online_payment_available: boolean; provider?: string | null; payment_label: string };
@@ -57,6 +59,12 @@ type CartLine = {
 // Stands in for a service when what is being booked is a table. Module level
 // so its identity survives a re-render — the dialog compares against it.
 const TABLE = { id: "", name: "Table booking", duration: null } as unknown as Product;
+
+/** "Appointment" -> "an appointment"; "Reservation" -> "a reservation". */
+function withArticle(word: string): string {
+  const lower = word.toLowerCase();
+  return `${/^[aeiou]/.test(lower) ? "an" : "a"} ${lower}`;
+}
 
 function displayedPrice(product: Product): number {
   return Number(product.discount_price ?? product.price ?? 0);
@@ -178,6 +186,7 @@ export default function PublicStorePage() {
   const isBooking = store?.mode === "booking";
   const isStay = store?.booking_kind === "stay";
   const takesTables = Boolean(store?.takes_table_bookings);
+  const bookingWord = store?.booking_label || "Booking";
   const overlayOpen = Boolean(selected) || cartOpen || checkoutOpen || reportOpen || Boolean(bookingFor) || tableOpen;
 
   function closeOverlays() {
@@ -509,7 +518,7 @@ export default function PublicStorePage() {
         <form onSubmit={submitBooking} className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}>
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h2 className="font-bold">{bookingFor === TABLE ? "Book a table" : isStay ? "Request these dates" : "Request a time"}</h2>
+              <h2 className="font-bold">{bookingFor === TABLE ? "Book a table" : isStay ? "Request these dates" : `Request ${withArticle(bookingWord)}`}</h2>
               <p className="mt-0.5 truncate text-sm text-slate-500">
                 {bookingFor === TABLE ? store.business_name : <>
                   {bookingFor.name}
@@ -553,7 +562,7 @@ export default function PublicStorePage() {
           </div>
 
           <button disabled={bookingBusy} className="mt-5 flex w-full items-center justify-center rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">
-            {bookingBusy ? <Loader2 className="animate-spin" size={18} /> : bookingFor === TABLE ? "Request table" : "Request booking"}
+            {bookingBusy ? <Loader2 className="animate-spin" size={18} /> : bookingFor === TABLE ? "Request table" : `Request ${bookingWord.toLowerCase()}`}
           </button>
           <p className="mt-2 text-center text-xs text-slate-500">{store.business_name} will confirm your time. Nothing is charged now.</p>
         </form>

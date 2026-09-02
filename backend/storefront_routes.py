@@ -40,6 +40,17 @@ _BOOKING_BUSINESS_TYPES = frozenset({
 # Types whose booking is a stay across dates rather than a slot on one day.
 _STAY_BUSINESS_TYPES = frozenset({"rental", "hotel"})
 
+# What each trade calls a booking. Mirrors the mobile app's business config so
+# a merchant's customers read the same word the merchant does.
+_BOOKING_LABELS = {
+    "salon": "Appointment", "services": "Appointment", "tech": "Appointment",
+    "healthcare": "Appointment", "spa": "Appointment", "repair": "Appointment",
+    "fitness": "Class",
+    "restaurant": "Reservation", "food": "Reservation", "bakery": "Reservation",
+    "hotel": "Reservation",
+    "rental": "Booking", "cleaning": "Booking", "events": "Booking",
+}
+
 # Businesses that do both: they sell from a menu and they hold a table. The
 # cart stays primary because ordering is what a link is mostly used for, with
 # a table booked alongside rather than instead.
@@ -255,6 +266,7 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
             "mode": "shop",
             "booking_kind": None,
             "item_label": "Products",
+            "booking_label": _BOOKING_LABELS.get(business_type, "Booking"),
             # A restaurant sells food and holds tables; one does not replace
             # the other, so it gets the cart plus a way to book.
             "takes_table_bookings": business_type in _TABLE_BUSINESS_TYPES,
@@ -263,6 +275,7 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
         "mode": "booking",
         "booking_kind": "stay" if business_type in _STAY_BUSINESS_TYPES else "appointment",
         "item_label": "Services",
+        "booking_label": _BOOKING_LABELS.get(business_type, "Booking"),
         "takes_table_bookings": False,
     }
 
@@ -669,6 +682,7 @@ async def _announce_new_booking(db, business: dict, booking: dict) -> None:
     elif booking.get("time"):
         when = f"{when} at {_text(booking.get('time'), 5)}"
     service = _text(booking.get("service_name"), 120) or "a service"
+    label = _BOOKING_LABELS.get(_business_type(business), "Booking")
     reference = _text(booking.get("booking_number"), 40)
     customer_name = _text(booking.get("customer_name"), 120) or "A customer"
     phone = _text(booking.get("customer_phone"), 40)
@@ -681,7 +695,7 @@ async def _announce_new_booking(db, business: dict, booking: dict) -> None:
                 user_id=str(business["_id"]),
                 to_number=phone,
                 message="\n".join([
-                    f"📅 *Booking request — {service}*",
+                    f"📅 *{label} request — {service}*",
                     f"{when}",
                     f"Reference: *{reference}*",
                     "",
@@ -700,7 +714,7 @@ async def _announce_new_booking(db, business: dict, booking: dict) -> None:
 
             await get_notification_service().send_notification(
                 push_token=push_token,
-                title=f"📅 New booking — {service}",
+                title=f"📅 New {label.lower()} — {service}",
                 body=f"{customer_name} — {when}",
                 data={"type": "storefront_booking", "booking_id": str(booking["_id"])},
             )
