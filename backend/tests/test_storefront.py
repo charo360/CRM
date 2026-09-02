@@ -396,6 +396,23 @@ def test_each_business_type_gets_the_right_kind_of_link(business_type, expected_
     assert mode["booking_kind"] == expected_kind
 
 
+def test_a_restaurant_keeps_its_cart_and_can_also_hold_a_table():
+    # Ordering and reserving are different jobs; one must not replace the other.
+    mode = sf._shop_mode({"business_knowledge": {"business_type": "restaurant"}})
+    assert mode["mode"] == "shop"
+    assert mode["takes_table_bookings"] is True
+
+
+def test_a_salon_is_not_offered_a_table():
+    mode = sf._shop_mode({"business_knowledge": {"business_type": "salon"}})
+    assert mode["takes_table_bookings"] is False
+
+
+def test_a_plain_shop_is_not_offered_a_table():
+    mode = sf._shop_mode({"business_knowledge": {"business_type": "retail"}})
+    assert mode["takes_table_bookings"] is False
+
+
 def test_the_type_comes_from_business_knowledge_not_the_signup_default():
     # settings.business_type is written once at sign-up as "retail" and never
     # updated; Business Knowledge is where the merchant actually chooses.
@@ -496,6 +513,58 @@ def test_a_shop_that_sells_goods_refuses_bookings(monkeypatch):
               "customer_name": "Ada", "phone": "+254700000000"},
     )
     assert response.status_code == 400
+
+
+def _restaurant_db():
+    place = business(
+        business_name="Corner Cafe",
+        business_knowledge={"business_type": "restaurant"},
+    )
+    return FakeDB(users=[place], products=[product()])
+
+
+def test_a_restaurant_books_a_table_without_naming_a_dish(monkeypatch):
+    _capture_pushes(monkeypatch)
+    db = _restaurant_db()
+    client = _booking_app(db)
+
+    response = client.post(
+        "/api/storefront/public/corner-cafe/bookings",
+        json={"date": _soon(), "time": "19:00", "party_size": 4,
+              "customer_name": "Ada", "phone": "+254700000000"},
+    )
+    assert response.status_code == 200
+
+    stored = db.bookings.docs[0]
+    assert stored["service_name"] == "Table booking"
+    assert stored["service_id"] == "manual", "the app reads 'manual' for a booking with no catalog entry"
+    assert stored["capacity"] == 4
+    assert stored["total_price"] == 0.0
+
+
+def test_a_table_needs_to_say_how_many_people(monkeypatch):
+    _capture_pushes(monkeypatch)
+    client = _booking_app(_restaurant_db())
+
+    response = client.post(
+        "/api/storefront/public/corner-cafe/bookings",
+        json={"date": _soon(), "time": "19:00", "party_size": "a few",
+              "customer_name": "Ada", "phone": "+254700000000"},
+    )
+    assert response.status_code == 400
+
+
+def test_a_party_size_cannot_be_absurd(monkeypatch):
+    _capture_pushes(monkeypatch)
+    db = _restaurant_db()
+    client = _booking_app(db)
+
+    client.post(
+        "/api/storefront/public/corner-cafe/bookings",
+        json={"date": _soon(), "time": "19:00", "party_size": 9999,
+              "customer_name": "Ada", "phone": "+254700000000"},
+    )
+    assert db.bookings.docs[0]["capacity"] == 50
 
 
 # --------------------------------------------------------------------------

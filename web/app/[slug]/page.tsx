@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { AlertCircle, Check, ChevronDown, Loader2, MessageCircle, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
+import { AlertCircle, CalendarDays, Check, ChevronDown, Loader2, MessageCircle, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import { formatCurrency, resolveMediaUrl } from "@/lib/utils";
 
@@ -36,6 +36,8 @@ type Store = {
   /** "shop" sells goods from a cart; "booking" sells time. */
   mode?: "shop" | "booking";
   booking_kind?: "appointment" | "stay" | null;
+  /** A restaurant sells from its menu and also holds tables. */
+  takes_table_bookings?: boolean;
   item_label?: string;
   products: Product[];
   checkout: { online_payment_available: boolean; provider?: string | null; payment_label: string };
@@ -51,6 +53,10 @@ type CartLine = {
   variant_name?: string;
   modifiers: SelectedModifier[];
 };
+
+// Stands in for a service when what is being booked is a table. Module level
+// so its identity survives a re-render — the dialog compares against it.
+const TABLE = { id: "", name: "Table booking", duration: null } as unknown as Product;
 
 function displayedPrice(product: Product): number {
   return Number(product.discount_price ?? product.price ?? 0);
@@ -103,6 +109,8 @@ export default function PublicStorePage() {
   const [bookingCheckout, setBookingCheckout] = useState("");
   const [bookingBusy, setBookingBusy] = useState(false);
   const [bookingError, setBookingError] = useState("");
+  const [tableOpen, setTableOpen] = useState(false);
+  const [partySize, setPartySize] = useState("2");
   const confirmationRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -169,7 +177,8 @@ export default function PublicStorePage() {
 
   const isBooking = store?.mode === "booking";
   const isStay = store?.booking_kind === "stay";
-  const overlayOpen = Boolean(selected) || cartOpen || checkoutOpen || reportOpen || Boolean(bookingFor);
+  const takesTables = Boolean(store?.takes_table_bookings);
+  const overlayOpen = Boolean(selected) || cartOpen || checkoutOpen || reportOpen || Boolean(bookingFor) || tableOpen;
 
   function closeOverlays() {
     setSelected(null);
@@ -177,6 +186,7 @@ export default function PublicStorePage() {
     setCheckoutOpen(false);
     setReportOpen(false);
     setBookingFor(null);
+    setTableOpen(false);
     setFormError("");
   }
 
@@ -199,7 +209,8 @@ export default function PublicStorePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          service_id: bookingFor.id,
+          service_id: bookingFor === TABLE ? "" : bookingFor.id,
+          party_size: bookingFor === TABLE ? Number(partySize) : undefined,
           date: bookingDate,
           time: isStay ? "00:00" : bookingTime,
           checkout_date: isStay ? bookingCheckout : "",
@@ -392,6 +403,11 @@ export default function PublicStorePage() {
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p>
+        {takesTables && <button
+          type="button"
+          onClick={() => { setBookingFor(TABLE); setBookingDate(""); setBookingTime(""); setBookingError(""); }}
+          className="mt-4 mr-2 inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/20"
+        ><CalendarDays size={16} />Book a table</button>}
         {store.whatsapp && <a
           href={`https://wa.me/${store.whatsapp}?text=${encodeURIComponent(`Hi ${store.business_name}, I have a question about your shop.`)}`}
           target="_blank"
@@ -493,11 +509,13 @@ export default function PublicStorePage() {
         <form onSubmit={submitBooking} className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}>
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h2 className="font-bold">{isStay ? "Request these dates" : "Request a time"}</h2>
+              <h2 className="font-bold">{bookingFor === TABLE ? "Book a table" : isStay ? "Request these dates" : "Request a time"}</h2>
               <p className="mt-0.5 truncate text-sm text-slate-500">
-                {bookingFor.name}
-                {bookingFor.duration ? ` · ${bookingFor.duration} min` : ""}
-                {` · ${formatCurrency(displayedPrice(bookingFor), store.currency)}`}
+                {bookingFor === TABLE ? store.business_name : <>
+                  {bookingFor.name}
+                  {bookingFor.duration ? ` · ${bookingFor.duration} min` : ""}
+                  {` · ${formatCurrency(displayedPrice(bookingFor), store.currency)}`}
+                </>}
               </p>
             </div>
             <button type="button" aria-label="Close" onClick={() => setBookingFor(null)} className="shrink-0 text-slate-400"><X /></button>
@@ -524,13 +542,18 @@ export default function PublicStorePage() {
                   className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
               </label>
             )}
+            {bookingFor === TABLE && <label className="text-sm font-medium">How many people
+              <input type="number" required min={1} max={50} value={partySize}
+                onChange={(event) => setPartySize(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
+            </label>}
             <input name="name" required placeholder="Your name" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
             <input name="phone" required type="tel" placeholder="Phone number with country code" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
             <textarea name="notes" placeholder="Anything they should know (optional)" className="min-h-16 rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />
           </div>
 
           <button disabled={bookingBusy} className="mt-5 flex w-full items-center justify-center rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">
-            {bookingBusy ? <Loader2 className="animate-spin" size={18} /> : "Request booking"}
+            {bookingBusy ? <Loader2 className="animate-spin" size={18} /> : bookingFor === TABLE ? "Request table" : "Request booking"}
           </button>
           <p className="mt-2 text-center text-xs text-slate-500">{store.business_name} will confirm your time. Nothing is charged now.</p>
         </form>

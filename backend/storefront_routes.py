@@ -40,6 +40,11 @@ _BOOKING_BUSINESS_TYPES = frozenset({
 # Types whose booking is a stay across dates rather than a slot on one day.
 _STAY_BUSINESS_TYPES = frozenset({"rental", "hotel"})
 
+# Businesses that do both: they sell from a menu and they hold a table. The
+# cart stays primary because ordering is what a link is mostly used for, with
+# a table booked alongside rather than instead.
+_TABLE_BUSINESS_TYPES = frozenset({"restaurant", "food"})
+
 # Kept short and concrete so a buyer can pick one without reading a policy.
 _REPORT_REASONS = frozenset({
     "scam", "not_delivered", "counterfeit", "offensive", "other",
@@ -246,11 +251,19 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
     """Whether this shop sells goods from a cart or takes bookings."""
     business_type = _business_type(user_doc)
     if business_type not in _BOOKING_BUSINESS_TYPES:
-        return {"mode": "shop", "booking_kind": None, "item_label": "Products"}
+        return {
+            "mode": "shop",
+            "booking_kind": None,
+            "item_label": "Products",
+            # A restaurant sells food and holds tables; one does not replace
+            # the other, so it gets the cart plus a way to book.
+            "takes_table_bookings": business_type in _TABLE_BUSINESS_TYPES,
+        }
     return {
         "mode": "booking",
         "booking_kind": "stay" if business_type in _STAY_BUSINESS_TYPES else "appointment",
         "item_label": "Services",
+        "takes_table_bookings": False,
     }
 
 
@@ -828,14 +841,27 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         if business.get("storefront_enabled", True) is False:
             raise HTTPException(404, "Store not found")
         shop = _shop_mode(business)
-        if shop["mode"] != "booking":
+        service_id = _text(body.get("service_id"), 80)
+        party_size = body.get("party_size")
+
+        # A restaurant books a table, which is not something in its menu, so
+        # there is no service to name. Everything else must book a real one.
+        table_booking = shop["mode"] == "shop" and shop.get("takes_table_bookings")
+        if not table_booking and shop["mode"] != "booking":
             raise HTTPException(400, "This shop takes orders rather than bookings")
 
-        service_id = _text(body.get("service_id"), 80)
-        listable = {str(p["_id"]): p for p in await _listable_products(db, business)}
-        service = listable.get(service_id)
-        if not service:
-            raise HTTPException(409, "That service is no longer available")
+        service = None
+        if table_booking:
+            try:
+                party_size = max(1, min(int(party_size or 1), 50))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "Say how many people the table is for")
+        else:
+            listable = {str(p["_id"]): p for p in await _listable_products(db, business)}
+            service = listable.get(service_id)
+            if not service:
+                raise HTTPException(409, "That service is no longer available")
+            party_size = None
 
         date_val = _text(body.get("date"), 10)
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_val):
@@ -852,8 +878,8 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             checkout_date = ""
 
         customer = await _create_or_update_customer(db, str(business["_id"]), body)
-        duration = service.get("duration")
-        price = float(service.get("discount_price") or service.get("price") or 0)
+        duration = service.get("duration") if service else None
+        price = float(service.get("discount_price") or service.get("price") or 0) if service else 0.0
 
         # Mirror what the app writes for a booking made by hand, so one taken
         # here is indistinguishable in the merchant's Bookings screen.
@@ -883,9 +909,11 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             "customer_id": customer["_id"],
             "customer_name": customer["name"],
             "customer_phone": customer["phone_number"],
-            "service_id": service_id,
-            "service_name": _text(service.get("name"), 200),
-            "service_category": service.get("offering_type") or service.get("category"),
+            # The app already understands "manual" for a booking with no
+            # catalog entry behind it, which is what a table is.
+            "service_id": service_id if service else "manual",
+            "service_name": _text(service.get("name"), 200) if service else "Table booking",
+            "service_category": (service.get("offering_type") or service.get("category")) if service else None,
             "staff_name": None,
             "date": date_val,
             "time": time_val,
@@ -894,8 +922,8 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             "checkin_date": date_val if checkout_date else None,
             "checkout_date": checkout_date or None,
             "nights": nights,
-            "capacity": None,
-            "enrolled_count": 1,
+            "capacity": party_size,
+            "enrolled_count": party_size or 1,
             "addons": [],
             "total_price": price,
             "status": "pending",
