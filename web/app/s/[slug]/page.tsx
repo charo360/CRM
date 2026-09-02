@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { AlertCircle, Check, ChevronDown, Loader2, Minus, Plus, ShoppingBag, X } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, Loader2, Minus, Plus, Search, ShoppingBag, X } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import { formatCurrency, resolveMediaUrl } from "@/lib/utils";
 
@@ -82,6 +82,8 @@ export default function PublicStorePage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [orderMessage, setOrderMessage] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("All");
 
   useEffect(() => {
     if (!slug) return;
@@ -102,6 +104,23 @@ export default function PublicStorePage() {
 
   const total = useMemo(() => cart.reduce((sum, line) => sum + line.price, 0), [cart]);
   const itemCount = useMemo(() => cart.reduce((sum, line) => sum + line.quantity, 0), [cart]);
+  const categories = useMemo(() => {
+    const cats = new Set((store?.products || []).map((product) => product.category || "Other"));
+    return ["All", ...Array.from(cats).sort()];
+  }, [store]);
+  const filteredProducts = useMemo(() => {
+    let list = store?.products || [];
+    if (selectedCategory !== "All") list = list.filter((product) => (product.category || "Other") === selectedCategory);
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      list = list.filter((product) =>
+        product.name.toLowerCase().includes(q) ||
+        (product.description || "").toLowerCase().includes(q) ||
+        (product.category || "").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [store, selectedCategory, searchQuery]);
   const selectedPrice = selected ? itemUnitPrice(selected, quantity, variantName, modifiers) : 0;
   const selectedImages = selected
     ? Array.from(new Set<string>([...(selected.images || []), selected.image_url || ""]))
@@ -235,17 +254,47 @@ export default function PublicStorePage() {
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
       <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-7 sm:px-6"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-3xl font-bold">{store.business_name}</h1><p className="mt-2 text-sm text-white/70">Browse, order, and pay securely.</p></div></header>
+
+      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-4 py-3 sm:px-6">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search products..."
+              className="w-full rounded-full border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-4 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+            />
+          </div>
+          {categories.length > 2 && <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+            {categories.map((category) => <button
+              key={category}
+              type="button"
+              onClick={() => setSelectedCategory(category)}
+              className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${category === selectedCategory ? "bg-brand-dark text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+            >{category}</button>)}
+          </div>}
+        </div>
+      </div>
+
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-7 pb-28 sm:px-6 lg:grid-cols-[1fr_340px] lg:pb-7">
         <section>
           {orderMessage && <div className="mb-5 flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"><Check className="mt-0.5 shrink-0" size={18} />{orderMessage}</div>}
-          {store.products.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">This catalog does not have products available right now.</div> : (
+          {store.products.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">This catalog does not have products available right now.</div> : filteredProducts.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">No products match your search.</div> : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4">
-              {store.products.map((product) => {
+              {filteredProducts.map((product) => {
                 const image = resolveMediaUrl(product.images?.[0] || product.image_url);
                 const salePrice = displayedPrice(product);
-                return <article key={product.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                  <button type="button" onClick={() => beginAdd(product)} className="group block w-full text-left" aria-label={`View ${product.name}`}><div className="aspect-square overflow-hidden bg-slate-100 p-1.5">{image ? <img src={image} alt={product.name} className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.03]" /> : <div className="grid h-full place-items-center text-slate-300"><ShoppingBag size={30} /></div>}</div></button>
-                  <div className="p-3 sm:p-4"><p className="truncate text-[11px] text-slate-400 sm:text-xs">{product.category}</p><button type="button" onClick={() => beginAdd(product)} className="mt-1 line-clamp-2 min-h-10 text-left text-sm font-semibold leading-snug hover:text-brand-dark hover:underline sm:text-base">{product.name}</button>{product.description && <p className="mt-1 line-clamp-2 text-xs text-slate-500 sm:text-sm">{product.description}</p>}<div className="mt-3"><div><p className="text-sm font-bold text-brand-dark sm:text-base">{formatCurrency(salePrice, store.currency)}</p>{product.discount_price != null && product.discount_price < product.price && <p className="text-xs text-slate-400 line-through">{formatCurrency(product.price, store.currency)}</p>}{product.unit && <p className="text-xs text-slate-400">{product.unit}</p>}</div><button type="button" disabled={!product.in_stock} onClick={() => beginAdd(product)} className="mt-3 w-full rounded-lg bg-brand-dark px-2 py-2 text-xs font-semibold text-white hover:bg-brand disabled:cursor-not-allowed disabled:bg-slate-300">{product.in_stock ? "View details" : "Out of stock"}</button></div></div>
+                const hasDiscount = product.discount_price != null && product.discount_price < product.price;
+                const savePercent = hasDiscount ? Math.round((1 - product.discount_price! / product.price) * 100) : 0;
+                const lowStock = product.in_stock && product.stock_quantity != null && product.stock_quantity > 0 && product.stock_quantity <= 5;
+                return <article key={product.id} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+                  <button type="button" onClick={() => beginAdd(product)} className="relative block w-full text-left" aria-label={`View ${product.name}`}>
+                    <div className="aspect-square overflow-hidden bg-slate-100 p-1.5">{image ? <img src={image} alt={product.name} className={`h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.03] ${!product.in_stock ? "opacity-50 grayscale" : ""}`} /> : <div className="grid h-full place-items-center text-slate-300"><ShoppingBag size={30} /></div>}</div>
+                    {hasDiscount && <span className="absolute left-2 top-2 rounded-full bg-orange-500 px-2 py-0.5 text-[11px] font-bold text-white shadow-sm">-{savePercent}%</span>}
+                    {!product.in_stock && <span className="absolute inset-0 grid place-items-center bg-slate-900/10"><span className="rounded-full bg-slate-900/80 px-3 py-1 text-xs font-semibold text-white">Out of stock</span></span>}
+                  </button>
+                  <div className="p-3 sm:p-4"><p className="truncate text-[11px] text-slate-400 sm:text-xs">{product.category}</p><button type="button" onClick={() => beginAdd(product)} className="mt-1 line-clamp-2 min-h-10 text-left text-sm font-semibold leading-snug hover:text-brand-dark hover:underline sm:text-base">{product.name}</button>{product.description && <p className="mt-1 line-clamp-2 text-xs text-slate-500 sm:text-sm">{product.description}</p>}<div className="mt-3"><div className="flex items-baseline gap-1.5"><p className={`text-sm font-bold sm:text-base ${hasDiscount ? "text-orange-600" : "text-brand-dark"}`}>{formatCurrency(salePrice, store.currency)}</p>{hasDiscount && <p className="text-xs text-slate-400 line-through">{formatCurrency(product.price, store.currency)}</p>}</div>{product.unit && <p className="text-xs text-slate-400">{product.unit}</p>}{lowStock && <p className="mt-1 text-xs font-semibold text-orange-600">Only {product.stock_quantity} left</p>}<button type="button" disabled={!product.in_stock} onClick={() => beginAdd(product)} className="mt-3 w-full rounded-lg bg-brand-dark px-2 py-2 text-xs font-semibold text-white hover:bg-brand disabled:cursor-not-allowed disabled:bg-slate-300">{product.in_stock ? "View details" : "Out of stock"}</button></div></div>
                 </article>;
               })}
             </div>
