@@ -3042,7 +3042,16 @@ async def get_settings(user = Depends(get_current_user)):
         "country_code": user.get("country_code", s.get("country_code", "")),
         "ai_model": s.get("ai_model", "standard"),
         "auto_reply_audience": s.get("auto_reply_audience", "everyone"),
-        "business_type": s.get("business_type") or user.get("business_type", ""),
+        # Business Knowledge is where the merchant chooses their business type
+        # and the only copy that changes; settings.business_type is written
+        # once at sign-up as "retail". Reading settings first meant the app
+        # kept calling a salon a shop — showing Products instead of Services
+        # and hiding the Bookings tab from the businesses that need it.
+        "business_type": (
+            (user.get("business_knowledge") or {}).get("business_type")
+            or s.get("business_type")
+            or user.get("business_type", "")
+        ),
         "primary_language": s.get("primary_language", "English"),
         "country": s.get("country", ""),
         "business_name": user.get("business_name", ""),
@@ -10904,7 +10913,13 @@ async def evolution_webhook(request: Request):
                         __import__("country_utils").detect_country_from_phone(user.get("phone_number", ""))
                     )["currency"]
                 )
-                _business_type = _user_settings.get("business_type") or user.get("business_type", "")
+                # Business Knowledge holds the merchant's choice; the settings
+                # copy is the sign-up default of "retail" and never changes.
+                _business_type = (
+                    (user.get("business_knowledge") or {}).get("business_type")
+                    or _user_settings.get("business_type")
+                    or user.get("business_type", "")
+                )
                 _raw_pm_ctx = user.get("payment_methods") or []
                 _payment_methods_ctx = [
                     m if isinstance(m, dict) else {"name": str(m), "details": ""}

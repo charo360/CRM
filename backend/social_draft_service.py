@@ -95,7 +95,14 @@ async def _load_business_blocks(
     settings = user.get("settings") or {}
     bc = {
         "name": settings.get("business_name") or user.get("business_name") or "this business",
-        "type": settings.get("business_type") or user.get("business_type") or "retail",
+        # Business Knowledge holds the type the merchant chose; settings keeps
+        # the sign-up default of "retail" forever.
+        "type": (
+            (user.get("business_knowledge") or {}).get("business_type")
+            or settings.get("business_type")
+            or user.get("business_type")
+            or "retail"
+        ),
         "currency": settings.get("currency") or "KES",
         "about": settings.get("about") or "",
         "products_services": settings.get("products_services") or "",
