@@ -427,14 +427,10 @@ async def _announce_new_order(db, business: dict, order: dict) -> None:
     phone = _text(order.get("customer_phone"), 40)
 
     if phone:
-        # WhatsApp is the channel every shop is meant to be on, so try it
-        # first. But a shop whose connection has dropped, or that has not
-        # linked WhatsApp yet, must still not leave its buyer with nothing.
-        confirmed = False
         try:
             from whatsapp_service import get_whatsapp_service
 
-            result = await get_whatsapp_service(db).send_message(
+            await get_whatsapp_service(db).send_message(
                 user_id=str(business["_id"]),
                 to_number=phone,
                 message="\n".join([
@@ -446,24 +442,8 @@ async def _announce_new_order(db, business: dict, order: dict) -> None:
                 customer_name=customer_name,
                 send_context="storefront_order",
             )
-            confirmed = (result or {}).get("status") == "success"
-            if not confirmed:
-                logger.warning(
-                    "[storefront] WhatsApp did not deliver the confirmation (%s); falling back to SMS",
-                    (result or {}).get("status"),
-                )
         except Exception as exc:
-            logger.error("[storefront] order confirmation over WhatsApp failed: %s", exc)
-
-        if not confirmed:
-            from sms_service import send_sms
-
-            shop_name = _text(business.get("business_name"), 40) or "The shop"
-            # Kept to one segment: this is a paid fallback, not the usual path.
-            await send_sms(
-                phone,
-                f"Order {order_number} received - {amount}. {shop_name} will confirm shortly.",
-            )
+            logger.error("[storefront] order confirmation to buyer failed: %s", exc)
 
     push_token = business.get("push_token")
     if push_token:
