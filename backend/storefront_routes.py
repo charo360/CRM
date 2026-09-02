@@ -51,6 +51,10 @@ _BOOKING_LABELS = {
     "rental": "Booking", "cleaning": "Booking", "events": "Booking",
 }
 
+# Trades where an order is made to order rather than taken off a shelf, so a
+# date is part of the order rather than an afterthought in the notes.
+_DATED_ORDER_BUSINESS_TYPES = frozenset({"bakery"})
+
 # Businesses that do both: they sell from a menu and they hold a table. The
 # cart stays primary because ordering is what a link is mostly used for, with
 # a table booked alongside rather than instead.
@@ -258,6 +262,17 @@ def _business_type(user_doc: dict) -> str:
     ).lower()
 
 
+def _min_notice_days(user_doc: dict, business_type: str) -> int:
+    """How far ahead this trade needs an order, from its own settings."""
+    if business_type not in _DATED_ORDER_BUSINESS_TYPES:
+        return 0
+    knowledge = user_doc.get("business_knowledge") or {}
+    try:
+        return max(0, min(int(knowledge.get("bakery_advance_days") or 0), 60))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _shop_mode(user_doc: dict) -> Dict[str, Any]:
     """Whether this shop sells goods from a cart or takes bookings."""
     business_type = _business_type(user_doc)
@@ -267,6 +282,10 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
             "booking_kind": None,
             "item_label": "Products",
             "booking_label": _BOOKING_LABELS.get(business_type, "Booking"),
+            # A cake is baked for a day. Ask when it is wanted at checkout
+            # rather than hoping the buyer says so in the notes.
+            "needs_wanted_date": business_type in _DATED_ORDER_BUSINESS_TYPES,
+            "min_notice_days": _min_notice_days(user_doc, business_type),
             # A restaurant sells food and holds tables; one does not replace
             # the other, so it gets the cart plus a way to book.
             "takes_table_bookings": business_type in _TABLE_BUSINESS_TYPES,
@@ -276,6 +295,8 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
         "booking_kind": "stay" if business_type in _STAY_BUSINESS_TYPES else "appointment",
         "item_label": "Services",
         "booking_label": _BOOKING_LABELS.get(business_type, "Booking"),
+        "needs_wanted_date": False,
+        "min_notice_days": 0,
         "takes_table_bookings": False,
     }
 
@@ -508,6 +529,7 @@ async def _announce_new_order(db, business: dict, order: dict) -> None:
     amount = f"{currency} {total:,.2f}".replace(".00", "")
     order_number = _text(order.get("order_number"), 40)
     customer_name = _text(order.get("customer_name"), 120) or "Customer"
+    wanted = _text(order.get("wanted_date"), 10)
     phone = _text(order.get("customer_phone"), 40)
 
     if phone:
@@ -520,6 +542,7 @@ async def _announce_new_order(db, business: dict, order: dict) -> None:
                 message="\n".join([
                     f"🛒 *Order received — {amount}*",
                     f"Order: *{order_number}*",
+                    *( [f"For: *{wanted}*"] if wanted else [] ),
                     "",
                     "Thank you! We'll confirm your order shortly.",
                 ]),
@@ -537,7 +560,7 @@ async def _announce_new_order(db, business: dict, order: dict) -> None:
             await get_notification_service().send_notification(
                 push_token=push_token,
                 title=f"🛒 New order — {amount}",
-                body=f"{customer_name} — {order_number}",
+                body=f"{customer_name} — {order_number}" + (f" · for {wanted}" if wanted else ""),
                 data={"type": "storefront_order", "order_id": str(order["_id"])},
             )
         except Exception as exc:
@@ -1044,6 +1067,28 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             for product_id, item in requested_items
         ]
 
+        # A bakery bakes for a day, so the date is part of the order and is
+        # checked against the notice the bakery says it needs.
+        shop = _shop_mode(business)
+        wanted_date = _text(body.get("wanted_date"), 10)
+        if shop.get("needs_wanted_date"):
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", wanted_date):
+                raise HTTPException(400, "Choose the day you need this order")
+            earliest = (datetime.utcnow() + timedelta(days=shop.get("min_notice_days") or 0)).date()
+            try:
+                from datetime import date as _date
+
+                if _date.fromisoformat(wanted_date) < earliest:
+                    raise HTTPException(
+                        400,
+                        f"This business needs {shop['min_notice_days']} day(s) notice. "
+                        f"The earliest is {earliest.isoformat()}.",
+                    )
+            except ValueError:
+                raise HTTPException(400, "Choose the day you need this order")
+        else:
+            wanted_date = ""
+
         customer = await _create_or_update_customer(db, str(business["_id"]), body)
         total = round(sum(float(line["price"]) for line in lines), 2)
         if total <= 0:
@@ -1070,6 +1115,7 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             "delivery_type": _text(body.get("delivery_type"), 32) or "pickup",
             "delivery_address": _text(body.get("delivery_address"), 500),
             "notes": _text(body.get("notes"), 1000),
+            "wanted_date": wanted_date or None,
             "status": "pending",
             "created_by": "storefront",
             "recorded_by": "storefront",

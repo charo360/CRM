@@ -40,6 +40,9 @@ type Store = {
   takes_table_bookings?: boolean;
   /** What this trade calls a booking: Appointment, Reservation, Class... */
   booking_label?: string;
+  /** A bakery bakes for a day, so checkout asks when the order is wanted. */
+  needs_wanted_date?: boolean;
+  min_notice_days?: number;
   item_label?: string;
   products: Product[];
   checkout: { online_payment_available: boolean; provider?: string | null; payment_label: string };
@@ -187,6 +190,10 @@ export default function PublicStorePage() {
   const isStay = store?.booking_kind === "stay";
   const takesTables = Boolean(store?.takes_table_bookings);
   const bookingWord = store?.booking_label || "Booking";
+  const needsWantedDate = Boolean(store?.needs_wanted_date);
+  const earliestWanted = new Date(Date.now() + (store?.min_notice_days || 0) * 86400000)
+    .toISOString()
+    .slice(0, 10);
   const overlayOpen = Boolean(selected) || cartOpen || checkoutOpen || reportOpen || Boolean(bookingFor) || tableOpen;
 
   function closeOverlays() {
@@ -359,6 +366,7 @@ export default function PublicStorePage() {
       delivery_type: data.get("delivery_type"),
       delivery_address: data.get("delivery_address"),
       notes: data.get("notes"),
+      wanted_date: data.get("wanted_date"),
       items: cart.map(({ product_id, quantity, variant_name, modifiers }) => ({ product_id, quantity, variant_name, modifiers })),
     };
     try {
@@ -647,7 +655,7 @@ export default function PublicStorePage() {
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-8px_24px_rgba(15,23,42,0.08)]"><div className="mx-auto flex max-w-2xl items-center gap-3">{isBooking ? <button type="button" onClick={() => { const service = selected; setSelected(null); beginBooking(service); }} className="flex-1 rounded-xl bg-brand-dark py-3.5 text-sm font-bold text-white">Book this · {formatCurrency(selectedPrice, store.currency)}</button> : <><div className="flex shrink-0 items-center rounded-xl border border-slate-200"><button type="button" onClick={() => setQuantity((current) => Math.max(Number(selected.moq || 1), current - 1))} className="p-3" aria-label="Reduce quantity"><Minus size={18} /></button><span className="w-9 text-center font-medium">{quantity}</span><button type="button" onClick={() => setQuantity((current) => current + 1)} className="p-3" aria-label="Increase quantity"><Plus size={18} /></button></div><button type="button" onClick={addSelected} className="flex-1 rounded-xl bg-brand-dark py-3.5 text-sm font-bold text-white">Add to cart · {formatCurrency(selectedPrice * quantity, store.currency)}</button></>}</div>{formError && <p className="mx-auto mt-2 max-w-2xl text-sm text-rose-600">{formError}</p>}</div>
       </div>}
 
-      {checkoutOpen && <div className="fixed inset-0 z-50 grid place-items-end bg-slate-900/40 sm:place-items-center sm:p-4" onMouseDown={() => setCheckoutOpen(false)}><form onSubmit={submitOrder} className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h2 className="font-bold">Checkout</h2><button type="button" onClick={() => setCheckoutOpen(false)} className="text-slate-400"><X /></button></div><p className="mt-1 text-sm text-slate-500">{formatCurrency(total, store.currency)} · {store.business_name}</p>{formError && <p className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{formError}</p>}<div className="mt-4 grid gap-3"><input name="name" required placeholder="Your name" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/><input name="phone" required type="tel" placeholder="Phone number with country code" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/>{store.checkout.online_payment_available && <input name="email" required type="email" placeholder="Email for secure payment" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/>}<label className="text-sm font-medium">Delivery<select name="delivery_type" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm"><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></label><textarea name="delivery_address" placeholder="Delivery address (if needed)" className="min-h-20 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/><textarea name="notes" placeholder="Order note (optional)" className="min-h-16 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/></div><button disabled={submitting} className="mt-5 flex w-full items-center justify-center rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">{submitting ? <Loader2 className="animate-spin" size={18} /> : store.checkout.online_payment_available ? "Continue to secure payment" : "Place order"}</button></form></div>}
+      {checkoutOpen && <div className="fixed inset-0 z-50 grid place-items-end bg-slate-900/40 sm:place-items-center sm:p-4" onMouseDown={() => setCheckoutOpen(false)}><form onSubmit={submitOrder} className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-center justify-between"><h2 className="font-bold">Checkout</h2><button type="button" onClick={() => setCheckoutOpen(false)} className="text-slate-400"><X /></button></div><p className="mt-1 text-sm text-slate-500">{formatCurrency(total, store.currency)} · {store.business_name}</p>{formError && <p className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{formError}</p>}<div className="mt-4 grid gap-3"><input name="name" required placeholder="Your name" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/><input name="phone" required type="tel" placeholder="Phone number with country code" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/>{store.checkout.online_payment_available && <input name="email" required type="email" placeholder="Email for secure payment" className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/>}{needsWantedDate && <label className="text-sm font-medium">When do you need it?<input name="wanted_date" type="date" required min={earliestWanted} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm" />{(store.min_notice_days || 0) > 0 && <span className="mt-1 block text-xs font-normal text-slate-500">{store.business_name} needs {store.min_notice_days} day{store.min_notice_days === 1 ? "" : "s"} notice.</span>}</label>}<label className="text-sm font-medium">Delivery<select name="delivery_type" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm"><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></label><textarea name="delivery_address" placeholder="Delivery address (if needed)" className="min-h-20 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/><textarea name="notes" placeholder="Order note (optional)" className="min-h-16 rounded-lg border border-slate-200 px-3 py-2.5 text-sm"/></div><button disabled={submitting} className="mt-5 flex w-full items-center justify-center rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">{submitting ? <Loader2 className="animate-spin" size={18} /> : store.checkout.online_payment_available ? "Continue to secure payment" : "Place order"}</button></form></div>}
     </main>
   );
 }

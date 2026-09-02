@@ -588,6 +588,67 @@ def test_a_party_size_cannot_be_absurd(monkeypatch):
     assert db.bookings.docs[0]["capacity"] == 50
 
 
+def _bakery_db(advance_days=2):
+    shop = business(
+        business_name="Sweet Things",
+        public_store_slug="sweet-things",
+        business_knowledge={"business_type": "bakery", "bakery_advance_days": advance_days},
+    )
+    return FakeDB(users=[shop], products=[product(name="Birthday Cake", price=40.0)])
+
+
+def _order_body(**extra):
+    body = {"customer_name": "Ada", "phone": "+254700000000",
+            "delivery_type": "pickup", "items": [{"product_id": "p1", "quantity": 1}]}
+    body.update(extra)
+    return body
+
+
+def test_a_bakery_is_asked_when_the_order_is_wanted():
+    mode = sf._shop_mode({"business_knowledge": {"business_type": "bakery",
+                                                 "bakery_advance_days": 3}})
+    assert mode["mode"] == "shop", "a bakery still sells from a cart"
+    assert mode["needs_wanted_date"] is True
+    assert mode["min_notice_days"] == 3
+
+
+def test_other_shops_are_not_asked_for_a_date():
+    mode = sf._shop_mode({"business_knowledge": {"business_type": "retail"}})
+    assert mode["needs_wanted_date"] is False
+    assert mode["min_notice_days"] == 0
+
+
+def test_a_bakery_order_records_the_day_it_is_wanted(monkeypatch):
+    _capture_pushes(monkeypatch)
+    db = _bakery_db()
+    client = _booking_app(db)
+    wanted = (datetime.utcnow() + timedelta(days=5)).date().isoformat()
+
+    response = client.post("/api/storefront/public/sweet-things/orders",
+                           json=_order_body(wanted_date=wanted))
+    assert response.status_code == 200
+    assert db.orders.docs[0]["wanted_date"] == wanted
+
+
+def test_a_bakery_order_must_say_which_day(monkeypatch):
+    _capture_pushes(monkeypatch)
+    client = _booking_app(_bakery_db())
+
+    assert client.post("/api/storefront/public/sweet-things/orders",
+                       json=_order_body()).status_code == 400
+
+
+def test_a_bakery_will_not_take_an_order_inside_its_notice(monkeypatch):
+    _capture_pushes(monkeypatch)
+    client = _booking_app(_bakery_db(advance_days=3))
+    tomorrow = (datetime.utcnow() + timedelta(days=1)).date().isoformat()
+
+    response = client.post("/api/storefront/public/sweet-things/orders",
+                           json=_order_body(wanted_date=tomorrow))
+    assert response.status_code == 400
+    assert "notice" in response.json()["detail"]
+
+
 # --------------------------------------------------------------------------
 # Reporting a shop
 # --------------------------------------------------------------------------
