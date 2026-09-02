@@ -11,6 +11,12 @@ import { useBusiness } from '../../context/BusinessContext';
 
 import { settingsAPI } from '../../context/api';
 
+// "Class" is the only booking label that does not simply take an "s".
+function pluralBookingLabel(label?: string) {
+  if (!label) return 'Bookings';
+  return /(s|sh|ch|x|z)$/i.test(label) ? `${label}es` : `${label}s`;
+}
+
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -102,7 +108,7 @@ export default function TabsLayout() {
                   }] : []),
                   ...(showBroadcastTab && config.bookingsTabVisible ? [{
                     icon: 'calendar-outline' as const,
-                    label: config.bookingLabel ? `${config.bookingLabel}s` : 'Bookings',
+                    label: pluralBookingLabel(config.bookingLabel),
                     onPress: () => router.push('/(tabs)/bookings' as any),
                     color: '#25D366'
                   }] : []),
