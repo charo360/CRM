@@ -468,6 +468,67 @@ async def release_expired_storefront_reservations(db, older_than_minutes: int = 
     return released
 
 
+async def remind_unconfirmed_storefront_orders(db, older_than_minutes: int = 120) -> int:
+    """Nudge merchants about shop orders they have not acted on yet.
+
+    The buyer is told the business will confirm shortly, so an order left
+    sitting is a promise going unkept. Reminds once per order and groups them
+    per business, so a busy shop gets one push rather than one per order.
+    """
+    cutoff = datetime.utcnow() - timedelta(minutes=older_than_minutes)
+    waiting = await db.orders.find({
+        "created_by": "storefront",
+        "status": "pending",
+        "payment_status": {"$ne": "Expired"},
+        "pending_reminder_sent": {"$ne": True},
+        "created_at": {"$lt": cutoff},
+    }).to_list(200)
+    if not waiting:
+        return 0
+
+    by_business: Dict[str, List[dict]] = {}
+    for order in waiting:
+        by_business.setdefault(str(order.get("user_id")), []).append(order)
+
+    reminded = 0
+    for business_id, orders in by_business.items():
+        business = await db.users.find_one({"_id": business_id})
+        push_token = (business or {}).get("push_token")
+        if push_token:
+            oldest = min(orders, key=lambda o: o.get("created_at") or datetime.utcnow())
+            waited = datetime.utcnow() - (oldest.get("created_at") or datetime.utcnow())
+            hours = max(1, int(waited.total_seconds() // 3600))
+            body = (
+                f"{_text(oldest.get('customer_name'), 120) or 'A customer'} has been waiting {hours}h"
+                if len(orders) == 1
+                else f"{len(orders)} orders waiting — the oldest for {hours}h"
+            )
+            try:
+                from notification_service import get_notification_service
+
+                await get_notification_service().send_notification(
+                    push_token=push_token,
+                    title="⏳ Shop orders need confirming",
+                    body=body,
+                    data={"type": "storefront_orders_waiting", "count": len(orders)},
+                )
+            except Exception as exc:
+                logger.error("[storefront] pending order reminder failed: %s", exc)
+                continue
+
+        # Mark them either way: without a push token there is nothing to send,
+        # and re-checking these same orders every cycle helps nobody.
+        for order in orders:
+            await db.orders.update_one(
+                {"_id": order["_id"]}, {"$set": {"pending_reminder_sent": True}}
+            )
+            reminded += 1
+
+    if reminded:
+        logger.info("[storefront] reminded on %s unconfirmed order(s)", reminded)
+    return reminded
+
+
 def _public_origin() -> str:
     return (os.environ.get("FRONTEND_URL") or "https://zilo.pro").rstrip("/")
 

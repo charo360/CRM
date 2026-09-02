@@ -641,6 +641,21 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         coalesce=True,
     )
 
+    # Shop orders the merchant has not confirmed — every 30 min. The buyer was
+    # told the business would confirm shortly, so a sitting order is a promise
+    # going unkept.
+    from storefront_routes import remind_unconfirmed_storefront_orders
+    scheduler.add_job(
+        remind_unconfirmed_storefront_orders,
+        IntervalTrigger(minutes=30),
+        args=[db],
+        id="storefront_pending_orders",
+        name="Remind Unconfirmed Storefront Orders (every 30 min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Delegate scheduled runs — every 5 min (time-based automations).
     from delegate.service import run_due_scheduled_delegations
     scheduler.add_job(
