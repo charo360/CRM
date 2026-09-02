@@ -552,11 +552,18 @@ async def release_expired_storefront_reservations(db, older_than_minutes: int = 
     released = 0
     for order in stale:
         try:
-            await _release_stock(db, str(order["user_id"]), order.get("items") or [])
-            await db.orders.update_one(
+            # Claim the order before touching stock. More than one backend can
+            # be running this, and only one of them may win a given order —
+            # otherwise both hand the same items back and the count goes up
+            # twice. If this process dies after claiming, the stock stays down,
+            # which is the safe way round to be wrong.
+            claimed = await db.orders.update_one(
                 {"_id": order["_id"], "stock_reserved": True},
                 {"$set": {"stock_reserved": False, "payment_status": "Expired"}},
             )
+            if not claimed.modified_count:
+                continue
+            await _release_stock(db, str(order["user_id"]), order.get("items") or [])
             released += 1
         except Exception as exc:
             logger.error("[storefront] could not release stock for %s: %s", order.get("_id"), exc)
@@ -589,37 +596,47 @@ async def remind_unconfirmed_storefront_orders(db, older_than_minutes: int = 120
 
     reminded = 0
     for business_id, orders in by_business.items():
+        # Claim the orders before sending anything. More than one backend can
+        # be running this, and whichever claims an order owns the reminder for
+        # it — otherwise the merchant is told twice about the same order.
+        # Claiming also covers the no-push-token case, where there is nothing
+        # to send and re-checking these same orders every cycle helps nobody.
+        claimed = []
+        for order in orders:
+            result = await db.orders.update_one(
+                {"_id": order["_id"], "pending_reminder_sent": {"$ne": True}},
+                {"$set": {"pending_reminder_sent": True}},
+            )
+            if result.modified_count:
+                claimed.append(order)
+        if not claimed:
+            continue
+        reminded += len(claimed)
+
         business = await db.users.find_one({"_id": business_id})
         push_token = (business or {}).get("push_token")
-        if push_token:
-            oldest = min(orders, key=lambda o: o.get("created_at") or datetime.utcnow())
-            waited = datetime.utcnow() - (oldest.get("created_at") or datetime.utcnow())
-            hours = max(1, int(waited.total_seconds() // 3600))
-            body = (
-                f"{_text(oldest.get('customer_name'), 120) or 'A customer'} has been waiting {hours}h"
-                if len(orders) == 1
-                else f"{len(orders)} orders waiting — the oldest for {hours}h"
-            )
-            try:
-                from notification_service import get_notification_service
+        if not push_token:
+            continue
 
-                await get_notification_service().send_notification(
-                    push_token=push_token,
-                    title="⏳ Shop orders need confirming",
-                    body=body,
-                    data={"type": "storefront_orders_waiting", "count": len(orders)},
-                )
-            except Exception as exc:
-                logger.error("[storefront] pending order reminder failed: %s", exc)
-                continue
+        oldest = min(claimed, key=lambda o: o.get("created_at") or datetime.utcnow())
+        waited = datetime.utcnow() - (oldest.get("created_at") or datetime.utcnow())
+        hours = max(1, int(waited.total_seconds() // 3600))
+        body = (
+            f"{_text(oldest.get('customer_name'), 120) or 'A customer'} has been waiting {hours}h"
+            if len(claimed) == 1
+            else f"{len(claimed)} orders waiting — the oldest for {hours}h"
+        )
+        try:
+            from notification_service import get_notification_service
 
-        # Mark them either way: without a push token there is nothing to send,
-        # and re-checking these same orders every cycle helps nobody.
-        for order in orders:
-            await db.orders.update_one(
-                {"_id": order["_id"]}, {"$set": {"pending_reminder_sent": True}}
+            await get_notification_service().send_notification(
+                push_token=push_token,
+                title="⏳ Shop orders need confirming",
+                body=body,
+                data={"type": "storefront_orders_waiting", "count": len(claimed)},
             )
-            reminded += 1
+        except Exception as exc:
+            logger.error("[storefront] pending order reminder failed: %s", exc)
 
     if reminded:
         logger.info("[storefront] reminded on %s unconfirmed order(s)", reminded)
