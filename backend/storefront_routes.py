@@ -13,7 +13,7 @@ import os
 import re
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -421,6 +421,53 @@ async def _announce_new_order(db, business: dict, order: dict) -> None:
             logger.error("[storefront] new order push to merchant failed: %s", exc)
 
 
+async def _release_stock(db, user_id: str, line_items: List[dict]) -> None:
+    for item in line_items:
+        product = await db.products.find_one({"_id": item["product_id"], "user_id": user_id})
+        if not product or product.get("stock_quantity") is None:
+            continue
+        await db.products.update_one(
+            {"_id": item["product_id"], "user_id": user_id},
+            {"$inc": {"stock_quantity": int(item["quantity"])}},
+        )
+
+
+async def release_expired_storefront_reservations(db, older_than_minutes: int = 30) -> int:
+    """Give back stock held by online payments that were never completed.
+
+    Stock is taken when the order is placed so two buyers cannot claim the last
+    item while one of them is on the payment page. A buyer who closes that page
+    never comes back, though, so without this the count stays down for good and
+    the product eventually reads as out of stock.
+
+    Orders without an online provider are left alone: those are a real
+    commitment the merchant intends to fulfil, not a pending payment.
+    """
+    cutoff = datetime.utcnow() - timedelta(minutes=older_than_minutes)
+    stale = await db.orders.find({
+        "created_by": "storefront",
+        "stock_reserved": True,
+        "payment_provider": {"$in": list(_ONLINE_PROVIDERS)},
+        "payment_status": {"$ne": "Paid"},
+        "created_at": {"$lt": cutoff},
+    }).to_list(200)
+
+    released = 0
+    for order in stale:
+        try:
+            await _release_stock(db, str(order["user_id"]), order.get("items") or [])
+            await db.orders.update_one(
+                {"_id": order["_id"], "stock_reserved": True},
+                {"$set": {"stock_reserved": False, "payment_status": "Expired"}},
+            )
+            released += 1
+        except Exception as exc:
+            logger.error("[storefront] could not release stock for %s: %s", order.get("_id"), exc)
+    if released:
+        logger.info("[storefront] released stock held by %s unpaid order(s)", released)
+    return released
+
+
 def _public_origin() -> str:
     return (os.environ.get("FRONTEND_URL") or "https://zilo.pro").rstrip("/")
 
@@ -622,6 +669,7 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             "recorded_by": "storefront",
             "order_number": f"ZILO-{now.strftime('%y%m%d')}-{secrets.token_hex(3).upper()}",
             "public_token": secrets.token_urlsafe(24),
+            "stock_reserved": True,
             "created_at": now,
             "storefront_ip": _text(request.client.host if request.client else "", 64),
         }
@@ -666,6 +714,15 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         business = await db.users.find_one({"_id": order["user_id"]})
         if not business or business.get("storefront_enabled", True) is False:
             raise HTTPException(404, "Store not found")
+        # The reservation may have been released while the buyer was away, so
+        # claim the stock again before sending them back to pay for it.
+        if not order.get("stock_reserved", True):
+            await _reserve_stock(db, str(order["user_id"]), order.get("items") or [])
+            await db.orders.update_one(
+                {"_id": order["_id"]},
+                {"$set": {"stock_reserved": True, "payment_status": "Pending"}},
+            )
+            order["stock_reserved"] = True
         payment = await _start_online_payment(db, business, order)
         await db.orders.update_one(
             {"_id": order["_id"]},

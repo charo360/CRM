@@ -626,6 +626,21 @@ def start_scheduler(db: AsyncIOMotorDatabase):
         coalesce=True,
     )
 
+    # Storefront stock held by abandoned online payments — every 15 min.
+    # Without this the count stays down for good and the product eventually
+    # reads as out of stock.
+    from storefront_routes import release_expired_storefront_reservations
+    scheduler.add_job(
+        release_expired_storefront_reservations,
+        IntervalTrigger(minutes=15),
+        args=[db],
+        id="storefront_stock_release",
+        name="Release Abandoned Storefront Stock (every 15 min)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # Delegate scheduled runs — every 5 min (time-based automations).
     from delegate.service import run_due_scheduled_delegations
     scheduler.add_job(
