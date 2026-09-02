@@ -104,16 +104,23 @@ class ImageUploadHandler:
             # Check ImgBB
             imgbb_key = os.environ.get('IMGBB_API_KEY')
             if imgbb_key:
-                logger.info("Using ImgBB for product image")
-                base64_data = base64.b64encode(content).decode('utf-8')
-                result = await ImageUploadHandler.upload_base64_to_cloudinary(base64_data, file.filename)
-                return {
-                    "image_url": result["image_url"],
-                    "filename": file.filename
-                }
+                try:
+                    logger.info("Using ImgBB for product image")
+                    base64_data = base64.b64encode(content).decode('utf-8')
+                    result = await ImageUploadHandler.upload_base64_to_cloudinary(base64_data, file.filename)
+                    return {
+                        "image_url": result["image_url"],
+                        "filename": file.filename
+                    }
+                except Exception as imgbb_error:
+                    # A rate-limited or misconfigured ImgBB key must not fail the
+                    # whole upload when local disk can still hold the photo —
+                    # same reasoning as the S3 fallback above.
+                    logger.warning("ImgBB product image upload failed; saving locally: %s", imgbb_error)
             
-            # Fallback: Save locally (for local development)
-            logger.warning("No cloud storage configured, saving locally")
+            # Fallback: Save locally (for local development, or when configured
+            # cloud storage is unreachable)
+            logger.warning("Saving product image locally (no cloud storage available)")
             ext = Path(file.filename).suffix.lower()
             unique_filename = f"{uuid.uuid4()}{ext}"
             file_path = UPLOAD_DIR / unique_filename
