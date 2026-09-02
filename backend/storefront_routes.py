@@ -225,8 +225,21 @@ def _public_product(product: dict) -> Dict[str, Any]:
 
 
 def _business_type(user_doc: dict) -> str:
+    """What kind of business this is, as the merchant last said.
+
+    Business Knowledge is where they choose it and is the only copy that ever
+    changes. ``settings.business_type`` is written once at sign-up and is
+    always "retail", so reading that first would mean the choice never took
+    effect.
+    """
+    knowledge = user_doc.get("business_knowledge") or {}
     settings = user_doc.get("settings") or {}
-    return _text(settings.get("business_type") or user_doc.get("business_type"), 40).lower()
+    return _text(
+        knowledge.get("business_type")
+        or settings.get("business_type")
+        or user_doc.get("business_type"),
+        40,
+    ).lower()
 
 
 def _shop_mode(user_doc: dict) -> Dict[str, Any]:
