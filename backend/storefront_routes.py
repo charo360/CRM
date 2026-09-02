@@ -8,6 +8,7 @@ the browser never supplies a price that is trusted.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import secrets
@@ -15,7 +16,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from paystack_credentials import paystack_connected
 from paystack_service import initialize_checkout_for_user as initialize_paystack_checkout
@@ -24,6 +25,8 @@ from paystack_service import initialize_checkout_for_user as initialize_paystack
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 _PHONE_RE = re.compile(r"^[+0-9][0-9 .()\-]{6,31}$")
 _ONLINE_PROVIDERS = ("paystack",)
+
+logger = logging.getLogger(__name__)
 
 # Shops sit at the site root (``/<slug>``), so a slug matching a page of the
 # web app would be shadowed by it and the shop would be unreachable. Every
@@ -368,6 +371,56 @@ async def _reserve_stock(db, user_id: str, line_items: List[dict]) -> None:
         raise
 
 
+async def _announce_new_order(db, business: dict, order: dict) -> None:
+    """Tell both sides that an order arrived.
+
+    An order that skips online payment used to land silently: the buyer was
+    told the business would confirm shortly, and the business heard nothing
+    until it next opened the app. Neither message is worth failing an order
+    over, so both are best effort. Paid orders are announced by the payment
+    webhook instead, which can say the money actually arrived.
+    """
+    currency = _text(order.get("currency"), 8)
+    total = float(order.get("total_amount") or 0)
+    amount = f"{currency} {total:,.2f}".replace(".00", "")
+    order_number = _text(order.get("order_number"), 40)
+    customer_name = _text(order.get("customer_name"), 120) or "Customer"
+    phone = _text(order.get("customer_phone"), 40)
+
+    if phone:
+        try:
+            from whatsapp_service import get_whatsapp_service
+
+            await get_whatsapp_service(db).send_message(
+                user_id=str(business["_id"]),
+                to_number=phone,
+                message="\n".join([
+                    f"🛒 *Order received — {amount}*",
+                    f"Order: *{order_number}*",
+                    "",
+                    "Thank you! We'll confirm your order shortly.",
+                ]),
+                customer_name=customer_name,
+                send_context="storefront_order",
+            )
+        except Exception as exc:
+            logger.error("[storefront] order confirmation to buyer failed: %s", exc)
+
+    push_token = business.get("push_token")
+    if push_token:
+        try:
+            from notification_service import get_notification_service
+
+            await get_notification_service().send_notification(
+                push_token=push_token,
+                title=f"🛒 New order — {amount}",
+                body=f"{customer_name} — {order_number}",
+                data={"type": "storefront_order", "order_id": str(order["_id"])},
+            )
+        except Exception as exc:
+            logger.error("[storefront] new order push to merchant failed: %s", exc)
+
+
 def _public_origin() -> str:
     return (os.environ.get("FRONTEND_URL") or "https://zilo.pro").rstrip("/")
 
@@ -499,7 +552,7 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         return _store_payload(business, products)
 
     @api_router.post("/storefront/public/{slug}/orders")
-    async def create_public_order(slug: str, body: dict, request: Request):
+    async def create_public_order(slug: str, body: dict, request: Request, background_tasks: BackgroundTasks):
         business = await _business_doc(db, slug)
         if business.get("storefront_enabled", True) is False:
             raise HTTPException(404, "Store not found")
@@ -590,6 +643,10 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             {"$set": {"payment_provider": payment.get("provider") or "manual", "payment_reference": payment.get("reference") or ""}},
         )
         order["payment_provider"] = payment.get("provider") or "manual"
+        # An order heading to a payment page is announced by the webhook once
+        # the money lands. Anything else is announced now, or nobody is told.
+        if payment.get("payment_action") != "redirect":
+            background_tasks.add_task(_announce_new_order, db, business, order)
         return {**_order_payload(order), **payment}
 
     @api_router.get("/storefront/public/orders/{order_token}")
